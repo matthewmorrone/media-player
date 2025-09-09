@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic
+
+# Optional but recommended for features
+opencv-python
+numpy
+# One of these for Whisper-based subtitles
+faster-whisper
+openai-whisper
+# For sprite sheet generation
+Pillow

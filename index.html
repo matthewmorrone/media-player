@@ -1,0 +1,4157 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Local Media</title>
+  <style>
+    body {
+      font-family:
+        system-ui,
+        -apple-system,
+        Segoe UI,
+        Roboto,
+        sans-serif;
+      margin: 0;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      height: 100vh;
+    }
+
+    header,
+    footer {
+      padding: 12px 16px;
+      border-bottom: 1px solid #ddd;
+    }
+
+    footer {
+      border-top: 1px solid #ddd;
+      border-bottom: 0;
+    }
+
+    #container {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: 100%;
+    }
+
+    #sidebar {
+      border-right: 1px solid #eee;
+      padding: 18px 16px 16px 16px;
+      background: #f9f9fc;
+      min-width: 260px;
+      box-shadow: 2px 0 8px #0001;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    #infoPanel {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px #0001;
+      padding: 16px 14px;
+      margin-top: 0;
+      border: 1px solid #eee;
+      font-size: 14px;
+      color: #222;
+      line-height: 1.7;
+    }
+
+    .infoTitle {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 2px;
+      color: #222;
+    }
+
+    .infoRow {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 2px;
+    }
+
+    .infoLabel {
+      color: #888;
+      font-size: 13px;
+      min-width: 70px;
+    }
+
+    .infoValue {
+      color: #222;
+      font-size: 14px;
+      font-family: monospace;
+    }
+
+    #main {
+      padding: 12px;
+      overflow: auto;
+    }
+
+    ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    li {
+      padding: 6px 4px;
+      cursor: pointer;
+    }
+
+    li:hover {
+      background: #f6f6f6;
+    }
+
+    .badge {
+      font-size: 11px;
+      padding: 2px 6px;
+      border: 1px solid #ccc;
+      border-radius: 999px;
+      margin-left: 6px;
+    }
+
+    #video {
+      width: 100%;
+      max-height: 70vh;
+      background: #000;
+      display: block;
+      cursor: pointer;
+    }
+
+    /* Remove reserved padding; controls are absolutely positioned */
+    /* #player.player { padding-bottom: 84px; } */
+    .file {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .small {
+      color: #666;
+      font-size: 12px;
+    }
+
+    /* Utility classes for layout/spacing/typography */
+    .flex {
+      display: flex;
+    }
+
+    .flex-col {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .items-center {
+      align-items: center;
+    }
+
+    .items-start {
+      align-items: flex-start;
+    }
+
+    .justify-between {
+      justify-content: space-between;
+    }
+
+    .gap-6 {
+      gap: 6px;
+    }
+
+    .gap-8 {
+      gap: 8px;
+    }
+
+    .gap-12 {
+      gap: 12px;
+    }
+
+    .gap-16 {
+      gap: 16px;
+    }
+
+    .wrap {
+      flex-wrap: wrap;
+    }
+
+    .mb-8 {
+      margin-bottom: 8px;
+    }
+
+    .mb-18 {
+      margin-bottom: 18px;
+    }
+
+    .mt-8 {
+      margin-top: 8px;
+    }
+
+    .mt-12 {
+      margin-top: 12px;
+    }
+
+    .w-80 {
+      width: 80px;
+    }
+
+    .w-120 {
+      width: 120px;
+    }
+
+    .w-220 {
+      width: 220px;
+    }
+
+    .block {
+      display: block;
+    }
+
+    .prewrap {
+      white-space: pre-wrap;
+    }
+
+    .stat-val {
+      font-size: 20px;
+      font-weight: 600;
+    }
+
+    .grid-auto-180 {
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    }
+
+    .player-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 8px 0;
+    }
+
+    .header-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .tab-bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .scroll-60 {
+      overflow: auto;
+      max-height: 60vh;
+    }
+
+    .tile-no-pad {
+      padding: 0;
+    }
+
+    .image-cover {
+      max-width: 360px;
+      max-height: 240px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #111;
+    }
+
+    .progress-lg {
+      width: 220px;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+
+    .fixed-menu {
+      position: fixed;
+      z-index: 1000;
+      background: #fff;
+      border: 1px solid #ccc;
+      padding: 12px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px #0002;
+    }
+
+    .meta-extra {
+      margin-top: 4px;
+      white-space: pre-wrap;
+      line-height: 1.4;
+    }
+
+    .thumb-img {
+      width: 100%;
+      max-width: 220px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      object-fit: cover;
+    }
+
+    .thumb-placeholder {
+      width: 100%;
+      max-width: 220px;
+      height: 120px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f0f0f0;
+      color: #666;
+      border-radius: 8px;
+    }
+
+    .w-full {
+      width: 100%;
+    }
+
+    .table-collapse {
+      border-collapse: collapse;
+    }
+
+    .thead-sticky {
+      position: sticky;
+      top: 0;
+      background: #fafafa;
+    }
+
+    /* List column config + resizing */
+    #listControls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    #listColumnsPanel {
+      background: #fff;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      padding: 8px 10px;
+      box-shadow: 0 4px 16px #0002;
+      display: none;
+      position: absolute;
+      z-index: 10;
+      margin-top: 6px;
+    }
+    #listColumnsPanel .row { gap: 10px; }
+    #listColumnsPanel label { font-size: 12px; color: #333; }
+    #listColumnsPanel .muted { color: #777; }
+  #listColumnsPanel .section { margin: 8px 0; }
+  #listColumnsPanel .section strong { display:block; margin-bottom:6px; }
+  #listColumnsPanel .choices { max-height: 220px; overflow: auto; border: 1px solid #eee; padding: 6px; border-radius: 6px; }
+  #listColumnsPanel input[type="text"] { width: 220px; }
+
+    #listTable {
+      table-layout: fixed;
+      width: 100%;
+    }
+    #listTable th { position: relative; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #listTable td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .col-resizer {
+      position: absolute;
+      right: 0;
+      top: 0;
+      width: 6px;
+      height: 100%;
+      cursor: col-resize;
+      background: transparent;
+    }
+    .col-resizer:hover { background: #eaeaea; }
+    .dragging-col { opacity: 0.5; }
+
+    .text-left {
+      text-align: left;
+    }
+
+    .text-right {
+      text-align: right;
+    }
+
+    .th {
+      padding: 8px;
+      border-bottom: 1px solid #eee;
+    }
+
+    .td {
+      padding: 6px 8px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .back-btn {
+      margin: 8px 8px 8px 0;
+      font-size: 18px;
+      font-weight: 700;
+      padding: 10px 14px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .back-icon {
+      font-size: 20px;
+      opacity: 0.8;
+    }
+
+    .player-title {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.2px;
+      max-width: 60vw;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Ensure controls anchor to the video box */
+    .player-media {
+      position: relative;
+    }
+
+    .sprite-preview {
+      position: absolute;
+      bottom: 48px;
+      /* float above controls bar */
+      left: 0;
+      width: 160px;
+      height: 90px;
+      background: #000 no-repeat;
+      background-size: cover;
+      border: 1px solid #333;
+      border-radius: 6px;
+      box-shadow: 0 2px 8px #0006;
+      pointer-events: none;
+      transform: translateX(-50%);
+      display: none;
+      z-index: 7;
+    }
+
+    /* #infoPanel spacing handled in main panel styles */
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .controls input[type="text"] {
+      flex: 1;
+      padding: 6px 8px;
+      font-size: 14px;
+    }
+
+    .controls button {
+      padding: 6px 10px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px;
+      align-items: start;
+    }
+
+    .tile {
+      border: 1px solid #eee;
+      border-radius: 8px;
+      padding: 8px;
+      background: #fff;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .tile.selected {
+      outline: 2px solid #06f;
+      box-shadow: 0 0 0 2px #06f inset;
+    }
+
+    .tile video {
+      width: 100%;
+      height: 120px;
+      background: #000;
+      object-fit: cover;
+    }
+
+    .tile .name {
+      font-size: 12px;
+      color: #333;
+      word-break: break-word;
+    }
+
+    .tile .thumb {
+      width: 100%;
+      height: 120px;
+      object-fit: cover;
+      background: #111;
+      display: block;
+    }
+
+    .btn {
+      font-size: 12px;
+      padding: 4px 8px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: #f8f8f8;
+      cursor: pointer;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .pager {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-start;
+      margin: 8px 0;
+    }
+
+    .pager input[type="number"] {
+      width: 72px;
+      padding: 4px 6px;
+      font-size: 12px;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .placeholder {
+      width: 100%;
+      height: 120px;
+      background: #151515;
+      color: #888;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      border-radius: 4px;
+      border: 1px dashed #333;
+    }
+
+    .swatch {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+
+    /* Player overlays */
+    .player {
+      position: relative;
+    }
+
+    /* Scrub visuals sit inside the progress bar now */
+    #heatmapStripe {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      background-size: 100% 100%;
+      image-rendering: pixelated;
+      opacity: 0.9;
+      border-radius: 10px;
+      background-color: transparent;
+    }
+
+    #chaptersBar {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      pointer-events: none;
+    }
+
+    #chaptersBar .marker {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: #ff4081;
+      opacity: 0.9;
+    }
+
+    #chaptersBar .marker::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: -1px;
+      right: -1px;
+      background: linear-gradient(to bottom, #ff4081, #ffc107);
+      opacity: 0.5;
+    }
+
+    /* Custom player controls */
+    #controlsBar {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      user-select: none;
+      padding: 8px 10px;
+      background: linear-gradient(to top,
+          rgba(0, 0, 0, 0.55),
+          rgba(0, 0, 0, 0.35));
+      border-radius: 8px;
+      color: #fff;
+      z-index: 6;
+      opacity: 1;
+      transition: opacity 0.15s ease;
+    }
+
+    #btnPlayPause,
+    #btnCC {
+      padding: 6px 10px;
+      font-size: 13px;
+      border: 1px solid #fff3;
+      background: #ffffff22;
+      color: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    #btnPlayPause:hover,
+    #btnCC:hover {
+      background: #ffffff33;
+    }
+
+    #timeLabel {
+      font-size: 12px;
+      color: #fff;
+      min-width: 100px;
+      text-align: right;
+    }
+
+    #controlsProgress {
+      position: relative;
+      height: 10px;
+      background: #ffffff2a;
+      border-radius: 999px;
+      flex: 1;
+      cursor: pointer;
+      overflow: hidden;
+    }
+
+    #controlsProgressFill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 0;
+      background: #2e8cff;
+      border-radius: 999px;
+    }
+
+    /* Right-side queue panel */
+    /* queue removed */
+    /* Generic tiny progress bar */
+    .progress {
+      width: 100%;
+      height: 4px;
+      background: #eee;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .progress .bar {
+      height: 100%;
+      width: 0;
+      background: #06f;
+      transition: width 0.15s linear;
+    }
+
+    /* Indeterminate animation */
+    .indeterminate {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .indeterminate::before {
+      content: "";
+      position: absolute;
+      left: -40%;
+      top: 0;
+      height: 100%;
+      width: 40%;
+      background: linear-gradient(90deg,
+          transparent,
+          rgba(0, 0, 0, 0.15),
+          transparent);
+      animation: slide 1s linear infinite;
+    }
+
+    @keyframes slide {
+      0% {
+        left: -40%;
+      }
+
+      100% {
+        left: 100%;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <header class="header-bar">
+    <strong>Local Media</strong>
+    <div id="tabBar" class="tab-bar">
+      <button class="btn" id="tabPlayer">Player</button>
+      <button class="btn" id="tabGrid">Grid</button>
+      <button class="btn" id="tabList">List</button>
+      <button class="btn" id="tabTasks">Tasks</button>
+      <button class="btn" id="tabStats">Stats</button>
+      <button class="btn" id="tabSettings">Settings</button>
+      <button class="btn" id="playRandomBtn">Random</button>
+      <button class="btn" id="tabImage">Image</button>
+      <button class="btn" id="toggleHoversBtn" data-enabled="0" title="Enable/disable hover video previews">
+        Hovers: Off
+      </button>
+    </div>
+  </header>
+  <div id="container">
+    <div id="sidebar">
+      <div class="controls">
+        <input id="rootInput" type="text" value="/Volumes/media/PornMin" placeholder="Root folder" />
+        <button id="setRootBtn">Set</button>
+      </div>
+      <div id="infoPanel" class="small"></div>
+      <ul id="dirs"></ul>
+    </div>
+    <div id="main">
+      <div id="player" class="player">
+        <h1>
+          <div id="meta"></div>
+        </h1>
+        <div class="player-media">
+          <video id="video" class="hidden" preload="metadata"></video>
+          <!-- Scrub visuals inside progress bar -->
+          <div id="controlsBar" class="hidden">
+            <button id="btnPlayPause" title="Play/Pause (space)">Play</button>
+            <div id="controlsProgress">
+              <div id="heatmapStripe"></div>
+              <div id="chaptersBar"></div>
+              <div id="controlsProgressFill"></div>
+            </div>
+            <span id="timeLabel">0:00 / 0:00</span>
+            <button id="btnCC" title="Toggle captions">CC</button>
+          </div>
+        </div>
+        <div id="playerActions" class="player-actions">
+          <button id="setThumbBtn" class="btn">
+            Set Thumbnail from Current Frame
+          </button>
+        </div>
+      </div>
+      <!-- Stats Tab Content -->
+      <div id="statsTab" class="hidden flex-col gap-12">
+        <div class="grid grid-auto-180">
+          <div class="tile">
+            <div class="small">SCENES SIZE</div>
+            <div id="statScenesSize" class="stat-val">
+              —
+            </div>
+          </div>
+          <div class="tile">
+            <div class="small">SCENES</div>
+            <div id="statScenes" class="stat-val">
+              —
+            </div>
+          </div>
+          <div class="tile">
+            <div class="small">SCENES DURATION</div>
+            <div id="statScenesDuration" class="stat-val">
+              —
+            </div>
+          </div>
+          <div class="tile">
+            <div class="small">COVERS</div>
+            <div id="statCovers" class="stat-val">
+              —
+            </div>
+          </div>
+          <div class="tile">
+            <div class="small">HOVERS</div>
+            <div id="statHovers" class="stat-val">
+              —
+            </div>
+          </div>
+          <div class="tile">
+            <div class="small">SUBTITLES</div>
+            <div id="statSubs" class="stat-val">
+              —
+            </div>
+          </div>
+          <div class="tile">
+            <div class="small">METADATA</div>
+            <div id="statMeta" class="stat-val">
+              —
+            </div>
+          </div>
+          <!-- Performers -->
+          <!-- Studios -->
+          <!-- Tags -->
+        </div>
+        <div class="small" id="statsNote"></div>
+      </div>
+      <!-- Settings Tab Content -->
+      <div id="settingsTab" class="hidden flex-col gap-12">
+        <div class="tile">
+          <div class="small"><strong>Server Health</strong></div>
+          <pre id="healthInfo" class="small prewrap"></pre>
+        </div>
+        <div class="tile">
+          <div class="small"><strong>Config</strong></div>
+          <pre id="configInfo" class="small prewrap"></pre>
+        </div>
+      </div>
+      <!-- List Tab (v2 parity) -->
+      <div id="listTab" class="hidden flex-col gap-8">
+        <div class="row" id="listControls">
+          <button id="reloadListBtn" class="btn">Reload</button>
+          <div style="position:relative;">
+            <button id="toggleListColumnsBtn" class="btn">Columns</button>
+            <div id="listColumnsPanel" class="small"></div>
+          </div>
+        </div>
+        <div class="tile tile-no-pad">
+          <div class="scroll-60">
+            <table id="listTable" class="small w-full table-collapse">
+              <thead class="thead-sticky"><tr id="listHeaderRow"></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <!-- Image Tab Content -->
+      <div id="imageTab" class="hidden flex-col gap-12">
+        <div class="row">
+          <button id="analyzeBtn" class="btn">Analyze Cover</button>
+          <span class="small" id="imageStatus"></span>
+        </div>
+        <div class="row items-start gap-16">
+          <img id="coverPreview" alt="Cover preview" class="image-cover" />
+          <div id="analysisResults" class="small"></div>
+        </div>
+      </div>
+      <div id="gridControls" class="controls mb-8 wrap">
+        <span class="small">Grid columns</span>
+        <select id="gridSize">
+          <option value="3">3</option>
+          <option value="4" selected>4</option>
+          <option value="5">5</option>
+          <option value="8">8</option>
+          <option value="16">16</option>
+          <option value="32">32</option>
+        </select>
+        <span class="small">Page size</span>
+        <input id="pageSize" type="number" min="4" max="500" step="4" value="16" />
+        <input id="searchInput" type="text" placeholder="Search…" class="w-120" />
+        <select id="sortBy">
+          <option value="name">Name</option>
+          <option value="size">Size</option>
+          <option value="date">Date</option>
+          <option value="random">Random</option>
+        </select>
+        <select id="sortOrder">
+          <option value="asc">Asc</option>
+          <option value="desc">Desc</option>
+        </select>
+        <button id="prevBtn" class="btn">Prev</button>
+        <div id="pageInfo" class="small"></div>
+        <button id="nextBtn" class="btn">Next</button>
+      </div>
+      <div id="files" class="grid"></div>
+      <div id="fileMenu" class="hidden fixed-menu">
+        <button id="coverBtn" class="btn">Generate cover</button>
+        <button id="closeMenuBtn" class="btn">Close</button>
+      </div>
+      <div id="tasksDiv" class="hidden mt-12">
+        <div class="mb-18" id="taskSection-metadata" data-task-section="metadata">
+          <div class="small"><strong>JSON Metadata</strong></div>
+          <progress id="metaProgress" max="100" value="0" class="progress-lg"></progress>
+          <span id="metaPct" class="small"></span>
+          <button id="generateMissingMetaBtn" class="btn">
+            Generate missing metadata
+          </button>
+          <button id="clearMetaBtn" class="btn">Clear all metadata</button>
+        </div>
+        <div class="mb-18" id="taskSection-covers" data-task-section="covers">
+          <div class="small flex items-center gap-8 wrap">
+            <strong>Covers</strong>
+            <span class="small">Offset (s)</span>
+            <input id="coverOffset" type="number" min="0" step="0.1" value="10" class="w-80" />
+          </div>
+          <progress id="coverProgress" max="100" value="0" class="progress-lg"></progress>
+          <span id="coverPct" class="small"></span>
+          <button id="generateMissingCoversBtn" class="btn">Generate missing covers</button>
+          <button id="clearCoversBtn" class="btn">Clear all covers</button>
+        </div>
+        <div class="mb-18" id="taskSection-hovers" data-task-section="hovers">
+          <div class="small"><strong>Hover Previews</strong></div>
+          <progress id="hoverProgress" max="100" value="0" class="progress-lg"></progress>
+          <span id="hoverPct" class="small"></span>
+          <button id="generateMissingHoversBtn" class="btn"> Generate missing hovers </button>
+          <button id="clearHoversBtn" class="btn">Clear all hovers</button>
+        </div>
+        <div class="mb-18" id="taskSection-phash" data-task-section="phash">
+          <div class="small"><strong>pHash</strong></div>
+          <progress id="phashProgress" max="100" value="0" class="progress-lg"></progress>
+          <span id="phashPct" class="small"></span>
+          <button id="generateMissingPhashBtn" class="btn">Generate missing pHash</button>
+          <button id="clearPhashBtn" class="btn">Clear all pHash</button>
+        </div>
+        <div class="mb-18" id="taskSection-scenes" data-task-section="scenes">
+          <div class="small"><strong>Chapter Markers</strong></div>
+          <progress id="scenesProgress" max="100" value="0" class="progress-lg"></progress>
+          <span id="scenesPct" class="small"></span>
+          <button id="generateMissingScenesBtn" class="btn">Generate missing scenes</button>
+          <button id="clearScenesBtn" class="btn">Clear all scenes</button>
+        </div>
+        <div class="mb-18" id="taskSection-sprites" data-task-section="sprites">
+          <div class="small"><strong>Scrubbing Thumbnails</strong></div>
+          <progress id="spritesProgress" max="100" value="0" class="progress-lg"></progress>
+          <span id="spritesPct" class="small"></span>
+          <button id="generateMissingSpritesBtn" class="btn"> Generate missing sprites </button>
+          <button id="clearSpritesBtn" class="btn">Clear all sprites</button>
+        </div>
+        <div class="mb-18" id="taskSection-heatmaps" data-task-section="heatmaps">
+          <div class="small"><strong>Heatmaps</strong></div>
+          <progress id="heatmapsProgress" max="100" value="0" class="progress-lg"></progress>
+          <span id="heatmapsPct" class="small"></span>
+          <button id="generateMissingHeatmapsBtn" class="btn"> Generate missing heatmaps </button>
+          <button id="clearHeatmapsBtn" class="btn"> Clear all heatmaps </button>
+        </div>
+        <div class="mb-18" id="taskSection-subtitles" data-task-section="subtitles">
+          <div class="small"><strong>Subtitles</strong></div>
+          <progress id="subsProgress" max="100" value="0" class="progress-lg"></progress>
+          <span id="subsPct" class="small"></span>
+          <button id="generateMissingSubsBtn" class="btn"> Generate missing subtitles </button>
+          <button id="clearSubsBtn" class="btn">Clear all subtitles</button>
+        </div>
+        <div class="mb-18" id="taskSection-faces" data-task-section="faces">
+          <div class="small"><strong>Face Embeddings</strong></div>
+          <progress id="facesProgress" max="100" value="0" class="progress-lg"></progress>
+          <span id="facesPct" class="small"></span>
+          <button id="generateMissingFacesBtn" class="btn"> Generate missing embeddings </button>
+          <button id="clearFacesBtn" class="btn">Clear all embeddings</button>
+        </div>
+        <!-- <button class="btn" disabled>Find end of intro</button> -->
+        <!-- <button class="btn" disabled>Facial recognition of actors</button> -->
+      </div>
+    </div>
+  </div>
+  <footer>
+    <span id="status"></span>
+  </footer>
+  <!-- queue removed -->
+  <script>
+    // v1 UI script (copied as-is)
+    const videoEl = document.getElementById("video");
+    const metaEl = document.getElementById("meta");
+    const playerEl = document.getElementById("player");
+    const controlsBar = document.getElementById("controlsBar");
+    const heatmapStripe = document.getElementById("heatmapStripe");
+    const chaptersBar = document.getElementById("chaptersBar");
+    const gridControls = document.getElementById("gridControls");
+    const filesGrid = document.getElementById("files");
+    const tasksDiv = document.getElementById("tasksDiv");
+    const toggleHoversBtn = document.getElementById("toggleHoversBtn");
+    let hoverPreviewsEnabled = true; // default enabled
+
+    // Simple tab router helpers
+    const TAB_SLUGS = {
+      Player: "player",
+      Grid: "grid",
+      List: "list",
+      Tasks: "tasks",
+      Stats: "stats",
+      Image: "image",
+      Settings: "settings",
+    };
+    const SLUG_TO_TAB = Object.fromEntries(
+      Object.entries(TAB_SLUGS).map(([k, v]) => [v, k]),
+    );
+    function getTabFromLocation() {
+      const slug = (location.hash || "").replace(/^#/, "").toLowerCase();
+      return SLUG_TO_TAB[slug] || null;
+    }
+    function setRouteForTab(tab, replace = false) {
+      const slug = TAB_SLUGS[tab] || "grid";
+      const target = `#${slug}`;
+      if (replace) {
+        history.replaceState({ tab }, "", target);
+      } else {
+        history.pushState({ tab }, "", target);
+      }
+    }
+
+    function showTab(tab, fromRouter) {
+      // Hide all tab-specific containers by default to prevent bleed-through
+      const listTab = document.getElementById("listTab");
+      if (listTab) listTab.classList.add("hidden");
+      const statsTab = document.getElementById("statsTab");
+      if (statsTab) statsTab.classList.add("hidden");
+      const imgTab = document.getElementById("imageTab");
+      if (imgTab) imgTab.classList.add("hidden");
+      const settingsTab = document.getElementById("settingsTab");
+      if (settingsTab) settingsTab.classList.add("hidden");
+      // Always hide Player-only UI by default; Player branch will re-show as needed
+      const _bb = document.getElementById("backBtn");
+      if (_bb) _bb.style.display = "none";
+      if (controlsBar) controlsBar.classList.add("hidden");
+      if (tab === "Player") {
+        playerEl.classList.remove("hidden");
+        videoEl.classList.remove("hidden");
+        metaEl.classList.remove("hidden");
+        gridControls.style.display = "none";
+        filesGrid.style.display = "none";
+        tasksDiv.classList.add("hidden");
+        const statsTab = document.getElementById("statsTab");
+        if (statsTab) statsTab.classList.add("hidden");
+        const imgTab = document.getElementById("imageTab");
+        if (imgTab) imgTab.classList.add("hidden");
+        // Stop any Tasks auto-refresh while in Player
+        if (tasksRefreshTimer) {
+          clearInterval(tasksRefreshTimer);
+          tasksRefreshTimer = null;
+        }
+        let backBtn = document.getElementById("backBtn");
+        if (!backBtn) {
+          backBtn = document.createElement("button");
+          backBtn.id = "backBtn";
+          backBtn.className = "btn back-btn";
+          const backIcon = document.createElement("span");
+          backIcon.textContent = "←";
+          backIcon.className = "back-icon";
+          const titleSpan = document.createElement("span");
+          titleSpan.id = "playerTitle";
+          titleSpan.textContent = "Back";
+          titleSpan.className = "player-title";
+          backBtn.appendChild(backIcon);
+          backBtn.appendChild(titleSpan);
+          playerEl.parentNode.insertBefore(backBtn, playerEl);
+          backBtn.onclick = () => {
+            showTab("Grid");
+            // Restore previous selection and scroll
+            if (window._lastGridTile) {
+              window._lastGridTile.classList.add("selected");
+              window._lastGridTile.scrollIntoView({
+                block: "nearest",
+                inline: "nearest",
+              });
+            }
+          };
+        }
+        backBtn.style.display = "";
+        // Always play the selected file if present
+        if (selectedFile) {
+          play(selectedFile);
+        }
+        // Show add marker button inside player actions
+        let addMarkerBtn = document.getElementById("addMarkerBtn");
+        if (!addMarkerBtn) {
+          addMarkerBtn = document.createElement("button");
+          addMarkerBtn.id = "addMarkerBtn";
+          addMarkerBtn.className = "btn";
+          addMarkerBtn.textContent = "Add Persistent Marker";
+          const actions = document.getElementById("playerActions");
+          if (actions) actions.appendChild(addMarkerBtn);
+          addMarkerBtn.onclick = async () => {
+            if (!selectedFile) {
+              return;
+            }
+            const currentTime = Math.floor(videoEl.currentTime || 0);
+            addMarkerBtn.disabled = true;
+            addMarkerBtn.textContent = "Saving marker…";
+            const res = await fetch(
+              `/api/marker?path=${encodeURIComponent(selectedFile.path)}&time=${currentTime}`,
+              { method: "POST" },
+            );
+            if (res.ok) {
+              addMarkerBtn.textContent = "Marker saved!";
+              try { await renderOverlaysForFile(selectedFile); } catch (_) {}
+            } else {
+              addMarkerBtn.textContent = "Failed to save marker";
+            }
+            setTimeout(() => {
+              addMarkerBtn.textContent = "Add Persistent Marker";
+              addMarkerBtn.disabled = false;
+            }, 2000);
+          };
+        }
+        addMarkerBtn.style.display = "";
+        // Show Set Thumbnail button in Player
+        const setThumbBtn = document.getElementById("setThumbBtn");
+        if (setThumbBtn) setThumbBtn.style.display = "";
+        // Only play if not already loaded
+        if (selectedFile) {
+          const src = `/api/stream?path=${encodeURIComponent(selectedFile.path)}`;
+          const currentSrc = videoEl.querySelector("source")?.src || "";
+          if (
+            !currentSrc.endsWith(encodeURIComponent(selectedFile.path)) &&
+            !currentSrc.endsWith(selectedFile.path)
+          ) {
+            play(selectedFile);
+          }
+        }
+        // Only show overlay and controls in Player when a file is active; delay until metadata loaded
+        if (controlsBar) controlsBar.classList.add("hidden");
+        if (tasksRefreshTimer) {
+          clearInterval(tasksRefreshTimer);
+          tasksRefreshTimer = null;
+        }
+        // stop jobs SSE stream when leaving Tasks
+        try {
+          if (jobsEvtSrc) {
+            jobsEvtSrc.close();
+            jobsEvtSrc = null;
+          }
+        } catch (_) { }
+        // stop indeterminate animation outside Tasks
+        try {
+          setIndeterminateActive(false);
+        } catch (_) { }
+      } else if (tab === "Grid") {
+        playerEl.classList.add("hidden");
+        videoEl.classList.add("hidden");
+        metaEl.classList.add("hidden");
+        gridControls.style.display = "";
+        filesGrid.style.display = "";
+        tasksDiv.classList.add("hidden");
+        const statsTab = document.getElementById("statsTab");
+        if (statsTab) statsTab.classList.add("hidden");
+        const imgTab = document.getElementById("imageTab");
+        if (imgTab) imgTab.classList.add("hidden");
+        const setThumbBtn = document.getElementById("setThumbBtn");
+        if (setThumbBtn) setThumbBtn.style.display = "none";
+        let addMarkerBtn = document.getElementById("addMarkerBtn");
+        if (addMarkerBtn) addMarkerBtn.style.display = "none";
+        if (controlsBar) controlsBar.classList.add("hidden");
+        if (tasksRefreshTimer) {
+          clearInterval(tasksRefreshTimer);
+          tasksRefreshTimer = null;
+        }
+        // stop jobs SSE stream when leaving Tasks
+        try {
+          if (jobsEvtSrc) {
+            jobsEvtSrc.close();
+            jobsEvtSrc = null;
+          }
+        } catch (_) { }
+        try {
+          setIndeterminateActive(false);
+        } catch (_) { }
+      } else if (tab === "Tasks") {
+        playerEl.classList.add("hidden");
+        videoEl.classList.add("hidden");
+        metaEl.classList.add("hidden");
+        gridControls.style.display = "none";
+        filesGrid.style.display = "none";
+        tasksDiv.classList.remove("hidden");
+        if (listTab) listTab.classList.add("hidden");
+        if (statsTab) statsTab.classList.add("hidden");
+        if (imgTab) imgTab.classList.add("hidden");
+        let setThumbBtn = document.getElementById("setThumbBtn");
+        if (setThumbBtn) setThumbBtn.style.display = "none";
+        let addMarkerBtn = document.getElementById("addMarkerBtn");
+        if (addMarkerBtn) addMarkerBtn.style.display = "none";
+        updateTasksStats();
+        if (tasksRefreshTimer) {
+          clearInterval(tasksRefreshTimer);
+        }
+        // start jobs SSE stream
+        try {
+          startJobsSSE();
+        } catch (_) { }
+        // start dynamic polling cadence
+        try {
+          updatePollingInterval();
+        } catch (_) { }
+        // reflect current activity in animations
+        try {
+          setIndeterminateActive(window.__jobsActive === true);
+        } catch (_) { }
+      } else if (tab === "Stats") {
+        playerEl.classList.add("hidden");
+        videoEl.classList.add("hidden");
+        metaEl.classList.add("hidden");
+        gridControls.style.display = "none";
+        filesGrid.style.display = "none";
+        tasksDiv.classList.add("hidden");
+        if (imgTab) imgTab.classList.add("hidden");
+        if (settingsTab) settingsTab.classList.add("hidden");
+        if (listTab) listTab.classList.add("hidden");
+        if (statsTab) statsTab.classList.remove("hidden");
+        loadStats();
+        try {
+          if (jobsEvtSrc) {
+            jobsEvtSrc.close();
+            jobsEvtSrc = null;
+          }
+        } catch (_) { }
+      } else if (tab === "Settings") {
+        playerEl.classList.add("hidden");
+        videoEl.classList.add("hidden");
+        metaEl.classList.add("hidden");
+        gridControls.style.display = "none";
+        filesGrid.style.display = "none";
+        tasksDiv.classList.add("hidden");
+        const setThumbBtn = document.getElementById("setThumbBtn");
+        if (setThumbBtn) setThumbBtn.style.display = "none";
+        let addMarkerBtn = document.getElementById("addMarkerBtn");
+        if (addMarkerBtn) addMarkerBtn.style.display = "none";
+        if (statsTab) statsTab.classList.add("hidden");
+        if (listTab) listTab.classList.add("hidden");
+        if (settingsTab) settingsTab.classList.remove("hidden");
+        // stop jobs SSE stream
+        try {
+          if (jobsEvtSrc) {
+            jobsEvtSrc.close();
+            jobsEvtSrc = null;
+          }
+        } catch (_) { }
+      } else if (tab === "List") {
+        videoEl.classList.add("hidden");
+        metaEl.classList.add("hidden");
+        gridControls.style.display = "none";
+        filesGrid.style.display = "none";
+        tasksDiv.classList.add("hidden");
+        if (statsTab) statsTab.classList.add("hidden");
+        if (imgTab) imgTab.classList.add("hidden");
+        if (settingsTab) settingsTab.classList.add("hidden");
+        if (listTab) listTab.classList.remove("hidden");
+        loadList();
+        try {
+          if (jobsEvtSrc) {
+            jobsEvtSrc.close();
+            jobsEvtSrc = null;
+          }
+        } catch (_) { }
+      } else if (tab === "Image") {
+        videoEl.classList.add("hidden");
+        metaEl.classList.add("hidden");
+        gridControls.style.display = "none";
+        filesGrid.style.display = "none";
+        tasksDiv.classList.add("hidden");
+        const setThumbBtn = document.getElementById("setThumbBtn");
+        if (setThumbBtn) setThumbBtn.style.display = "none";
+        let addMarkerBtn = document.getElementById("addMarkerBtn");
+        if (addMarkerBtn) addMarkerBtn.style.display = "none";
+        const imgTab = document.getElementById("imageTab");
+        if (imgTab) imgTab.classList.remove("hidden");
+        loadImagePreviewAndMaybeAnalyze();
+        // stop jobs SSE stream
+        try {
+          if (jobsEvtSrc) {
+            jobsEvtSrc.close();
+            jobsEvtSrc = null;
+          }
+        } catch (_) { }
+      } else if (tab === "Settings") {
+        videoEl.classList.add("hidden");
+        metaEl.classList.add("hidden");
+        gridControls.style.display = "none";
+        filesGrid.style.display = "none";
+        tasksDiv.classList.add("hidden");
+        const statsTab = document.getElementById("statsTab");
+        if (statsTab) statsTab.classList.add("hidden");
+        const imgTab = document.getElementById("imageTab");
+        if (imgTab) imgTab.classList.add("hidden");
+        const settingsTab = document.getElementById("settingsTab");
+        if (settingsTab) settingsTab.classList.remove("hidden");
+        loadSettings();
+        // stop jobs SSE stream
+        try {
+          if (jobsEvtSrc) {
+            jobsEvtSrc.close();
+            jobsEvtSrc = null;
+          }
+        } catch (_) { }
+      }
+      // Update URL route after switching (unless invoked by popstate)
+      try {
+        if (!fromRouter) setRouteForTab(tab);
+      } catch (_) { }
+    }
+
+  // Ensure sprite preview is positioned within player-media for z-index stacking
+    function mountSpritePreviewInPlayer() {
+      const preview = document.querySelector('.sprite-preview');
+      const wrap = document.querySelector('.player-media');
+      if (preview && wrap && preview.parentElement !== wrap) {
+        wrap.appendChild(preview);
+      }
+    }
+
+    document.getElementById("tabPlayer").onclick = () => showTab("Player");
+    document.getElementById("tabGrid").onclick = () => showTab("Grid");
+    document.getElementById("tabTasks").onclick = () => showTab("Tasks");
+    document.getElementById("tabStats").onclick = () => showTab("Stats");
+    document.getElementById("tabImage").onclick = () => showTab("Image");
+    const _tabListBtn = document.getElementById("tabList");
+    if (_tabListBtn) _tabListBtn.onclick = () => showTab("List");
+    document.getElementById("tabSettings").onclick = () =>
+      showTab("Settings");
+    document.getElementById("playRandomBtn").onclick = async () => {
+      let allMediaFiles = [];
+      let page = 1;
+      let pageSize = 500;
+      let totalPages = 1;
+      do {
+        const params = new URLSearchParams();
+        params.set("page", String(page));
+        params.set("page_size", String(pageSize));
+        const searchVal = document
+          .getElementById("searchInput")
+          ?.value?.trim();
+        if (searchVal) params.set("search", searchVal);
+        params.set("sort", "name");
+        const res = await fetch("/api/library?" + params.toString(), {
+          method: "GET",
+        });
+        if (!res.ok) break;
+        const body = await res.json();
+        const data = body.data || body;
+        allMediaFiles = allMediaFiles.concat(data.files || []);
+        totalPages = data.total_pages || 1;
+        page++;
+      } while (page <= totalPages);
+      if (allMediaFiles.length === 0) {
+        alert("No videos found!");
+        return;
+      }
+      const randomIdx = Math.floor(Math.random() * allMediaFiles.length);
+      const file = allMediaFiles[randomIdx];
+      selectedFile = file;
+      showTab("Player");
+      play(file);
+    };
+
+    // --- TASKS PAGE LOGIC ---
+    const coverProgress = document.getElementById("coverProgress");
+    const coverPct = document.getElementById("coverPct");
+    const hoverProgress = document.getElementById("hoverProgress");
+    const hoverPct = document.getElementById("hoverPct");
+    const metaProgress = document.getElementById("metaProgress");
+    const metaPct = document.getElementById("metaPct");
+    const phashProgress = document.getElementById("phashProgress");
+    const phashPct = document.getElementById("phashPct");
+    const scenesProgress = document.getElementById("scenesProgress");
+    const scenesPct = document.getElementById("scenesPct");
+    const spritesProgress = document.getElementById("spritesProgress");
+    const spritesPct = document.getElementById("spritesPct");
+    const subsProgress = document.getElementById("subsProgress");
+    const subsPct = document.getElementById("subsPct");
+    const generateMissingCoversBtn = document.getElementById(
+      "generateMissingCoversBtn",
+    );
+    const clearCoversBtn = document.getElementById("clearCoversBtn");
+    const generateMissingHoversBtn = document.getElementById(
+      "generateMissingHoversBtn",
+    );
+    const clearHoversBtn = document.getElementById("clearHoversBtn");
+    const generateMissingMetaBtn = document.getElementById(
+      "generateMissingMetaBtn",
+    );
+    const clearMetaBtn = document.getElementById("clearMetaBtn");
+    const generateMissingPhashBtn = document.getElementById(
+      "generateMissingPhashBtn",
+    );
+    const clearPhashBtn = document.getElementById("clearPhashBtn");
+    const generateMissingScenesBtn = document.getElementById(
+      "generateMissingScenesBtn",
+    );
+    const clearScenesBtn = document.getElementById("clearScenesBtn");
+    const heatmapsProgress = document.getElementById("heatmapsProgress");
+    const heatmapsPct = document.getElementById("heatmapsPct");
+    const generateMissingHeatmapsBtn = document.getElementById(
+      "generateMissingHeatmapsBtn",
+    );
+    const clearHeatmapsBtn = document.getElementById("clearHeatmapsBtn");
+    const generateMissingSpritesBtn = document.getElementById(
+      "generateMissingSpritesBtn",
+    );
+    const clearSpritesBtn = document.getElementById("clearSpritesBtn");
+    const generateMissingSubsBtn = document.getElementById(
+      "generateMissingSubsBtn",
+    );
+    const clearSubsBtn = document.getElementById("clearSubsBtn");
+    const facesProgress = document.getElementById("facesProgress");
+    const facesPct = document.getElementById("facesPct");
+    const generateMissingFacesBtn = document.getElementById(
+      "generateMissingFacesBtn",
+    );
+    const clearFacesBtn = document.getElementById("clearFacesBtn");
+    let tasksRefreshTimer = null;
+    // Collect all Tasks progress elements for animation toggling
+    const _allProgressEls = [
+      coverProgress,
+      facesProgress,
+      hoverProgress,
+      metaProgress,
+      phashProgress,
+      scenesProgress,
+      heatmapsProgress,
+      subsProgress,
+      spritesProgress,
+    ].filter(Boolean);
+    function setIndeterminateActive(active) {
+      _allProgressEls.forEach((el) =>
+        el.classList.toggle("indeterminate", !!active),
+      );
+    }
+    // Scope indeterminate animation to a specific task section by name
+    function setTaskIndeterminate(taskName, active) {
+      const section = document.querySelector(
+        `[data-task-section="${taskName}"] .progress-lg`,
+      );
+      if (!section) return;
+      section.classList.toggle("indeterminate", !!active);
+    }
+    // queue removed
+
+    // Queue refresh is tied to Tasks tab (no global auto-refresh)
+
+    async function updateTasksStats() {
+      try {
+        const res = await fetch("/api/stats?fast=1");
+        if (!res.ok) return;
+        const body = await res.json();
+        const s = body.data || body;
+        const total = s.total_files || 0;
+        const pct = (n, t) => (t ? Math.floor((n / t) * 100) : 0);
+        // Covers
+        const covers = s.covers || 0;
+        if (coverProgress) coverProgress.value = pct(covers, total);
+        if (coverPct)
+          coverPct.textContent = `${covers}/${total} (${pct(covers, total)}%)`;
+        // Hovers
+        const hovers = s.hovers || 0;
+        if (hoverProgress) hoverProgress.value = pct(hovers, total);
+        if (hoverPct)
+          hoverPct.textContent = `${hovers}/${total} (${pct(hovers, total)}%)`;
+        // Metadata
+        const metas = s.metadata || 0;
+        if (metaProgress) metaProgress.value = pct(metas, total);
+        if (metaPct)
+          metaPct.textContent = `${metas}/${total} (${pct(metas, total)}%)`;
+        // pHash
+        const phashes = s.phash || 0;
+        if (phashProgress) phashProgress.value = pct(phashes, total);
+        if (phashPct)
+          phashPct.textContent = `${phashes}/${total} (${pct(phashes, total)}%)`;
+        // Scenes
+        const scenes = s.scenes || 0;
+        if (scenesProgress) scenesProgress.value = pct(scenes, total);
+        if (scenesPct)
+          scenesPct.textContent = `${scenes}/${total} (${pct(scenes, total)}%)`;
+        // Sprites
+        const sprites = s.sprites || 0;
+        if (spritesProgress) spritesProgress.value = pct(sprites, total);
+        if (spritesPct)
+          spritesPct.textContent = `${sprites}/${total} (${pct(sprites, total)}%)`;
+        // Heatmaps
+        const heatmaps = s.heatmaps || 0;
+        if (heatmapsProgress) heatmapsProgress.value = pct(heatmaps, total);
+        if (heatmapsPct)
+          heatmapsPct.textContent = `${heatmaps}/${total} (${pct(heatmaps, total)}%)`;
+        // Subtitles
+        const subs = s.subtitles || 0;
+        if (subsProgress) subsProgress.value = pct(subs, total);
+        if (subsPct)
+          subsPct.textContent = `${subs}/${total} (${pct(subs, total)}%)`;
+        // Faces
+        const faces = s.faces || 0;
+        if (facesProgress) facesProgress.value = pct(faces, total);
+        if (facesPct)
+          facesPct.textContent = `${faces}/${total} (${pct(faces, total)}%)`;
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    if (clearCoversBtn) {
+      clearCoversBtn.onclick = async () => {
+        clearCoversBtn.disabled = true;
+        let allMediaFiles = [];
+        let page = 1;
+        let pageSize = 500;
+        let totalPages = 1;
+        do {
+          const params = new URLSearchParams();
+          params.set("page", String(page));
+          params.set("page_size", String(pageSize));
+          const res = await fetch("/api/library?" + params.toString(), {
+            method: "GET",
+          });
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          allMediaFiles = allMediaFiles.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (let i = 0; i < allMediaFiles.length; i++) {
+          const file = allMediaFiles[i];
+          if (file.cover) {
+            // Remove cover file via API (needs backend endpoint)
+            await fetch(
+              `/api/cover/delete?path=${encodeURIComponent(file.path)}`,
+              { method: "DELETE" },
+            );
+          }
+        }
+        clearCoversBtn.disabled = false;
+        updateTasksStats();
+        // Also refresh Stats so the COVERS count drops immediately
+        try {
+          await loadStats();
+        } catch (_) { }
+        // Refresh grid so removed covers disappear
+        try {
+          await load(cwd);
+        } catch (_) { }
+      };
+    }
+    if (generateMissingHoversBtn) {
+      generateMissingHoversBtn.onclick = async () => {
+        generateMissingHoversBtn.disabled = true;
+        await fetch("/api/hover/create/batch", { method: "POST" });
+        generateMissingHoversBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+        // Refresh grid to reflect hover availability flags
+        try {
+          await load(cwd);
+        } catch (_) { }
+      };
+    }
+    if (clearHoversBtn) {
+      clearHoversBtn.onclick = async () => {
+        clearHoversBtn.disabled = true;
+        let allMediaFiles = [];
+        let page = 1;
+        let pageSize = 500;
+        let totalPages = 1;
+        do {
+          const params = new URLSearchParams();
+          params.set("page", String(page));
+          params.set("page_size", String(pageSize));
+          const res = await fetch("/api/library?" + params.toString(), {
+            method: "GET",
+          });
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          allMediaFiles = allMediaFiles.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (let i = 0; i < allMediaFiles.length; i++) {
+          const file = allMediaFiles[i];
+          if (file.hoverPreview) {
+            // Remove hover file via API (needs backend endpoint)
+            await fetch(
+              `/api/hover/delete?path=${encodeURIComponent(file.path)}`,
+              { method: "DELETE" },
+            );
+          }
+        }
+        clearHoversBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+        // Refresh grid to reflect hover removal
+        try {
+          await load(cwd);
+        } catch (_) { }
+      };
+    }
+    if (generateMissingMetaBtn) {
+      generateMissingMetaBtn.onclick = async () => {
+        generateMissingMetaBtn.disabled = true;
+        let allMediaFiles = [];
+        let page = 1;
+        let pageSize = 500;
+        let totalPages = 1;
+        do {
+          const params = new URLSearchParams();
+          params.set("page", String(page));
+          params.set("page_size", String(pageSize));
+          const res = await fetch("/api/library?" + params.toString(), {
+            method: "GET",
+          });
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          allMediaFiles = allMediaFiles.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (let i = 0; i < allMediaFiles.length; i++) {
+          const file = allMediaFiles[i];
+          if (file.duration == null) {
+            // Regenerate metadata by calling /api/metadata (GET)
+            await fetch(
+              `/api/metadata/create?path=${encodeURIComponent(file.path)}`,
+              { method: "POST" },
+            );
+          }
+        }
+        generateMissingMetaBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+        // Refresh grid for updated duration/flags
+        try {
+          await load(cwd);
+        } catch (_) { }
+      };
+    }
+    if (clearMetaBtn) {
+      clearMetaBtn.onclick = async () => {
+        clearMetaBtn.disabled = true;
+        let allMediaFiles = [];
+        let page = 1;
+        let pageSize = 500;
+        let totalPages = 1;
+        do {
+          const params = new URLSearchParams();
+          params.set("page", String(page));
+          params.set("page_size", String(pageSize));
+          const res = await fetch("/api/library?" + params.toString(), {
+            method: "GET",
+          });
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          allMediaFiles = allMediaFiles.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (let i = 0; i < allMediaFiles.length; i++) {
+          const file = allMediaFiles[i];
+          // Remove meta file via API (needs backend endpoint)
+          await fetch(
+            `/api/metadata/delete?path=${encodeURIComponent(file.path)}`,
+            { method: "DELETE" },
+          );
+        }
+        clearMetaBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+        // Refresh grid after clearing metadata
+        try {
+          await load(cwd);
+        } catch (_) { }
+      };
+    }
+
+    // pHash buttons
+    if (generateMissingPhashBtn) {
+      generateMissingPhashBtn.onclick = async () => {
+        generateMissingPhashBtn.disabled = true;
+        let page = 1,
+          pageSize = 500,
+          totalPages = 1,
+          files = [];
+        do {
+          const params = new URLSearchParams({
+            page: String(page),
+            page_size: String(pageSize),
+          });
+          const res = await fetch("/api/library?" + params.toString());
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          files = files.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (const f of files) {
+          if (!f.phash) {
+            await fetch(
+              `/api/phash/create?path=${encodeURIComponent(f.path)}`,
+              { method: "POST" },
+            );
+          }
+        }
+        generateMissingPhashBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+    if (clearPhashBtn) {
+      clearPhashBtn.onclick = async () => {
+        clearPhashBtn.disabled = true;
+        let page = 1,
+          pageSize = 500,
+          totalPages = 1,
+          files = [];
+        do {
+          const params = new URLSearchParams({
+            page: String(page),
+            page_size: String(pageSize),
+          });
+          const res = await fetch("/api/library?" + params.toString());
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          files = files.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (const f of files) {
+          if (f.phash) {
+            await fetch(
+              `/api/phash/delete?path=${encodeURIComponent(f.path)}`,
+              { method: "DELETE" },
+            );
+          }
+        }
+        clearPhashBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+
+    // Scenes buttons
+    if (generateMissingScenesBtn) {
+      generateMissingScenesBtn.onclick = async () => {
+        generateMissingScenesBtn.disabled = true;
+        let page = 1,
+          pageSize = 500,
+          totalPages = 1,
+          files = [];
+        do {
+          const params = new URLSearchParams({
+            page: String(page),
+            page_size: String(pageSize),
+          });
+          const res = await fetch("/api/library?" + params.toString());
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          files = files.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (const f of files) {
+          if (!f.chapters) {
+            await fetch(
+              `/api/scenes/create?path=${encodeURIComponent(f.path)}`,
+              { method: "POST" },
+            );
+          }
+        }
+        generateMissingScenesBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+    if (clearScenesBtn) {
+      clearScenesBtn.onclick = async () => {
+        clearScenesBtn.disabled = true;
+        let page = 1,
+          pageSize = 500,
+          totalPages = 1,
+          files = [];
+        do {
+          const params = new URLSearchParams({
+            page: String(page),
+            page_size: String(pageSize),
+          });
+          const res = await fetch("/api/library?" + params.toString());
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          files = files.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (const f of files) {
+          if (f.chapters) {
+            await fetch(
+              `/api/scenes/delete?path=${encodeURIComponent(f.path)}`,
+              { method: "DELETE" },
+            );
+          }
+        }
+        clearScenesBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+
+    // Sprites buttons
+    if (generateMissingSpritesBtn) {
+      generateMissingSpritesBtn.onclick = async () => {
+        generateMissingSpritesBtn.disabled = true;
+        await fetch("/api/sprites/create/batch", { method: "POST" });
+        generateMissingSpritesBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+
+    // Heatmaps buttons
+    if (generateMissingHeatmapsBtn) {
+      generateMissingHeatmapsBtn.onclick = async () => {
+        generateMissingHeatmapsBtn.disabled = true;
+        await fetch("/api/heatmaps/create/batch", { method: "POST" });
+        generateMissingHeatmapsBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+    // Subtitles buttons
+    if (generateMissingSubsBtn) {
+      generateMissingSubsBtn.onclick = async () => {
+        generateMissingSubsBtn.disabled = true;
+        await fetch("/api/subtitles/create/batch", { method: "POST" });
+        generateMissingSubsBtn.disabled = false;
+        updateTasksStats();
+        try { await loadStats(); } catch (_) { }
+      };
+    }
+    if (clearSubsBtn) {
+      clearSubsBtn.onclick = async () => {
+        clearSubsBtn.disabled = true;
+        let page = 1,
+          pageSize = 500,
+          totalPages = 1,
+          files = [];
+        do {
+          const params = new URLSearchParams({
+            page: String(page),
+            page_size: String(pageSize),
+          });
+          const res = await fetch("/api/library?" + params.toString());
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          files = files.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (const f of files) {
+          if (f.subtitles) {
+            await fetch(
+              `/api/subtitles/delete?path=${encodeURIComponent(f.path)}`,
+              { method: "DELETE" },
+            );
+          }
+        }
+        clearSubsBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+    if (clearHeatmapsBtn) {
+      clearHeatmapsBtn.onclick = async () => {
+        clearHeatmapsBtn.disabled = true;
+        let page = 1,
+          pageSize = 500,
+          totalPages = 1,
+          files = [];
+        do {
+          const params = new URLSearchParams({
+            page: String(page),
+            page_size: String(pageSize),
+          });
+          const res = await fetch("/api/library?" + params.toString());
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          files = files.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (const f of files) {
+          if (f.heatmaps) {
+            await fetch(
+              `/api/heatmaps/delete?path=${encodeURIComponent(f.path)}`,
+              { method: "DELETE" },
+            );
+          }
+        }
+        clearHeatmapsBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+    if (clearSpritesBtn) {
+      clearSpritesBtn.onclick = async () => {
+        clearSpritesBtn.disabled = true;
+        let page = 1,
+          pageSize = 500,
+          totalPages = 1,
+          files = [];
+        do {
+          const params = new URLSearchParams({
+            page: String(page),
+            page_size: String(pageSize),
+          });
+          const res = await fetch("/api/library?" + params.toString());
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          files = files.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (const f of files) {
+          if (f.scrubThumbs) {
+            await fetch(
+              `/api/sprites/delete?path=${encodeURIComponent(f.path)}`,
+              { method: "DELETE" },
+            );
+          }
+        }
+        clearSpritesBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+
+    // Faces buttons
+    if (generateMissingFacesBtn) {
+      generateMissingFacesBtn.onclick = async () => {
+        generateMissingFacesBtn.disabled = true;
+        await fetch("/api/faces/create/batch", { method: "POST" });
+        generateMissingFacesBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+    if (clearFacesBtn) {
+      clearFacesBtn.onclick = async () => {
+        clearFacesBtn.disabled = true;
+        let page = 1,
+          pageSize = 500,
+          totalPages = 1,
+          files = [];
+        do {
+          const params = new URLSearchParams({
+            page: String(page),
+            page_size: String(pageSize),
+          });
+          const res = await fetch("/api/library?" + params.toString());
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          files = files.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        for (const f of files) {
+          if (f.faces) {
+            await fetch(
+              `/api/faces/delete?path=${encodeURIComponent(f.path)}`,
+              { method: "DELETE" },
+            );
+          }
+        }
+        clearFacesBtn.disabled = false;
+        updateTasksStats();
+        try {
+          await loadStats();
+        } catch (_) { }
+      };
+    }
+
+    // Removed tags import/export, report UI, and jobs live log box
+    let jobsEvtSrc = null;
+    // Track active job IDs to switch polling cadence and animations
+    let __runningJobIds = new Set();
+    window.__jobsActive = false;
+    function startJobsSSE() {
+      if (jobsEvtSrc) {
+        try { jobsEvtSrc.close(); } catch (_) { }
+        jobsEvtSrc = null;
+      }
+      let triedApiAlias = false;
+      const openEs = (url) => {
+        const es = new EventSource(url);
+        jobsEvtSrc = es;
+  es.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data || "{}");
+          const line = `[${new Date().toLocaleTimeString()}] ${data.event || "msg"} ${data.id || ""}`;
+          if (typeof jobsBox !== "undefined" && jobsBox) {
+            jobsBox.textContent = (jobsBox.textContent + "\n" + line).trim();
+            jobsBox.scrollTop = jobsBox.scrollHeight;
+          }
+          // Maintain set of running jobs and update UI cadence
+          const evt = (data.event || "").toLowerCase();
+          const jid = data.id;
+          if (evt === "started" && jid) {
+            __runningJobIds.add(jid);
+            // toggle only that task section's animation if known
+            const jtype = (data.type || "").toLowerCase();
+            const map = {
+              "metadata": "metadata",
+              "cover": "covers",
+              "hover": "hovers",
+              "hover-concat": "hovers",
+              "phash": "phash",
+              "scenes": "scenes",
+              "sprites": "sprites",
+              "heatmaps": "heatmaps",
+              "subtitles": "subtitles",
+              "faces": "faces",
+              "faces-batch": "faces",
+              "sprites-batch": "sprites",
+              "subtitles-batch": "subtitles",
+              "heatmaps-batch": "heatmaps",
+              "hover-batch": "hovers",
+            };
+            if (map[jtype]) setTaskIndeterminate(map[jtype], true);
+          } else if ((evt === "finished" || evt === "cancel") && jid) {
+            __runningJobIds.delete(jid);
+            const jtype = (data.type || "").toLowerCase();
+            const map = {
+              "metadata": "metadata",
+              "cover": "covers",
+              "hover": "hovers",
+              "hover-concat": "hovers",
+              "phash": "phash",
+              "scenes": "scenes",
+              "sprites": "sprites",
+              "heatmaps": "heatmaps",
+              "subtitles": "subtitles",
+              "faces": "faces",
+              "faces-batch": "faces",
+              "sprites-batch": "sprites",
+              "subtitles-batch": "subtitles",
+              "heatmaps-batch": "heatmaps",
+              "hover-batch": "hovers",
+            };
+            if (map[jtype]) setTaskIndeterminate(map[jtype], false);
+          }
+          const newActive = __runningJobIds.size > 0;
+          if (window.__jobsActive !== newActive) {
+            window.__jobsActive = newActive;
+            try {
+              updatePollingInterval();
+            } catch (_) { }
+            try {
+              setIndeterminateActive(newActive);
+            } catch (_) { }
+          }
+          // Nudge a quick stats refresh on any event for snappier feedback
+          try {
+            updateTasksStats();
+          } catch (_) { }
+        } catch (_) { }
+        };
+        es.onerror = () => {
+          // First failure: try API alias once, then let browser retry
+          if (!triedApiAlias) {
+            triedApiAlias = true;
+            try { es.close(); } catch (_) { }
+            openEs("/api/jobs/events");
+          }
+        };
+      };
+      openEs("/jobs/events");
+    }
+
+    // Refresh stats and jobs every 1 second in Tasks tab
+    function startTasksRefresh() {
+      updateTasksStats();
+      updatePollingInterval();
+    }
+    // Update polling cadence based on job activity (fast when active, slow when idle)
+    function updatePollingInterval() {
+      if (tasksRefreshTimer) clearInterval(tasksRefreshTimer);
+      // Only poll if Tasks tab is visible
+      if (!tasksDiv || tasksDiv.classList.contains("hidden")) return;
+      const intervalMs = window.__jobsActive === true ? 1000 : 5000;
+      tasksRefreshTimer = setInterval(() => {
+        updateTasksStats();
+      }, intervalMs);
+    }
+    // Wire up tab switch to start/stop refresh
+    document.getElementById("tabTasks").onclick = () => {
+      showTab("Tasks");
+      startTasksRefresh();
+    };
+    document.getElementById("tabGrid").onclick = () => {
+      showTab("Grid");
+      if (tasksRefreshTimer) clearInterval(tasksRefreshTimer);
+      try {
+        if (jobsEvtSrc) {
+          jobsEvtSrc.close();
+          jobsEvtSrc = null;
+        }
+      } catch (_) { }
+      try {
+        setIndeterminateActive(false);
+      } catch (_) { }
+    };
+    document.getElementById("tabPlayer").onclick = () => {
+      showTab("Player");
+      if (tasksRefreshTimer) clearInterval(tasksRefreshTimer);
+      try {
+        if (jobsEvtSrc) {
+          jobsEvtSrc.close();
+          jobsEvtSrc = null;
+        }
+      } catch (_) { }
+      try {
+        setIndeterminateActive(false);
+      } catch (_) { }
+    };
+    document.getElementById("tabStats").onclick = () => {
+      showTab("Stats");
+      if (tasksRefreshTimer) clearInterval(tasksRefreshTimer);
+      try {
+        if (jobsEvtSrc) {
+          jobsEvtSrc.close();
+          jobsEvtSrc = null;
+        }
+      } catch (_) { }
+      try {
+        setIndeterminateActive(false);
+      } catch (_) { }
+    };
+    document.getElementById("tabImage").onclick = () => {
+      showTab("Image");
+      if (tasksRefreshTimer) clearInterval(tasksRefreshTimer);
+      try {
+        if (jobsEvtSrc) {
+          jobsEvtSrc.close();
+          jobsEvtSrc = null;
+        }
+      } catch (_) { }
+      try {
+        setIndeterminateActive(false);
+      } catch (_) { }
+    };
+    // --- IMAGE TAB LOGIC ---
+    const coverPreview = document.getElementById("coverPreview");
+    const analyzeBtn = document.getElementById("analyzeBtn");
+    const analysisResults = document.getElementById("analysisResults");
+  const imageStatus = document.getElementById("imageStatus");
+
+    if (analyzeBtn) analyzeBtn.onclick = analyzeCurrentImage;
+
+    function setImageStatus(text) {
+      if (imageStatus) imageStatus.textContent = text || "";
+    }
+
+    async function loadImagePreviewAndMaybeAnalyze() {
+      if (!window.selectedFile || !window.selectedFile.path) {
+        if (coverPreview) coverPreview.src = "";
+        if (analysisResults) analysisResults.innerHTML = "<em>No file selected.</em>";
+        setImageStatus("");
+        return;
+      }
+      const path = window.selectedFile.path;
+      const url = `/api/cover/get?path=${encodeURIComponent(path)}`;
+      setImageStatus("Loading cover…");
+      if (analysisResults) analysisResults.innerHTML = "";
+      try {
+        const res = await fetch(url, { method: "GET" });
+        if (!res.ok) {
+          if (analysisResults)
+            analysisResults.innerHTML = "<em>No cover found. Generate a cover in Player or Tasks.</em>";
+          if (coverPreview) coverPreview.src = "";
+          setImageStatus("");
+          return;
+        }
+        const blob = await res.blob();
+        const obj = URL.createObjectURL(blob);
+        if (coverPreview) {
+          coverPreview.src = obj;
+          coverPreview.onload = () => URL.revokeObjectURL(obj);
+        }
+        setImageStatus("");
+      } catch (_) {
+        if (analysisResults) analysisResults.innerHTML = "<em>Failed to load cover.</em>";
+        setImageStatus("");
+      }
+    }
+
+    async function analyzeCurrentImage() {
+      setImageStatus("Analyzing…");
+      try {
+        // Placeholder: no backend analysis implemented yet
+        if (analysisResults)
+          analysisResults.innerHTML = "<em>Image analysis not available.</em>";
+        setImageStatus("");
+      } catch (_) {
+        setImageStatus("Analysis failed.");
+      }
+    }
+
+    // --- STATS TAB LOGIC ---
+    function humanBytes(n) {
+      if (!n || n <= 0) return "0 B";
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+      let i = 0;
+      let v = n;
+      while (v >= 1024 && i < units.length - 1) {
+        v /= 1024;
+        i++;
+      }
+      return `${v.toFixed(1)} ${units[i]}`;
+    }
+    function humanDuration(totalSeconds) {
+      if (!totalSeconds && totalSeconds !== 0) return "";
+      const s = Math.floor(totalSeconds);
+      const weeks = Math.floor(s / (7 * 24 * 3600));
+      const days = Math.floor((s % (7 * 24 * 3600)) / (24 * 3600));
+      const hours = Math.floor((s % (24 * 3600)) / 3600);
+      const minutes = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      const parts = [];
+      if (weeks) parts.push(`${weeks}W`);
+      if (days) parts.push(`${days}D`);
+      if (hours) parts.push(`${hours}h`);
+      if (minutes) parts.push(`${minutes}m`);
+      if (sec || parts.length === 0) parts.push(`${sec}s`);
+      return parts.join(" ");
+    }
+    async function loadStats() {
+      try {
+        const res = await fetch("/api/stats", { method: "GET" });
+        if (!res.ok) return;
+        const body = await res.json();
+        const s = body.data || body;
+        const scenes = s.total_files || 0;
+        const size = humanBytes(s.total_size_bytes || 0);
+        const dur = humanDuration(s.total_duration_seconds || 0);
+        const covers = s.covers || 0;
+        const hovers = s.hovers || 0;
+        const subs = s.subtitles || 0;
+        const meta = s.metadata || 0;
+        const note = [];
+        if (s.duration_files_count != null && scenes) {
+          note.push(
+            `${s.duration_files_count}/${scenes} files have duration`,
+          );
+        }
+        document.getElementById("statScenesSize").textContent = size;
+        document.getElementById("statScenes").textContent = scenes;
+        document.getElementById("statScenesDuration").textContent = dur;
+        document.getElementById("statCovers").textContent = covers;
+        document.getElementById("statHovers").textContent = hovers;
+        document.getElementById("statSubs").textContent = subs;
+        document.getElementById("statMeta").textContent = meta;
+        const noteEl = document.getElementById("statsNote");
+        if (noteEl) noteEl.textContent = note.join(" • ");
+      } catch (_) { }
+    }
+
+    // SETTINGS TAB
+    async function loadSettings() {
+      try {
+        const [h, c] = await Promise.all([
+          fetch("/health")
+            .then((r) => r.json())
+            .catch(() => ({})),
+          fetch("/config")
+            .then((r) => r.json())
+            .catch(() => ({})),
+        ]);
+        const hi = document.getElementById("healthInfo");
+        const ci = document.getElementById("configInfo");
+        if (hi) hi.textContent = JSON.stringify(h, null, 2);
+        if (ci) ci.textContent = JSON.stringify(c, null, 2);
+      } catch (_) { }
+    }
+    // Keyboard controls for video player
+    document.addEventListener("keydown", function (e) {
+      if (!videoEl || videoEl.classList.contains("hidden")) {
+        return;
+      }
+      if (
+        document.activeElement &&
+        ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)
+      )
+        return;
+      if (e.code === "ArrowLeft") {
+        videoEl.currentTime = Math.max(0, videoEl.currentTime - 10);
+        e.preventDefault();
+      } else if (e.code === "ArrowRight") {
+        videoEl.currentTime = Math.min(
+          videoEl.duration || 0,
+          videoEl.currentTime + 10,
+        );
+        e.preventDefault();
+      } else if (e.code === "Space") {
+        if (videoEl.paused) {
+          videoEl.play();
+        } else {
+          videoEl.pause();
+        }
+        e.preventDefault();
+      }
+    });
+    // Custom controls behavior
+    const btnPlayPause = document.getElementById("btnPlayPause");
+    const btnCC = document.getElementById("btnCC");
+    const controlsProgress = document.getElementById("controlsProgress");
+    const controlsProgressFill = document.getElementById(
+      "controlsProgressFill",
+    );
+    const timeLabel = document.getElementById("timeLabel");
+    function fmtTime(t) {
+      if (!isFinite(t) || t < 0) return "0:00";
+      const s = Math.floor(t % 60)
+        .toString()
+        .padStart(2, "0");
+      const m = Math.floor((t / 60) % 60);
+      const h = Math.floor(t / 3600);
+      return h ? `${h}:${m.toString().padStart(2, "0")}:${s}` : `${m}:${s}`;
+    }
+    function updateControls() {
+      if (!videoEl) return;
+      const d = videoEl.duration || 0;
+      const c = videoEl.currentTime || 0;
+      if (timeLabel) timeLabel.textContent = `${fmtTime(c)} / ${fmtTime(d)}`;
+      if (controlsProgressFill) {
+        const pct = d ? Math.max(0, Math.min(1, c / d)) : 0;
+        controlsProgressFill.style.width = `${pct * 100}%`;
+      }
+      if (btnPlayPause)
+        btnPlayPause.textContent = videoEl.paused ? "Play" : "Pause";
+    }
+    if (btnPlayPause)
+      btnPlayPause.onclick = () => {
+        if (videoEl.paused) videoEl.play();
+        else videoEl.pause();
+      };
+    if (btnCC)
+      btnCC.onclick = () => {
+        const tt = videoEl.textTracks && videoEl.textTracks[0];
+        if (!tt) return;
+        tt.mode = tt.mode === "showing" ? "disabled" : "showing";
+      };
+    if (controlsProgress)
+      controlsProgress.addEventListener("click", (e) => {
+        const r = controlsProgress.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+        if (isFinite(videoEl.duration))
+          videoEl.currentTime = pct * videoEl.duration;
+      });
+    // Click video to toggle play/pause
+    if (videoEl)
+      videoEl.addEventListener("click", () => {
+        if (videoEl.paused) videoEl.play();
+        else videoEl.pause();
+      });
+    // Space toggles play/pause when focused on document
+    document.addEventListener("keydown", (e) => {
+      if (e.code === "Space" && !e.repeat) {
+        e.preventDefault();
+        if (videoEl.paused) videoEl.play();
+        else videoEl.pause();
+      }
+    });
+    if (videoEl) {
+      videoEl.addEventListener("timeupdate", updateControls);
+      videoEl.addEventListener("loadedmetadata", updateControls);
+      videoEl.addEventListener("play", updateControls);
+      videoEl.addEventListener("pause", updateControls);
+    }
+    // Keep progress bar responsive with RAF in case timeupdate is throttled
+    let _rafId;
+    function tickControls() {
+      updateControls();
+      _rafId = requestAnimationFrame(tickControls);
+    }
+    if (document.visibilityState !== "hidden") {
+      _rafId = requestAnimationFrame(tickControls);
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        if (_rafId) cancelAnimationFrame(_rafId);
+        _rafId = null;
+      } else {
+        if (!_rafId) _rafId = requestAnimationFrame(tickControls);
+      }
+    });
+    function showFileMenu(x, y) {
+      const menu = document.getElementById("fileMenu");
+      menu.classList.remove("hidden");
+      menu.style.left = x + "px";
+      menu.style.top = y + "px";
+    }
+
+    function hideFileMenu() {
+      const menu = document.getElementById("fileMenu");
+      menu.classList.add("hidden");
+      selectedFile = null;
+    }
+
+    document.getElementById("closeMenuBtn").onclick = hideFileMenu;
+    document.getElementById("coverBtn").onclick = async () => {
+      if (!selectedFile) {
+        return;
+      }
+      const ok = await generateCover(selectedFile);
+      if (ok) {
+        const cacheBust = `?t=${Date.now()}`;
+        const imgs = document.querySelectorAll(`.tile img.thumb`);
+        imgs.forEach((img) => {
+          // Replace all thumbs for selected file by matching their alt/title if we have it; fallback: reload visible tiles later
+          if (
+            selectedFile &&
+            img.closest(".tile")?.textContent?.includes(selectedFile.name)
+          ) {
+            img.src =
+              (selectedFile.cover || img.src).split("?")[0] + cacheBust;
+          }
+        });
+      }
+      hideFileMenu();
+    };
+    const dirsEl = document.getElementById("dirs");
+    const filesEl = document.getElementById("files");
+    const crumbsEl = document.getElementById("crumbs");
+    const infoPanel = document.getElementById("infoPanel");
+    const statusEl = document.getElementById("status");
+    const rootInput = document.getElementById("rootInput");
+    const setRootBtn = document.getElementById("setRootBtn");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    const pageInfo = document.getElementById("pageInfo");
+    const pageSizeInput = document.getElementById("pageSize");
+
+    videoEl.classList.add("hidden");
+    metaEl.textContent = "";
+
+    // Removed duplicate declaration of cwd
+    let cwd = "";
+
+    let currentPage = 1;
+    let pageSize =
+      parseInt(pageSizeInput ? pageSizeInput.value : 48, 10) || 48;
+    let totalPages = 1;
+    let totalFiles = 0;
+    let loading = false;
+    let allFiles = [];
+    let selectedFile = null;
+    let selectedTile = null;
+    const metaCache = new Map();
+    let visibleStart = 0,
+      visibleEnd = 0;
+
+    function human(n) {
+      if (n < 1024) {
+        return n + " B";
+      }
+      const u = ["KB", "MB", "GB", "TB"];
+      let i = -1;
+      do {
+        n = n / 1024;
+        i++;
+      } while (n >= 1024 && i < u.length - 1);
+      return n.toFixed(1) + " " + u[i];
+    }
+
+    function esc(s) {
+      return String(s == null ? "" : s);
+    }
+
+    function baseName(name) {
+      const i = name.lastIndexOf(".");
+      return i > 0 ? name.slice(0, i) : name;
+    }
+    function hhmmss(sec) {
+      if (!sec && sec !== 0) {
+        return "";
+      }
+      sec = Math.floor(sec);
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      const pad = (n) => String(n).padStart(2, "0");
+      return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+    }
+
+    async function showInfo(file) {
+      if (!infoPanel) {
+        return;
+      }
+      const sizeLine = human(file.size || 0);
+      const ext = file.name.split(".").pop().toLowerCase();
+      let thumbHtml = "";
+      if (file.cover) {
+        thumbHtml = `<img id="infoThumb" src="${file.cover}?t=${Date.now()}" alt="Thumbnail" class="thumb-img" />`;
+      } else {
+        thumbHtml = `<div id="infoThumb" class="placeholder thumb-placeholder">No thumbnail</div>`;
+      }
+      infoPanel.innerHTML = `
+      ${thumbHtml}
+  <div class="infoTitle">${esc(file.title || baseName(file.name))}</div>
+      <div class="infoRow"><span class="infoLabel">Type</span><span class="infoValue">${ext}</span></div>
+      <div class="infoRow"><span class="infoLabel">Size</span><span class="infoValue">${sizeLine}</span></div>
+      <div class="infoRow"><span class="infoLabel">Duration</span><span class="infoValue" id="infoDuration">Loading…</span></div>
+      <div class="infoRow"><span class="infoLabel">Resolution</span><span class="infoValue" id="infoRes">Loading…</span></div>
+      <div class="infoRow"><span class="infoLabel">V Codec</span><span class="infoValue" id="infoCodec">Loading…</span></div>
+      <div class="infoRow"><span class="infoLabel">V Bitrate</span><span class="infoValue" id="infoVBitrate">Loading…</span></div>
+      <div class="infoRow"><span class="infoLabel">Bitrate</span><span class="infoValue" id="infoBitrate">Loading…</span></div>
+      <div class="infoRow"><span class="infoLabel">A Codec</span><span class="infoValue" id="infoACodec">—</span></div>
+      <div class="infoRow"><span class="infoLabel">A Bitrate</span><span class="infoValue" id="infoABitrate">—</span></div>
+      <div class="infoRow"><span class="infoLabel">Metadata</span><span class="infoValue" id="infoMetaFile">Loading…</span></div>
+      <div class="infoRow"><span class="infoLabel">Thumbnail</span><span class="infoValue">${file.cover ? "✅" : "❌"}</span></div>
+      <div class="infoRow"><span class="infoLabel">Hover Preview</span><span class="infoValue">${file.hoverPreview ? "✅" : "❌"}</span></div>
+      <div class="infoRow"><span class="infoLabel">pHash</span><span class="infoValue">${file.phash ? "✅" : "❌"}</span></div>
+      <div class="infoRow"><span class="infoLabel">Chapter Markers</span><span class="infoValue">${file.chapters ? "✅" : "❌"}</span></div>
+      <div class="infoRow"><span class="infoLabel">Scrubbing Thumbnails</span><span class="infoValue">${file.scrubThumbs ? "✅" : "❌"}</span></div>
+      <div class="infoRow"><span class="infoLabel">Heatmaps</span><span class="infoValue" id="infoHeatmaps">Loading…</span></div>
+      <div class="infoRow"><span class="infoLabel">Subtitles</span><span class="infoValue" id="infoSubtitles">Loading…</span></div>
+      <div class="infoRow"><span class="infoLabel">Face Embeddings</span><span class="infoValue" id="infoFaces">Loading…</span></div>
+      <div id="infoMetaExtra" class="small meta-extra"></div>
+      <div class="row mt-8 gap-6 wrap">
+        <button class="btn" id="infoPlay">Play</button>
+      </div>
+    `;
+      try {
+        const res = await fetch(
+          `/api/metadata/get?path=${encodeURIComponent(file.path)}`,
+          { method: "GET" },
+        );
+        if (res.ok) {
+          const body = await res.json();
+          const j = body.data || body;
+          document.getElementById("infoMetaFile").textContent = "✅";
+          if (j.duration) {
+            document.getElementById("infoDuration").textContent = hhmmss(
+              j.duration,
+            );
+          }
+          if (j.width && j.height) {
+            document.getElementById("infoRes").textContent =
+              `${j.width}×${j.height}`;
+          }
+          if (j.vcodec) {
+            document.getElementById("infoCodec").textContent = j.vcodec;
+          }
+          if (j.vbitrate) {
+            document.getElementById("infoVBitrate").textContent = j.vbitrate
+              ? `${(j.vbitrate / 1e6).toFixed(1)} Mbps`
+              : "";
+          } else {
+            document.getElementById("infoVBitrate").textContent = "";
+          }
+          if (j.bitrate) {
+            document.getElementById("infoBitrate").textContent =
+              `${(j.bitrate / 1e6).toFixed(1)} Mbps`;
+          }
+          if (j.acodec) {
+            document.getElementById("infoACodec").textContent = j.acodec;
+          }
+          if (j.abitrate) {
+            document.getElementById("infoABitrate").textContent =
+              `${(j.abitrate / 1e6).toFixed(1)} Mbps`;
+          }
+          // Show any extra metadata keys not explicitly displayed
+          const known = new Set([
+            "duration",
+            "width",
+            "height",
+            "vcodec",
+            "vbitrate",
+            "bitrate",
+            "acodec",
+            "abitrate",
+          ]);
+          const extras = Object.keys(j)
+            .filter((k) => !known.has(k) && j[k] != null && j[k] !== "")
+            .map((k) => `${k}: ${j[k]}`);
+          if (extras.length) {
+            document.getElementById("infoMetaExtra").textContent =
+              extras.join("\n");
+          }
+        } else {
+          document.getElementById("infoDuration").textContent = "";
+          document.getElementById("infoRes").textContent = "";
+          document.getElementById("infoCodec").textContent = "";
+          document.getElementById("infoBitrate").textContent = "";
+          document.getElementById("infoVBitrate").textContent = "";
+          document.getElementById("infoMetaFile").textContent = "❌";
+        }
+      } catch (_) {
+        document.getElementById("infoDuration").textContent = "";
+        document.getElementById("infoRes").textContent = "";
+        document.getElementById("infoCodec").textContent = "";
+        document.getElementById("infoBitrate").textContent = "";
+        document.getElementById("infoVBitrate").textContent = "";
+        const mf = document.getElementById("infoMetaFile");
+        if (mf) mf.textContent = "❌";
+      }
+      // Update Heatmaps/Subtitles/Faces indicators dynamically
+      (async () => {
+        const setFlag = (id, ok) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = ok ? "✅" : "❌";
+        };
+        // Heatmaps: prefer PNG, fallback JSON
+        try {
+          const hp = await fetch(`/api/heatmaps/png?path=${encodeURIComponent(file.path)}`, { method: 'HEAD' });
+          if (hp.ok) setFlag('infoHeatmaps', true); else {
+            const hj = await fetch(`/api/heatmaps/json?path=${encodeURIComponent(file.path)}`, { method: 'GET' });
+            setFlag('infoHeatmaps', hj.ok);
+          }
+        } catch (_) { setFlag('infoHeatmaps', false); }
+        // Subtitles
+        try {
+          const hs = await fetch(`/api/subtitles/get?path=${encodeURIComponent(file.path)}`, { method: 'HEAD' });
+          setFlag('infoSubtitles', hs.ok);
+        } catch (_) { setFlag('infoSubtitles', false); }
+        // Faces
+        try {
+          let ok = false;
+          try {
+            const hf = await fetch(`/api/faces/get?path=${encodeURIComponent(file.path)}`, { method: 'HEAD' });
+            ok = hf.ok;
+          } catch (_) { /* fallback */ }
+          if (!ok) {
+            const jf = await fetch(`/api/faces/json?path=${encodeURIComponent(file.path)}`, { method: 'GET' });
+            ok = jf.ok;
+          }
+          setFlag('infoFaces', ok);
+        } catch (_) { setFlag('infoFaces', false); }
+      })();
+      const playBtn = document.getElementById("infoPlay");
+      if (playBtn) {
+        playBtn.onclick = () => play(file);
+      }
+      const coverBtn = document.getElementById("infoCover");
+      if (coverBtn) {
+        coverBtn.onclick = async () => {
+          await generateCover(file);
+          showInfo(file);
+        };
+      }
+    }
+
+    function selectTile(tile, file) {
+      if (selectedTile && selectedTile !== tile) {
+        selectedTile.classList.remove("selected");
+      }
+      selectedTile = tile;
+      selectedFile = file;
+      tile.classList.add("selected");
+      // On demand cover generation and display
+      let coverDiv = tile.querySelector(".placeholder");
+      if (coverDiv) {
+        coverDiv.textContent = "Loading cover…";
+        fetch(`/api/cover/get?path=${encodeURIComponent(file.path)}`, {
+          method: "GET",
+        })
+          .then((res) => {
+            if (res.ok) return res.blob();
+            // If no cover, trigger generation
+            return fetch(
+              `/api/cover/create?path=${encodeURIComponent(file.path)}`,
+              { method: "POST" },
+            ).then((postRes) => {
+              if (!postRes.ok) throw new Error("Cover generation failed");
+              // After generation, fetch again
+              return fetch(
+                `/api/cover/get?path=${encodeURIComponent(file.path)}&t=${Date.now()}`,
+                { method: "GET" },
+              ).then((finalRes) => {
+                if (!finalRes.ok) throw new Error("Cover fetch failed");
+                return finalRes.blob();
+              });
+            });
+          })
+          .then((blob) => {
+            const url = URL.createObjectURL(blob);
+            const img = document.createElement("img");
+            img.className = "thumb";
+            img.src = url;
+            img.onload = () => {
+              URL.revokeObjectURL(url);
+            };
+            coverDiv.replaceWith(img);
+          })
+          .catch(() => {
+            coverDiv.textContent = "No cover";
+          });
+      }
+      showInfo(file);
+    }
+
+    let _io;
+    function observeLazy(el) {
+      if (!_io) {
+        _io = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e) => {
+              if (e.isIntersecting) {
+                const v = e.target;
+                if (!v.src && v.dataset.src) {
+                  v.src = v.dataset.src;
+                }
+                _io.unobserve(v);
+              }
+            });
+          },
+          { root: null, rootMargin: "200px", threshold: 0.01 },
+        );
+      }
+      _io.observe(el);
+    }
+
+    let _ioMeta;
+    function observeMeta(el, file) {
+      if (!_ioMeta) {
+        _ioMeta = new IntersectionObserver(
+          (entries) => {
+            entries.forEach(async (e) => {
+              if (!e.isIntersecting) {
+                return;
+              }
+              const tgt = e.target;
+              _ioMeta.unobserve(tgt);
+              const key = tgt.dataset.metakey;
+              if (!key) {
+                return;
+              }
+              if (metaCache.has(key)) {
+                tgt.textContent = metaCache.get(key);
+                return;
+              }
+              if (tgt.dataset.loading) {
+                return;
+              }
+              tgt.dataset.loading = "1";
+              try {
+                const res = await fetch(
+                  `/api/metadata/get?path=${encodeURIComponent(key)}`,
+                  { method: "GET" },
+                );
+                if (res.ok) {
+                  const j = await res.json();
+                  const bits = [];
+                  if (j.duration) {
+                    bits.push(hhmmss(j.duration));
+                  }
+                  if (j.width && j.height) {
+                    bits.push(`${j.width}×${j.height}`);
+                  }
+                  if (j.vcodec) {
+                    bits.push(j.vcodec);
+                  }
+                  if (j.bitrate) {
+                    const mbps = (j.bitrate / 1e6).toFixed(1);
+                    bits.push(`${mbps} Mbps`);
+                  }
+                  const line = bits.join(" • ");
+                  metaCache.set(key, line);
+                  tgt.textContent = line;
+                } else {
+                  tgt.textContent = "";
+                }
+              } catch (_) {
+                tgt.textContent = "";
+              } finally {
+                delete tgt.dataset.loading;
+              }
+            });
+          },
+          {
+            root: null,
+            rootMargin: "200px",
+            threshold: 0.01,
+          },
+        );
+      }
+      el.dataset.metakey = file.path;
+      _ioMeta.observe(el);
+    }
+
+    async function generateCover(file, overrideOffset) {
+      const off =
+        overrideOffset != null
+          ? Number(overrideOffset)
+          : parseFloat(
+            document.getElementById("coverOffset")?.value || "0",
+          ) || 0;
+      const params = new URLSearchParams({ path: file.path, t: String(off) });
+      if (off > 0) params.set("overwrite", "1");
+      const res = await fetch(`/api/cover/create?${params.toString()}`, {
+        method: "POST",
+      });
+      return res.ok;
+    }
+
+    async function load(path = "", pageOverride) {
+      status("Loading…");
+      const params = new URLSearchParams();
+      if (path) {
+        params.set("path", path);
+      }
+      // Use pageOverride if provided, else currentPage
+      const pageToRequest =
+        pageOverride !== undefined ? pageOverride : currentPage;
+      params.set("page", String(pageToRequest));
+      params.set("page_size", String(pageSize));
+      // Add search, filter, and sort params
+      const searchVal = document.getElementById("searchInput")?.value?.trim();
+      if (searchVal) {
+        params.set("search", searchVal);
+      }
+      const sortVal = document.getElementById("sortBy")?.value;
+      if (sortVal) {
+        params.set("sort", sortVal);
+      }
+      const orderVal = document.getElementById("sortOrder")?.value;
+      if (orderVal) {
+        params.set("order", orderVal);
+      }
+      const res = await fetch("/api/library?" + params.toString(), {
+        method: "GET",
+      });
+      if (!res.ok) {
+        status("Error loading");
+        return;
+      }
+      const body = await res.json();
+      const data = body.data || body;
+      // pagination info available in `data` if needed for debugging
+      cwd = data.cwd || "";
+      // Always use backend values for pagination
+      currentPage = data.page || pageToRequest;
+      totalPages = data.total_pages || 1;
+      totalFiles = data.total_files || 0;
+      pageSize = data.page_size || pageSize;
+      // Only use current page's files for rendering
+      renderFiles(data.files || []);
+      // Always display backend's total_files and total_pages in paginator
+      renderPager(currentPage, totalPages, totalFiles, pageSize);
+      // Update allFiles for bulk operations (fetch all files if needed)
+      allFiles = data.files || [];
+      selectedTile = null;
+      selectedFile = null;
+      if (infoPanel) {
+        infoPanel.innerHTML = "";
+      }
+      status("OK");
+    }
+
+    async function ensureHover(file) {
+      // Fast path: backend reported hover preview exists
+      if (file.hoverPreview) return file.hoverPreview + `&t=${Date.now()}`;
+      const base = `/api/hover/get?path=${encodeURIComponent(file.path)}`;
+      // Check if available now
+      try {
+        const head = await fetch(base + `&t=${Date.now()}`, {
+          method: "HEAD",
+          cache: "no-store",
+        });
+        if (head.ok) return base + `&t=${Date.now()}`;
+      } catch (_) { }
+      // Trigger generation (non-blocking if already exists)
+      try {
+        await fetch(
+          `/api/hover/create?path=${encodeURIComponent(file.path)}`,
+          { method: "POST" },
+        );
+      } catch (_) { }
+      // Poll briefly for readiness so preview can start on first hover
+      const maxTries = 12; // ~1.8s @ 150ms
+      for (let i = 0; i < maxTries; i++) {
+        try {
+          const head2 = await fetch(base + `&t=${Date.now()}`, {
+            method: "HEAD",
+            cache: "no-store",
+          });
+          if (head2.ok) return base + `&t=${Date.now()}`;
+        } catch (_) { }
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      return null;
+    }
+
+    // Ensure no tiles are currently showing a hover video
+    function stopAllTileHovers(exceptTile = null) {
+      try {
+        const tiles = document.querySelectorAll(".tile");
+        tiles.forEach((t) => {
+          if (exceptTile && t === exceptTile) return;
+          if (typeof t.onmouseleave === "function") {
+            try {
+              t.onmouseleave();
+            } catch (_) { }
+          } else {
+            // Best-effort: pause any inline video
+            const v = t.querySelector("video.thumb");
+            if (v) {
+              try {
+                v.pause();
+              } catch (_) { }
+              v.removeAttribute("src");
+              try {
+                v.load();
+              } catch (_) { }
+            }
+          }
+          t._hovering = false;
+        });
+      } catch (_) { }
+    }
+
+    function renderFiles(files) {
+      // Render file tiles with preview (image/video/placeholder)
+      if (!Array.isArray(files)) return;
+      if (!filesEl) return;
+      filesEl.innerHTML = "";
+      files.forEach((file) => {
+        const tile = document.createElement("div");
+        tile.className = "tile";
+        // Basic structure: name and placeholder
+        const displayTitle = file.title || file.name;
+        tile.innerHTML = `<div class="placeholder">Loading…</div><div class="name">${esc(displayTitle || file.title || file.name.replace(/\.[^./]+$/, ""))}</div>`;
+        tile.onclick = () => {
+          selectTile(tile, file);
+          showInfo(file);
+          // Save last grid tile for back button
+          window._lastGridTile = tile;
+        };
+        tile.ondblclick = () => {
+          selectTile(tile, file);
+          showTab("Player");
+          play(file);
+          // Save last grid tile for back button
+          window._lastGridTile = tile;
+        };
+        filesEl.appendChild(tile);
+        // Asynchronously load thumbnail
+        setTimeout(() => {
+          let preview = "";
+          if (file.cover) {
+            preview = `<img class="thumb" src="${file.cover}" alt="cover" />`;
+          } else if (file.type && file.type.startsWith("video")) {
+            preview = `<div class="placeholder">VIDEO</div>`;
+          } else if (file.type && file.type.startsWith("audio")) {
+            preview = `<div class="placeholder">AUDIO</div>`;
+          } else {
+            preview = `<div class="placeholder">NO PREVIEW</div>`;
+          }
+          const ph = tile.querySelector(".placeholder");
+          if (ph) {
+            ph.outerHTML = preview;
+          }
+          tile.onmouseenter = async () => {
+            if (!hoverPreviewsEnabled) return;
+            // Stop any other tile's hover video before starting this one
+            stopAllTileHovers(tile);
+            // Track hover tokens to avoid late insert after mouse leaves
+            const token = (tile._hoverToken || 0) + 1;
+            tile._hoverToken = token;
+            tile._hovering = true;
+            const url = await ensureHover(file);
+            // If no preview exists, don't swap out the thumbnail
+            if (!url) {
+              return;
+            }
+            if (!tile._hovering || tile._hoverToken !== token) return;
+            // Double-check no other tiles are showing hover previews
+            stopAllTileHovers(tile);
+            const current = tile.querySelector(
+              ".thumb, .placeholder, video.thumb",
+            );
+            const v = document.createElement("video");
+            v.className = "thumb";
+            v.src = url;
+            v.muted = true;
+            v.autoplay = true;
+            v.loop = true;
+            v.playsInline = true;
+            v.style.pointerEvents = "none";
+            if (current) current.replaceWith(v);
+            try {
+              await v.play();
+            } catch (_) { }
+          };
+          tile.onmouseleave = () => {
+            tile._hovering = false;
+            tile._hoverToken = (tile._hoverToken || 0) + 1;
+            if (tile._hoverTimer) {
+              clearInterval(tile._hoverTimer);
+              tile._hoverTimer = null;
+            }
+            const current = tile.querySelector("video.thumb");
+            if (current) {
+              current.pause();
+              current.src = "";
+              current.load();
+              if (file.cover) {
+                const img = document.createElement("img");
+                img.className = "thumb";
+                img.src = file.cover;
+                current.replaceWith(img);
+              } else if (file.type && file.type.startsWith("video")) {
+                const div = document.createElement("div");
+                div.className = "placeholder";
+                div.textContent = "VIDEO";
+                current.replaceWith(div);
+              } else if (file.type && file.type.startsWith("audio")) {
+                const div = document.createElement("div");
+                div.className = "placeholder";
+                div.textContent = "AUDIO";
+                current.replaceWith(div);
+              } else {
+                const div = document.createElement("div");
+                div.className = "placeholder";
+                div.textContent = "NO PREVIEW";
+                current.replaceWith(div);
+              }
+            }
+          };
+        }, 0);
+      });
+    }
+
+    if (toggleHoversBtn) {
+      toggleHoversBtn.onclick = () => {
+        hoverPreviewsEnabled = !hoverPreviewsEnabled;
+        toggleHoversBtn.dataset.enabled = hoverPreviewsEnabled ? "1" : "0";
+        toggleHoversBtn.textContent = hoverPreviewsEnabled
+          ? "Hovers: On"
+          : "Hovers: Off";
+        toggleHoversBtn.classList.toggle("active", hoverPreviewsEnabled);
+        if (!hoverPreviewsEnabled) {
+          // When disabling, immediately stop any active hover previews
+          stopAllTileHovers();
+        }
+      };
+      // Reflect default state on load
+      toggleHoversBtn.dataset.enabled = hoverPreviewsEnabled ? "1" : "0";
+      toggleHoversBtn.textContent = hoverPreviewsEnabled
+        ? "Hovers: On"
+        : "Hovers: Off";
+      toggleHoversBtn.classList.toggle("active", hoverPreviewsEnabled);
+    }
+
+    function renderPager() {
+      if (!pageInfo) {
+        return;
+      }
+      // Use arguments if provided, fallback to globals
+      const args = arguments;
+      const page = args.length > 0 ? args[0] : currentPage;
+      const pages = args.length > 1 ? args[1] : totalPages;
+      const files = args.length > 2 ? args[2] : totalFiles;
+      const size = args.length > 3 ? args[3] : pageSize;
+      pageInfo.textContent = `Page ${page} / ${pages} • ${files} files`;
+      if (pageSizeInput) {
+        pageSizeInput.value = String(size);
+      }
+      if (prevBtn) {
+        prevBtn.disabled = page <= 1;
+      }
+      if (nextBtn) {
+        nextBtn.disabled = page >= pages;
+      }
+    }
+    async function play(file) {
+      selectedFile = file;
+      const src = `/api/stream?path=${encodeURIComponent(file.path)}`;
+      const subURL = `/api/subtitles/get?path=${encodeURIComponent(file.path)}`;
+      videoEl.pause();
+      videoEl.innerHTML = "";
+      videoEl.classList.remove("hidden");
+      const source = document.createElement("source");
+      if (!source.src) {
+        source.src = src;
+      }
+      source.src = src;
+      videoEl.appendChild(source);
+      // Try to attach subtitles track if present; allow user toggle via native menu
+      try {
+        const head = await fetch(subURL, { method: "HEAD" });
+        if (head.ok) {
+          const track = document.createElement("track");
+          track.kind = "subtitles";
+          track.label = "English";
+          track.srclang = "en";
+          track.src = subURL;
+          // Do not force default; let user toggle via player controls
+          videoEl.appendChild(track);
+          // Also add a CC toggle button for convenience
+          let toggleSubsBtn = document.getElementById("toggleSubsBtn");
+          if (!toggleSubsBtn) {
+            toggleSubsBtn = document.createElement("button");
+            toggleSubsBtn.id = "toggleSubsBtn";
+            toggleSubsBtn.className = "btn mt-8";
+            toggleSubsBtn.textContent = "Show Subtitles";
+            const setThumbBtn = document.getElementById("setThumbBtn");
+            if (setThumbBtn)
+              setThumbBtn.parentNode.insertBefore(
+                toggleSubsBtn,
+                setThumbBtn.nextSibling,
+              );
+          }
+          toggleSubsBtn.style.display = "";
+          toggleSubsBtn.onclick = () => {
+            const tt = videoEl.textTracks && videoEl.textTracks[0];
+            if (!tt) return;
+            tt.mode = tt.mode === "showing" ? "disabled" : "showing";
+            toggleSubsBtn.textContent =
+              tt.mode === "showing" ? "Hide Subtitles" : "Show Subtitles";
+          };
+        } else {
+          const toggleSubsBtn = document.getElementById("toggleSubsBtn");
+          if (toggleSubsBtn) toggleSubsBtn.style.display = "none";
+        }
+      } catch (e) {
+        const toggleSubsBtn = document.getElementById("toggleSubsBtn");
+        if (toggleSubsBtn) toggleSubsBtn.style.display = "none";
+      }
+      metaEl.textContent = file.title || baseName(file.name);
+      videoEl.load();
+      try {
+        await videoEl.play();
+      } catch (_) { }
+      // Load and render scenes and heatmaps overlays
+      renderOverlaysForFile(file).catch(() => { });
+      // Refresh markers when duration becomes available
+      videoEl.onloadedmetadata = () => {
+        renderOverlaysForFile(file).catch(() => { });
+        if (controlsBar && getTabFromLocation() === "Player")
+          controlsBar.classList.remove("hidden");
+      };
+    }
+
+    async function renderOverlaysForFile(file) {
+      if (!file) return;
+      // Scenes
+      let scenes = null;
+      try {
+        const res = await fetch(
+          `/api/scenes/get?path=${encodeURIComponent(file.path)}`,
+        );
+        if (res.ok) {
+          const body = await res.json();
+          scenes =
+            (body.data &&
+              (body.data.markers || body.data.scenes || body.data.markers)) ||
+            body.markers ||
+            null;
+          if (Array.isArray(body.data?.markers)) scenes = body.data.markers;
+        }
+      } catch (_) { }
+      renderChapters(scenes, file);
+      // Heatmaps: prefer PNG for speed; fallback to JSON gradient
+      let heatmapURL = null;
+      try {
+        const resP = await fetch(
+          `/api/heatmaps/png?path=${encodeURIComponent(file.path)}`,
+        );
+        if (resP.ok) {
+          // Blob URL to avoid re-requesting
+          const blob = await resP.blob();
+          heatmapURL = URL.createObjectURL(blob);
+        }
+      } catch (_) { }
+      if (heatmapURL) {
+        renderHeatmapStripe({ type: "png", url: heatmapURL });
+      } else {
+        try {
+          const resJ = await fetch(
+            `/api/heatmaps/json?path=${encodeURIComponent(file.path)}`,
+          );
+          if (resJ.ok) {
+            const body = await resJ.json();
+            const data = (body.data && body.data.heatmaps) || body.heatmaps;
+            renderHeatmapStripe({ type: "json", data });
+          } else {
+            renderHeatmapStripe(null);
+          }
+        } catch (_) {
+          renderHeatmapStripe(null);
+        }
+      }
+      if (controlsBar && getTabFromLocation() === "Player")
+        controlsBar.classList.remove("hidden");
+    }
+
+    function renderChapters(scenes, file) {
+      if (!chaptersBar) return;
+      chaptersBar.innerHTML = "";
+      const duration = videoEl.duration || file?.duration || 0;
+      if (!duration || !Array.isArray(scenes)) return;
+      // scenes entries could be {time,score} or tuples; normalize
+      const times = scenes
+        .map((s) =>
+          typeof s === "number" ? s : (s.time ?? s[0] ?? s.t ?? null),
+        )
+        .filter((t) => typeof t === "number");
+      times.forEach((t) => {
+        const pct = Math.min(99.9, Math.max(0, (t / duration) * 100));
+        const m = document.createElement("div");
+        m.className = "marker";
+        m.style.left = pct + "%";
+        // clicking a marker seeks to its time
+        m.style.pointerEvents = "auto";
+        m.title = `Scene @ ${hhmmss(t)}`;
+        m.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          try {
+            videoEl.currentTime = t;
+          } catch (_) { }
+        });
+        chaptersBar.appendChild(m);
+      });
+    }
+
+    function renderHeatmapStripe(payload) {
+      if (!heatmapStripe) return;
+      heatmapStripe.style.backgroundImage = "";
+      heatmapStripe.style.background = "#111";
+      if (!payload) return;
+      if (payload.type === "png" && payload.url) {
+        heatmapStripe.style.backgroundImage = `url('${payload.url}')`;
+        heatmapStripe.style.backgroundRepeat = "no-repeat";
+        heatmapStripe.style.backgroundSize = "100% 100%";
+        return;
+      }
+      if (payload.type === "json" && payload.data) {
+        const data = payload.data;
+        const samples = data.samples || [];
+        if (!samples.length) return;
+        // Build CSS gradient; use brightness by default, overlay motion as stripes
+        const stops = samples.map((s, i) => {
+          const t = s.t ?? s.time ?? (i / samples.length) * 100;
+          const brightness = Math.max(0, Math.min(255, s.brightness ?? 0));
+          const color = `rgb(${brightness},${brightness},${brightness})`;
+          const pct = Math.max(
+            0,
+            Math.min(100, (i / (samples.length - 1)) * 100),
+          );
+          return `${color} ${pct}%`;
+        });
+        heatmapStripe.style.backgroundImage = `linear-gradient(to right, ${stops.join(",")})`;
+      }
+    }
+
+    // Seek behavior on overlay
+    if (controlsProgress) {
+      const seekFromEvent = (ev) => {
+        const rect = controlsProgress.getBoundingClientRect();
+        const x =
+          (ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left;
+        const pct = Math.max(0, Math.min(1, x / rect.width));
+        if (!isNaN(videoEl.duration)) {
+          videoEl.currentTime = pct * videoEl.duration;
+        }
+      };
+      // Hover scrubbing preview using sprite sheet when available
+      let spriteData = null; // {index:{...}, sheetUrl:string}
+      let previewEl = null;
+      const spritesRequested = new Set(); // track files we've kicked off generation for
+      async function ensureSprites() {
+        if (!selectedFile) return null;
+        if (spriteData && spriteData.file === selectedFile.path)
+          return spriteData;
+        // Try to fetch existing sprites first
+        const tryFetch = async () => {
+          const res = await fetch(
+            `/api/sprites/json?path=${encodeURIComponent(selectedFile.path)}`,
+          );
+          if (!res.ok) return null;
+          const body = await res.json();
+          const index = (body.data && body.data.index) || body.index;
+          const sheetUrl = (body.data && body.data.sheet) || body.sheet;
+          return { index, sheetUrl };
+        };
+        try {
+          let data = await tryFetch();
+          if (!data) {
+            // If missing, kick off generation once for this file, then poll briefly
+            const key = selectedFile.path;
+            if (!spritesRequested.has(key)) {
+              spritesRequested.add(key);
+              try {
+                await fetch(
+                  `/api/sprites/create?path=${encodeURIComponent(key)}`,
+                  { method: "POST" },
+                );
+              } catch (_) {
+                // ignore fire-and-forget errors
+              }
+            }
+            // Poll up to ~5s for readiness
+            const deadline = Date.now() + 5000;
+            while (!data && Date.now() < deadline) {
+              await new Promise((r) => setTimeout(r, 400));
+              data = await tryFetch();
+            }
+          }
+          if (!data) {
+            spriteData = null;
+            return null;
+          }
+          spriteData = { ...data, file: selectedFile.path };
+          return spriteData;
+        } catch (_) {
+          spriteData = null;
+          return null;
+        }
+      }
+      function ensurePreviewEl() {
+        if (previewEl) return previewEl;
+        previewEl = document.createElement("div");
+        previewEl.className = "sprite-preview";
+        const wrap = document.querySelector('.player-media');
+        if (wrap) wrap.appendChild(previewEl);
+        else document.body.appendChild(previewEl);
+        return previewEl;
+      }
+      function updatePreviewPosition(clientX) {
+        const wrap = document.querySelector('.player-media');
+        const rect = wrap ? wrap.getBoundingClientRect() : controlsProgress.getBoundingClientRect();
+        ensurePreviewEl();
+        const clamped = Math.max(rect.left + 8, Math.min(rect.right - 8, clientX));
+        const localX = clamped - rect.left; // position within wrapper
+        previewEl.style.left = `${localX}px`;
+      }
+      function showSpriteAt(pct) {
+        if (!spriteData) return;
+        const idx = spriteData.index;
+        const frames = idx.frames || idx.cols * idx.rows;
+        if (!frames) return;
+        const i = Math.max(0, Math.min(frames - 1, Math.floor(pct * frames)));
+        const col = i % idx.cols;
+        const row = Math.floor(i / idx.cols);
+        const tw = idx.tile_width || 160;
+        const th = idx.tile_height || 90;
+        const x = -col * tw;
+        const y = -row * (idx.tile_height || th);
+        previewEl.style.backgroundImage = `url('${spriteData.sheetUrl}')`;
+        previewEl.style.backgroundSize = `${idx.cols * tw}px ${idx.rows * (idx.tile_height || th)}px`;
+        previewEl.style.backgroundPosition = `${x}px ${y}px`;
+        previewEl.style.width = `${tw}px`;
+        previewEl.style.height = `${idx.tile_height || th}px`;
+        previewEl.style.display = "";
+      }
+      controlsProgress.addEventListener("mousemove", async (e) => {
+        const rect = controlsProgress.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const pct = Math.max(0, Math.min(1, x / rect.width));
+        updatePreviewPosition(e.clientX);
+        const s = await ensureSprites();
+        if (s) showSpriteAt(pct);
+      });
+      controlsProgress.addEventListener("mouseleave", () => {
+        if (previewEl) previewEl.style.display = "none";
+      });
+      controlsProgress.addEventListener("click", seekFromEvent);
+      let dragging = false;
+      controlsProgress.addEventListener("mousedown", (e) => {
+        dragging = true;
+        seekFromEvent(e);
+      });
+      window.addEventListener("mousemove", (e) => {
+        if (dragging) seekFromEvent(e);
+      });
+      window.addEventListener("mouseup", () => (dragging = false));
+      controlsProgress.addEventListener(
+        "touchstart",
+        (e) => {
+          dragging = true;
+          seekFromEvent(e);
+        },
+        { passive: true },
+      );
+      controlsProgress.addEventListener(
+        "touchmove",
+        (e) => {
+          if (dragging) seekFromEvent(e);
+        },
+        { passive: true },
+      );
+      window.addEventListener("touchend", () => (dragging = false), {
+        passive: true,
+      });
+    }
+
+    function status(t) {
+      statusEl.textContent = t;
+    }
+
+    setRootBtn.onclick = async () => {
+      const v = rootInput.value.trim();
+      if (!v) {
+        return;
+      }
+      status("Setting root…");
+      const params = new URLSearchParams({ root: v });
+      const res = await fetch("/api/setroot?" + params.toString(), {
+        method: "POST",
+      });
+      if (res.ok) {
+        currentPage = 1;
+        cwd = "";
+        await load("");
+      } else {
+        try {
+          const problem = await res.json();
+          status("Failed: " + JSON.stringify(problem));
+        } catch (_) {
+          status("Failed to set root");
+        }
+      }
+    };
+
+    // Control listeners setup
+    function setupControlListeners() {
+      document.getElementById("searchInput").addEventListener("input", () => {
+        currentPage = 1;
+        load(cwd);
+      });
+      document.getElementById("sortBy").addEventListener("change", () => {
+        currentPage = 1;
+        load(cwd);
+      });
+      document.getElementById("sortOrder").addEventListener("change", () => {
+        currentPage = 1;
+        load(cwd);
+      });
+      document.getElementById("gridSize").addEventListener("change", () => {
+        load(cwd);
+      });
+      if (pageSizeInput) {
+        pageSizeInput.addEventListener("change", () => {
+          let v = parseInt(pageSizeInput.value, 10);
+          if (v > 0) {
+            if (v % 4 !== 0) {
+              v = Math.round(v / 4) * 4;
+            }
+            pageSizeInput.value = v;
+            pageSize = v;
+            currentPage = 1;
+            load(cwd);
+          }
+        });
+      }
+    }
+
+    // Auto-load root folder on page load
+    window.addEventListener("DOMContentLoaded", async () => {
+      // Wire up set thumbnail button logic
+      const setThumbBtn = document.getElementById("setThumbBtn");
+      if (setThumbBtn) {
+        setThumbBtn.onclick = async () => {
+          if (!selectedFile) return;
+          const currentTime = Math.floor(videoEl.currentTime || 0);
+          setThumbBtn.disabled = true;
+          setThumbBtn.textContent = "Setting thumbnail…";
+          // Use correct API: POST to /api/create_cover?path=...&t=...
+          // Always use 't' as the timestamp query param for backend
+          const res = await fetch(
+            `/api/cover/create?path=${encodeURIComponent(selectedFile.path)}&t=${currentTime}&overwrite=1`,
+            { method: "POST" },
+          );
+          if (res.ok) {
+            setThumbBtn.textContent = "Thumbnail set!";
+            // Use a unique timestamp to force browser to reload the image
+            const uniqueTs = Date.now() + Math.floor(Math.random() * 10000);
+            const metaRes = await fetch(
+              `/api/metadata/get?path=${encodeURIComponent(selectedFile.path)}`,
+              { method: "GET" },
+            );
+            let updatedFile = selectedFile;
+            if (metaRes.ok) {
+              const meta = await metaRes.json();
+              const metaBody = meta.data || meta;
+              updatedFile = {
+                ...selectedFile,
+                ...metaBody,
+                cover: `/api/cover/get?path=${encodeURIComponent(selectedFile.path)}&t=${uniqueTs}`,
+              };
+            } else {
+              updatedFile = {
+                ...selectedFile,
+                cover: `/api/cover/get?path=${encodeURIComponent(selectedFile.path)}&t=${uniqueTs}`,
+              };
+            }
+            showInfo(updatedFile);
+          } else {
+            setThumbBtn.textContent = "Failed to set thumbnail";
+          }
+          setTimeout(() => {
+            setThumbBtn.textContent = "Set Thumbnail from Current Frame";
+            setThumbBtn.disabled = false;
+          }, 2000);
+        };
+        // Only show button in Player tab
+        setThumbBtn.style.display = "none";
+      }
+      setupControlListeners();
+      mountSpritePreviewInPlayer();
+      // Initialize tab from URL (hash) or default to Grid without pushing a new history entry
+      const initialTab = getTabFromLocation() || "Grid";
+      showTab(initialTab, true);
+      try {
+        setRouteForTab(initialTab, true);
+      } catch (_) { }
+      if (rootInput && rootInput.value) {
+        // Directly set root and load videos without button click
+        const v = rootInput.value.trim();
+        if (v) {
+          status("Setting root…");
+          const params = new URLSearchParams({ root: v });
+          const res = await fetch("/api/setroot?" + params.toString(), {
+            method: "POST",
+          });
+          if (res.ok) {
+            currentPage = 1;
+            cwd = "";
+            await load("");
+          }
+        }
+      }
+    });
+
+    // Handle back/forward navigation for tabs
+    window.addEventListener("popstate", () => {
+      const t = getTabFromLocation() || "Grid";
+      showTab(t, true);
+    });
+    window.addEventListener("hashchange", () => {
+      const t = getTabFromLocation() || "Grid";
+      showTab(t, true);
+    });
+
+    if (prevBtn) {
+      prevBtn.onclick = async () => {
+        if (currentPage > 1) {
+          await load(cwd, currentPage - 1);
+        }
+      };
+    }
+    if (nextBtn) {
+      nextBtn.onclick = async () => {
+        if (currentPage < totalPages) {
+          await load(cwd, currentPage + 1);
+        }
+      };
+    }
+    if (pageSizeInput) {
+      pageSizeInput.onchange = async () => {
+        let v = parseInt(pageSizeInput.value, 10);
+        if (v > 0) {
+          // Only allow multiples of 4 or 8
+          if (v % 4 !== 0) v = Math.round(v / 4) * 4;
+          pageSizeInput.value = v;
+          pageSize = v;
+          currentPage = 1;
+          await load(cwd);
+        }
+      };
+    }
+
+    const gridSizeInput = document.getElementById("gridSize");
+    if (gridSizeInput) {
+      gridSizeInput.onchange = () => {
+        const cols = parseInt(gridSizeInput.value, 10) || 4;
+        filesEl.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+      };
+      filesEl.style.gridTemplateColumns = `repeat(${gridSizeInput.value}, 1fr)`;
+    }
+
+    document.addEventListener("keydown", (e) => {
+      // Always allow space/arrow keys for player and grid navigation
+      if (
+        document.activeElement &&
+        ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)
+      )
+        return;
+      const tiles = Array.from(document.querySelectorAll(".tile"));
+      let idx = tiles.indexOf(selectedTile);
+      let cols = parseInt(document.getElementById("gridSize").value, 10) || 4;
+      if (e.code === "Space") {
+        if (!videoEl.classList.contains("hidden")) {
+          e.preventDefault();
+          if (videoEl.paused) {
+            videoEl.play();
+          } else {
+            videoEl.pause();
+          }
+        } else {
+          if (selectedTile && tiles.length) {
+            selectedTile.click();
+          }
+        }
+      } else if (e.code === "ArrowLeft") {
+        if (!videoEl.classList.contains("hidden")) {
+          e.preventDefault();
+          try {
+            videoEl.currentTime = Math.max(0, (videoEl.currentTime || 0) - 5);
+          } catch (_) { }
+        } else {
+          if (idx > 0) {
+            tiles[idx - 1].click();
+            tiles[idx - 1].scrollIntoView({
+              block: "nearest",
+              inline: "nearest",
+            });
+            e.preventDefault();
+          }
+        }
+      } else if (e.code === "ArrowRight") {
+        if (!videoEl.classList.contains("hidden")) {
+          e.preventDefault();
+          try {
+            videoEl.currentTime = (videoEl.currentTime || 0) + 5;
+          } catch (_) { }
+        } else {
+          if (idx < tiles.length - 1) {
+            tiles[idx + 1].click();
+            tiles[idx + 1].scrollIntoView({
+              block: "nearest",
+              inline: "nearest",
+            });
+            e.preventDefault();
+          }
+        }
+      } else if (e.code === "ArrowDown") {
+        if (idx + cols < tiles.length) {
+          tiles[idx + cols].click();
+          tiles[idx + cols].scrollIntoView({
+            block: "nearest",
+            inline: "nearest",
+          });
+          e.preventDefault();
+        }
+      } else if (e.code === "ArrowUp") {
+        if (idx - cols >= 0) {
+          tiles[idx - cols].click();
+          tiles[idx - cols].scrollIntoView({
+            block: "nearest",
+            inline: "nearest",
+          });
+          e.preventDefault();
+        }
+      }
+    });
+
+    // Add 'Random' to sort dropdown
+    const sortBySelect = document.getElementById("sortBy");
+    if (
+      sortBySelect &&
+      !Array.from(sortBySelect.options).some((opt) => opt.value === "random")
+    ) {
+      const randomOption = document.createElement("option");
+      randomOption.value = "random";
+      randomOption.textContent = "Random";
+      sortBySelect.appendChild(randomOption);
+    }
+    // Add 'Play Random Video' button at the top
+    const controlsDiv = document.getElementById("gridControls");
+    if (controlsDiv && !document.getElementById("playRandomBtn")) {
+      const playRandomBtn = document.createElement("button");
+      playRandomBtn.id = "playRandomBtn";
+      playRandomBtn.className = "btn";
+      playRandomBtn.textContent = "Random";
+      controlsDiv.insertBefore(playRandomBtn, controlsDiv.firstChild);
+      playRandomBtn.onclick = async () => {
+        // Fetch all files (all pages)
+        let allMediaFiles = [];
+        let page = 1;
+        let pageSize = 500;
+        let totalPages = 1;
+        do {
+          const params = new URLSearchParams();
+          params.set("page", String(page));
+          params.set("page_size", String(pageSize));
+          // Use current filters (search only)
+          const searchVal = document
+            .getElementById("searchInput")
+            ?.value?.trim();
+          if (searchVal) params.set("search", searchVal);
+          params.set("sort", "name"); // Always fetch all, don't sort random here
+          const res = await fetch("/api/library?" + params.toString(), {
+            method: "GET",
+          });
+          if (!res.ok) break;
+          const body = await res.json();
+          const data = body.data || body;
+          allMediaFiles = allMediaFiles.concat(data.files || []);
+          totalPages = data.total_pages || 1;
+          page++;
+        } while (page <= totalPages);
+        if (allMediaFiles.length === 0) {
+          alert("No videos found!");
+          return;
+        }
+        const randomIdx = Math.floor(Math.random() * allMediaFiles.length);
+        const file = allMediaFiles[randomIdx];
+        play(file);
+      };
+    }
+
+    // List tab logic
+    // Column config
+    const LIST_COLS_KEY = "listCols.v2";
+    const defaultListCols = [
+      { key: "name", label: "Name", align: "left", width: 320, visible: true, source: "basic" },
+      { key: "size", label: "Size", align: "right", width: 100, visible: true, source: "basic" },
+      { key: "duration", label: "Duration", align: "right", width: 110, visible: true, source: "basic" },
+      { key: "codecs", label: "Codecs", align: "left", width: 160, visible: true, source: "basic" },
+      { key: "tags", label: "Tags", align: "left", width: 200, visible: true, source: "basic" },
+      // Artifacts (hidden by default)
+      { key: "art.cover", label: "Cover", align: "center", width: 80, visible: false, source: "artifact" },
+      { key: "art.hover", label: "Hover", align: "center", width: 80, visible: false, source: "artifact" },
+      { key: "art.sprites", label: "Sprites", align: "center", width: 80, visible: false, source: "artifact" },
+      { key: "art.subtitles", label: "Subtitles", align: "center", width: 92, visible: false, source: "artifact" },
+      { key: "art.phash", label: "pHash", align: "center", width: 80, visible: false, source: "artifact" },
+      { key: "art.heatmaps", label: "Heatmaps", align: "center", width: 92, visible: false, source: "artifact" },
+      { key: "art.scenes", label: "Scenes", align: "center", width: 80, visible: false, source: "artifact" },
+      { key: "art.faces", label: "Faces", align: "center", width: 80, visible: false, source: "artifact" },
+    ];
+    function getListCols() {
+      try {
+        const raw = localStorage.getItem(LIST_COLS_KEY);
+        if (!raw) return defaultListCols.slice();
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return defaultListCols.slice();
+        // merge to ensure any new defaults are included
+        const byKey = Object.fromEntries(parsed.map(c => [c.key, c]));
+        const merged = defaultListCols.map(d => ({ ...d, ...(byKey[d.key] || {}) }));
+        // include any legacy/custom keys
+        parsed.forEach(c => { if (!merged.find(m => m.key === c.key)) merged.push(c); });
+        return merged;
+      } catch { return defaultListCols.slice(); }
+    }
+    function setListCols(cols) {
+      localStorage.setItem(LIST_COLS_KEY, JSON.stringify(cols));
+    }
+    // Metadata discovery cache
+    const metaRawCache = new Map(); // path -> raw ffprobe json
+    let discoveredMetaKeys = new Set();
+
+    function renderListColumnsPanel() {
+      const panel = document.getElementById("listColumnsPanel");
+      if (!panel) return;
+      const cols = getListCols();
+      panel.innerHTML = `
+        <div class="row"><strong>Columns</strong><span class="muted">(drag to reorder)</span></div>
+        <div class="section">
+          <div class="muted">Basics & Artifacts</div>
+          <div id="listColsChoices" class="choices"></div>
+        </div>
+        <div class="section">
+          <div class="row">
+            <strong>ffprobe metadata</strong>
+            <input id="metaFilter" type="text" placeholder="filter…" />
+            <button id="discoverMetaBtn" class="btn">Discover ffprobe keys</button>
+          </div>
+          <div id="metaColsChoices" class="choices"></div>
+        </div>
+        <div class="row">
+          <button id="resetListColsBtn" class="btn">Reset</button>
+        </div>
+      `;
+      const choices = panel.querySelector("#listColsChoices");
+      cols.forEach((c, idx) => {
+        const id = `col_${c.key}`;
+        const wrap = document.createElement("div");
+        wrap.className = "row";
+        wrap.style.alignItems = "center";
+        wrap.style.gap = "8px";
+        wrap.draggable = true;
+        wrap.dataset.index = String(idx);
+        wrap.innerHTML = `<input type="checkbox" id="${id}" ${c.visible ? "checked" : ""}/> <label for="${id}">${esc(c.label)}</label>`;
+        // drag to reorder
+        wrap.addEventListener("dragstart", (e) => {
+          wrap.classList.add("dragging-col");
+          e.dataTransfer?.setData("text/plain", String(wrap.dataset.index || idx));
+        });
+        wrap.addEventListener("dragend", () => wrap.classList.remove("dragging-col"));
+        wrap.addEventListener("dragover", (e) => e.preventDefault());
+        wrap.addEventListener("drop", (e) => {
+          e.preventDefault();
+          const from = parseInt(e.dataTransfer?.getData("text/plain") || "-1", 10);
+          const to = parseInt(wrap.dataset.index || String(idx), 10);
+          if (from >= 0 && from !== to) {
+            const cur = getListCols();
+            const [moved] = cur.splice(from, 1);
+            cur.splice(to, 0, moved);
+            setListCols(cur);
+            renderListHeader();
+            // re-open panel to reflect order
+            renderListColumnsPanel();
+            loadListRows(lastListDataCache || []);
+          }
+        });
+        choices.appendChild(wrap);
+        const cb = wrap.querySelector("input");
+        cb.addEventListener("change", () => {
+          const cur = getListCols();
+          cur[idx].visible = cb.checked;
+          setListCols(cur);
+          renderListHeader();
+          loadListRows(lastListDataCache || []);
+        });
+      });
+      // metadata choices
+      const metaChoices = panel.querySelector('#metaColsChoices');
+      function renderMetaChoices() {
+        if (!metaChoices) return;
+        metaChoices.innerHTML = '';
+        const filterVal = (panel.querySelector('#metaFilter')?.value || '').toLowerCase();
+        const keys = Array.from(discoveredMetaKeys).sort();
+        keys.forEach((k) => {
+          if (filterVal && !k.toLowerCase().includes(filterVal)) return;
+          const id = `mcol_${k.replace(/[^a-zA-Z0-9_.-]/g,'_')}`;
+          const row = document.createElement('div');
+          row.className = 'row';
+          row.style.alignItems = 'center';
+          row.style.gap = '8px';
+          const existing = getListCols().find(c => c.source === 'meta' && c.key === k);
+          row.innerHTML = `<input type="checkbox" id="${id}" ${existing ? 'checked' : ''}/> <label for="${id}">${esc(k)}</label>`;
+          metaChoices.appendChild(row);
+          const cb = row.querySelector('input');
+          cb.addEventListener('change', () => {
+            const cur = getListCols();
+            if (cb.checked) {
+              if (!existing) {
+                cur.push({ key: k, label: k, align: 'left', width: 160, visible: true, source: 'meta' });
+              }
+            } else {
+              const idx = cur.findIndex(c => c.source === 'meta' && c.key === k);
+              if (idx >= 0) cur.splice(idx, 1);
+            }
+            setListCols(cur);
+            renderListHeader();
+            loadListRows(lastListDataCache || []);
+            renderMetaChoices();
+          });
+        });
+      }
+      panel.querySelector('#metaFilter')?.addEventListener('input', renderMetaChoices);
+      const discoverBtn = panel.querySelector('#discoverMetaBtn');
+      if (discoverBtn) {
+        discoverBtn.addEventListener('click', async () => {
+          await discoverMetadataKeys();
+          renderMetaChoices();
+        });
+      }
+      renderMetaChoices();
+      const resetBtn = panel.querySelector("#resetListColsBtn");
+      resetBtn.addEventListener("click", () => {
+        setListCols(defaultListCols);
+        renderListHeader();
+        renderListColumnsPanel();
+        loadListRows(lastListDataCache || []);
+      });
+    }
+    function renderListHeader() {
+      const row = document.getElementById("listHeaderRow");
+      if (!row) return;
+      row.innerHTML = "";
+      const cols = getListCols().filter(c => c.visible !== false);
+      cols.forEach((c, idx) => {
+        const th = document.createElement("th");
+        th.className = `th text-${c.align || "left"}`;
+        th.draggable = true;
+        th.dataset.key = c.key;
+        th.dataset.index = String(idx);
+        if (c.width) th.style.width = c.width + "px";
+        th.innerHTML = `<span>${esc(c.label)}</span><span class="col-resizer" data-idx="${idx}"></span>`;
+        // drag reorder
+        th.addEventListener("dragstart", (e) => {
+          th.classList.add("dragging-col");
+          e.dataTransfer?.setData("text/plain", String(th.dataset.index || idx));
+        });
+        th.addEventListener("dragend", () => th.classList.remove("dragging-col"));
+        th.addEventListener("dragover", (e) => e.preventDefault());
+        th.addEventListener("drop", (e) => {
+          e.preventDefault();
+          const from = parseInt(e.dataTransfer?.getData("text/plain") || "-1", 10);
+          let to = parseInt(th.dataset.index || String(idx), 10);
+          // If dropped on right half, insert after
+          const rect = th.getBoundingClientRect();
+          const mid = rect.left + rect.width / 2;
+          if ((e.clientX || 0) > mid) to = to + 1;
+          if (from >= 0 && from !== to) {
+            // reorder on full config preserving hidden columns order
+            const curAll = getListCols();
+            const visible = curAll.filter(c => c.visible !== false);
+            const hidden = curAll.filter(c => c.visible === false);
+            const [moved] = visible.splice(from, 1);
+            // Clamp to bounds
+            const toIdx = Math.max(0, Math.min(visible.length, to));
+            visible.splice(toIdx, 0, moved);
+            const merged = [];
+            // maintain original order but with new visible ordering
+            visible.forEach(v => merged.push(v));
+            hidden.forEach(h => merged.push(h));
+            setListCols(merged);
+            renderListHeader();
+            loadListRows(lastListDataCache || []);
+          }
+        });
+        // resize handle
+        const handle = th.querySelector(".col-resizer");
+        handle.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const startX = e.clientX;
+          const startW = th.getBoundingClientRect().width;
+          function onMove(ev) {
+            const dx = ev.clientX - startX;
+            const newW = Math.max(60, Math.round(startW + dx));
+            th.style.width = newW + "px";
+          }
+          function onUp() {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+            // persist width to config
+            const key = th.dataset.key;
+            const cur = getListCols();
+            const found = cur.find(c => c.key === key);
+            if (found) {
+              const w = Math.round(th.getBoundingClientRect().width);
+              found.width = w;
+              setListCols(cur);
+            }
+          }
+          window.addEventListener("mousemove", onMove);
+          window.addEventListener("mouseup", onUp);
+        });
+        row.appendChild(th);
+      });
+    }
+    function cellText(col, v) {
+      if (col.source === 'artifact') {
+        const art = v.artifacts || {};
+        const key = col.key.replace('art.', '');
+        const alt = v[key] || v[{
+          cover: 'cover', hover: 'hoverPreview', sprites: 'scrubThumbs', subtitles: 'subtitles', phash: 'phash', heatmaps: 'heatmaps', scenes: 'chapters', faces: 'faces'
+        }[key]];
+        const val = (art[key] !== undefined ? art[key] : (alt !== undefined ? alt : false));
+        return val ? '✅' : '—';
+      }
+      if (col.source === 'meta') {
+        return '…'; // will be filled asynchronously
+      }
+      switch (col.key) {
+        case "name": return esc(v.name);
+        case "size": return human(v.size || 0);
+        case "duration": return hhmmss(v.duration || 0);
+        case "codecs": return [v.vcodec || "", v.acodec || ""].filter(Boolean).join(" / ");
+        case "tags": return Array.isArray(v.tags) ? v.tags.join(", ") : "";
+        default: return esc(v[col.key] ?? "");
+      }
+    }
+    function getByPath(obj, path) {
+      try {
+        const parts = String(path).split('.');
+        let cur = obj;
+        for (const p of parts) {
+          const m = p.match(/^(\w+)(?:\[(\d+)\])?$/);
+          if (!m) return undefined;
+          const key = m[1];
+          const idx = m[2] != null ? parseInt(m[2], 10) : null;
+          cur = cur?.[key];
+          if (idx != null) cur = Array.isArray(cur) ? cur[idx] : undefined;
+          if (cur == null) return undefined;
+        }
+        return cur;
+      } catch { return undefined; }
+    }
+    async function ensureMetadata(path) {
+      if (metaRawCache.has(path)) return metaRawCache.get(path);
+      try {
+        const res = await fetch(`/api/metadata/get?path=${encodeURIComponent(path)}&view=1`);
+        if (!res.ok) return null;
+        const j = await res.json();
+        const raw = j?.data?.raw ?? j?.raw ?? null;
+        if (raw) metaRawCache.set(path, raw);
+        return raw;
+      } catch { return null; }
+    }
+    async function fillMetaCellsForRow(tr, v) {
+      const cells = tr.querySelectorAll('[data-meta-path]');
+      if (!cells.length) return;
+      const raw = await ensureMetadata(v.path);
+      cells.forEach((td) => {
+        const p = td.getAttribute('data-meta-path');
+        let val = raw ? getByPath(raw, p) : undefined;
+        if (val == null) td.textContent = '';
+        else if (typeof val === 'object') td.textContent = JSON.stringify(val);
+        else td.textContent = String(val);
+      });
+    }
+    function _listRow(v) {
+      const tr = document.createElement("tr");
+      const cols = getListCols().filter(c => c.visible !== false);
+      cols.forEach((c) => {
+        const td = document.createElement("td");
+        td.className = `td text-${c.align || "left"}`;
+        if (c.width) td.style.width = c.width + "px";
+        const txt = cellText(c, v);
+        if (c.source === 'meta') {
+          td.textContent = txt;
+          td.dataset.metaPath = c.key; // meta path key
+        } else {
+          td.textContent = txt;
+        }
+        tr.appendChild(td);
+      });
+      tr.addEventListener("click", () => {
+        selectedFile = {
+          path: v.path,
+          name: v.name,
+          size: v.size,
+          duration: v.duration,
+          cover: v.cover,
+          title: v.title,
+        };
+        showInfo(selectedFile);
+      });
+      tr.addEventListener("dblclick", () => {
+        if (!selectedFile || selectedFile.path !== v.path) {
+          selectedFile = {
+            path: v.path,
+            name: v.name,
+            size: v.size,
+            duration: v.duration,
+          };
+        }
+        showTab("Player");
+        play(selectedFile);
+      });
+      // async fill meta cells
+      fillMetaCellsForRow(tr, v);
+      return tr;
+    }
+    let lastListDataCache = null;
+    function loadListRows(vids) {
+      const tbody = document.querySelector("#listTable tbody");
+      if (tbody) tbody.innerHTML = "";
+      if (tbody) vids.forEach((v) => tbody.appendChild(_listRow(v)));
+    }
+    async function loadList() {
+      // Use the same directory that Grid is currently showing (cwd), falling back to rootInput or '.'
+      const dir =
+        typeof cwd === "string" && cwd.length > 0
+          ? cwd
+          : rootInput?.value?.trim() || ".";
+      const url = `/videos?directory=${encodeURIComponent(dir)}&recursive=false&limit=1000&detail=true`;
+      renderListHeader();
+      const tbody = document.querySelector("#listTable tbody");
+      if (tbody) tbody.innerHTML = "";
+  try {
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const j = await res.json();
+        const vids = j.videos || [];
+        lastListDataCache = vids;
+        loadListRows(vids);
+      } catch (_) { }
+    }
+    const reloadListBtn = document.getElementById("reloadListBtn");
+    if (reloadListBtn) reloadListBtn.onclick = () => loadList();
+
+    // Columns control
+    const toggleListColumnsBtn = document.getElementById("toggleListColumnsBtn");
+    if (toggleListColumnsBtn) {
+      toggleListColumnsBtn.addEventListener("click", (e) => {
+        const panel = document.getElementById("listColumnsPanel");
+        if (!panel) return;
+        if (panel.style.display === "block") {
+          panel.style.display = "none";
+        } else {
+          renderListColumnsPanel();
+          panel.style.display = "block";
+        }
+      });
+      document.addEventListener("click", (e) => {
+        const panel = document.getElementById("listColumnsPanel");
+        if (!panel) return;
+        const btn = document.getElementById("toggleListColumnsBtn");
+        if (!btn) return;
+        const within = panel.contains(e.target) || btn.contains(e.target);
+        if (!within) panel.style.display = "none";
+      });
+    }
+
+    async function discoverMetadataKeys() {
+      // Scan current video list (up to 50) for ffprobe keys
+      const vids = (lastListDataCache || []).slice(0, 50);
+      const found = new Set(discoveredMetaKeys);
+      for (const v of vids) {
+        const raw = await ensureMetadata(v.path);
+        if (!raw) continue;
+        function walk(obj, prefix) {
+          if (obj == null) return;
+          if (Array.isArray(obj)) {
+            obj.forEach((item, i) => walk(item, `${prefix}[${i}]`));
+          } else if (typeof obj === 'object') {
+            for (const k of Object.keys(obj)) {
+              const np = prefix ? `${prefix}.${k}` : k;
+              const val = obj[k];
+              if (val && typeof val === 'object') walk(val, np);
+              else found.add(np);
+            }
+          } else {
+            if (prefix) found.add(prefix);
+          }
+        }
+        walk(raw, '');
+      }
+      discoveredMetaKeys = found;
+      return found;
+    }
+
+    load();
+  </script>
+</body>
+
+</html>
