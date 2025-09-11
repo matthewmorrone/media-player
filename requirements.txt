@@ -10,3 +10,8 @@ faster-whisper
 openai-whisper
 # For sprite sheet generation
 Pillow
+
+# Optional enhanced face pipeline (detector + embeddings)
+# Install to enable backend=insightface
+insightface
+onnxruntime

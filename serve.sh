@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR/.."
+cd "$SCRIPT_DIR"
 
 # Configurable host/port
 HOST="${HOST:-127.0.0.1}"
@@ -31,12 +31,11 @@ if command -v lsof >/dev/null 2>&1; then
 	fi
 fi
 
-exec env MEDIA_ROOT="${MEDIA_ROOT:-$PWD}" uvicorn v3.app:app \
+exec env MEDIA_ROOT="${MEDIA_ROOT:-$PWD}" uvicorn app:app \
 	--reload \
 	--host "$HOST" \
 	--port "$PORT" \
 	--log-level info \
-	--reload-dir v2 \
-	--reload-dir v3 \
+	--reload-dir . \
 	--reload-include "*.py" \
 	--reload-include "*.html"
