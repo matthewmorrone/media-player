@@ -1646,7 +1646,7 @@ def v2_update_video_tags(name: str, payload: TagUpdate, directory: str = Query("
     data.setdefault("rating", 0)
     if payload.replace and payload.add is not None:
         data["tags"] = []
-    if payload.replace and payload.performers_add is not None:
+    if payload.replace:
         data["performers"] = []
     if payload.add:
         for t in payload.add:
