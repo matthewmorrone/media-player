@@ -1337,9 +1337,11 @@ def tags_export(directory: str = Query("."), recursive: bool = Query(False)):
                 data["performers"] = td.get("performers", []) or []
                 data["description"] = td.get("description", "") or ""
                 try:
-                    data["rating"] = int(td.get("rating", 0) or 0)
+                    rating = int(td.get("rating", 0) or 0)
                 except Exception:
-                    data["rating"] = 0
+                    rating = 0
+                # Clamp rating to valid range 0-5
+                data["rating"] = max(0, min(5, rating))
             except Exception:
                 pass
         out.append(data)
