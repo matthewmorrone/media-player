@@ -2842,18 +2842,43 @@
                                 }
                         } catch (_) {}
                         renderStars(currentRating);
-                        document.getElementById('saveTagsBtn').addEventListener('click', async () => {
-                                const payload = {
-                                        replace: true,
-                                        add: $('#tagsInput').tagsinput('items'),
-                                        performers_add: $('#performersInput').tagsinput('items'),
-                                        rating: currentRating,
-                                };
-                                await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(dir)}`, {
-                                        method: 'PATCH',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify(payload),
+                        const saveTagsBtn = document.getElementById('saveTagsBtn');
+                        // Create feedback message element if not present
+                        let saveFeedback = document.getElementById('saveTagsFeedback');
+                        if (!saveFeedback) {
+                            saveFeedback = document.createElement('div');
+                            saveFeedback.id = 'saveTagsFeedback';
+                            saveFeedback.style.marginTop = '8px';
+                            saveTagsBtn.parentNode.insertBefore(saveFeedback, saveTagsBtn.nextSibling);
+                        }
+                        saveTagsBtn.addEventListener('click', async () => {
+                            saveTagsBtn.disabled = true;
+                            saveFeedback.textContent = '';
+                            const payload = {
+                                replace: true,
+                                add: $('#tagsInput').tagsinput('items'),
+                                performers_add: $('#performersInput').tagsinput('items'),
+                                rating: currentRating,
+                            };
+                            try {
+                                const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(dir)}`, {
+                                    method: 'PATCH',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(payload),
                                 });
+                                if (resp.ok) {
+                                    saveFeedback.textContent = 'Tags saved successfully!';
+                                    saveFeedback.style.color = 'green';
+                                } else {
+                                    saveFeedback.textContent = 'Failed to save tags.';
+                                    saveFeedback.style.color = 'red';
+                                }
+                            } catch (e) {
+                                saveFeedback.textContent = 'Error saving tags.';
+                                saveFeedback.style.color = 'red';
+                            } finally {
+                                saveTagsBtn.disabled = false;
+                            }
                         });
                 }
 		const rootInput = document.getElementById("rootInput");
