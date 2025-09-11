@@ -1665,7 +1665,7 @@ def v2_update_video_tags(name: str, payload: TagUpdate, directory: str = Query("
     if payload.rating is not None:
         try:
             data["rating"] = max(0, min(5, int(payload.rating)))
-        except Exception:
+        except (ValueError, TypeError):
             data["rating"] = 0
     try:
         tfile.write_text(json.dumps(data, indent=2))
