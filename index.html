@@ -2840,7 +2840,18 @@
                                         (t.performers || []).forEach(v => $('#performersInput').tagsinput('add', v));
                                         currentRating = t.rating || 0;
                                 }
-                        } catch (_) {}
+                        } catch (err) {
+                                console.error('Failed to load tags/performers/rating:', err);
+                                // Optionally, provide user feedback:
+                                const tagsInputRow = section.querySelector('.infoRow');
+                                if (tagsInputRow) {
+                                        const errorMsg = document.createElement('span');
+                                        errorMsg.style.color = 'red';
+                                        errorMsg.style.marginLeft = '8px';
+                                        errorMsg.textContent = 'Failed to load tags';
+                                        tagsInputRow.appendChild(errorMsg);
+                                }
+                        }
                         renderStars(currentRating);
                         const saveTagsBtn = document.getElementById('saveTagsBtn');
                         // Create feedback message element if not present
