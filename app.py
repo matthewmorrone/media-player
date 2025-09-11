@@ -1398,7 +1398,8 @@ def tags_import(payload: TagsImport):
             cur["description"] = data.get("description")
         if isinstance(data.get("rating"), int):
             try:
-                cur["rating"] = int(data.get("rating"))
+                rating = int(data.get("rating"))
+                cur["rating"] = max(0, min(5, rating))
             except Exception:
                 cur["rating"] = 0
         try:
