@@ -8,12 +8,13 @@ import subprocess
 import sys
 import tempfile
 import threading
+import re
 import time
 import uuid
 from pathlib import Path
 import asyncio
 from collections import defaultdict
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Callable
 from pydantic import BaseModel
 from difflib import SequenceMatcher
 
@@ -639,6 +640,7 @@ def _detect_faces(
     min_neighbors: int = 7,
     min_size_frac: float = 0.10,
     backend: str = "auto",
+    progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> List[Dict[str, Any]]:
     """Detect faces using selected backend.
 
@@ -663,6 +665,18 @@ def _detect_faces(
                 raise RuntimeError("cannot open video")
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             step = max(int(fps * interval), 1)
+            # progress: estimate how many frames we will process
+            try:
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            except Exception:
+                total_frames = 0
+            total_processed = int(total_frames // step) if total_frames > 0 else 0
+            processed = 0
+            if progress_cb is not None:
+                try:
+                    progress_cb(processed, total_processed)
+                except Exception:
+                    pass
             results: List[Dict[str, Any]] = []
             frame_idx = 0
             while True:
@@ -700,6 +714,12 @@ def _detect_faces(
                             })
                         except Exception:
                             continue
+                    processed += 1
+                    if progress_cb is not None:
+                        try:
+                            progress_cb(processed, total_processed)
+                        except Exception:
+                            pass
                 frame_idx += 1
             cap.release()
             return results
@@ -715,6 +735,18 @@ def _detect_faces(
             raise RuntimeError("cannot open video")
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         step = max(int(fps * interval), 1)
+        # progress: estimate number of processed frames
+        try:
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        except Exception:
+            total_frames = 0
+        total_processed = int(total_frames // step) if total_frames > 0 else 0
+        processed = 0
+        if progress_cb is not None:
+            try:
+                progress_cb(processed, total_processed)
+            except Exception:
+                pass
         import cv2.data  # type: ignore  # noqa: F401
         cascade = cv2.CascadeClassifier(f"{cv2.data.haarcascades}haarcascade_frontalface_default.xml")
         if cascade.empty():
@@ -756,6 +788,12 @@ def _detect_faces(
                     vec = net.forward()[0]
                     embedding = [round(float(v), 6) for v in vec.tolist()]
                     results.append({"time": round(float(t), 3), "box": [int(x), int(y), int(w), int(h)], "score": 1.0, "embedding": embedding})
+                processed += 1
+                if progress_cb is not None:
+                    try:
+                        progress_cb(processed, total_processed)
+                    except Exception:
+                        pass
             frame_idx += 1
         cap.release()
         return results
@@ -771,6 +809,7 @@ def compute_face_embeddings(
     min_neighbors: int = 7,
     min_size_frac: float = 0.10,
     backend: str = "auto",
+    progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
     out = faces_path(video)
     # Deduplicate faces so there's one embedding per distinct face for this video.
@@ -781,6 +820,7 @@ def compute_face_embeddings(
         min_neighbors=min_neighbors,
         min_size_frac=min_size_frac,
         backend=backend,
+        progress_cb=progress_cb,
     )
 
     def _dedupe_faces(items: List[Dict[str, Any]], sim_thresh: float = 0.9) -> List[Dict[str, Any]]:
@@ -1396,9 +1436,9 @@ def tags_import(payload: TagsImport):
                     cur[k] = list(dict.fromkeys(list(cur.get(k, [])) + vals))
         if isinstance(data.get("description"), str):
             cur["description"] = data.get("description")
-        if isinstance(data.get("rating"), int):
+        if data.get("rating") is not None:
             try:
-                rating = int(data.get("rating"))
+                rating = int(data.get("rating") or 0)
                 cur["rating"] = max(0, min(5, rating))
             except Exception:
                 cur["rating"] = 0
@@ -1514,7 +1554,7 @@ def _collect_media_and_meta(root: Path) -> tuple[dict[str, Path], dict[str, dict
         meta[v.stem] = summaries.get(rel) or {}
     return media, meta
 
-
+# TODO @copilot v2 reference, unnecessary backwards compatibility
 @app.get("/videos")
 def v2_list_videos(request: Request, directory: str = Query("."), recursive: bool = Query(False), offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000), q: Optional[str] = Query(None), tags: Optional[str] = Query(None), performers: Optional[str] = Query(None), match_any: bool = Query(False), detail: bool = Query(False)):
     root = Path(directory).expanduser().resolve()
@@ -1597,7 +1637,7 @@ def v2_list_videos(request: Request, directory: str = Query("."), recursive: boo
     resp = {"directory": str(root), "count": total, "videos": videos_out, "offset": offset, "limit": limit, "etag": etag}
     return resp
 
-
+# TODO @copilot v2 reference, unnecessary backwards compatibility
 @app.get("/videos/{name}/tags")
 def v2_get_video_tags(name: str, directory: str = Query(".")):
     root = Path(directory).expanduser().resolve()
@@ -1627,7 +1667,7 @@ class TagUpdate(BaseModel):
     description: str | None = None
     rating: int | None = None
 
-
+# TODO @copilot v2 reference, unnecessary backwards compatibility
 @app.patch("/videos/{name}/tags")
 def v2_update_video_tags(name: str, payload: TagUpdate, directory: str = Query(".")):
     root = Path(directory).expanduser().resolve()
@@ -1673,7 +1713,7 @@ def v2_update_video_tags(name: str, payload: TagUpdate, directory: str = Query("
         raise HTTPException(500, "failed to write tags")
     return data
 
-
+# TODO @copilot v2 reference, unnecessary backwards compatibility
 @app.get("/tags/summary")
 def v2_tags_summary(directory: str = Query("."), recursive: bool = Query(False)):
     root = Path(directory).expanduser().resolve()
@@ -1696,10 +1736,10 @@ def v2_tags_summary(directory: str = Query("."), recursive: bool = Query(False))
             perf_counts[t] = perf_counts.get(t, 0) + 1
     return {"tags": tag_counts, "performers": perf_counts}
 
-
+# TODO @copilot v2 reference, unnecessary backwards compatibility
 @app.get("/phash/duplicates")
 def v2_phash_duplicates(directory: str = Query("."), recursive: bool = Query(False), threshold: float = Query(0.90), limit: int = Query(0)):
-    # Simple duplicate detector on existing phash artifacts using Hamming similarity on hex strings
+    # Duplicate detector that considers pHash plus metadata (duration, resolution, bitrate, size, title)
     root = Path(directory).expanduser().resolve()
     if not root.is_dir():
         raise HTTPException(404, "directory not found")
@@ -1714,7 +1754,80 @@ def v2_phash_duplicates(directory: str = Query("."), recursive: bool = Query(Fal
             h_hex = data.get("phash")
             if not isinstance(h_hex, str):
                 continue
-            entries.append({"video": v.name, "path": str(v), "hex": h_hex})
+            # Gather lightweight metadata signals
+            meta: dict | None = None
+            mpath = metadata_path(v)
+            if mpath.exists():
+                try:
+                    meta = json.loads(mpath.read_text())
+                except Exception:
+                    meta = None
+            else:
+                # opportunistically compute metadata if ffprobe is available
+                try:
+                    metadata_single(v, force=False)
+                    if mpath.exists():
+                        meta = json.loads(mpath.read_text())
+                except Exception:
+                    meta = None
+            # Extract comparable features
+            dur = extract_duration(meta) if meta else None
+            width = height = None
+            v_bitrate = None
+            a_bitrate = None
+            title = None
+            try:
+                if isinstance(meta, dict):
+                    fmt = meta.get("format", {}) or {}
+                    try:
+                        _vb = fmt.get("bit_rate")
+                        v_bitrate = float(_vb) if _vb is not None else None
+                    except Exception:
+                        v_bitrate = None
+                    try:
+                        title = (fmt.get("tags", {}) or {}).get("title")
+                    except Exception:
+                        title = None
+                    for st in meta.get("streams", []) or []:
+                        if (st or {}).get("codec_type") == "video":
+                            try:
+                                width = int(st.get("width") or 0) or None
+                                height = int(st.get("height") or 0) or None
+                            except Exception:
+                                width = width or None
+                                height = height or None
+                            try:
+                                vb = st.get("bit_rate")
+                                if vb is not None:
+                                    v_bitrate = float(vb)
+                            except Exception:
+                                pass
+                        elif (st or {}).get("codec_type") == "audio":
+                            try:
+                                ab = st.get("bit_rate")
+                                if ab is not None:
+                                    a_bitrate = float(ab)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            size_bytes = None
+            try:
+                size_bytes = v.stat().st_size
+            except Exception:
+                size_bytes = None
+            entries.append({
+                "video": v.name,
+                "path": str(v),
+                "hex": h_hex,
+                "duration": dur,
+                "width": width,
+                "height": height,
+                "bitrate_v": v_bitrate,
+                "bitrate_a": a_bitrate,
+                "size": size_bytes,
+                "title": title,
+            })
         except Exception:
             continue
     pairs: list[dict] = []
@@ -1730,13 +1843,47 @@ def v2_phash_duplicates(directory: str = Query("."), recursive: bool = Query(Fal
             dist = hamming(a["hex"], b["hex"]) if bits else 0
             sim = 1.0 - (dist / bits) if bits else 0.0
             if sim >= float(threshold):
+                # Compute metadata affinity bonus (0..~0.1)
+                bonus = 0.0
+                try:
+                    def frac_close(x, y, tol=0.05):
+                        if x is None or y is None:
+                            return 0.0
+                        if x == 0 or y == 0:
+                            return 0.0
+                        f = abs(float(x) - float(y)) / max(abs(float(x)), abs(float(y)))
+                        return 1.0 if f <= tol else max(0.0, 1.0 - (f - tol) * 5)
+                    # duration closeness within 5%
+                    bonus += 0.04 * frac_close(a.get("duration"), b.get("duration"), tol=0.05)
+                    # resolution match
+                    res_match = 1.0 if (a.get("width") and a.get("height") and a.get("width") == b.get("width") and a.get("height") == b.get("height")) else 0.0
+                    bonus += 0.02 * res_match
+                    # filesize closeness within 10%
+                    bonus += 0.02 * frac_close(a.get("size"), b.get("size"), tol=0.10)
+                    # bitrate closeness within 15%
+                    vb = frac_close(a.get("bitrate_v"), b.get("bitrate_v"), tol=0.15)
+                    ab = frac_close(a.get("bitrate_a"), b.get("bitrate_a"), tol=0.20)
+                    bonus += 0.01 * vb + 0.005 * ab
+                    # title token similarity if present
+                    ta = (a.get("title") or a.get("video") or "").lower()
+                    tb = (b.get("title") or b.get("video") or "").lower()
+                    if ta and tb:
+                        try:
+                            s = SequenceMatcher(None, ta, tb).ratio()
+                            bonus += 0.005 * s
+                        except Exception:
+                            pass
+                except Exception:
+                    bonus += 0.0
+                final_score = min(1.0, sim + bonus)
                 pairs.append({
                     "a": a["path"],
                     "b": b["path"],
-                    "similarity": sim,
+                    "similarity": final_score,
                     "bits": bits,
                     "distance": dist,
-                    "crossover": None,
+                    "phash_similarity": sim,
+                    "meta_bonus": round(bonus, 4),
                 })
     pairs.sort(key=lambda x: x["similarity"], reverse=True)
     if limit and limit > 0:
@@ -2051,6 +2198,64 @@ def cover_create(path: str = Query(...), t: Optional[str | float] = Query(defaul
         return _wrap_job("cover", str(video.relative_to(STATE["root"])), _do)
     except Exception as e:  # noqa: BLE001
         raise_api_error(f"cover create failed: {e}", status_code=500)
+
+
+@api.post("/cover/create/batch")
+def cover_create_batch(
+    path: str = Query(default=""),
+    recursive: bool = Query(default=True),
+    t: Optional[str | float] = Query(default=10),
+    quality: int = Query(default=2),
+    overwrite: bool = Query(default=False),
+):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    if not base.exists() or not base.is_dir():
+        raise_api_error("Not found", status_code=404)
+
+    time_spec = str(t) if t is not None else "middle"
+    q = int(quality)
+    force = bool(overwrite)
+
+    sup_jid = _new_job("cover-batch", str(base))
+    _start_job(sup_jid)
+
+    def _worker():
+        try:
+            vids: list[Path] = []
+            it = base.rglob("*") if recursive else base.iterdir()
+            for p in it:
+                if _is_original_media_file(p, base):
+                    vids.append(p)
+            _set_job_progress(sup_jid, total=len(vids), processed_set=0)
+            for p in vids:
+                try:
+                    # Skip if exists and not overwriting
+                    if thumbs_path(p).exists() and not force:
+                        _set_job_progress(sup_jid, processed_inc=1)
+                        continue
+                    try:
+                        generate_thumbnail(p, force=force, time_spec=time_spec, quality=q)
+                    except Exception:
+                        # Best-effort stub
+                        out = thumbs_path(p)
+                        out.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            from PIL import Image  # type: ignore
+                            img = Image.new("RGB", (320, 180), color=(17, 17, 17))
+                            img.save(out, format="JPEG", quality=max(2, min(95, int(q) * 10)))
+                        except Exception:
+                            try:
+                                out.write_bytes(b"")
+                            except Exception:
+                                pass
+                finally:
+                    _set_job_progress(sup_jid, processed_inc=1)
+            _finish_job(sup_jid, None)
+        except Exception as e:
+            _finish_job(sup_jid, str(e))
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return api_success({"started": True, "job": sup_jid})
 
 
 @api.delete("/cover/delete")
@@ -2859,7 +3064,7 @@ def test_path(path: str = Query(...)):
     "owner": (p.owner() if p.exists() else None) if hasattr(p, "owner") else None,
     })
 
-
+# TODO @copilot v2 reference, unnecessary backwards compatibility
 # --- Stats --- map v2 -> v1 shape
 @api.get("/stats")
 def stats(path: str = Query(default=""), recursive: bool = Query(default=True), fast: bool = Query(default=False)):
@@ -3016,9 +3221,42 @@ def faces_create(
     min_neighbors: int = Query(default=7),
     min_size_frac: float = Query(default=0.10),
     backend: str = Query(default="auto", pattern="^(auto|opencv|insightface)$"),
+    background: bool = Query(default=False),
 ):
     fp = safe_join(STATE["root"], path)
-    def _do():
+    # Background mode for UI progress: return immediately with job id and report progress via SSE/polling
+    if background:
+        rel = str(fp.relative_to(STATE["root"]))
+        def _runner():
+            compute_face_embeddings(
+                fp,
+                sim_thresh=sim_thresh,
+                interval=interval,
+                scale_factor=scale_factor,
+                min_neighbors=min_neighbors,
+                min_size_frac=min_size_frac,
+                backend=backend,
+                progress_cb=lambda processed, total: _set_job_progress(jid, total=total if total is not None else None, processed_set=processed),
+            )
+            return {"created": True, "path": str(faces_path(fp))}
+        # create job and start thread
+        jid = _new_job("faces", rel)
+        _start_job(jid)
+        def _bg():
+            try:
+                res = _runner()
+                with JOB_LOCK:
+                    if jid in JOBS:
+                        JOBS[jid]["result"] = res
+                _finish_job(jid, None)
+            except Exception as e:  # noqa: BLE001
+                _finish_job(jid, str(e))
+        threading.Thread(target=_bg, name=f"job-faces-{Path(path).name}", daemon=True).start()
+        return api_success({"job": jid, "queued": True})
+    # Synchronous mode (used by tests and scripts); still emits job progress while running
+    jid = _new_job("faces", str(fp.relative_to(STATE["root"])) )
+    _start_job(jid)
+    try:
         compute_face_embeddings(
             fp,
             sim_thresh=sim_thresh,
@@ -3027,11 +3265,12 @@ def faces_create(
             min_neighbors=min_neighbors,
             min_size_frac=min_size_frac,
             backend=backend,
+            progress_cb=lambda processed, total: _set_job_progress(jid, total=total if total is not None else None, processed_set=processed),
         )
+        _finish_job(jid, None)
         return api_success({"created": True, "path": str(faces_path(fp))})
-    try:
-        return _wrap_job("faces", str(fp.relative_to(STATE["root"])), _do)
     except Exception as e:
+        _finish_job(jid, str(e))
         raise_api_error(f"faces failed: {e}", status_code=500)
 
 
@@ -3082,6 +3321,7 @@ def faces_create_batch(
                             min_neighbors=min_neighbors,
                             min_size_frac=min_size_frac,
                             backend=backend,
+                            progress_cb=lambda processed, total, _jid=jid: _set_job_progress(_jid, total=total if total is not None else None, processed_set=processed),
                         )
                         _finish_job(jid, None)
                     except Exception as e:
@@ -3397,7 +3637,7 @@ def jobs(state: str = Query(default="active"), limit: int = Query(default=100)):
     return api_success({"jobs": vals[: max(1, min(limit, 1000))]})
 
 # Cleanup API: attempt to reconcile renamed media with orphaned artifacts
-@api.post("/artifacts/cleanup")
+@app.post("/api/artifacts/cleanup")
 def artifacts_cleanup(
     path: str = Query(default=""),
     dry_run: bool = Query(default=True),
@@ -3434,6 +3674,34 @@ def _iter_videos(dir_path: Path, recursive: bool) -> list[Path]:
     return _find_mp4s(dir_path, recursive)
 
 
+class AutoTagRequest(BaseModel):
+    path: Optional[str] = None
+    recursive: Optional[bool] = False
+    performers: Optional[list[str]] = None
+    tags: Optional[list[str]] = None
+
+
+@app.post("/api/autotag/scan")
+def autotag_scan(req: AutoTagRequest):
+    base = Path(req.path or str(STATE["root"]))
+    if not base.exists() or not base.is_dir():
+        raise_api_error("Not found", status_code=404)
+    jr = JobRequest(
+        task="autotag",
+        directory=str(base),
+        recursive=bool(req.recursive),
+        force=False,
+        params={
+            "performers": list(req.performers or []),
+            "tags": list(req.tags or []),
+        },
+    )
+    jid = _new_job(jr.task, jr.directory or str(STATE["root"]))
+    t = threading.Thread(target=_run_job_worker, args=(jid, jr), daemon=True)
+    t.start()
+    return api_success({"job": jid, "queued": True})
+
+
 def _job_check_canceled(jid: str) -> bool:
     ev = JOB_CANCEL_EVENTS.get(jid)
     return bool(ev and ev.is_set())
@@ -3451,6 +3719,97 @@ def _run_job_worker(jid: str, jr: JobRequest):
         task = (jr.task or "").lower()
         base = Path(jr.directory or str(STATE["root"]))
         base = base.expanduser().resolve()
+        if task == "autotag":
+            vids = _iter_videos(base, bool(jr.recursive))
+            _set_job_progress(jid, total=len(vids), processed_set=0)
+            prm = jr.params or {}
+            perf_list = [str(x).strip() for x in (prm.get("performers") or []) if str(x).strip()]
+            tag_list = [str(x).strip() for x in (prm.get("tags") or []) if str(x).strip()]
+            # Precompile simple word-boundary regex for each candidate
+            def _mk_patterns(items: list[str]):
+                pats = []
+                for it in items:
+                    s = re.escape(it.lower())
+                    # allow separators like ., _, -, space between words by replacing spaces with a character class
+                    s = s.replace(r"\ ", r"[\s._-]+")
+                    pats.append(re.compile(rf"(?<![A-Za-z0-9]){s}(?![A-Za-z0-9])"))
+                return pats
+            perf_pats = _mk_patterns(perf_list)
+            tag_pats = _mk_patterns(tag_list)
+            changed = 0
+            matched_count = 0
+            for i, v in enumerate(vids, start=1):
+                if _job_check_canceled(jid):
+                    _finish_job(jid)
+                    return
+                try:
+                    name = v.name.rsplit(".", 1)[0].lower()
+                    # normalize separators
+                    hay = re.sub(r"[\s._-]+", " ", name)
+                    found_perfs: list[str] = []
+                    for pat, raw in zip(perf_pats, perf_list):
+                        if pat.search(hay):
+                            found_perfs.append(raw)
+                    found_tags: list[str] = []
+                    for pat, raw in zip(tag_pats, tag_list):
+                        if pat.search(hay):
+                            found_tags.append(raw)
+                    if not found_perfs and not found_tags:
+                        _set_job_progress(jid, processed_set=i)
+                        continue
+                    matched_count += 1
+                    # Load current tags
+                    tfile = _tags_file(v)
+                    if tfile.exists():
+                        try:
+                            data = json.loads(tfile.read_text())
+                        except Exception:
+                            data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
+                    else:
+                        data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
+                    data.setdefault("tags", [])
+                    data.setdefault("performers", [])
+                    before_t = set(data["tags"])
+                    before_p = set(data["performers"])
+                    for t in found_tags:
+                        if t not in data["tags"]:
+                            data["tags"].append(t)
+                    for p in found_perfs:
+                        if p not in data["performers"]:
+                            data["performers"].append(p)
+                    if set(data["tags"]) != before_t or set(data["performers"]) != before_p:
+                        try:
+                            tfile.write_text(json.dumps(data, indent=2))
+                            changed += 1
+                        except Exception:
+                            pass
+                finally:
+                    _set_job_progress(jid, processed_set=i)
+            _job_set_result(jid, {"matched_files": matched_count, "updated_files": changed, "total": len(vids)})
+            _finish_job(jid)
+            return
+        if task == "cover":
+            vids = _iter_videos(base, bool(jr.recursive))
+            _set_job_progress(jid, total=len(vids), processed_set=0)
+            prm = jr.params or {}
+            time_spec = str(prm.get("t", prm.get("time", 10))) if prm.get("t", prm.get("time")) is not None else "middle"
+            q = int(prm.get("quality", 2))
+            force = bool(jr.force) or bool(prm.get("overwrite", False))
+            for v in vids:
+                if _job_check_canceled(jid):
+                    _finish_job(jid)
+                    return
+                try:
+                    if thumbs_path(v).exists() and not force:
+                        pass
+                    else:
+                        generate_thumbnail(v, force=force, time_spec=time_spec, quality=q)
+                except Exception:
+                    pass
+                _set_job_progress(jid, processed_inc=1)
+            _job_set_result(jid, {"processed": len(vids)})
+            _finish_job(jid)
+            return
         if task == "metadata":
             vids = _iter_videos(base, bool(jr.recursive))
             _set_job_progress(jid, total=len(vids), processed_set=0)
@@ -3708,6 +4067,7 @@ def jobs_status(job_id: str):
         j = JOBS.get(job_id)
     if not j:
         raise HTTPException(404, "job not found")
+    # TODO @copilot v2 reference
     # Map to v2-ish shape
     out = {
         "id": j["id"],
@@ -3742,6 +4102,95 @@ try:
 except Exception:
     # If already registered or during import-time constraints, ignore
     pass
+
+# Proper /api endpoints that resolve paths relative to MEDIA_ROOT
+@api.get("/videos/{name}/tags")
+def api_get_video_tags(name: str, directory: str = Query(default="")):
+    base = safe_join(STATE["root"], directory) if directory else STATE["root"]
+    path = base / name
+    if not path.exists():
+        raise_api_error("video not found", status_code=404)
+    tfile = _tags_file(path)
+    if not tfile.exists():
+        return {"video": name, "tags": [], "performers": [], "description": "", "rating": 0}
+    try:
+        data = json.loads(tfile.read_text())
+    except Exception:
+        raise_api_error("invalid tags file", status_code=500)
+    if "description" not in data:
+        data["description"] = ""
+    if "rating" not in data:
+        data["rating"] = 0
+    return data
+
+
+@api.patch("/videos/{name}/tags")
+def api_update_video_tags(name: str, payload: TagUpdate, directory: str = Query(default="")):
+    base = safe_join(STATE["root"], directory) if directory else STATE["root"]
+    path = base / name
+    if not path.exists():
+        raise_api_error("video not found", status_code=404)
+    tfile = _tags_file(path)
+    if tfile.exists():
+        try:
+            data = json.loads(tfile.read_text())
+        except Exception:
+            data = {"video": name, "tags": [], "performers": [], "description": "", "rating": 0}
+    else:
+        data = {"video": name, "tags": [], "performers": [], "description": "", "rating": 0}
+    data.setdefault("description", "")
+    data.setdefault("rating", 0)
+    if payload.replace and payload.add is not None:
+        data["tags"] = []
+    if payload.replace:
+        data["performers"] = []
+    if payload.add:
+        for t in payload.add:
+            if t not in data["tags"]:
+                data["tags"].append(t)
+    if payload.remove:
+        data["tags"] = [t for t in data["tags"] if t not in payload.remove]
+    if payload.performers_add:
+        for t in payload.performers_add:
+            if t not in data["performers"]:
+                data["performers"].append(t)
+    if payload.performers_remove:
+        data["performers"] = [t for t in data["performers"] if t not in payload.performers_remove]
+    if payload.description is not None:
+        data["description"] = payload.description
+    if payload.rating is not None:
+        try:
+            data["rating"] = max(0, min(5, int(payload.rating)))
+        except (ValueError, TypeError):
+            data["rating"] = 0
+    try:
+        tfile.write_text(json.dumps(data, indent=2))
+    except Exception:
+        raise_api_error("failed to write tags", status_code=500)
+    return data
+
+
+@api.get("/tags/summary")
+def api_tags_summary(path: str = Query(default=""), recursive: bool = Query(default=False)):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    if not base.is_dir():
+        raise_api_error("directory not found", status_code=404)
+    vids = _find_mp4s(base, bool(recursive))
+    tag_counts: dict[str, int] = {}
+    perf_counts: dict[str, int] = {}
+    for p in vids:
+        tf = _tags_file(p)
+        if not tf.exists():
+            continue
+        try:
+            data = json.loads(tf.read_text())
+        except Exception:
+            continue
+        for t in data.get("tags", []) or []:
+            tag_counts[t] = tag_counts.get(t, 0) + 1
+        for t in data.get("performers", []) or []:
+            perf_counts[t] = perf_counts.get(t, 0) + 1
+    return {"tags": tag_counts, "performers": perf_counts}
 
 
 if __name__ == "__main__":  # pragma: no cover

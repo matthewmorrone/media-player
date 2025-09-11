@@ -358,6 +358,18 @@
 		}
 		#listTable th {position: relative; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 		#listTable td {white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		/* Vertical column borders for List */
+		#listTable th:not(:last-child),
+		#listTable td:not(:last-child) { border-right: 1px solid #eee; }
+		/* Column/row selection visuals */
+		#listTable th.col-selected, #listTable td.col-selected { background: #eef6ff; box-shadow: inset 0 0 0 1px #cfe6ff; }
+		#listTable tr.row-selected td { background: #fff3cd; }
+		/* Drag feedback: highlight target column */
+		#listTable th.drag-hover, #listTable td.drag-hover { background: #fff0e0; }
+		/* Optional: rotate headers 90deg CCW for dense views */
+		#listTable.rotate-headers th { height: 160px; vertical-align: bottom; overflow: visible; }
+		#listTable.rotate-headers th .th-label { position: absolute; left: 10px; bottom: 8px; display: inline-block; transform: rotate(-90deg); transform-origin: bottom left; white-space: nowrap; }
+		#listTable.rotate-headers th .col-resizer { height: calc(100% - 8px); }
 		.col-resizer {
 			position: absolute;
 			right: 0;
@@ -368,7 +380,15 @@
 			background: transparent;
 		}
 		.col-resizer:hover {background: #eaeaea; }
-		.dragging-col {opacity: 0.5; }
+		.dragging-col {opacity: 0.6; cursor: grabbing; }
+		/* Drop indicator for clearer reordering targets */
+		#listTable th.drop-left::before,
+		#listTable th.drop-right::after { content: ""; position: absolute; top: 0; bottom: 0; width: 4px; background: #ff7a00; }
+		#listTable th.drop-left::before { left: 0; }
+		#listTable th.drop-right::after { right: 0; }
+		/* Drag indicators in the Columns panel */
+		#listColumnsPanel .drop-before { border-top: 3px solid #2e8cff; }
+		#listColumnsPanel .drop-after { border-bottom: 3px solid #2e8cff; }
 
 		.text-left {
 			text-align: left;
@@ -728,10 +748,11 @@
 			<button class="btn" id="tabList">List</button>
 			<button class="btn" id="tabTasks">Tasks</button>
 			<button class="btn" id="tabStats">Stats</button>
+			<button class="btn" id="tabSimilar">Similar</button>
 			<button class="btn" id="tabSettings">Settings</button>
+			<button class="btn" id="tabSetup">Setup</button>
 			<button class="btn" id="playRandomBtn">Random</button>
 			<button class="btn" id="tabImage">Image</button>
-			<button class="btn" id="toggleHoversBtn">Hovers: On</button>
 		</div>
 	</header>
 	<div id="container">
@@ -811,6 +832,24 @@
 				</div>
 				<div class="small" id="statsNote"></div>
 			</div>
+			<!-- Similar Tab Content (pHash duplicates) -->
+			<div id="similarTab" class="hidden flex-col gap-12">
+				<div class="row items-center gap-12 wrap">
+					<strong>Similar (pHash)</strong>
+					<label class="small">Threshold
+						<input id="similarThresh" type="number" min="0" max="1" step="0.01" value="0.90" class="w-80" />
+					</label>
+					<label class="small">Limit
+						<input id="similarLimit" type="number" min="0" step="1" value="50" class="w-80" />
+					</label>
+					<label class="small">
+						<input id="similarRecursive" type="checkbox" /> Recursive
+					</label>
+					<button id="similarRefreshBtn" class="btn">Refresh</button>
+					<span id="similarStatus" class="small"></span>
+				</div>
+				<div id="similarResults" class="grid"></div>
+			</div>
 			<!-- Settings Tab Content -->
 			<div id="settingsTab" class="hidden flex-col gap-12">
 				<div class="tile">
@@ -822,10 +861,38 @@
 					<pre id="configInfo" class="small prewrap"></pre>
 				</div>
 			</div>
+			<!-- Setup Tab Content -->
+			<div id="setupTab" class="hidden flex-col gap-12">
+				<div class="tile">
+					<div class="small"><strong>Auto-tag by filename</strong></div>
+					<div class="row wrap gap-12 mt-8">
+						<label class="small flex-col">
+							<span>Performers (one per line)</span>
+							<textarea id="setupPerformers" rows="6" style="width: 320px;"></textarea>
+						</label>
+						<label class="small flex-col">
+							<span>Tag keywords (one per line)</span>
+							<textarea id="setupTags" rows="6" style="width: 320px;"></textarea>
+						</label>
+					</div>
+					<div class="row gap-8 mt-8">
+						<button id="setupSaveBtn" class="btn">Save lists (local)</button>
+						<button id="setupRunBtn" class="btn">Run scan</button>
+						<span id="setupStatus" class="small"></span>
+					</div>
+				</div>
+			</div>
 			<!-- List Tab -->
 			<div id="listTab" class="hidden flex-col gap-8">
 				<div class="row" id="listControls">
 					<button id="reloadListBtn" class="btn">Reload</button>
+					<button id="toggleRotateHeadersBtn" class="btn" title="Rotate column headers 90° for compact view">Rotate headers: Off</button>
+					<label class="small" style="display:inline-flex; align-items:center; gap:6px;">
+						<input type="checkbox" id="enableColSelectChk" /> Columns selectable
+					</label>
+					<label class="small" style="display:inline-flex; align-items:center; gap:6px;">
+						<input type="checkbox" id="enableRowSelectChk" /> Rows selectable
+					</label>
 					<div style="position:relative;">
 						<button id="toggleListColumnsBtn" class="btn">Columns</button>
 						<div id="listColumnsPanel" class="small"></div>
@@ -881,6 +948,7 @@
 			</div>
 			<!-- Grid Tab Wrapper -->
 			<div id="gridTab">
+				<button class="btn" id="toggleHoversBtn">Hovers: On</button>
 				<div id="gridControls" class="controls mb-8 wrap">
 					<span class="small">Grid columns</span>
 					<select id="gridSize">
@@ -900,10 +968,8 @@
 						<option value="date">Date</option>
 						<option value="random">Random</option>
 					</select>
-					<select id="sortOrder">
-						<option value="asc">Asc</option>
-						<option value="desc">Desc</option>
-					</select>
+					<!-- Sort order toggle: replaces asc/desc dropdown -->
+					<button id="sortOrderToggle" class="btn" title="Toggle sort order (Asc/Desc)">↑</button>
 					<button id="prevBtn" class="btn">Prev</button>
 					<div id="pageInfo" class="small"></div>
 					<button id="nextBtn" class="btn">Next</button>
@@ -919,9 +985,7 @@
 					<div class="small"><strong>JSON Metadata</strong></div>
 					<progress id="metaProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="metaPct" class="small"></span>
-					<button id="generateMissingMetaBtn" class="btn">
-						Generate missing metadata
-					</button>
+					<button id="generateMissingMetaBtn" class="btn"> Generate missing metadata </button>
 					<button id="recomputeAllMetaBtn" class="btn btn-secondary">Recompute all metadata</button>
 					<button id="clearMetaBtn" class="btn">Clear all metadata</button>
 				</div>
@@ -934,6 +998,7 @@
 					<progress id="coverProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="coverPct" class="small"></span>
 					<button id="generateMissingCoversBtn" class="btn">Generate missing covers</button>
+					<button id="recomputeAllCoversBtn" class="btn btn-secondary">Recompute all covers</button>
 					<button id="clearCoversBtn" class="btn">Clear all covers</button>
 				</div>
 				<div class="mb-18" id="taskSection-hovers" data-task-section="hovers">
@@ -941,6 +1006,7 @@
 					<progress id="hoverProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="hoverPct" class="small"></span>
 					<button id="generateMissingHoversBtn" class="btn">Generate missing hovers</button>
+					<button id="recomputeAllHoversBtn" class="btn btn-secondary">Recompute all hovers</button>
 					<button id="clearHoversBtn" class="btn">Clear all hovers</button>
 				</div>
 				<div class="mb-18" id="taskSection-phash" data-task-section="phash">
@@ -948,6 +1014,7 @@
 					<progress id="phashProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="phashPct" class="small"></span>
 					<button id="generateMissingPhashBtn" class="btn">Generate missing pHash</button>
+					<button id="recomputeAllPhashBtn" class="btn btn-secondary">Recompute all pHash</button>
 					<button id="clearPhashBtn" class="btn">Clear all pHash</button>
 				</div>
 				<div class="mb-18" id="taskSection-scenes" data-task-section="scenes">
@@ -955,6 +1022,7 @@
 					<progress id="scenesProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="scenesPct" class="small"></span>
 					<button id="generateMissingScenesBtn" class="btn">Generate missing scenes</button>
+					<button id="recomputeAllScenesBtn" class="btn btn-secondary">Recompute all scenes</button>
 					<button id="clearScenesBtn" class="btn">Clear all scenes</button>
 				</div>
 				<div class="mb-18" id="taskSection-sprites" data-task-section="sprites">
@@ -962,6 +1030,7 @@
 					<progress id="spritesProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="spritesPct" class="small"></span>
 					<button id="generateMissingSpritesBtn" class="btn">Generate missing sprites</button>
+					<button id="recomputeAllSpritesBtn" class="btn btn-secondary">Recompute all sprites</button>
 					<button id="clearSpritesBtn" class="btn">Clear all sprites</button>
 				</div>
 				<div class="mb-18" id="taskSection-heatmaps" data-task-section="heatmaps">
@@ -969,6 +1038,7 @@
 					<progress id="heatmapsProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="heatmapsPct" class="small"></span>
 					<button id="generateMissingHeatmapsBtn" class="btn">Generate missing heatmaps</button>
+					<button id="recomputeAllHeatmapsBtn" class="btn btn-secondary">Recompute all heatmaps</button>
 					<button id="clearHeatmapsBtn" class="btn">Clear all heatmaps</button>
 				</div>
 				<div class="mb-18" id="taskSection-subtitles" data-task-section="subtitles">
@@ -976,6 +1046,7 @@
 					<progress id="subsProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="subsPct" class="small"></span>
 					<button id="generateMissingSubsBtn" class="btn">Generate missing subtitles</button>
+					<button id="recomputeAllSubsBtn" class="btn btn-secondary">Recompute all subtitles</button>
 					<button id="clearSubsBtn" class="btn">Clear all subtitles</button>
 				</div>
 				<div class="mb-18" id="taskSection-faces" data-task-section="faces">
@@ -1048,20 +1119,22 @@
 			List: "list",
 			Tasks: "tasks",
 			Stats: "stats",
+			Similar: "similar",
 			Image: "image",
 			Settings: "settings",
+			Setup: "setup",
 		};
 		const SLUG_TO_TAB = Object.fromEntries(Object.entries(TAB_SLUGS).map(([k, v]) => [v, k]));
 		// Paging helpers: keep ?page in the URL
 		function getPageFromLocation() {
-			try {
+			try { 
 				const u = new URL(location.href);
 				const p = parseInt(u.searchParams.get('page') || '1', 10);
 				return isFinite(p) && p > 0 ? p : 1;
 			} catch (_) { return 1; }
 		}
 		function setPageInLocation(page, replace = false) {
-			try {
+			try { 
 				const u = new URL(location.href);
 				if (page && page > 1) u.searchParams.set('page', String(page));
 				else u.searchParams.delete('page');
@@ -1093,24 +1166,20 @@
 			List: "listTab",
 			Tasks: "tasksDiv",
 			Stats: "statsTab",
+			Similar: "similarTab",
 			Settings: "settingsTab",
 			Image: "imageTab",
+			Setup: "setupTab",
 		};
 		function hideAllTabs() {
 			Object.values(TAB_CONTAINERS).forEach((id) => {
 				const el = document.getElementById(id);
-				if (el) {
-					el.classList.add("hidden");
-				}
+				if (el) { el.classList.add("hidden"); }
 			});
 			// Hide Player-only UI by default
 			const _bb = document.getElementById("backBtn");
-			if (_bb) {
-				_bb.style.display = "none";
-			}
-			if (controlsBar) {
-				controlsBar.classList.add("hidden");
-			}
+			if (_bb) { _bb.style.display = "none"; }
+			if (controlsBar) { controlsBar.classList.add("hidden"); }
 			const setThumbBtn = document.getElementById("setThumbBtn");
 			if (setThumbBtn) { setThumbBtn.style.display = "none"; }
 			const setMarkerBtn = document.getElementById("setMarkerBtn");
@@ -1120,96 +1189,75 @@
 				clearInterval(tasksRefreshTimer);
 				tasksRefreshTimer = null;
 			}
-			try {
+			try { 
 				if (jobsEvtSrc) {
 					jobsEvtSrc.close();
 					jobsEvtSrc = null;
 				}
 			}
-			catch (_) {
-			}
-			try {
-				setIndeterminateActive(false);
-			}
-			catch (_) {
-			}
+			catch (_) { }
+			try { setIndeterminateActive(false); } catch (_) { }
 		}
 		function showTab(tab, fromRouter) {
 			hideAllTabs();
+			try { window.activeTab = tab; } catch(_) {}
 			const id = TAB_CONTAINERS[tab] || TAB_CONTAINERS.Grid;
 			const container = document.getElementById(id);
-			if (container) {
-				container.classList.remove("hidden");
-			}
+			if (container) { container.classList.remove("hidden"); }
 			// Per-tab actions
 			if (tab === "Player") {
 				// Show back + player UI and ensure a file is loaded
 				const _bb = document.getElementById("backBtn");
-				if (_bb) {
-					_bb.style.display = "";
-				}
+				if (_bb) { _bb.style.display = ""; }
 				const setThumbBtn = document.getElementById("setThumbBtn");
+				// TODO @copilot: can't you do this more programmatically?
 				if (setThumbBtn) { setThumbBtn.style.display = ""; }
 				const setMarkerBtn = document.getElementById("setMarkerBtn");
+				// TODO @copilot: can't you do this more programmatically?
 				if (setMarkerBtn) { setMarkerBtn.style.display = ""; }
 				if (selectedFile) {
 					const currentSrc = videoEl.querySelector("source")?.src || "";
 					const shouldLoad = !currentSrc.endsWith(encodeURIComponent(selectedFile.path)) && !currentSrc.endsWith(selectedFile.path);
-					if (shouldLoad) {
-						play(selectedFile);
-					}
+					if (shouldLoad) { play(selectedFile); }
 				}
 			}
 			else if (tab === "Tasks") {
-				try {
-					startJobsSSE();
-				}
+				try { startJobsSSE(); }
 				catch (_) { }
-				try {
-					updateTasksStats();
-				}
+				try { updateTasksStats(); }
 				catch (_) { }
-				try {
-					updatePollingInterval();
-				}
+				try { updatePollingInterval(); }
 				catch (_) { }
-				try {
-					setIndeterminateActive(window.__jobsActive === true);
-				}
+				try { setIndeterminateActive(window.__jobsActive === true); }
 				catch (_) { }
 			}
 			else if (tab === "Stats") {
-				try {
-					loadStats();
-				}
+				try { loadStats(); }
+				catch (_) { }
+			}
+			else if (tab === "Similar") {
+				try { loadSimilar(); }
 				catch (_) { }
 			}
 			else if (tab === "List") {
-				try {
-					loadList();
-				}
+				try { loadList(); }
 				catch (_) { }
 			}
 			else if (tab === "Image") {
-				try {
-					loadFaces();
-				}
+				try { loadFaces(); }
 				catch (_) { }
 			}
 			else if (tab === "Settings") {
-				try {
-					loadSettings();
-				}
+				try { loadSettings(); }
+				catch (_) { }
+			}
+			else if (tab === "Setup") {
+				try { loadSetup(); }
 				catch (_) { }
 			}
 			// Update URL route after switching (unless invoked by popstate)
-			try {
-				if (!fromRouter) {
-					setRouteForTab(tab);
-				}
-			}
-			catch (_) {
-			}
+			try { if (!fromRouter) setRouteForTab(tab); }
+			catch (_) { }
 		}
 
 		// Ensure sprite preview is positioned within player-media for z-index stacking
@@ -1222,14 +1270,16 @@
 		}
 
 		// DRY bindings for top nav; detailed side effects live in showTab
-		document.getElementById("tabPlayer").onclick = () => {showTab("Player"); };
-		document.getElementById("tabGrid").onclick = () => {showTab("Grid"); };
-		document.getElementById("tabTasks").onclick = () => {showTab("Tasks"); };
-		document.getElementById("tabStats").onclick = () => {showTab("Stats"); };
-		document.getElementById("tabImage").onclick = () => {showTab("Image"); };
+		document.getElementById("tabPlayer").onclick = () => showTab("Player");
+		document.getElementById("tabGrid").onclick = () => showTab("Grid");
+		document.getElementById("tabTasks").onclick = () => showTab("Tasks");
+		document.getElementById("tabStats").onclick = () => showTab("Stats");
+		document.getElementById("tabSimilar").onclick = () => showTab("Similar");
+		document.getElementById("tabImage").onclick = () => showTab("Image");
+		document.getElementById("tabSetup").onclick = () => showTab("Setup");
 		const _tabListBtn = document.getElementById("tabList");
 		if (_tabListBtn) {
-			_tabListBtn.onclick = () => {showTab("List"); };
+			_tabListBtn.onclick = () => showTab("List");
 		}
 		// Static Back button behavior
 		const _backBtn = document.getElementById("backBtn");
@@ -1238,8 +1288,11 @@
 				showTab("Grid");
 				if (window._lastGridTile) {
 					window._lastGridTile.classList.add("selected");
-					try {
-						window._lastGridTile.scrollIntoView({block: "nearest", inline: "nearest" });
+					try { 
+						window._lastGridTile.scrollIntoView({
+							block: "nearest", 
+							inline: "nearest"
+						});
 					}
 					catch (_) { }
 				}
@@ -1287,7 +1340,7 @@
 		const coverPct = document.getElementById("coverPct");
 		const hoverProgress = document.getElementById("hoverProgress");
 		const hoverPct = document.getElementById("hoverPct");
-		const metaProgress = document.getElementById("metaProgress");
+		const metadataProgress = document.getElementById("metaProgress");
 		const metaPct = document.getElementById("metaPct");
 		const phashProgress = document.getElementById("phashProgress");
 		const phashPct = document.getElementById("phashPct");
@@ -1295,26 +1348,33 @@
 		const scenesPct = document.getElementById("scenesPct");
 		const spritesProgress = document.getElementById("spritesProgress");
 		const spritesPct = document.getElementById("spritesPct");
-		const subsProgress = document.getElementById("subsProgress");
+		const subtitlesProgress = document.getElementById("subsProgress");
 		const subsPct = document.getElementById("subsPct");
 		const generateMissingCoversBtn = document.getElementById("generateMissingCoversBtn");
+		const recomputeAllCoversBtn = document.getElementById("recomputeAllCoversBtn");
 		const clearCoversBtn = document.getElementById("clearCoversBtn");
 		const generateMissingHoversBtn = document.getElementById("generateMissingHoversBtn");
+		const recomputeAllHoversBtn = document.getElementById("recomputeAllHoversBtn");
 		const clearHoversBtn = document.getElementById("clearHoversBtn");
 		const generateMissingMetaBtn = document.getElementById("generateMissingMetaBtn");
 		const recomputeAllMetaBtn = document.getElementById("recomputeAllMetaBtn");
 		const clearMetaBtn = document.getElementById("clearMetaBtn");
 		const generateMissingPhashBtn = document.getElementById("generateMissingPhashBtn");
+		const recomputeAllPhashBtn = document.getElementById("recomputeAllPhashBtn");
 		const clearPhashBtn = document.getElementById("clearPhashBtn");
 		const generateMissingScenesBtn = document.getElementById("generateMissingScenesBtn");
+		const recomputeAllScenesBtn = document.getElementById("recomputeAllScenesBtn");
 		const clearScenesBtn = document.getElementById("clearScenesBtn");
 		const heatmapsProgress = document.getElementById("heatmapsProgress");
 		const heatmapsPct = document.getElementById("heatmapsPct");
 		const generateMissingHeatmapsBtn = document.getElementById("generateMissingHeatmapsBtn");
+		const recomputeAllHeatmapsBtn = document.getElementById("recomputeAllHeatmapsBtn");
 		const clearHeatmapsBtn = document.getElementById("clearHeatmapsBtn");
 		const generateMissingSpritesBtn = document.getElementById("generateMissingSpritesBtn");
+		const recomputeAllSpritesBtn = document.getElementById("recomputeAllSpritesBtn");
 		const clearSpritesBtn = document.getElementById("clearSpritesBtn");
 		const generateMissingSubsBtn = document.getElementById("generateMissingSubsBtn");
+		const recomputeAllSubsBtn = document.getElementById("recomputeAllSubsBtn");
 		const clearSubsBtn = document.getElementById("clearSubsBtn");
 		const facesProgress = document.getElementById("facesProgress");
 		const facesPct = document.getElementById("facesPct");
@@ -1334,28 +1394,25 @@
 			coverProgress,
 			facesProgress,
 			hoverProgress,
-			metaProgress,
+			metadataProgress,
 			phashProgress,
 			scenesProgress,
 			heatmapsProgress,
-			subsProgress,
+			subtitlesProgress,
 			spritesProgress,
 			cleanupProgress,
 		].filter(Boolean);
 		function setIndeterminateActive(active) {
-			_allProgressEls.forEach((el) =>
-				el.classList.toggle("indeterminate", !!active),
-			);
+			// No-op to avoid animating all progress bars; we use per-task animation instead.
+			// Left in place for compatibility with callers.
 		}
 		// Scope indeterminate animation to a specific task section by name
 		function setTaskIndeterminate(taskName, active) {
-			const section = document.querySelector(
-				`[data-task-section="${taskName}"] .progress-lg`,
-			);
+			const section = document.querySelector(`[data-task-section="${taskName}"] .progress-lg`);
 			if (!section) return;
 			section.classList.toggle("indeterminate", !!active);
 		}
-		// DRY: Single mapping for job type -> task section name (base types only)
+		// TODO @copilot: is this necessary?
 		const JOB_SECTION_BY_TYPE = {
 			"metadata": "metadata",
 			"cover": "covers",
@@ -1391,7 +1448,7 @@
 			}
 		}
 		async function updateTasksStats() {
-			try {
+			try { 
 				const res = await fetch("/api/stats?fast=1");
 				if (!res.ok) return;
 				const body = await res.json();
@@ -1410,7 +1467,7 @@
 				if (hoverPct) hoverPct.textContent = `${hovers}/${total} (${pct(hovers, total)}%)`;
 				// Metadata
 				const metas = s.metadata || 0;
-				if (metaProgress) metaProgress.value = pct(metas, total);
+				if (metadataProgress) metadataProgress.value = pct(metas, total);
 				if (metaPct) metaPct.textContent = `${metas}/${total} (${pct(metas, total)}%)`;
 				// pHash
 				const phashes = s.phash || 0;
@@ -1430,16 +1487,14 @@
 				if (heatmapsPct) heatmapsPct.textContent = `${heatmaps}/${total} (${pct(heatmaps, total)}%)`;
 				// Subtitles
 				const subs = s.subtitles || 0;
-				if (subsProgress) subsProgress.value = pct(subs, total);
+				if (subtitlesProgress) subtitlesProgress.value = pct(subs, total);
 				if (subsPct) subsPct.textContent = `${subs}/${total} (${pct(subs, total)}%)`;
 				// Faces
 				const faces = s.faces || 0;
 				if (facesProgress) facesProgress.value = pct(faces, total);
 				if (facesPct) facesPct.textContent = `${faces}/${total} (${pct(faces, total)}%)`;
 			}
-			catch (_) {
-				/* ignore */
-			}
+			catch (_) { }
 		}
 		if (clearCoversBtn) {
 			clearCoversBtn.onclick = async () => {
@@ -1473,15 +1528,70 @@
 				clearCoversBtn.disabled = false;
 				updateTasksStats();
 				// Also refresh Stats so the COVERS count drops immediately
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
 				// Refresh grid so removed covers disappear
-				try {
+				try { 
 					await load(cwd);
 				}
 				catch (_) { }
+			};
+		}
+
+		// Recompute ALL covers (batch with overwrite)
+		if (recomputeAllCoversBtn) {
+			recomputeAllCoversBtn.onclick = async () => {
+				recomputeAllCoversBtn.disabled = true;
+				try {
+					await fetch(`/api/cover/create/batch?overwrite=true`, { method: "POST" });
+					updateTasksStats();
+					try { await loadStats(); } catch (_) { }
+				} finally { recomputeAllCoversBtn.disabled = false; }
+			};
+		}
+		if (generateMissingCoversBtn) {
+			generateMissingCoversBtn.onclick = async () => {
+				generateMissingCoversBtn.disabled = true;
+				try { 
+					// Prefer server-side batch endpoint if available
+					let usedBatch = false;
+					try { 
+						const r = await fetch("/api/cover/create/batch", { method: "POST" });
+						usedBatch = r.ok;
+					} catch (_) { usedBatch = false; }
+					if (!usedBatch) {
+						// Fallback: iterate client-side
+						let allMediaFiles = [];
+						let page = 1;
+						let pageSize = 500;
+						let totalPages = 1;
+						do {
+							const params = new URLSearchParams();
+							params.set("page", String(page));
+							params.set("page_size", String(pageSize));
+							const res = await fetch("/api/library?" + params.toString(), { method: "GET" });
+							if (!res.ok) break;
+							const body = await res.json();
+							const data = body.data || body;
+							allMediaFiles = allMediaFiles.concat(data.files || []);
+							totalPages = data.total_pages || 1;
+							page++;
+						}
+						while (page <= totalPages);
+						for (let i = 0; i < allMediaFiles.length; i++) {
+							const file = allMediaFiles[i];
+							if (!file.cover) {
+								await fetch(`/api/cover/create?path=${encodeURIComponent(file.path)}`, { method: "POST" });
+								if (i % 10 === 0) { try { updateTasksStats(); } catch (_) { } }
+							}
+						}
+					}
+				}
+				finally {
+					generateMissingCoversBtn.disabled = false;
+					updateTasksStats();
+					try { await loadStats(); } catch (_) { }
+					try { await load(cwd); } catch (_) { }
+				}
 			};
 		}
 		if (generateMissingHoversBtn) {
@@ -1490,59 +1600,26 @@
 				await fetch("/api/hover/create/batch", {method: "POST" });
 				generateMissingHoversBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
 				// Refresh grid to reflect hover availability flags
-				try {
+				try { 
 					await load(cwd);
 				}
 				catch (_) { }
 			};
 		}
-		if (clearHoversBtn) {
-			clearHoversBtn.onclick = async () => {
-				clearHoversBtn.disabled = true;
-				let allMediaFiles = [];
-				let page = 1;
-				let pageSize = 500;
-				let totalPages = 1;
-				do {
-					const params = new URLSearchParams();
-					params.set("page", String(page));
-					params.set("page_size", String(pageSize));
-					const res = await fetch("/api/library?" + params.toString(), {
-						method: "GET",
-					});
-					if (!res.ok) break;
-					const body = await res.json();
-					const data = body.data || body;
-					allMediaFiles = allMediaFiles.concat(data.files || []);
-					totalPages = data.total_pages || 1;
-					page++;
-				}
-				while (page <= totalPages);
-				for (let i = 0; i< allMediaFiles.length; i++) {
-					const file = allMediaFiles[i];
-					if (file.hoverPreview) {
-						// Remove hover file via API (needs backend endpoint)
-						await fetch(`/api/hover/delete?path=${encodeURIComponent(file.path)}`, {method: "DELETE"});
-					}
-				}
-				clearHoversBtn.disabled = false;
-				updateTasksStats();
+		// Recompute ALL hovers
+		if (recomputeAllHoversBtn) {
+			recomputeAllHoversBtn.onclick = async () => {
+				recomputeAllHoversBtn.disabled = true;
 				try {
-					await loadStats();
-				}
-				catch (_) { }
-				// Refresh grid to reflect hover removal
-				try {
-					await load(cwd);
-				}
-				catch (_) { }
+					await fetch(`/api/hover/create/batch`, { method: "POST" });
+					updateTasksStats();
+					try { await loadStats(); } catch (_) { }
+				} finally { recomputeAllHoversBtn.disabled = false; }
 			};
 		}
+		/* removed broken duplicate generateMissingCoversBtn block */
 		if (generateMissingMetaBtn) {
 			generateMissingMetaBtn.onclick = async () => {
 				generateMissingMetaBtn.disabled = true;
@@ -1574,12 +1651,9 @@
 				}
 				generateMissingMetaBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
 				// Refresh grid for updated duration/flags
-				try {
+				try { 
 					await load(cwd);
 				}
 				catch (_) { }
@@ -1588,17 +1662,17 @@
 		if (recomputeAllMetaBtn) {
 			recomputeAllMetaBtn.onclick = async () => {
 				recomputeAllMetaBtn.disabled = true;
-				try {
+				try { 
 					// Use jobs API to recompute metadata with force=true across library
 					const base = {task: "metadata", directory: "", recursive: true, force: true };
 					const r = await fetch("/jobs", {method: "POST", headers: {"Content-Type": "application/json" }, body: JSON.stringify(base) });
 					if (r.ok) {
-						try {startJobsSSE(); }
+						try { startJobsSSE(); }
 						catch (_) { }
 						// Nudge Tasks stats quickly
 						let ticks = 0;
 						const burst = setInterval(() => {
-							try {updateTasksStats(); }
+							try { updateTasksStats(); }
 							catch (_) { }
 							if (++ticks >= 10) {
 								clearInterval(burst);
@@ -1609,9 +1683,30 @@
 				finally {
 					recomputeAllMetaBtn.disabled = false;
 					updateTasksStats();
-					try {await loadStats(); }
+					try { await loadStats(); }
 					catch (_) { }
 				}
+			};
+		}
+		// Recompute ALL pHash
+		if (recomputeAllPhashBtn) {
+			recomputeAllPhashBtn.onclick = async () => {
+				recomputeAllPhashBtn.disabled = true;
+				try {
+					let page = 1, pageSize = 500, totalPages = 1, files = [];
+					do {
+						const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+						const res = await fetch("/api/library?" + params.toString());
+						if (!res.ok) break;
+						const body = await res.json();
+						const data = body.data || body; files = files.concat(data.files || []);
+						totalPages = data.total_pages || 1; page++;
+					} while (page <= totalPages);
+					for (const f of files) {
+						await fetch(`/api/phash/create?path=${encodeURIComponent(f.path)}`, { method: "POST" });
+					}
+					updateTasksStats(); try { await loadStats(); } catch(_){}
+				} finally { recomputeAllPhashBtn.disabled = false; }
 			};
 		}
 		if (clearMetaBtn) {
@@ -1643,12 +1738,9 @@
 				}
 				clearMetaBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
 				// Refresh grid after clearing metadata
-				try {
+				try { 
 					await load(cwd);
 				}
 				catch (_) { }
@@ -1659,7 +1751,7 @@
 		async function pollJobUntilDone(jobId, onProgress) {
 			// Poll /jobs/{id} for status and results
 			const get = async () => {
-				try {
+				try { 
 					const res = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
 					if (!res.ok) {
 						return null;
@@ -1675,7 +1767,7 @@
 			const start = Date.now();
 			while (info && info.status && ["queued","running","cancel_requested"].includes(info.status)) {
 				if (typeof onProgress === "function") {
-					try {onProgress(info); }
+					try { onProgress(info); }
 					catch (_) { }
 				}
 				await new Promise(r => setTimeout(r, 500));
@@ -1683,7 +1775,7 @@
 				if (Date.now() - start >5 * 60 * 1000) break; // cap at 5 minutes
 			}
 			if (typeof onProgress === "function" && info) {
-				try {onProgress(info); }
+				try { onProgress(info); }
 				catch (_) { }
 			}
 			return info;
@@ -1700,14 +1792,14 @@
 			if (cleanupDryRunBtn) cleanupDryRunBtn.disabled = true;
 			if (cleanupRunBtn) cleanupRunBtn.disabled = true;
 			if (cleanupSummary) cleanupSummary.textContent = "";
-			try {
+			try { 
 				const params = new URLSearchParams({dry_run: String(!!dryRun), keep_orphans: String(!!(keepOrphansChk && keepOrphansChk.checked)) });
 				const res = await fetch(`/api/artifacts/cleanup?${params.toString()}`, {method: "POST" });
 				if (!res.ok) return;
 				const j = await res.json();
 				const jobId = (j.data && j.data.job) || j.job;
 				if (!jobId) return;
-				try {startJobsSSE(); }
+				try { startJobsSSE(); }
 				catch (_) { }
 				setTaskIndeterminate("cleanup", true);
 				await pollJobUntilDone(jobId, (info) => {
@@ -1715,7 +1807,7 @@
 					setCleanupProgress(info.processed || 0, info.total || 0);
 				});
 				// Fetch final result one more time
-				try {
+				try { 
 					const s = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
 					if (s.ok) {
 						const body = await s.json();
@@ -1752,9 +1844,9 @@
 				if (cleanupRunBtn) cleanupRunBtn.disabled = false;
 				setTaskIndeterminate("cleanup", false);
 				updateTasksStats();
-				try {await loadStats(); }
+				try { await loadStats(); }
 				catch (_) { }
-				try {await load(cwd); }
+				try { await load(cwd); }
 				catch (_) { }
 			}
 		}
@@ -1790,10 +1882,7 @@
 				}
 				generateMissingPhashBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
 			};
 		}
 		if (clearPhashBtn) {
@@ -1824,10 +1913,7 @@
 				}
 				clearPhashBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
 			};
 		}
 
@@ -1855,15 +1941,32 @@
 				while (page <= totalPages);
 				for (const f of files) {
 					if (!f.chapters) {
-						await fetch(`/api/scenes/create?path=${encodeURIComponent(f.path)}`, {method: "POST" });
+						await fetch(`/api/scenes/create?path=${encodeURIComponent(f.path)}`, {method: "POST"});
 					}
 				}
 				generateMissingScenesBtn.disabled = false;
 				updateTasksStats();
+				try { await loadStats(); } catch (_) { }
+			};
+		}
+		// Recompute ALL scenes
+		if (recomputeAllScenesBtn) {
+			recomputeAllScenesBtn.onclick = async () => {
+				recomputeAllScenesBtn.disabled = true;
 				try {
-					await loadStats();
-				}
-				catch (_) { }
+					let page = 1, pageSize = 500, totalPages = 1, files = [];
+					do {
+						const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+						const res = await fetch("/api/library?" + params.toString());
+						if (!res.ok) break; const body = await res.json();
+						const data = body.data || body; files = files.concat(data.files || []);
+						totalPages = data.total_pages || 1; page++;
+					} while (page <= totalPages);
+					for (const f of files) {
+						await fetch(`/api/scenes/create?path=${encodeURIComponent(f.path)}`, { method: "POST" });
+					}
+					updateTasksStats(); try { await loadStats(); } catch(_){}
+				} finally { recomputeAllScenesBtn.disabled = false; }
 			};
 		}
 		if (clearScenesBtn) {
@@ -1894,10 +1997,7 @@
 				}
 				clearScenesBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
 			};
 		}
 
@@ -1908,10 +2008,15 @@
 				await fetch("/api/sprites/create/batch", {method: "POST" });
 				generateMissingSpritesBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
+			};
+		}
+		// Recompute ALL sprites
+		if (recomputeAllSpritesBtn) {
+			recomputeAllSpritesBtn.onclick = async () => {
+				recomputeAllSpritesBtn.disabled = true;
+				try { await fetch("/api/sprites/create/batch", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_){} }
+				finally { recomputeAllSpritesBtn.disabled = false; }
 			};
 		}
 
@@ -1922,10 +2027,16 @@
 				await fetch("/api/heatmaps/create/batch", {method: "POST" });
 				generateMissingHeatmapsBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
+				try { await loadStats(); }
 				catch (_) { }
+			};
+		}
+		// Recompute ALL heatmaps
+		if (recomputeAllHeatmapsBtn) {
+			recomputeAllHeatmapsBtn.onclick = async () => {
+				recomputeAllHeatmapsBtn.disabled = true;
+				try { await fetch("/api/heatmaps/create/batch", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_){} }
+				finally { recomputeAllHeatmapsBtn.disabled = false; }
 			};
 		}
 
@@ -1936,8 +2047,16 @@
 				await fetch("/api/subtitles/create/batch", {method: "POST" });
 				generateMissingSubsBtn.disabled = false;
 				updateTasksStats();
-				try {await loadStats(); }
+				try { await loadStats(); }
 				catch (_) { }
+			};
+		}
+		// Recompute ALL subtitles
+		if (recomputeAllSubsBtn) {
+			recomputeAllSubsBtn.onclick = async () => {
+				recomputeAllSubsBtn.disabled = true;
+				try { await fetch("/api/subtitles/create/batch?overwrite=true", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_){} }
+				finally { recomputeAllSubsBtn.disabled = false; }
 			};
 		}
 
@@ -1969,9 +2088,7 @@
 				}
 				clearSubsBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
+				try { await loadStats(); }
 				catch (_) { }
 			};
 		}
@@ -2003,10 +2120,7 @@
 				}
 				clearHeatmapsBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
 			};
 		}
 		if (clearSpritesBtn) {
@@ -2037,10 +2151,7 @@
 				}
 				clearSpritesBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
 			};
 		}
 
@@ -2049,7 +2160,7 @@
 			generateMissingFacesBtn.onclick = async () => {
 				generateMissingFacesBtn.disabled = true;
 				if (recomputeAllFacesBtn) recomputeAllFacesBtn.disabled = true;
-				try {
+				try { 
 					const k = readBatchFaceKnobs();
 					const qs = new URLSearchParams({
 						"backend": String(k.backend || 'auto'),
@@ -2062,19 +2173,17 @@
 					});
 					await fetch(`/api/faces/create/batch?${qs.toString()}`, {method: "POST" });
 					// Ensure jobs SSE is connected so we see events immediately
-					try {startJobsSSE(); }
-					catch (_) { }
+					try { startJobsSSE(); } catch (_) { }
 					// Fast refresh for a short burst
 					let ticks = 0;
 					const burst = setInterval(() => {
-						try {updateTasksStats(); }
-						catch (_) { }
+						try { updateTasksStats(); } catch (_) { }
 						if (++ticks >= 10) clearInterval(burst);
 					}, 1000);
 					// Poll active jobs briefly to reflect activity even if SSE is delayed
 					let sawFaces = false;
 					for (let i = 0; i< 5; i++) {
-						try {
+						try { 
 							const r = await fetch("/api/jobs?state=active");
 							if (r.ok) {
 								const body = await r.json();
@@ -2086,7 +2195,7 @@
 						await new Promise(res => setTimeout(res, 500));
 					}
 					if (!sawFaces) {
-						try {setTaskIndeterminate("faces", true); }
+						try { setTaskIndeterminate("faces", true); }
 						catch (_) { }
 					}
 				}
@@ -2094,7 +2203,7 @@
 					generateMissingFacesBtn.disabled = false;
 					if (recomputeAllFacesBtn) recomputeAllFacesBtn.disabled = false;
 					updateTasksStats();
-					try {await loadStats(); }
+					try { await loadStats(); }
 					catch (_) { }
 				}
 			};
@@ -2115,17 +2224,16 @@
 						"only_missing": "false",
 					});
 					await fetch(`/api/faces/create/batch?${qs.toString()}`, {method: "POST" });
-					try {startJobsSSE(); }
+					try { startJobsSSE(); }
 					catch (_) { }
 					let ticks = 0;
 					const burst = setInterval(() => {
-						try {updateTasksStats(); }
-						catch (_) { }
+						try { updateTasksStats(); } catch (_) { }
 						if (++ticks >= 10) clearInterval(burst);
 					}, 1000);
 					let sawFaces = false;
 					for (let i = 0; i< 5; i++) {
-						try {
+						try { 
 							const r = await fetch("/api/jobs?state=active");
 							if (r.ok) {
 								const body = await r.json();
@@ -2137,16 +2245,14 @@
 						await new Promise(res => setTimeout(res, 500));
 					}
 					if (!sawFaces) {
-						try {setTaskIndeterminate("faces", true); }
-						catch (_) { }
+						try { setTaskIndeterminate("faces", true); } catch (_) { }
 					}
 				}
 				finally {
 					recomputeAllFacesBtn.disabled = false;
 					if (generateMissingFacesBtn) generateMissingFacesBtn.disabled = false;
 					updateTasksStats();
-					try {await loadStats(); }
-					catch (_) { }
+					try { await loadStats(); } catch (_) { }
 				}
 			};
 		}
@@ -2178,10 +2284,7 @@
 				}
 				clearFacesBtn.disabled = false;
 				updateTasksStats();
-				try {
-					await loadStats();
-				}
-				catch (_) { }
+				try { await loadStats(); } catch (_) { }
 			};
 		}
 
@@ -2191,8 +2294,7 @@
 		window.__jobsActive = false;
 		function startJobsSSE() {
 			if (jobsEvtSrc) {
-				try {jobsEvtSrc.close(); }
-				catch (_) { }
+				try { jobsEvtSrc.close(); } catch (_) { }
 				jobsEvtSrc = null;
 			}
 			let triedApiAlias = false;
@@ -2200,7 +2302,7 @@
 				const es = new EventSource(url);
 				jobsEvtSrc = es;
 				es.onmessage = (ev) => {
-					try {
+					try { 
 						const data = JSON.parse(ev.data || "{}");
 						const line = `[${new Date().toLocaleTimeString()}] ${data.event || "msg"} ${data.id || ""}`;
 						if (typeof jobsBox !== "undefined" && jobsBox) {
@@ -2227,20 +2329,17 @@
 						const newActive = __runningJobIds.size >0;
 						if (window.__jobsActive !== newActive) {
 							window.__jobsActive = newActive;
-							try {
+							try { 
 								updatePollingInterval();
 							}
 							catch (_) { }
-							try {
+							try { 
 								setIndeterminateActive(newActive);
 							}
 							catch (_) { }
 						}
 						// Nudge a quick stats refresh on any event for snappier feedback
-						try {
-							updateTasksStats();
-						}
-						catch (_) { }
+						try { updateTasksStats(); } catch (_) { }
 					}
 					catch (_) { }
 				};
@@ -2248,8 +2347,7 @@
 					// First failure: try API alias once, then let browser retry
 					if (!triedApiAlias) {
 						triedApiAlias = true;
-						try {es.close(); }
-						catch (_) { }
+						try { es.close(); } catch (_) { }
 						openEs("/api/jobs/events");
 					}
 				};
@@ -2257,7 +2355,7 @@
 			openEs("/jobs/events");
 			// After connecting, fetch current active jobs to restore UI state on refresh
 			(async () => {
-				try {
+				try { 
 					const res = await fetch("/api/jobs?state=active");
 					if (res.ok) {
 						const body = await res.json();
@@ -2273,10 +2371,8 @@
 						if (anyActive) {
 							if (window.__jobsActive !== true) {
 								window.__jobsActive = true;
-								try {updatePollingInterval(); }
-								catch (_) { }
-								try {setIndeterminateActive(true); }
-								catch (_) { }
+								try { updatePollingInterval(); } catch (_) { }
+								try { setIndeterminateActive(true); } catch (_) { }
 							}
 						}
 					}
@@ -2307,8 +2403,8 @@
 		const facesList = document.getElementById("facesList");
 		const refreshFacesBtn = document.getElementById("refreshFacesBtn");
 		const createFacesBtn = document.getElementById("createFacesBtn");
-	const faceBackendSelect = document.getElementById("faceBackendSelect");
-	const faceBatchBackendSelect = document.getElementById("faceBatchBackendSelect");
+		const faceBackendSelect = document.getElementById("faceBackendSelect");
+		const faceBatchBackendSelect = document.getElementById("faceBatchBackendSelect");
 
 		// Face tuning inputs and helpers
 		const faceIntervalInput = document.getElementById("faceIntervalInput");
@@ -2322,10 +2418,11 @@
 		const faceBatchMinSizeFracInput = document.getElementById("faceBatchMinSizeFracInput");
 		const faceBatchSimThreshInput = document.getElementById("faceBatchSimThreshInput");
 
-	const FACE_SINGLE_KEY = "face.knobs.single.v1";
-	const FACE_BATCH_KEY = "face.knobs.batch.v1";
-	const FACE_BACKEND_SINGLE_KEY = "face.backend.single.v1";
-	const FACE_BACKEND_BATCH_KEY = "face.backend.batch.v1";
+		// TODO @copilot v1 reference
+		const FACE_SINGLE_KEY = "face.knobs.single.v1";
+		const FACE_BATCH_KEY = "face.knobs.batch.v1";
+		const FACE_BACKEND_SINGLE_KEY = "face.backend.single.v1";
+		const FACE_BACKEND_BATCH_KEY = "face.backend.batch.v1";
 		function _num(v, d, min, max) {
 			let n = parseFloat(String(v));
 			if (!isFinite(n)) n = d;
@@ -2333,9 +2430,9 @@
 			if (max != null) n = Math.min(max, n);
 			return n;
 		}
-	function readSingleFaceKnobs() {
+		function readSingleFaceKnobs() {
 			return {
-		backend: (faceBackendSelect && faceBackendSelect.value) || "auto",
+				backend: (faceBackendSelect && faceBackendSelect.value) || "auto",
 				interval: _num(faceIntervalInput?.value, 1.0, 0.01, 999),
 				scale_factor: _num(faceScaleFactorInput?.value, 1.2, 1.01, 10),
 				min_neighbors: Math.max(1, parseInt(faceMinNeighborsInput?.value || "7", 10) || 7),
@@ -2343,9 +2440,9 @@
 				sim_thresh: _num(faceSimThreshInput?.value, 0.90, 0, 1),
 			};
 		}
-	function readBatchFaceKnobs() {
+		function readBatchFaceKnobs() {
 			return {
-		backend: (faceBatchBackendSelect && faceBatchBackendSelect.value) || "auto",
+				backend: (faceBatchBackendSelect && faceBatchBackendSelect.value) || "auto",
 				interval: _num(faceBatchIntervalInput?.value, 1.0, 0.01, 999),
 				scale_factor: _num(faceBatchScaleFactorInput?.value, 1.2, 1.01, 10),
 				min_neighbors: Math.max(1, parseInt(faceBatchMinNeighborsInput?.value || "7", 10) || 7),
@@ -2355,22 +2452,22 @@
 		}
 		function saveSingleFaceKnobs() { try { localStorage.setItem(FACE_SINGLE_KEY, JSON.stringify(readSingleFaceKnobs())); } catch (_) {} }
 		function saveBatchFaceKnobs() { try { localStorage.setItem(FACE_BATCH_KEY, JSON.stringify(readBatchFaceKnobs())); } catch (_) {} }
-	function restoreFaceKnobs() {
-			try {
-		const beS = localStorage.getItem(FACE_BACKEND_SINGLE_KEY);
-		if (beS && faceBackendSelect) faceBackendSelect.value = beS;
-				const sraw = localStorage.getItem(FACE_SINGLE_KEY);
-				if (sraw) {
-					const s = JSON.parse(sraw);
-					if (faceIntervalInput && s.interval != null) faceIntervalInput.value = String(s.interval);
-					if (faceScaleFactorInput && s.scale_factor != null) faceScaleFactorInput.value = String(s.scale_factor);
-					if (faceMinNeighborsInput && s.min_neighbors != null) faceMinNeighborsInput.value = String(s.min_neighbors);
-					if (faceMinSizeFracInput && s.min_size_frac != null) faceMinSizeFracInput.value = String(s.min_size_frac);
-					if (faceSimThreshInput && s.sim_thresh != null) faceSimThreshInput.value = String(s.sim_thresh);
+		function restoreFaceKnobs() {
+			try { 
+				const beS = localStorage.getItem(FACE_BACKEND_SINGLE_KEY);
+				if (beS && faceBackendSelect) faceBackendSelect.value = beS;
+					const sraw = localStorage.getItem(FACE_SINGLE_KEY);
+						if (sraw) {
+						const s = JSON.parse(sraw);
+						if (faceIntervalInput && s.interval != null) faceIntervalInput.value = String(s.interval);
+						if (faceScaleFactorInput && s.scale_factor != null) faceScaleFactorInput.value = String(s.scale_factor);
+						if (faceMinNeighborsInput && s.min_neighbors != null) faceMinNeighborsInput.value = String(s.min_neighbors);
+						if (faceMinSizeFracInput && s.min_size_frac != null) faceMinSizeFracInput.value = String(s.min_size_frac);
+						if (faceSimThreshInput && s.sim_thresh != null) faceSimThreshInput.value = String(s.sim_thresh);
 				}
 			}
 			catch (_) {}
-			try {
+			try { 
 				const beB = localStorage.getItem(FACE_BACKEND_BATCH_KEY);
 				if (beB && faceBatchBackendSelect) faceBatchBackendSelect.value = beB;
 				const braw = localStorage.getItem(FACE_BATCH_KEY);
@@ -2388,8 +2485,8 @@
 		// Persist on change and restore once
 		[faceIntervalInput, faceScaleFactorInput, faceMinNeighborsInput, faceMinSizeFracInput, faceSimThreshInput].forEach(el => { if (el) el.addEventListener('change', saveSingleFaceKnobs); });
 		[faceBatchIntervalInput, faceBatchScaleFactorInput, faceBatchMinNeighborsInput, faceBatchMinSizeFracInput, faceBatchSimThreshInput].forEach(el => { if (el) el.addEventListener('change', saveBatchFaceKnobs); });
-	if (faceBackendSelect) faceBackendSelect.addEventListener('change', () => { try { localStorage.setItem(FACE_BACKEND_SINGLE_KEY, faceBackendSelect.value); } catch(_){} });
-	if (faceBatchBackendSelect) faceBatchBackendSelect.addEventListener('change', () => { try { localStorage.setItem(FACE_BACKEND_BATCH_KEY, faceBatchBackendSelect.value); } catch(_){} });
+		if (faceBackendSelect) faceBackendSelect.addEventListener('change', () => { try { localStorage.setItem(FACE_BACKEND_SINGLE_KEY, faceBackendSelect.value); } catch(_){} });
+		if (faceBatchBackendSelect) faceBatchBackendSelect.addEventListener('change', () => { try { localStorage.setItem(FACE_BACKEND_BATCH_KEY, faceBatchBackendSelect.value); } catch(_){} });
 		restoreFaceKnobs();
 
 		function setImageStatus(text) {
@@ -2425,7 +2522,7 @@
 			}
 			const path = selectedFile.path;
 			setImageStatus("Loading faces…");
-			try {
+			try { 
 				const r = await fetch(`/api/faces/json?path=${encodeURIComponent(path)}`);
 				if (!r.ok) {
 					facesList.textContent = "";
@@ -2495,8 +2592,9 @@
 		if (refreshFacesBtn) refreshFacesBtn.onclick = loadFaces;
 		if (createFacesBtn) createFacesBtn.onclick = async () => {
 			if (!selectedFile || !selectedFile.path) return;
+			createFacesBtn.disabled = true;
 			setImageStatus("Computing faces…");
-			try {
+			try { 
 				const k = readSingleFaceKnobs();
 				const qs = new URLSearchParams({
 					"path": selectedFile.path,
@@ -2506,35 +2604,154 @@
 					"min_neighbors": String(k.min_neighbors),
 					"min_size_frac": String(k.min_size_frac),
 					"sim_thresh": String(k.sim_thresh),
+					"background": "true",
 				});
 				const r = await fetch(`/api/faces/create?${qs.toString()}`, {method: 'POST' });
 				if (r.ok) {
-					// Connect SSE for immediate events
-					try {startJobsSSE(); }
-					catch (_) { }
-					// Tight poll for completion for a short window
-					let tries = 0;
-					const maxTries = 30; // up to ~15s
-					while (tries++< maxTries) {
-						try {
-							const h = await fetch(`/api/faces/json?path=${encodeURIComponent(selectedFile.path)}`);
-							if (h.ok) break;
+					let jobId = null;
+					try { 
+						const body = await r.json();
+						const data = body.data || body;
+						jobId = data.job || null;
+					} catch (_) { jobId = null; }
+					// If we got a job id, poll for progress and reflect in the Image tab
+					if (jobId) {
+						try { startJobsSSE(); } catch (_) { }
+						await pollJobUntilDone(jobId, (info) => {
+							if (!info) return;
+							const t = Math.max(0, Number(info.total) || 0);
+							const p = Math.max(0, Number(info.processed) || 0);
+							const pct = t ? Math.floor((p / t) * 100) : 0;
+							setImageStatus(t ? `Computing faces… ${p}/${t} (${pct}%)` : `Computing faces… ${p}`);
+						});
+					}
+					else {
+						// Fallback: poll for faces artifact presence briefly
+						let tries = 0;
+						const maxTries = 30; // ~15s
+						while (tries++ < maxTries) {
+							try { 
+								const h = await fetch(`/api/faces/json?path=${encodeURIComponent(selectedFile.path)}`);
+								if (h.ok) break;
+							} catch (_) {}
+							await new Promise(res => setTimeout(res, 500));
 						}
-						catch (_) { }
-						await new Promise(res=> setTimeout(res, 500));
 					}
 					await loadFaces();
+					setTimeout(() => setImageStatus(""), 800);
 				}
 				else {
 					setImageStatus("Face compute failed");
 				}
 			}
-			catch (_) {
-				setImageStatus("Face compute failed");
-			}
+			catch (_) { setImageStatus("Face compute failed"); }
+			finally { createFacesBtn.disabled = false; }
 		};
 
 		// --- STATS TAB LOGIC ---
+		// --- SIMILAR TAB LOGIC ---
+		async function loadSimilar() {
+			const statusEl = document.getElementById('similarStatus');
+			const grid = document.getElementById('similarResults');
+			if (!statusEl || !grid) return;
+			// Determine directory from current Grid cwd or root input
+			const dir = typeof cwd === 'string' && cwd.length > 0 ? cwd : (rootInput?.value?.trim() || '.');
+			const thresh = parseFloat(document.getElementById('similarThresh')?.value || '0.90');
+			const limitVal = parseInt(document.getElementById('similarLimit')?.value || '50', 10);
+			const recursive = !!document.getElementById('similarRecursive')?.checked;
+			const qs = new URLSearchParams();
+			qs.set('directory', dir);
+			qs.set('threshold', isFinite(thresh) ? String(thresh) : '0.9');
+			if (recursive) qs.set('recursive', 'true'); else qs.set('recursive', 'false');
+			if (isFinite(limitVal) && limitVal > 0) qs.set('limit', String(limitVal));
+			statusEl.textContent = 'Loading…';
+			statusEl.style.color = '#666';
+			grid.innerHTML = '';
+			try { 
+				const res = await fetch(`/phash/duplicates?${qs.toString()}`);
+				if (!res.ok) { statusEl.textContent = 'Failed to load'; statusEl.style.color = 'red'; return; }
+				const j = await res.json();
+				const pairs = j.pairs || [];
+				if (!pairs.length) {
+					statusEl.textContent = 'No similar pairs found at this threshold.';
+					statusEl.style.color = '#666';
+					grid.innerHTML = '';
+					return;
+				}
+				statusEl.textContent = `${pairs.length} pairs ≥ ${(thresh*100).toFixed(0)}%`;
+				statusEl.style.color = '#333';
+				for (const p of pairs) {
+					const tile = document.createElement('div');
+					tile.className = 'tile p-8';
+					tile.style.minWidth = '360px';
+					tile.style.display = 'flex';
+					tile.style.flexDirection = 'column';
+					tile.style.gap = '8px';
+					const head = document.createElement('div');
+					head.className = 'row space-between items-center';
+					const sim = document.createElement('strong');
+					sim.textContent = `${Math.round((p.similarity || 0) * 100)}% similar`;
+					head.appendChild(sim);
+					const actions = document.createElement('div');
+					actions.className = 'row gap-6';
+					const mkBtn = (label, path) => {
+						const b = document.createElement('button');
+						b.className = 'btn btn-secondary';
+						b.textContent = label;
+						b.onclick = () => {
+							selectedFile = { path, name: path.split('/').pop() };
+							showTab('Player');
+							play(selectedFile);
+						};
+						return b;
+					};
+					actions.appendChild(mkBtn('Play A', p.a));
+					actions.appendChild(mkBtn('Play B', p.b));
+					head.appendChild(actions);
+					tile.appendChild(head);
+					const row = document.createElement('div');
+					row.className = 'row gap-12 wrap';
+					const mkCard = (label, path) => {
+						const card = document.createElement('div');
+						card.className = 'col gap-6';
+						card.style.width = '240px';
+						const cap = document.createElement('div');
+						cap.className = 'small muted';
+						cap.textContent = label;
+						const img = document.createElement('img');
+						img.alt = 'cover';
+						img.style.width = '220px';
+						img.style.height = 'auto';
+						img.style.borderRadius = '6px';
+						// Try to show cover; fallback text if missing
+						const url = `/api/cover/get?path=${encodeURIComponent(path)}&t=${Date.now()}`;
+						fetch(url, { method: 'GET' }).then(r => r.ok ? r.blob() : null).then(blob => {
+							if (blob) { img.src = URL.createObjectURL(blob); }
+							else { img.replaceWith(Object.assign(document.createElement('div'), {textContent: 'No cover', className: 'placeholder', style: 'width:220px;height:124px;'})); }
+						}).catch(() => {
+							img.replaceWith(Object.assign(document.createElement('div'), {textContent: 'No cover', className: 'placeholder', style: 'width:220px;height:124px;'}));
+						});
+						const pathEl = document.createElement('div');
+						pathEl.className = 'small code';
+						pathEl.textContent = path;
+						card.appendChild(cap);
+						card.appendChild(img);
+						card.appendChild(pathEl);
+						return card;
+					};
+					row.appendChild(mkCard('A', p.a));
+					row.appendChild(mkCard('B', p.b));
+					tile.appendChild(row);
+					grid.appendChild(tile);
+				}
+			}
+			catch (_) {
+				statusEl.textContent = 'Error loading';
+				statusEl.style.color = 'red';
+			}
+		}
+		const refreshBtn = document.getElementById('similarRefreshBtn');
+		if (refreshBtn) refreshBtn.onclick = () => loadSimilar();
 		function humanBytes(n) {
 			if (!n || n <= 0) return "0 B";
 			const units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -2563,7 +2780,7 @@
 			return parts.join(" ");
 		}
 		async function loadStats() {
-			try {
+			try { 
 				const res = await fetch("/api/stats", {method: "GET" });
 				if (!res.ok) return;
 				const body = await res.json();
@@ -2578,6 +2795,69 @@
 				const note = [];
 				if (s.duration_files_count != null && scenes) {
 					note.push(
+
+					// --- Setup tab wiring ---
+					function loadSetup() {
+						const perfEl = document.getElementById('setupPerformers');
+						const tagsEl = document.getElementById('setupTags');
+						const saveBtn = document.getElementById('setupSaveBtn');
+						const runBtn = document.getElementById('setupRunBtn');
+						const statusEl = document.getElementById('setupStatus');
+						if (!perfEl || !tagsEl || !saveBtn || !runBtn || !statusEl) return;
+						try { 
+							perfEl.value = (localStorage.getItem('setup.performers') || '').replace(/\r\n/g, '\n');
+							tagsEl.value = (localStorage.getItem('setup.tags') || '').replace(/\r\n/g, '\n');
+						}
+						catch(_) {}
+						saveBtn.onclick = () => {
+							try { 
+								localStorage.setItem('setup.performers', perfEl.value || '');
+								localStorage.setItem('setup.tags', tagsEl.value || '');
+								statusEl.textContent = 'Saved locally';
+								statusEl.style.color = 'green';
+							}
+							catch(_) {
+								statusEl.textContent = 'Failed to save';
+								statusEl.style.color = 'red';
+							}
+						};
+						runBtn.onclick = async () => {
+							const perfs = (perfEl.value || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
+							const tags = (tagsEl.value || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
+							statusEl.textContent = 'Starting…'; 
+							statusEl.style.color = '#666';
+							try { 
+								const body = { path: '', recursive: true, performers: perfs, tags };
+								const res = await fetch('/api/autotag/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+								if (!res.ok) { statusEl.textContent = 'Failed to start'; statusEl.style.color = 'red'; return; }
+								const j = await res.json();
+								const jid = (j.data && j.data.job) || j.job || '';
+								if (!jid) { statusEl.textContent = 'No job id'; statusEl.style.color = 'red'; return; }
+								statusEl.textContent = `Running (job ${jid})…`;
+								// lightweight poll for completion
+								const deadline = Date.now() + 60_000;
+								let done = false;
+								while (!done && Date.now() < deadline) {
+									await new Promise(r => setTimeout(r, 750));
+									try { 
+										const jr = await fetch('/api/jobs?state=recent&limit=50');
+										if (jr.ok) {
+											const jb = await jr.json();
+											const jobs = (jb.data && jb.data.jobs) || jb.jobs || [];
+											const me = jobs.find(x => x.id === jid);
+											if (me && (me.state === 'done' || me.state === 'failed')) {
+												done = true;
+												const r = me.result || {};
+												statusEl.textContent = me.state === 'done' ? `Done. Updated ${r.updated_files || 0} (matched ${r.matched_files || 0})` : 'Failed';
+												statusEl.style.color = me.state === 'done' ? 'green' : 'red';
+											}
+										}
+									} catch(_) {}
+								}
+								if (!done) { statusEl.textContent = 'Started (check Tasks for progress)…'; statusEl.style.color = '#666'; }
+							} catch(_) { statusEl.textContent = 'Error'; statusEl.style.color = 'red'; }
+						};
+					}
 					`${s.duration_files_count}/${scenes} files have duration`,
 					);
 				}
@@ -2596,14 +2876,14 @@
 
 		// SETTINGS TAB
 		async function loadSettings() {
-			try {
+			try { 
 				const [h, c] = await Promise.all([
-				fetch("/health")
-				.then((r) => r.json())
-				.catch(() => ({})),
-				fetch("/config")
-				.then((r) => r.json())
-				.catch(() => ({})),
+					fetch("/health")
+						.then((r) => r.json())
+						.catch(() => ({})),
+					fetch("/config")
+						.then((r) => r.json())
+						.catch(() => ({})),
 				]);
 				const hi = document.getElementById("healthInfo");
 				const ci = document.getElementById("configInfo");
@@ -2617,20 +2897,15 @@
 			if (!videoEl || videoEl.classList.contains("hidden")) {
 				return;
 			}
-			if (
-			document.activeElement &&
-			["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)
-			)
-			return;
+			const ae = document.activeElement;
+			const tag = (ae && ae.tagName) || "";
+			if (ae && (tag === "INPUT" || tag === "TEXTAREA" || ae.isContentEditable)) return;
 			if (e.code === "ArrowLeft") {
 				videoEl.currentTime = Math.max(0, videoEl.currentTime - 10);
 				e.preventDefault();
 			}
 			else if (e.code === "ArrowRight") {
-				videoEl.currentTime = Math.min(
-				videoEl.duration || 0,
-				videoEl.currentTime + 10,
-				);
+				videoEl.currentTime = Math.min( videoEl.duration || 0, videoEl.currentTime + 10 );
 				e.preventDefault();
 			}
 			else if (e.code === "Space") {
@@ -2644,7 +2919,7 @@
 			}
 			else if ((e.key || '').toLowerCase() === 'm') {
 				// Add persistent marker at current time
-				try {
+				try { 
 					if (selectedFile && selectedFile.path) {
 						const t = Math.max(0, Math.min(videoEl.duration || 0, videoEl.currentTime || 0));
 						fetch(`/api/marker?path=${encodeURIComponent(selectedFile.path)}&time=${encodeURIComponent(t)}`, { method: 'POST' })
@@ -2728,6 +3003,13 @@
 		});
 		// Space toggles play/pause when focused on document
 		document.addEventListener("keydown", (e) => {
+			// Ignore when user is typing into inputs/textareas or editable fields
+			const ae = document.activeElement;
+			const tag = (ae && ae.tagName) || "";
+			const typing = !!(ae && (tag === "INPUT" || tag === "TEXTAREA" || ae.isContentEditable));
+			if (typing) return;
+			// Only handle when player is visible
+			if (!videoEl || videoEl.classList.contains("hidden")) return;
 			if (e.code === "Space" && !e.repeat) {
 				e.preventDefault();
 				if (videoEl.paused) videoEl.play();
@@ -2803,95 +3085,98 @@
                 const infoPanel = document.getElementById("infoPanel");
                 const statusEl = document.getElementById("status");
 
-                async function renderTagEditor(file) {
-                        if (!infoPanel) return;
-                        const old = document.getElementById("tagEditorSection");
-                        if (old) old.remove();
-                        const section = document.createElement("div");
-                        section.id = "tagEditorSection";
-                        section.className = "mt-8";
-                        section.innerHTML = `
-                                <div class="infoRow"><span class="infoLabel">Tags</span><input id="tagsInput" type="text" /></div>
-                                <div class="infoRow"><span class="infoLabel">Performers</span><input id="performersInput" type="text" /></div>
-                                <div class="infoRow"><span class="infoLabel">Rating</span><div id="ratingContainer"></div></div>
-                                <div class="row mt-8"><button id="saveTagsBtn" class="btn">Save</button></div>`;
-                        infoPanel.appendChild(section);
-                        $('#tagsInput').tagsinput();
-                        $('#performersInput').tagsinput();
-                        let currentRating = 0;
-                        const ratingEl = section.querySelector('#ratingContainer');
-                        function renderStars(r) {
-                                ratingEl.innerHTML = '';
-                                for (let i = 1; i <= 5; i++) {
-                                        const s = document.createElement('span');
-                                        s.className = 'star' + (i <= r ? ' selected' : '');
-                                        s.textContent = i <= r ? '★' : '☆';
-                                        s.dataset.val = String(i);
-                                        s.addEventListener('click', () => { currentRating = i; renderStars(currentRating); });
-                                        ratingEl.appendChild(s);
-                                }
-                        }
-                        const dir = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : '';
-                        try {
-                                const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(dir)}`);
-                                if (resp.ok) {
-                                        const t = await resp.json();
-                                        (t.tags || []).forEach(v => $('#tagsInput').tagsinput('add', v));
-                                        (t.performers || []).forEach(v => $('#performersInput').tagsinput('add', v));
-                                        currentRating = t.rating || 0;
-                                }
-                        } catch (err) {
-                                console.error('Failed to load tags/performers/rating:', err);
-                                // Optionally, provide user feedback:
-                                const tagsInputRow = section.querySelector('.infoRow');
-                                if (tagsInputRow) {
-                                        const errorMsg = document.createElement('span');
-                                        errorMsg.style.color = 'red';
-                                        errorMsg.style.marginLeft = '8px';
-                                        errorMsg.textContent = 'Failed to load tags';
-                                        tagsInputRow.appendChild(errorMsg);
-                                }
-                        }
-                        renderStars(currentRating);
-                        const saveTagsBtn = document.getElementById('saveTagsBtn');
-                        // Create feedback message element if not present
-                        let saveFeedback = document.getElementById('saveTagsFeedback');
-                        if (!saveFeedback) {
-                            saveFeedback = document.createElement('div');
-                            saveFeedback.id = 'saveTagsFeedback';
-                            saveFeedback.style.marginTop = '8px';
-                            saveTagsBtn.parentNode.insertBefore(saveFeedback, saveTagsBtn.nextSibling);
-                        }
-                        saveTagsBtn.addEventListener('click', async () => {
-                            saveTagsBtn.disabled = true;
-                            saveFeedback.textContent = '';
-                            const payload = {
-                                replace: true,
-                                add: $('#tagsInput').tagsinput('items'),
-                                performers_add: $('#performersInput').tagsinput('items'),
-                                rating: currentRating,
-                            };
-                            try {
-                                const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(dir)}`, {
-                                    method: 'PATCH',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify(payload),
-                                });
-                                if (resp.ok) {
-                                    saveFeedback.textContent = 'Tags saved successfully!';
-                                    saveFeedback.style.color = 'green';
-                                } else {
-                                    saveFeedback.textContent = 'Failed to save tags.';
-                                    saveFeedback.style.color = 'red';
-                                }
-                            } catch (e) {
-                                saveFeedback.textContent = 'Error saving tags.';
-                                saveFeedback.style.color = 'red';
-                            } finally {
-                                saveTagsBtn.disabled = false;
-                            }
-                        });
-                }
+				async function renderTagEditor(file) {
+					if (!infoPanel) return;
+					const old = document.getElementById("tagEditorSection");
+					if (old) old.remove();
+					const section = document.createElement("div");
+					section.id = "tagEditorSection";
+					section.className = "mt-8";
+					section.innerHTML = `
+						<div class="infoRow"><span class="infoLabel">Tags</span><input id="tagsInput" type="text" list="tagsList" /></div>
+						<div class="infoRow"><span class="infoLabel">Performers</span><input id="performersInput" type="text" list="performersList" /></div>
+						<datalist id="tagsList"></datalist>
+						<datalist id="performersList"></datalist>
+						<div class="infoRow"><span class="infoLabel">Rating</span><div id="ratingContainer"></div></div>
+						<div id="saveTagsFeedback" class="small mt-8"></div>`;
+					infoPanel.appendChild(section);
+					// Allow spaces by using comma as the only delimiter
+					$('#tagsInput').tagsinput({ trimValue: true, confirmKeys: [13, 188] /* Enter, Comma */ });
+					$('#performersInput').tagsinput({ trimValue: true, confirmKeys: [13, 188] });
+					const tagsListEl = section.querySelector('#tagsList');
+					const perfListEl = section.querySelector('#performersList');
+					const saveFeedback = section.querySelector('#saveTagsFeedback');
+					const baseDir = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : '';
+					// Populate autocomplete lists from summary
+					try { 
+						const s = await fetch(`/api/tags/summary?path=${encodeURIComponent(baseDir)}`);
+						if (s.ok) {
+							const js = await s.json();
+							const tagNames = Object.keys(js.tags || {});
+							const perfNames = Object.keys(js.performers || {});
+							tagNames.sort((a,b) => a.localeCompare(b));
+							perfNames.sort((a,b) => a.localeCompare(b));
+							tagNames.forEach(t => { const o = document.createElement('option'); o.value = t; tagsListEl.appendChild(o); });
+							perfNames.forEach(p => { const o = document.createElement('option'); o.value = p; perfListEl.appendChild(o); });
+						}
+					} catch (_) { /* ignore */ }
+
+					let currentRating = 0;
+					const ratingEl = section.querySelector('#ratingContainer');
+					let _saveTimer;
+					async function saveTags() {
+						// Show inline, lightweight feedback
+						if (saveFeedback) { saveFeedback.textContent = 'Saving…'; saveFeedback.style.color = '#666'; }
+						const payload = {
+							replace: true,
+							add: $('#tagsInput').tagsinput('items'),
+							performers_add: $('#performersInput').tagsinput('items'),
+							rating: currentRating,
+						};
+						try { 
+							const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(baseDir)}`, {
+								method: 'PATCH',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify(payload),
+							});
+							if (saveFeedback) {
+								saveFeedback.textContent = resp.ok ? 'Saved' : 'Failed to save';
+								saveFeedback.style.color = resp.ok ? 'green' : 'red';
+							}
+						} catch (_) {
+							if (saveFeedback) { saveFeedback.textContent = 'Error saving'; saveFeedback.style.color = 'red'; }
+						}
+					}
+					function debouncedSave() {
+						clearTimeout(_saveTimer);
+						_saveTimer = setTimeout(saveTags, 600);
+					}
+					function renderStars(r) {
+						ratingEl.innerHTML = '';
+						for (let i = 1; i <= 5; i++) {
+							const s = document.createElement('span');
+							s.className = 'star' + (i <= r ? ' selected' : '');
+							s.textContent = i <= r ? '★' : '☆';
+							s.dataset.val = String(i);
+							s.addEventListener('click', () => { currentRating = i; renderStars(currentRating); debouncedSave(); });
+							ratingEl.appendChild(s);
+						}
+					}
+					// Load existing tags/performers/rating
+					try { 
+						const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(baseDir)}`);
+						if (resp.ok) {
+							const t = await resp.json();
+							(t.tags || []).forEach(v => $('#tagsInput').tagsinput('add', v));
+							(t.performers || []).forEach(v => $('#performersInput').tagsinput('add', v));
+							currentRating = t.rating || 0;
+						}
+					} catch (_) { /* ignore */ }
+					renderStars(currentRating);
+					// Autosave on changes (debounced)
+					$('#tagsInput').on('itemAdded itemRemoved', debouncedSave);
+					$('#performersInput').on('itemAdded itemRemoved', debouncedSave);
+				}
 		const rootInput = document.getElementById("rootInput");
 		const setRootBtn = document.getElementById("setRootBtn");
 		const prevBtn = document.getElementById("prevBtn");
@@ -2943,7 +3228,7 @@
 			const hiddenDirPicker = document.getElementById("hiddenDirPicker");
 			if (hiddenDirPicker) {
 				hiddenDirPicker.addEventListener("change", async (ev) => {
-					try {
+					try { 
 						const files = hiddenDirPicker.files;
 						if (!files || files.length === 0) return;
 						// Best-effort: derive directory from first file path if available
@@ -2980,7 +3265,7 @@
 			rootInput.addEventListener("dblclick", async (e) => {
 				e.preventDefault();
 				e.stopPropagation();
-				try {
+				try { 
 					// Try modern File System Access API
 					if (window.showDirectoryPicker) {
 						const dirHandle = await window.showDirectoryPicker();
@@ -3014,7 +3299,7 @@
 				}
 				catch (_) {/* ignore */ }
 				// Fallback: prompt the user for a path
-				try {
+				try { 
 					// Try hidden file input directory selection on browsers supporting webkitdirectory
 					if (hiddenDirPicker) {
 						hiddenDirPicker.click();
@@ -3074,7 +3359,7 @@
 				return;
 			}
 			selectedFile = file;
-			try {if (activeTab === 'Image') {await loadFaces(); } }
+			try { if (activeTab === 'Image') {await loadFaces(); } }
 			catch (_) { }
 			const sizeLine = human(file.size || 0);
 			const ext = file.name.split(".").pop().toLowerCase();
@@ -3100,7 +3385,7 @@
 			titleDiv.className = "infoTitle";
 			titleDiv.textContent = esc(file.title || baseName(file.name));
 			frag.appendChild(titleDiv);
-			function row(label, value, id) {
+			function row(label, value, id, withAction) {
 				const r = document.createElement("div");
 				r.className = "infoRow";
 				const lab = document.createElement("span");
@@ -3112,6 +3397,17 @@
 				val.textContent = value;
 				r.appendChild(lab);
 				r.appendChild(val);
+				if (withAction) {
+					const btn = document.createElement('button');
+					btn.className = 'btn';
+					btn.textContent = '×';
+					btn.title = 'Generate';
+					btn.style.padding = '0 6px';
+					btn.style.lineHeight = '18px';
+					btn.style.fontSize = '12px';
+					btn.dataset.actionFor = id;
+					r.appendChild(btn);
+				}
 				frag.appendChild(r);
 				return val;
 			}
@@ -3124,15 +3420,15 @@
 			row("Bitrate", "Loading…", "infoBitrate");
 			row("A Codec", "—", "infoACodec");
 			row("A Bitrate", "—", "infoABitrate");
-			row("Metadata", "Loading…", "infoMetaFile");
-			row("Thumbnail", file.cover ? "✅" : "❌", "infoThumbStatus");
-			row("Hover Preview", file.hoverPreview ? "✅" : "❌", "infoHoverPreview");
-			row("pHash", file.phash ? "✅" : "❌", "infoPhash");
-			row("Chapter Markers", file.chapters ? "✅" : "❌", "infoScenes");
-			row("Scrubbing Thumbnails", file.scrubThumbs ? "✅" : "❌", "infoSprites");
-			row("Heatmaps", "Loading…", "infoHeatmaps");
-			row("Subtitles", "Loading…", "infoSubtitles");
-			row("Face Embeddings", "Loading…", "infoFaces");
+			row("Metadata", "Loading…", "infoMetaFile", true);
+			row("Thumbnail", file.cover ? "✅" : "❌", "infoThumbStatus", true);
+			row("Hover Preview", file.hoverPreview ? "✅" : "❌", "infoHoverPreview", true);
+			row("pHash", file.phash ? "✅" : "❌", "infoPhash", true);
+			row("Chapter Markers", file.chapters ? "✅" : "❌", "infoScenes", true);
+			row("Scrubbing Thumbnails", file.scrubThumbs ? "✅" : "❌", "infoSprites", true);
+			row("Heatmaps", "Loading…", "infoHeatmaps", true);
+			row("Subtitles", "Loading…", "infoSubtitles", true);
+			row("Face Embeddings", "Loading…", "infoFaces", true);
 			const extra = document.createElement("div");
 			extra.id = "infoMetaExtra";
 			extra.className = "small meta-extra";
@@ -3156,6 +3452,19 @@
 					try { await handler(); } catch (_) {}
 					showInfo(file);
 				};
+				// Also wire the adjacent × button
+				try { 
+					const btn = el.parentElement?.querySelector('button.btn[data-action-for="' + id + '"]');
+					if (btn) {
+						btn.onclick = async (ev) => {
+							ev.stopPropagation();
+							btn.disabled = true;
+							try { await handler(); } finally { btn.disabled = false; }
+							showInfo(file);
+						};
+						btn.title = title;
+					}
+				} catch(_) {}
 			};
 			setClickable("infoThumbStatus", "Click to (re)generate cover", async () => {
 				await fetch(`/api/cover/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
@@ -3163,7 +3472,7 @@
 			setClickable("infoHoverPreview", "Click to (re)generate hover preview", async () => {
 				await fetch(`/api/hover/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
 			});
-			setClickable("infoSprites", "Click to (re)generate sprites", async () => {
+			setClickable("infoSprites", "Click to (re)generate sprites (use if scrubbing looks wrong)", async () => {
 				await fetch(`/api/sprites/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
 			});
 			setClickable("infoHeatmaps", "Click to (re)generate heatmaps", async () => {
@@ -3188,7 +3497,7 @@
                         });
                         infoPanel.appendChild(frag);
                         renderTagEditor(file);
-                        try {
+                        try { 
                                 const res = await fetch(
                                 `/api/metadata/get?path=${encodeURIComponent(file.path)}`,
                                 {method: "GET" },
@@ -3278,7 +3587,7 @@
 					}
 				};
 				// Heatmaps: prefer PNG, fallback JSON
-				try {
+				try { 
 					const hp = await fetch(`/api/heatmaps/png?path=${encodeURIComponent(file.path)}`, {method: 'HEAD' });
 					if (hp.ok) {
 						setFlag('infoHeatmaps', true);
@@ -3292,14 +3601,14 @@
 					setFlag('infoHeatmaps', false);
 				}
 				// Subtitles: SRT only
-				try {
+				try { 
 					const hs = await fetch(`/api/subtitles/get?path=${encodeURIComponent(file.path)}`, { method: 'HEAD' });
 					setFlag('infoSubtitles', hs.ok);
 				} catch (_) { setFlag('infoSubtitles', false); }
 				// Faces
-				try {
+				try { 
 					let ok = false;
-					try {
+					try { 
 						const hf = await fetch(`/api/faces/get?path=${encodeURIComponent(file.path)}`, {method: 'HEAD' });
 						ok = hf.ok;
 					}
@@ -3398,7 +3707,7 @@
 		}
 
 		function clearAllTextTracks(video) {
-			try {
+			try { 
 				const tracks = video.textTracks || [];
 				for (let ti = 0; ti < tracks.length; ti++) {
 					const tr = tracks[ti];
@@ -3460,7 +3769,7 @@
 							return;
 						}
 						tgt.dataset.loading = "1";
-						try {
+						try { 
 							const res = await fetch(
 							`/api/metadata/get?path=${encodeURIComponent(key)}`,
 							{method: "GET" },
@@ -3538,15 +3847,16 @@
 			if (sortVal) {
 				params.set("sort", sortVal);
 			}
-			const orderVal = document.getElementById("sortOrder")?.value;
-			if (orderVal) {
-				params.set("order", orderVal);
-			}
+			// Read order from toggle button dataset (default asc)
+			const orderBtn = document.getElementById("sortOrderToggle");
+			let orderVal = (orderBtn && orderBtn.dataset.order) || "asc";
+			if (orderBtn && !orderBtn.dataset.order) { orderBtn.dataset.order = orderVal; }
+			params.set("order", orderVal);
 			// Fetch with timeout to avoid hanging UI on slow network/back-end
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), 10000);
 			let res;
-			try {
+			try { 
 				res = await fetch("/api/library?" + params.toString(), {
 					method: "GET",
 					signal: controller.signal,
@@ -3592,7 +3902,7 @@
 			if (file.hoverPreview) return file.hoverPreview + `&t=${Date.now()}`;
 			const base = `/api/hover/get?path=${encodeURIComponent(file.path)}`;
 			// Check if available now
-			try {
+			try { 
 				const head = await fetch(base + `&t=${Date.now()}`, {
 					method: "HEAD",
 					cache: "no-store",
@@ -3601,7 +3911,7 @@
 			}
 			catch (_) { }
 			// Trigger generation (non-blocking if already exists)
-			try {
+			try { 
 				await fetch(
 				`/api/hover/create?path=${encodeURIComponent(file.path)}`,
 				{method: "POST" },
@@ -3611,7 +3921,7 @@
 			// Poll briefly for readiness so preview can start on first hover
 			const maxTries = 12; // ~1.8s @ 150ms
 			for (let i = 0; i< maxTries; i++) {
-				try {
+				try { 
 					const head2 = await fetch(base + `&t=${Date.now()}`, {
 						method: "HEAD",
 						cache: "no-store",
@@ -3626,12 +3936,12 @@
 
 		// Ensure no tiles are currently showing a hover video
 		function stopAllTileHovers(exceptTile = null) {
-			try {
+			try { 
 				const tiles = document.querySelectorAll(".tile");
 				tiles.forEach((t) => {
 					if (exceptTile && t === exceptTile) return;
 					if (typeof t.onmouseleave === "function") {
-						try {
+						try { 
 							t.onmouseleave();
 						}
 						catch (_) { }
@@ -3640,12 +3950,12 @@
 						// Best-effort: pause any inline video
 						const v = t.querySelector("video.thumb");
 						if (v) {
-							try {
+							try { 
 								v.pause();
 							}
 							catch (_) { }
 							v.removeAttribute("src");
-							try {
+							try { 
 								v.load();
 							}
 							catch (_) { }
@@ -3749,7 +4059,7 @@
 						v.playsInline = true;
 						v.style.pointerEvents = "none";
 						if (current) current.replaceWith(v);
-						try {
+						try { 
 							await v.play();
 						}
 						catch (_) { }
@@ -3835,6 +4145,7 @@
 			}
 		}
 		// Resume position storage
+		// TODO @copilot v1 reference
 		function resumeKey(path) {return `resume.v1:${path}`; }
 		let _lastSavedPosTs = 0;
 		function persistPosition() {
@@ -3842,7 +4153,7 @@
 			const now = Date.now();
 			if (now - _lastSavedPosTs< 1500) return; // throttle ~1.5s
 			_lastSavedPosTs = now;
-			try {
+			try { 
 				const pos = Math.floor(videoEl.currentTime || 0);
 				if (isFinite(pos) && pos >= 0) {
 					localStorage.setItem(resumeKey(selectedFile.path), String(pos));
@@ -3871,7 +4182,7 @@
 			videoEl.appendChild(source);
 			// Helper to force-enable our subtitles track
 			const ensureCaptionsVisible = () => {
-				try {
+				try { 
 					const tt = videoEl._subsTrack || (videoEl.textTracks && Array.from(videoEl.textTracks).find(t => t.kind === 'subtitles'));
 					if (tt) {
 						try { tt.mode = 'showing'; } catch (_) {}
@@ -3881,7 +4192,7 @@
 				catch (_) { }
 			};
 			// Attach subtitles by fetching SRT and injecting cues (SRT-only support)
-			try {
+			try { 
 				const head = await fetch(srtURL, { method: "HEAD" });
 				if (head.ok) {
 					// Clear any residual tracks/cues
@@ -3895,7 +4206,7 @@
 						const cues = parseSrtToCues(srt);
 						const Cue = window.VTTCue || window.TextTrackCue || window.WebKitTextTrackCue;
 						for (const c of cues) {
-							try {
+							try { 
 								const cue = new Cue(c.start, c.end, c.text);
 								// Push captions further up to avoid overlapping controls/nav
 								// Use percentage line if supported
@@ -3937,7 +4248,7 @@
 				}
 			} catch (_) { }
 			// Persist last played video for reload restore
-			try {
+			try { 
 				// TODO @copilot: reference to versions
 				const LAST_VIDEO_KEY = 'lastVideo.v1';
 				const name = file.name || (file.path ? file.path.split('/').pop() : '');
@@ -3949,7 +4260,7 @@
 			videoEl.load();
 			// Apply resume position before playback begins
 			const applyResume = () => {
-				try {
+				try { 
 					const key = resumeKey(file.path);
 					const saved = parseFloat(localStorage.getItem(key) || '');
 					const dur = videoEl.duration || 0;
@@ -3970,13 +4281,13 @@
 				applyResume();
 			}
 			// Warm up scrubbing sprites so previews are ready
-			try {
+			try { 
 				if (window.ensureSprites) {
 					await window.ensureSprites();
 				}
 			}
 			catch (_) { }
-			try {
+			try { 
 				await videoEl.play();
 			}
 			catch (_) { }
@@ -3986,7 +4297,7 @@
 			videoEl.onloadedmetadata = () => {
 				renderOverlaysForFile(file).catch(() => {});
 				// Ensure our subtitles track (if any) is shown and others disabled
-				try {
+				try { 
 					const tt = videoEl._subsTrack || (videoEl.textTracks && Array.from(videoEl.textTracks).find(t => t.kind === 'subtitles'));
 					if (tt) {
 						try { tt.mode = 'showing'; } catch (_) {}
@@ -4002,7 +4313,7 @@
 			if (!file) return;
 			// Scenes
 			let scenes = null;
-			try {
+			try { 
 				const res = await fetch(`/api/scenes/get?path=${encodeURIComponent(file.path)}`);
 				if (res.ok) {
 					const body = await res.json();
@@ -4016,7 +4327,7 @@
 			renderChapters(scenes, file);
 			// Heatmaps: prefer PNG for speed; fallback to JSON gradient
 			let heatmapURL = null;
-			try {
+			try { 
 				const resP = await fetch(`/api/heatmaps/png?path=${encodeURIComponent(file.path)}`);
 				if (resP.ok) {
 					// Blob URL to avoid re-requesting
@@ -4029,7 +4340,7 @@
 				renderHeatmapStripe({type: "png", url: heatmapURL });
 			}
 			else {
-				try {
+				try { 
 					const resJ = await fetch( `/api/heatmaps/json?path=${encodeURIComponent(file.path)}`);
 					if (resJ.ok) {
 						const body = await resJ.json();
@@ -4067,7 +4378,7 @@
 				m.title = `Scene @ ${hhmmss(t)}`;
 				m.addEventListener("click", (ev) => {
 					ev.stopPropagation();
-					try {
+					try { 
 						videoEl.currentTime = t;
 					}
 					catch (_) { }
@@ -4127,17 +4438,19 @@
 					if (!res.ok) return null;
 					const body = await res.json();
 					const index = (body.data && body.data.index) || body.index;
-					const sheetUrl = (body.data && body.data.sheet) || body.sheet;
+					let sheetUrl = (body.data && body.data.sheet) || body.sheet;
+					// cache-bust to avoid stale sprite sheets after regeneration
+					try { sheetUrl = sheetUrl + (sheetUrl.includes("?") ? "&" : "?") + "t=" + Date.now(); } catch (_) {}
 					return {index, sheetUrl };
 				};
-				try {
+				try { 
 					let data = await tryFetch();
 					if (!data) {
 						// If missing, kick off generation once for this file, then poll briefly
 						const key = selectedFile.path;
 						if (!spritesRequested.has(key)) {
 							spritesRequested.add(key);
-							try {
+							try { 
 								await fetch( `/api/sprites/create?path=${encodeURIComponent(key)}`, {method: "POST" }, );
 							}
 							catch (_) { }
@@ -4162,7 +4475,7 @@
 				}
 			}
 			// Expose for warm-up from play()
-			try {window.ensureSprites = ensureSprites; }
+			try { window.ensureSprites = ensureSprites; }
 			catch (_) { }
 			function ensurePreviewEl() {
 				if (previewEl) return previewEl;
@@ -4185,9 +4498,18 @@
 			function showSpriteAt(pct) {
 				if (!spriteData) return;
 				const idx = spriteData.index;
-				const frames = idx.frames || idx.cols * idx.rows;
+				const frames = idx.frames || (idx.cols * idx.rows);
 				if (!frames) return;
-				const i = Math.max(0, Math.min(frames - 1, Math.floor(pct * frames)));
+				// Prefer time-based mapping using interval when available
+				let i;
+				const hasInterval = Number.isFinite(idx.interval) && idx.interval > 0;
+				if (hasInterval && videoEl && Number.isFinite(videoEl.duration)) {
+					const t = Math.max(0, Math.min(videoEl.duration, pct * videoEl.duration));
+					i = Math.floor(t / idx.interval);
+				} else {
+					i = Math.floor(pct * frames);
+				}
+				i = Math.max(0, Math.min(frames - 1, i));
 				const col = i % idx.cols;
 				const row = Math.floor(i / idx.cols);
 				const tw = idx.tile_width || 160;
@@ -4250,10 +4572,32 @@
 				currentPage = 1;
 				load(cwd);
 			});
-			document.getElementById("sortOrder").addEventListener("change", () => {
-				currentPage = 1;
-				load(cwd);
-			});
+			const sortOrderToggle = document.getElementById("sortOrderToggle");
+			function updateSortOrderToggleIcon() {
+				if (!sortOrderToggle) return;
+				const cur = sortOrderToggle.dataset.order === 'desc' ? 'desc' : 'asc';
+				sortOrderToggle.textContent = cur === 'asc' ? '↑' : '↓';
+				sortOrderToggle.title = `Toggle sort order (${cur === 'asc' ? 'Asc' : 'Desc'})`;
+			}
+			if (sortOrderToggle) {
+				// seed from URL if present
+				try {
+					const u = new URL(window.location.href);
+					const orderQ = u.searchParams.get('order');
+					if (orderQ === 'asc' || orderQ === 'desc') {
+						sortOrderToggle.dataset.order = orderQ;
+					}
+				} catch(_){}
+				updateSortOrderToggleIcon();
+				sortOrderToggle.addEventListener('click', () => {
+					const cur = sortOrderToggle.dataset.order === 'desc' ? 'desc' : 'asc';
+					const next = cur === 'asc' ? 'desc' : 'asc';
+					sortOrderToggle.dataset.order = next;
+					updateSortOrderToggleIcon();
+					currentPage = 1;
+					load(cwd);
+				});
+			}
 			document.getElementById("gridSize").addEventListener("change", () => {
 				load(cwd);
 			});
@@ -4325,7 +4669,7 @@
 				setMarkerBtn.onclick = async () => {
 					if (!selectedFile || !selectedFile.path) return;
 					const t = Math.max(0, Math.min(videoEl.duration || 0, videoEl.currentTime || 0));
-					try {
+					try { 
 						await fetch(`/api/marker?path=${encodeURIComponent(selectedFile.path)}&time=${encodeURIComponent(t)}`, { method: 'POST' });
 						// Refresh scenes overlay to show the new marker immediately
 						await renderOverlaysForFile(selectedFile);
@@ -4337,7 +4681,7 @@
 			setupControlListeners();
 			mountSpritePreviewInPlayer();
 			// Ensure backend root is set before attempting to restore/load; if not provided, proceed with existing backend root
-			try {
+			try { 
 				const v = (rootInput && rootInput.value) ? rootInput.value.trim() : "";
 				if (v) {
 					status("Setting root…");
@@ -4374,16 +4718,17 @@
 			}
 			catch (_) {
 				// On any error, attempt to load current root rather than hang
-				try {await load(""); }
+				try { await load(""); }
 				catch (_) { }
 			}
 			// Initialize tab from URL (hash) or default to Grid without pushing a new history entry
 			const initialTab = getTabFromLocation() || "Grid";
 			showTab(initialTab, true);
-			try {setRouteForTab(initialTab, true); }
+			try { setRouteForTab(initialTab, true); }
 			catch (_) { }
 			// Restore last played video (set selection always; autoplay only when on Player)
-			try {
+			try { 
+				// TODO @copilot v1 reference
 				const LAST_VIDEO_KEY = 'lastVideo.v1';
 				const raw = localStorage.getItem(LAST_VIDEO_KEY);
 				if (raw) {
@@ -4488,7 +4833,7 @@
 			else if (e.code === "ArrowLeft") {
 				if (!videoEl.classList.contains("hidden")) {
 					e.preventDefault();
-					try {
+					try { 
 						videoEl.currentTime = Math.max(0, (videoEl.currentTime || 0) - 5);
 					}
 					catch (_) { }
@@ -4507,7 +4852,7 @@
 			else if (e.code === "ArrowRight") {
 				if (!videoEl.classList.contains("hidden")) {
 					e.preventDefault();
-					try {
+					try { 
 						videoEl.currentTime = (videoEl.currentTime || 0) + 5;
 					}
 					catch (_) { }
@@ -4618,7 +4963,7 @@
 			{key: "art.faces", label: "Faces", align: "center", width: 80, visible: false, source: "artifact" },
 		];
 		function getListCols() {
-			try {
+			try { 
 				const raw = localStorage.getItem(LIST_COLS_KEY);
 				if (!raw) return defaultListCols.slice();
 				const parsed = JSON.parse(raw);
@@ -4680,12 +5025,29 @@
 					wrap.classList.add("dragging-col");
 					e.dataTransfer?.setData("text/plain", String(wrap.dataset.index || idx));
 				});
-				wrap.addEventListener("dragend", () => wrap.classList.remove("dragging-col"));
-				wrap.addEventListener("dragover", (e) => e.preventDefault());
+				wrap.addEventListener("dragend", () => {
+					wrap.classList.remove("dragging-col");
+					wrap.classList.remove("drop-before");
+					wrap.classList.remove("drop-after");
+				});
+				wrap.addEventListener("dragover", (e) => {
+					e.preventDefault();
+					const rect = wrap.getBoundingClientRect();
+					const mid = rect.top + rect.height / 2;
+					wrap.classList.toggle("drop-before", (e.clientY || 0) < mid);
+					wrap.classList.toggle("drop-after", (e.clientY || 0) >= mid);
+				});
+				wrap.addEventListener("dragleave", () => {
+					wrap.classList.remove("drop-before");
+					wrap.classList.remove("drop-after");
+				});
 				wrap.addEventListener("drop", (e) => {
 					e.preventDefault();
 					const from = parseInt(e.dataTransfer?.getData("text/plain") || "-1", 10);
-					const to = parseInt(wrap.dataset.index || String(idx), 10);
+					let to = parseInt(wrap.dataset.index || String(idx), 10);
+					const rect = wrap.getBoundingClientRect();
+					const mid = rect.top + rect.height / 2;
+					if ((e.clientY || 0) >= mid) to = to + 1;
 					if (from >= 0 && from !== to) {
 						const cur = getListCols();
 						const [moved] = cur.splice(from, 1);
@@ -4696,6 +5058,8 @@
 						renderListColumnsPanel();
 						loadListRows(lastListDataCache || []);
 					}
+					wrap.classList.remove("drop-before");
+					wrap.classList.remove("drop-after");
 				});
 				choices.appendChild(wrap);
 				const cb = wrap.querySelector("input");
@@ -4774,14 +5138,28 @@
 				th.dataset.index = String(idx);
 				if (c.width) th.style.width = c.width + "px";
 				// TODO @copilot: avoid this. use static html that's hidden until needed
-				th.innerHTML = `<span>${esc(c.label)}</span><span class="col-resizer" data-idx="${idx}"></span>`;
+				th.innerHTML = `<span class="th-label">${esc(c.label)}</span><span class="col-resizer" data-idx="${idx}"></span>`;
 				// drag reorder
 				th.addEventListener("dragstart", (e) => {
 					th.classList.add("dragging-col");
 					e.dataTransfer?.setData("text/plain", String(th.dataset.index || idx));
 				});
-				th.addEventListener("dragend", () => th.classList.remove("dragging-col"));
-				th.addEventListener("dragover", (e) => e.preventDefault());
+				th.addEventListener("dragend", () => {
+					th.classList.remove("dragging-col");
+					th.classList.remove("drop-left");
+					th.classList.remove("drop-right");
+				});
+				th.addEventListener("dragover", (e) => {
+					e.preventDefault();
+					const rect = th.getBoundingClientRect();
+					const mid = rect.left + rect.width / 2;
+					th.classList.toggle("drop-left", (e.clientX || 0) < mid);
+					th.classList.toggle("drop-right", (e.clientX || 0) >= mid);
+				});
+				th.addEventListener("dragleave", () => {
+					th.classList.remove("drop-left");
+					th.classList.remove("drop-right");
+				});
 				th.addEventListener("drop", (e) => {
 					e.preventDefault();
 					const from = parseInt(e.dataTransfer?.getData("text/plain") || "-1", 10);
@@ -4807,6 +5185,8 @@
 						renderListHeader();
 						loadListRows(lastListDataCache || []);
 					}
+					th.classList.remove("drop-left");
+					th.classList.remove("drop-right");
 				});
 				// resize handle
 				const handle = th.querySelector(".col-resizer");
@@ -4835,6 +5215,41 @@
 					}
 					window.addEventListener("mousemove", onMove);
 					window.addEventListener("mouseup", onUp);
+				});
+				// double-click: auto-fit to content
+				handle.addEventListener("dblclick", (e) => {
+					e.preventDefault(); e.stopPropagation();
+					// Measure header label
+					const lbl = th.querySelector('.th-label');
+					let maxW = 60;
+					if (lbl) {
+						const rect = (lbl instanceof HTMLElement) ? lbl.getBoundingClientRect() : null;
+						if (rect) maxW = Math.max(maxW, Math.ceil(rect.width) + 24);
+					}
+					// Measure body cells in this column
+					const table = document.getElementById('listTable');
+					if (table) {
+						const colIdx = Array.from(th.parentElement?.children || []).indexOf(th);
+						const rows = table.querySelectorAll('tbody tr');
+						let count = 0;
+						rows.forEach((tr) => {
+							if (count > 200) return; // cap measurement for performance
+							const tds = tr.querySelectorAll('td');
+							const td = tds[colIdx];
+							if (td) {
+								const r = td.getBoundingClientRect();
+								maxW = Math.max(maxW, Math.ceil(r.width));
+								count++;
+							}
+						});
+					}
+					// Apply and persist
+					maxW = Math.max(60, Math.min(maxW + 18, 1200));
+					th.style.width = maxW + 'px';
+					const key = th.dataset.key;
+					const cur = getListCols();
+					const found = cur.find(c => c.key === key);
+					if (found) { found.width = maxW; setListCols(cur); }
 				});
 				row.appendChild(th);
 			});
@@ -4870,16 +5285,20 @@
 			}
 		}
 		function getByPath(obj, path) {
-			try {
-				const parts = String(path).split('.');
+			try { 
+				const parts = String(path)
+					.replace(/\[(\d+)\]/g, '.$1')
+					.split('.')
+					.filter(p => p.length > 0);
 				let cur = obj;
 				for (const p of parts) {
-					const m = p.match(/^(\w+)(?:\[(\d+)\])?$/);
-					if (!m) return undefined;
-					const key = m[1];
-					const idx = m[2] != null ? parseInt(m[2], 10) : null;
-					cur = cur?.[key];
-					if (idx != null) cur = Array.isArray(cur) ? cur[idx] : undefined;
+					if (/^\d+$/.test(p)) {
+						const i = parseInt(p, 10);
+						cur = Array.isArray(cur) ? cur[i] : undefined;
+					}
+					else {
+						cur = cur?.[p];
+					}
 					if (cur == null) return undefined;
 				}
 				return cur;
@@ -4888,7 +5307,7 @@
 		}
 		async function ensureMetadata(path) {
 			if (metaRawCache.has(path)) return metaRawCache.get(path);
-			try {
+			try { 
 				const res = await fetch(`/api/metadata/get?path=${encodeURIComponent(path)}&view=1`);
 				if (!res.ok) return null;
 				const j = await res.json();
@@ -4968,7 +5387,7 @@
 			renderListHeader();
 			const tbody = document.querySelector("#listTable tbody");
 			if (tbody) tbody.innerHTML = "";
-			try {
+			try { 
 				const res = await fetch(url);
 				if (!res.ok) return;
 				const j = await res.json();
@@ -4980,6 +5399,118 @@
 		}
 		const reloadListBtn = document.getElementById("reloadListBtn");
 		if (reloadListBtn) reloadListBtn.onclick = () => loadList();
+
+		// Rotate headers toggle
+		const toggleRotateHeadersBtn = document.getElementById('toggleRotateHeadersBtn');
+		const listTableEl = document.getElementById('listTable');
+		const ROTATE_HDRS_KEY = 'list.rotateHeaders.v1';
+		function applyRotateHeaders(flag) {
+			if (!listTableEl) return;
+			listTableEl.classList.toggle('rotate-headers', !!flag);
+			if (toggleRotateHeadersBtn) toggleRotateHeadersBtn.textContent = `Rotate headers: ${flag ? 'On' : 'Off'}`;
+		}
+		(function initRotateHeaders(){
+			try { applyRotateHeaders(localStorage.getItem(ROTATE_HDRS_KEY) === '1'); } catch(_){}
+		})();
+		if (toggleRotateHeadersBtn) toggleRotateHeadersBtn.onclick = () => {
+			const cur = listTableEl?.classList.contains('rotate-headers');
+			const next = !cur;
+			applyRotateHeaders(next);
+			try { localStorage.setItem(ROTATE_HDRS_KEY, next ? '1' : '0'); } catch(_){}
+		};
+
+		// Column/Row selection logic
+		const enableColSelectChk = document.getElementById('enableColSelectChk');
+		const enableRowSelectChk = document.getElementById('enableRowSelectChk');
+		let colSelectEnabled = false;
+		let rowSelectEnabled = false;
+		let selectedColIndex = -1;
+		function setColSelected(index) {
+			selectedColIndex = index;
+			const table = document.getElementById('listTable');
+			if (!table) return;
+			// Clear previous
+			table.querySelectorAll('th.col-selected, td.col-selected').forEach(el => el.classList.remove('col-selected'));
+			if (index < 0) return;
+			// Mark header
+			const headerCells = table.querySelectorAll('thead th');
+			if (headerCells[index]) headerCells[index].classList.add('col-selected');
+			// Mark body cells at same index
+			table.querySelectorAll('tbody tr').forEach(tr => {
+				const cells = tr.querySelectorAll('td');
+				if (cells[index]) cells[index].classList.add('col-selected');
+			});
+		}
+		function clearRowSelections() {
+			const table = document.getElementById('listTable');
+			if (!table) return;
+			table.querySelectorAll('tbody tr.row-selected').forEach(tr => tr.classList.remove('row-selected'));
+		}
+		function setColumnHover(index, on) {
+			const table = document.getElementById('listTable');
+			if (!table) return;
+			// Header
+			const th = table.querySelectorAll('thead th')[index];
+			if (th) th.classList.toggle('drag-hover', !!on);
+			// Body cells
+			table.querySelectorAll('tbody tr').forEach(tr => {
+				const cells = tr.querySelectorAll('td');
+				if (cells[index]) cells[index].classList.toggle('drag-hover', !!on);
+			});
+		}
+
+		function wireSelectionHandlers() {
+			const table = document.getElementById('listTable');
+			if (!table) return;
+			// Header click for column selection
+			table.querySelectorAll('thead th').forEach((th, idx) => {
+				if (th.dataset.selWired === '1') return;
+				th.dataset.selWired = '1';
+				th.addEventListener('click', (e) => {
+					if (!colSelectEnabled) return;
+					setColSelected(selectedColIndex === idx ? -1 : idx);
+					e.stopPropagation();
+				});
+				// Stronger drag target feedback across full column
+				th.addEventListener('dragover', () => setColumnHover(idx, true));
+				th.addEventListener('dragleave', () => setColumnHover(idx, false));
+				th.addEventListener('drop', () => setColumnHover(idx, false));
+			});
+			// Row click for row selection
+			table.querySelectorAll('tbody tr').forEach((tr) => {
+				if (tr.dataset.selWired === '1') return;
+				tr.dataset.selWired = '1';
+				tr.addEventListener('click', (e) => {
+					if (!rowSelectEnabled) return;
+					const already = tr.classList.contains('row-selected');
+					clearRowSelections();
+					if (!already) tr.classList.add('row-selected');
+					e.stopPropagation();
+				});
+			});
+		}
+		// Apply after header/body render
+		const _renderListHeader_orig = renderListHeader;
+		renderListHeader = function() {
+			_renderListHeader_orig();
+			wireSelectionHandlers();
+		};
+		const _loadListRows_orig = loadListRows;
+		loadListRows = function(vids) {
+			_loadListRows_orig(vids);
+			wireSelectionHandlers();
+			// Re-apply selected column after rerender
+			if (colSelectEnabled && selectedColIndex >= 0) setColSelected(selectedColIndex);
+		};
+		// Toggle checkboxes
+		if (enableColSelectChk) enableColSelectChk.addEventListener('change', () => {
+			colSelectEnabled = !!enableColSelectChk.checked;
+			if (!colSelectEnabled) setColSelected(-1);
+		});
+		if (enableRowSelectChk) enableRowSelectChk.addEventListener('change', () => {
+			rowSelectEnabled = !!enableRowSelectChk.checked;
+			if (!rowSelectEnabled) clearRowSelections();
+		});
 
 		// Columns control
 		const toggleListColumnsBtn = document.getElementById("toggleListColumnsBtn");
@@ -5023,7 +5554,7 @@
 							const np = prefix ? `${prefix}.${k}` : k;
 							const val = obj[k];
 							if (val && typeof val === 'object') walk(val, np);
-							else found.add(np);
+							else if (np) found.add(np);
 						}
 					}
 					else {
@@ -5032,7 +5563,7 @@
 				}
 				walk(raw, '');
 			}
-			discoveredMetaKeys = found;
+			discoveredMetaKeys = new Set(Array.from(found).filter(k => !!k && typeof k === 'string' && k.trim().length > 0));
 			return found;
 		}
 

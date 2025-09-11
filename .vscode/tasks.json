@@ -2,17 +2,17 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Run v3 dev server",
+			"label": "Run dev server",
 			"type": "shell",
-			"command": "bash -lc 'cd v3 && ./serve.sh'",
+			"command": "bash -lc './serve.sh'",
 			"isBackground": true,
 			"problemMatcher": [],
 			"group": "build"
 		},
 		{
-			"label": "Run v3 dev server",
+			"label": "Run dev server",
 			"type": "shell",
-			"command": "bash -lc 'cd v3 && ./serve.sh'",
+			"command": "bash -lc './serve.sh'",
 			"isBackground": true,
 			"group": "build"
 		}

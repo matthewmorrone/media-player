@@ -1,0 +1,78 @@
+# --- OS / Editor ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon\r
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.idea/
+.vscode/
+*.code-workspace
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.pytest_cache/
+.mypy_cache/
+.pytype/
+.pyre/
+.ruff_cache/
+.tox/
+.nox/
+
+# Packaging / build
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-wheel-metadata/
+
+# Virtual environments
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# Logs
+*.log
+logs/
+
+# Coverage / test outputs
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+nosetests.xml
+*.cover
+*.py,cover
+
+# Caches (general)
+.cache/
+
+# --- Project specific ---
+# Media artifact directories created by the app under library roots
+.artifacts/
+**/.artifacts/
+
+# Legacy preview folders (if accidentally created under repo)
+.previews/
+**/.previews/
+
+# Uvicorn/Starlette static files cache (none by default, but ignore if added)
+staticfiles/

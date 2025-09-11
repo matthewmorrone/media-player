@@ -1,6 +1,6 @@
-v3 test suite
+test suite
 
 Run from repo root:
 
 - With Python venv active and deps installed:
-  pytest v3/tests -q
+  pytest tests -q
