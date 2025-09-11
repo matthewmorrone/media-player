@@ -2,10 +2,13 @@
 <html>
 
 <head>
-	<meta charset="utf-8" />
-	<meta name="viewport" content="width=device-width,initial-scale=1" />
-	<title>Local Media</title>
-	<style>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>Local Media</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-tagsinput/0.8.0/bootstrap-tagsinput.css" />
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-tagsinput/0.8.0/bootstrap-tagsinput.min.js"></script>
+        <style>
 		body {
 			font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 			margin: 0;
@@ -73,11 +76,25 @@
 			min-width: 70px;
 		}
 
-		.infoValue {
-			color: #222;
-			font-size: 14px;
-			font-family: monospace;
-		}
+                .infoValue {
+                        color: #222;
+                        font-size: 14px;
+                        font-family: monospace;
+                }
+
+                .bootstrap-tagsinput {
+                        width: 100%;
+                }
+
+                .star {
+                        cursor: pointer;
+                        font-size: 20px;
+                        color: #ccc;
+                }
+
+                .star.selected {
+                        color: gold;
+                }
 
 		#main {
 			padding: 12px;
@@ -2780,11 +2797,101 @@
 			}
 			hideFileMenu();
 		};
-		const dirsEl = document.getElementById("dirs");
-		const filesEl = document.getElementById("files");
-		const crumbsEl = document.getElementById("crumbs");
-		const infoPanel = document.getElementById("infoPanel");
-		const statusEl = document.getElementById("status");
+                const dirsEl = document.getElementById("dirs");
+                const filesEl = document.getElementById("files");
+                const crumbsEl = document.getElementById("crumbs");
+                const infoPanel = document.getElementById("infoPanel");
+                const statusEl = document.getElementById("status");
+
+                async function renderTagEditor(file) {
+                        if (!infoPanel) return;
+                        const old = document.getElementById("tagEditorSection");
+                        if (old) old.remove();
+                        const section = document.createElement("div");
+                        section.id = "tagEditorSection";
+                        section.className = "mt-8";
+                        section.innerHTML = `
+                                <div class="infoRow"><span class="infoLabel">Tags</span><input id="tagsInput" type="text" /></div>
+                                <div class="infoRow"><span class="infoLabel">Performers</span><input id="performersInput" type="text" /></div>
+                                <div class="infoRow"><span class="infoLabel">Rating</span><div id="ratingContainer"></div></div>
+                                <div class="row mt-8"><button id="saveTagsBtn" class="btn">Save</button></div>`;
+                        infoPanel.appendChild(section);
+                        $('#tagsInput').tagsinput();
+                        $('#performersInput').tagsinput();
+                        let currentRating = 0;
+                        const ratingEl = section.querySelector('#ratingContainer');
+                        function renderStars(r) {
+                                ratingEl.innerHTML = '';
+                                for (let i = 1; i <= 5; i++) {
+                                        const s = document.createElement('span');
+                                        s.className = 'star' + (i <= r ? ' selected' : '');
+                                        s.textContent = i <= r ? '★' : '☆';
+                                        s.dataset.val = String(i);
+                                        s.addEventListener('click', () => { currentRating = i; renderStars(currentRating); });
+                                        ratingEl.appendChild(s);
+                                }
+                        }
+                        const dir = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : '';
+                        try {
+                                const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(dir)}`);
+                                if (resp.ok) {
+                                        const t = await resp.json();
+                                        (t.tags || []).forEach(v => $('#tagsInput').tagsinput('add', v));
+                                        (t.performers || []).forEach(v => $('#performersInput').tagsinput('add', v));
+                                        currentRating = t.rating || 0;
+                                }
+                        } catch (err) {
+                                console.error('Failed to load tags/performers/rating:', err);
+                                // Optionally, provide user feedback:
+                                const tagsInputRow = section.querySelector('.infoRow');
+                                if (tagsInputRow) {
+                                        const errorMsg = document.createElement('span');
+                                        errorMsg.style.color = 'red';
+                                        errorMsg.style.marginLeft = '8px';
+                                        errorMsg.textContent = 'Failed to load tags';
+                                        tagsInputRow.appendChild(errorMsg);
+                                }
+                        }
+                        renderStars(currentRating);
+                        const saveTagsBtn = document.getElementById('saveTagsBtn');
+                        // Create feedback message element if not present
+                        let saveFeedback = document.getElementById('saveTagsFeedback');
+                        if (!saveFeedback) {
+                            saveFeedback = document.createElement('div');
+                            saveFeedback.id = 'saveTagsFeedback';
+                            saveFeedback.style.marginTop = '8px';
+                            saveTagsBtn.parentNode.insertBefore(saveFeedback, saveTagsBtn.nextSibling);
+                        }
+                        saveTagsBtn.addEventListener('click', async () => {
+                            saveTagsBtn.disabled = true;
+                            saveFeedback.textContent = '';
+                            const payload = {
+                                replace: true,
+                                add: $('#tagsInput').tagsinput('items'),
+                                performers_add: $('#performersInput').tagsinput('items'),
+                                rating: currentRating,
+                            };
+                            try {
+                                const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(dir)}`, {
+                                    method: 'PATCH',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(payload),
+                                });
+                                if (resp.ok) {
+                                    saveFeedback.textContent = 'Tags saved successfully!';
+                                    saveFeedback.style.color = 'green';
+                                } else {
+                                    saveFeedback.textContent = 'Failed to save tags.';
+                                    saveFeedback.style.color = 'red';
+                                }
+                            } catch (e) {
+                                saveFeedback.textContent = 'Error saving tags.';
+                                saveFeedback.style.color = 'red';
+                            } finally {
+                                saveTagsBtn.disabled = false;
+                            }
+                        });
+                }
 		const rootInput = document.getElementById("rootInput");
 		const setRootBtn = document.getElementById("setRootBtn");
 		const prevBtn = document.getElementById("prevBtn");
@@ -3076,15 +3183,16 @@
 			setClickable("infoMetaFile", "Click to (re)generate metadata", async () => {
 				await fetch(`/api/metadata/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
 			});
-			setClickable("infoScenes", "Click to (re)generate chapters", async () => {
-				await fetch(`/api/scenes/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
-			});
-			infoPanel.appendChild(frag);
-			try {
-				const res = await fetch(
-				`/api/metadata/get?path=${encodeURIComponent(file.path)}`,
-				{method: "GET" },
-				);
+                        setClickable("infoScenes", "Click to (re)generate chapters", async () => {
+                                await fetch(`/api/scenes/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
+                        });
+                        infoPanel.appendChild(frag);
+                        renderTagEditor(file);
+                        try {
+                                const res = await fetch(
+                                `/api/metadata/get?path=${encodeURIComponent(file.path)}`,
+                                {method: "GET" },
+                                );
 				if (res.ok) {
 					const body = await res.json();
 					const j = body.data || body;

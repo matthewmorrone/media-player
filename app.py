@@ -1329,13 +1329,19 @@ def tags_export(directory: str = Query("."), recursive: bool = Query(False)):
     out: list[dict] = []
     for v in vids:
         tf = _tags_file(v)
-        data = {"path": str(v), "name": v.name, "tags": [], "performers": [], "description": ""}
+        data = {"path": str(v), "name": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
         if tf.exists():
             try:
                 td = json.loads(tf.read_text())
                 data["tags"] = td.get("tags", []) or []
                 data["performers"] = td.get("performers", []) or []
                 data["description"] = td.get("description", "") or ""
+                try:
+                    rating = int(td.get("rating", 0) or 0)
+                except Exception:
+                    rating = 0
+                # Clamp rating to valid range 0-5
+                data["rating"] = max(0, min(5, rating))
             except Exception:
                 pass
         out.append(data)
@@ -1370,7 +1376,7 @@ def tags_import(payload: TagsImport):
         if not p.exists():
             continue
         tf = _tags_file(p)
-        cur = {"video": p.name, "tags": [], "performers": [], "description": ""}
+        cur = {"video": p.name, "tags": [], "performers": [], "description": "", "rating": 0}
         if tf.exists() and not payload.replace:
             try:
                 cur = json.loads(tf.read_text())
@@ -1379,6 +1385,7 @@ def tags_import(payload: TagsImport):
         cur.setdefault("tags", [])
         cur.setdefault("performers", [])
         cur.setdefault("description", "")
+        cur.setdefault("rating", 0)
         # merge
         for k in ("tags", "performers"):
             vals = data.get(k)
@@ -1389,6 +1396,12 @@ def tags_import(payload: TagsImport):
                     cur[k] = list(dict.fromkeys(list(cur.get(k, [])) + vals))
         if isinstance(data.get("description"), str):
             cur["description"] = data.get("description")
+        if isinstance(data.get("rating"), int):
+            try:
+                rating = int(data.get("rating"))
+                cur["rating"] = max(0, min(5, rating))
+            except Exception:
+                cur["rating"] = 0
         try:
             tf.write_text(json.dumps(cur, indent=2))
             count += 1
@@ -1556,14 +1569,17 @@ def v2_list_videos(request: Request, directory: str = Query("."), recursive: boo
                     info["tags"] = tdata.get("tags", [])
                     info["performers"] = tdata.get("performers", [])
                     info["description"] = tdata.get("description", "")
+                    info["rating"] = tdata.get("rating", 0)
                 except Exception:
                     info["tags"] = []
                     info["performers"] = []
                     info["description"] = ""
+                    info["rating"] = 0
             else:
                 info["tags"] = []
                 info["performers"] = []
                 info["description"] = ""
+                info["rating"] = 0
             # duration / codecs from summary cache
             rel = None
             try:
@@ -1590,13 +1606,15 @@ def v2_get_video_tags(name: str, directory: str = Query(".")):
         raise HTTPException(404, "video not found")
     tfile = _tags_file(path)
     if not tfile.exists():
-        return {"video": name, "tags": [], "performers": [], "description": ""}
+        return {"video": name, "tags": [], "performers": [], "description": "", "rating": 0}
     try:
         data = json.loads(tfile.read_text())
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, "invalid tags file") from e
     if "description" not in data:
         data["description"] = ""
+    if "rating" not in data:
+        data["rating"] = 0
     return data
 
 
@@ -1607,6 +1625,7 @@ class TagUpdate(BaseModel):
     performers_remove: list[str] | None = None
     replace: bool = False
     description: str | None = None
+    rating: int | None = None
 
 
 @app.patch("/videos/{name}/tags")
@@ -1620,12 +1639,15 @@ def v2_update_video_tags(name: str, payload: TagUpdate, directory: str = Query("
         try:
             data = json.loads(tfile.read_text())
         except Exception:
-            data = {"video": name, "tags": [], "performers": [], "description": ""}
+            data = {"video": name, "tags": [], "performers": [], "description": "", "rating": 0}
     else:
-        data = {"video": name, "tags": [], "performers": [], "description": ""}
+        data = {"video": name, "tags": [], "performers": [], "description": "", "rating": 0}
     data.setdefault("description", "")
+    data.setdefault("rating", 0)
     if payload.replace and payload.add is not None:
         data["tags"] = []
+    if payload.replace:
+        data["performers"] = []
     if payload.add:
         for t in payload.add:
             if t not in data["tags"]:
@@ -1640,6 +1662,11 @@ def v2_update_video_tags(name: str, payload: TagUpdate, directory: str = Query("
         data["performers"] = [t for t in data["performers"] if t not in payload.performers_remove]
     if payload.description is not None:
         data["description"] = payload.description
+    if payload.rating is not None:
+        try:
+            data["rating"] = max(0, min(5, int(payload.rating)))
+        except (ValueError, TypeError):
+            data["rating"] = 0
     try:
         tfile.write_text(json.dumps(data, indent=2))
     except Exception:
