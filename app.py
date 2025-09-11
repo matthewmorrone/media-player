@@ -2309,6 +2309,57 @@ def metadata_delete(path: str = Query(...)):
             raise_api_error(f"Failed to delete metadata: {e}", status_code=500)
     raise_api_error("Metadata not found", status_code=404)
 
+# --- Tags ---
+
+
+class TagsPayload(BaseModel):
+    tags: list[str] | None = None
+    performers: list[str] | None = None
+    description: str | None = None
+
+
+@api.get("/tags/get")
+def tags_get(path: str = Query(...)):
+    fp = safe_join(STATE["root"], path)
+    if not fp.exists():
+        raise_api_error("Not found", status_code=404)
+    tfile = _tags_file(fp)
+    if not tfile.exists():
+        return api_success({"tags": [], "performers": [], "description": ""})
+    try:
+        data = json.loads(tfile.read_text())
+    except Exception:
+        raise_api_error("invalid tags file", status_code=500)
+    data.setdefault("tags", [])
+    data.setdefault("performers", [])
+    data.setdefault("description", "")
+    return api_success(data)
+
+
+@api.patch("/tags/update")
+def tags_update(path: str = Query(...), payload: TagsPayload = Body(...)):
+    fp = safe_join(STATE["root"], path)
+    if not fp.exists():
+        raise_api_error("Not found", status_code=404)
+    tfile = _tags_file(fp)
+    data = {"video": fp.name, "tags": [], "performers": [], "description": ""}
+    if tfile.exists():
+        try:
+            data = json.loads(tfile.read_text())
+        except Exception:
+            pass
+    if payload.tags is not None:
+        data["tags"] = list(dict.fromkeys(t for t in payload.tags if t))
+    if payload.performers is not None:
+        data["performers"] = list(dict.fromkeys(t for t in payload.performers if t))
+    if payload.description is not None:
+        data["description"] = payload.description
+    try:
+        tfile.write_text(json.dumps(data, indent=2))
+    except Exception:
+        raise_api_error("failed to write tags", status_code=500)
+    return api_success(data)
+
 
 # --- Subtitles --- (prefer .artifacts/<name>.srt, but also read <name>.srt next to file)
 def _find_subtitles(fp: Path) -> Optional[Path]:

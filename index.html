@@ -85,6 +85,12 @@
       font-family: monospace;
     }
 
+    #infoPanel input[type="text"] {
+      flex: 1;
+      padding: 4px 6px;
+      font-size: 13px;
+    }
+
     #main {
       padding: 12px;
       overflow: auto;
@@ -2548,9 +2554,12 @@
       <div class="infoRow"><span class="infoLabel">Heatmaps</span><span class="infoValue" id="infoHeatmaps">Loading…</span></div>
       <div class="infoRow"><span class="infoLabel">Subtitles</span><span class="infoValue" id="infoSubtitles">Loading…</span></div>
       <div class="infoRow"><span class="infoLabel">Face Embeddings</span><span class="infoValue" id="infoFaces">Loading…</span></div>
+      <div class="infoRow"><span class="infoLabel">Tags</span><input id="infoTags" type="text" /></div>
+      <div class="infoRow"><span class="infoLabel">Performers</span><input id="infoPerformers" type="text" /></div>
       <div id="infoMetaExtra" class="small meta-extra"></div>
       <div class="row mt-8 gap-6 wrap">
         <button class="btn" id="infoPlay">Play</button>
+        <button class="btn" id="infoSaveTags">Save Tags</button>
       </div>
     `;
       try {
@@ -2626,6 +2635,42 @@
         document.getElementById("infoVBitrate").textContent = "";
         const mf = document.getElementById("infoMetaFile");
         if (mf) mf.textContent = "❌";
+      }
+      try {
+        const tres = await fetch(
+          `/api/tags/get?path=${encodeURIComponent(file.path)}`,
+          { method: "GET" },
+        );
+        if (tres.ok) {
+          const tb = await tres.json();
+          const td = tb.data || tb;
+          const tEl = document.getElementById("infoTags");
+          const pEl = document.getElementById("infoPerformers");
+          if (tEl) tEl.value = (td.tags || []).join(", ");
+          if (pEl) pEl.value = (td.performers || []).join(", ");
+        }
+      } catch (_) {}
+      const saveTagsBtn = document.getElementById("infoSaveTags");
+      if (saveTagsBtn) {
+        saveTagsBtn.onclick = async () => {
+          const t = document
+            .getElementById("infoTags")
+            .value.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const p = document
+            .getElementById("infoPerformers")
+            .value.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          await fetch(`/api/tags/update?path=${encodeURIComponent(file.path)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tags: t, performers: p }),
+          });
+          file.tags = t;
+          file.performers = p;
+        };
       }
       // Update Heatmaps/Subtitles/Faces indicators dynamically
       (async () => {

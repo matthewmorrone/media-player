@@ -72,4 +72,22 @@ def test_stats_counts(client, tmp_path):
     assert r.status_code == 200
     data = r.json().get('data') or {}
     assert data.get('total_files') == 2
+
+
+def test_tags_roundtrip(client, tmp_path):
+    client.post('/api/setroot', params={'root': str(tmp_path)})
+    video = tmp_path / 't.mp4'
+    video.write_bytes(b'00')
+    r_empty = client.get('/api/tags/get', params={'path': 't.mp4'})
+    assert r_empty.status_code == 200
+    data = r_empty.json().get('data') or {}
+    assert data.get('tags') == []
+    payload = {'tags': ['a', 'b', 'a'], 'performers': ['p1', 'p1']}
+    r_set = client.patch('/api/tags/update', params={'path': 't.mp4'}, json=payload)
+    assert r_set.status_code == 200
+    r_again = client.get('/api/tags/get', params={'path': 't.mp4'})
+    assert r_again.status_code == 200
+    data2 = r_again.json().get('data') or {}
+    assert data2.get('tags') == ['a', 'b']
+    assert data2.get('performers') == ['p1']
     
