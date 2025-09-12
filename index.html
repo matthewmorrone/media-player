@@ -9,16 +9,7 @@
         <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-tagsinput/0.8.0/bootstrap-tagsinput.min.js"></script>
         <style>
-		body {
-			font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-			margin: 0;
-			display: grid;
-			grid-template-rows: auto 1fr auto;
-			height: 100vh;
-		}
-
-		header, footer {
-			padding: 12px 16px;
+		header {
 			border-bottom: 1px solid #ddd;
 		}
 
@@ -397,6 +388,16 @@
 		.text-right {
 			text-align: right;
 		}
+
+		/* Jobs activity styling */
+		.job-state { font-weight: 600; }
+		.job-state.state-queued { color: #777; }
+		.job-state.state-running { color: #1e6091; }
+		.job-state.state-done { color: #2b9348; }
+		.job-state.state-failed { color: #d00000; }
+		.job-state.state-canceled { color: #8d99ae; }
+		.jobs-prog-box { display: grid; grid-template-rows: auto auto; gap: 4px; }
+		.jobs-prog-box progress { width: 160px; height: 6px; }
 
 		.th {
 			padding: 8px;
@@ -1003,6 +1004,27 @@
 				</div>
 				<div class="mb-18" id="taskSection-hovers" data-task-section="hovers">
 					<div class="small"><strong>Hover Previews</strong></div>
+					<div class="row items-center gap-12 wrap mt-6">
+						<label class="small">CRF (0-51)
+							<input id="hoverCrfInput" type="number" min="0" max="51" step="1" value="28" class="w-80" />
+						</label>
+						<label class="small">Preset
+							<select id="hoverPresetSelect" class="w-120">
+								<option value="ultrafast">ultrafast</option>
+								<option value="superfast">superfast</option>
+								<option value="veryfast" selected>veryfast</option>
+								<option value="faster">faster</option>
+								<option value="fast">fast</option>
+								<option value="medium">medium</option>
+								<option value="slow">slow</option>
+								<option value="slower">slower</option>
+								<option value="veryslow">veryslow</option>
+							</select>
+						</label>
+						<label class="small">Concurrency
+							<input id="hoverConcurrencyInput" type="number" min="0" step="1" value="0" class="w-80" />
+						</label>
+					</div>
 					<progress id="hoverProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="hoverPct" class="small"></span>
 					<button id="generateMissingHoversBtn" class="btn">Generate missing hovers</button>
@@ -1027,6 +1049,27 @@
 				</div>
 				<div class="mb-18" id="taskSection-sprites" data-task-section="sprites">
 					<div class="small"><strong>Scrubbing Thumbnails</strong></div>
+					<div class="row items-center gap-12 wrap mt-6">
+						<label class="small">Interval (s)
+							<input id="spritesIntervalInput" type="number" min="0.1" step="0.1" value="10.0" class="w-80" />
+						</label>
+						<label class="small">Width (px)
+							<input id="spritesWidthInput" type="number" min="64" step="16" value="320" class="w-80" />
+						</label>
+						<label class="small">Cols
+							<input id="spritesColsInput" type="number" min="2" step="1" value="10" class="w-80" />
+						</label>
+						<label class="small">Rows
+							<input id="spritesRowsInput" type="number" min="2" step="1" value="10" class="w-80" />
+						</label>
+						<label class="small">Quality (2-31)
+							<input id="spritesQualityInput" type="number" min="2" max="31" step="1" value="4" class="w-80" />
+						</label>
+						<label class="row items-center gap-6 small"><input type="checkbox" id="spritesOnlyMissingChk" checked />Only missing</label>
+						<label class="small">Concurrency
+							<input id="spritesConcurrencyInput" type="number" min="0" step="1" value="0" class="w-80" />
+						</label>
+					</div>
 					<progress id="spritesProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="spritesPct" class="small"></span>
 					<button id="generateMissingSpritesBtn" class="btn">Generate missing sprites</button>
@@ -1092,6 +1135,19 @@
 					</div>
 					<div id="cleanupSummary" class="small mt-8 prewrap"></div>
 				</div>
+				<!-- Jobs activity log (SSE) -->
+				<div class="mb-18" id="taskSection-jobs" data-task-section="jobs">
+					<div class="small flex items-center gap-8 wrap">
+						<strong>Jobs Activity</strong>
+					</div>
+					<div class="row wrap items-center gap-8 small mt-6">
+						<strong>Live</strong>
+						<label class="row items-center gap-6 small"><input type="checkbox" id="jobsFilterActiveOnly" />Active only</label>
+						<button id="clearJobsListBtn" class="btn">Clear list</button>
+					</div>
+					<div id="jobsLiveList" class="small" style="max-height:240px; overflow:auto; background:#fafafa; color:#222; padding:8px; border:1px solid #eee; border-radius:6px; line-height:1.6;"></div>
+					<!-- Raw log merged into per-job details; global raw log removed -->
+				</div>
 				<!--<button class="btn" disabled>Find end of intro</button>-->
 				<!--<button class="btn" disabled>Facial recognition of actors</button>-->
 			</div>
@@ -1108,6 +1164,129 @@
 		const heatmapStripe = document.getElementById("heatmapStripe");
 		const chaptersBar = document.getElementById("chaptersBar");
 		const gridControls = document.getElementById("gridControls");
+		const playerActionsEl = document.getElementById("playerActions");
+		// Local storage keys (versioned)
+		const LAST_VIDEO_KEY = 'lastVideo.v1';
+		// Jobs activity UI: raw log + live per-job list
+		const jobsLiveList = document.getElementById("jobsLiveList");
+		const clearJobsListBtn = document.getElementById("clearJobsListBtn");
+		const jobsFilterActiveOnly = document.getElementById("jobsFilterActiveOnly");
+		if (clearJobsListBtn && jobsLiveList) clearJobsListBtn.addEventListener('click', () => { jobsLiveList.textContent = ""; _jobsRowMap.clear(); });
+		if (jobsFilterActiveOnly) jobsFilterActiveOnly.addEventListener('change', () => {
+			for (const [id, row] of _jobsRowMap.entries()) {
+				const stateEl = row.querySelector('[data-slot="state"]');
+				const txt = (stateEl && stateEl.textContent) || '';
+				if (jobsFilterActiveOnly.checked) {
+					row.style.display = (txt === 'Queued' || txt === 'Running') ? 'grid' : 'none';
+				} else {
+					row.style.display = 'grid';
+				}
+			}
+		});
+		// Map of jobId -> row element
+		const _jobsRowMap = new Map();
+		// Active batch progress by normalized task type (e.g., 'covers', 'hovers')
+		// value: { id, processed, total, ts }
+		const _activeBatchByType = new Map();
+		function _fmtPct(processed, total) {
+			if (typeof total === 'number' && total > 0 && typeof processed === 'number') {
+				const pct = Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
+				return `${pct}%`;
+			}
+			return '';
+		}
+		function _ensureJobRow(id, type, path) {
+			if (!jobsLiveList) return null;
+			let row = _jobsRowMap.get(id);
+			if (!row) {
+				row = document.createElement('div');
+				row.dataset.jobId = id;
+				row.style.display = 'grid';
+				row.style.gridTemplateColumns = 'minmax(140px, 200px) minmax(90px, 120px) 1fr minmax(120px, 180px)';
+				row.style.gap = '8px';
+				row.style.alignItems = 'center';
+				const cType = document.createElement('div'); cType.className = 'muted'; cType.dataset.slot = 'type';
+				const cState = document.createElement('div'); cState.className = 'job-state'; cState.dataset.slot = 'state';
+				const cPath = document.createElement('div'); cPath.style.whiteSpace = 'nowrap'; cPath.style.overflow = 'hidden'; cPath.style.textOverflow = 'ellipsis'; cPath.dataset.slot = 'path';
+				const cProg = document.createElement('div'); cProg.className = 'jobs-prog-box'; cProg.dataset.slot = 'prog';
+				const cProgBar = document.createElement('progress'); cProgBar.max = 100; cProgBar.value = 0; cProgBar.dataset.slot = 'progbar';
+				const cProgText = document.createElement('div'); cProgText.className = 'muted'; cProgText.dataset.slot = 'progtext';
+				row.appendChild(cType); row.appendChild(cState); row.appendChild(cPath); row.appendChild(cProg);
+				cProg.appendChild(cProgBar); cProg.appendChild(cProgText);
+				jobsLiveList.appendChild(row);
+				_jobsRowMap.set(id, row);
+				// prune to last N rows to avoid unbounded DOM growth
+				const maxRows = 200;
+				while (jobsLiveList.children.length > maxRows) {
+					const first = jobsLiveList.firstChild;
+					if (first && first.dataset && first.dataset.jobId) _jobsRowMap.delete(first.dataset.jobId);
+					jobsLiveList.removeChild(first);
+				}
+			}
+			if (type) row.querySelector('[data-slot="type"]').textContent = String(type);
+			if (path) row.querySelector('[data-slot="path"]').textContent = String(path);
+			return row;
+		}
+		function _updateJobRow({ id, event, type, path, processed, total, error }) {
+			const row = _ensureJobRow(id, type, path);
+			if (!row) return;
+			const stateEl = row.querySelector('[data-slot="state"]');
+			const progBoxEl = row.querySelector('[data-slot="prog"]');
+			const progBarEl = row.querySelector('[data-slot="progbar"]');
+			const progTextEl = row.querySelector('[data-slot="progtext"]');
+			let stateTxt = '';
+			if (event === 'created' || event === 'queued') stateTxt = 'Queued';
+			else if (event === 'started' || event === 'progress') stateTxt = 'Running';
+			else if (event === 'finished') stateTxt = error ? 'Failed' : 'Done';
+			else if (event === 'cancel') stateTxt = 'Canceled';
+			if (stateTxt) {
+				stateEl.textContent = stateTxt;
+				stateEl.classList.remove('state-queued', 'state-running', 'state-done', 'state-failed', 'state-canceled');
+				if (stateTxt === 'Queued') stateEl.classList.add('state-queued');
+				if (stateTxt === 'Running') stateEl.classList.add('state-running');
+				if (stateTxt === 'Done') stateEl.classList.add('state-done');
+				if (stateTxt === 'Failed') stateEl.classList.add('state-failed');
+				if (stateTxt === 'Canceled') stateEl.classList.add('state-canceled');
+			}
+			const pct = _fmtPct(processed, total);
+			if (pct) {
+				if (progBarEl) progBarEl.value = Math.max(0, Math.min(100, parseInt(pct, 10)));
+				if (progTextEl) progTextEl.textContent = `${processed ?? ''}${typeof processed==='number' && typeof total==='number' ? '/' : ''}${typeof total==='number' ? total : ''} ${pct}`.trim();
+			}
+			else if (typeof processed === 'number' || typeof total === 'number') {
+				if (progTextEl) progTextEl.textContent = `${processed ?? ''}${typeof processed==='number' && typeof total==='number' ? '/' : ''}${typeof total==='number' ? total : ''}`.trim();
+			}
+			// Suffix the last event for merged context
+			try {
+				if (progTextEl && event) {
+					const cur = progTextEl.textContent || '';
+					const suffix = ` • ${String(event)}`;
+					if (!cur.endsWith(suffix)) progTextEl.textContent = (cur + suffix).trim();
+				}
+			}
+			catch(_) { }
+			// Update active batch overlay for progress bars
+			try {
+				const t = typeof normalizeJobType === 'function' ? normalizeJobType(type) : (type || '').toLowerCase();
+				if (event === 'progress' && typeof total === 'number') {
+					_activeBatchByType.set(t, { id, processed: Number(processed) || 0, total: Number(total) || 0, ts: Date.now() });
+				}
+				else if ((event === 'finished' || event === 'cancel') && _activeBatchByType.has(t)) {
+					const cur = _activeBatchByType.get(t);
+					if (cur && cur.id === id) _activeBatchByType.delete(t);
+				}
+				// Nudge a quick stats refresh so overlay applies immediately
+				if (typeof updateTasksStats === 'function') { updateTasksStats(); }
+			}
+			catch (_) { }
+			// Active-only filter: hide rows that are no longer running/queued
+			const chk = document.getElementById('jobsFilterActiveOnly');
+			if (chk && chk.checked) {
+				row.style.display = (stateTxt === 'Queued' || stateTxt === 'Running') ? 'grid' : 'none';
+			} else {
+				row.style.display = 'grid';
+			}
+		}
 		const filesGrid = document.getElementById("files");
 		const tasksDiv = document.getElementById("tasksDiv");
 		const toggleHoversBtn = document.getElementById("toggleHoversBtn");
@@ -1158,8 +1337,7 @@
 			}
 		}
 
-		// DRY tab switching: hide all, then show the requested one
-		// TODO @copilot: these should be standardized
+		// DRY tab switching: hide all, then show the requested one (standardized with TAB_ENTER handlers)
 		const TAB_CONTAINERS = {
 			Player: "player",
 			Grid: "gridTab",
@@ -1171,19 +1349,19 @@
 			Image: "imageTab",
 			Setup: "setupTab",
 		};
+		function togglePlayerUI(active) {
+			const _bb = document.getElementById("backBtn");
+			if (_bb) _bb.style.display = active ? "" : "none";
+			if (controlsBar) controlsBar.classList.toggle("hidden", !active);
+			if (playerActionsEl) playerActionsEl.style.display = active ? "" : "none";
+		}
 		function hideAllTabs() {
 			Object.values(TAB_CONTAINERS).forEach((id) => {
 				const el = document.getElementById(id);
 				if (el) { el.classList.add("hidden"); }
 			});
 			// Hide Player-only UI by default
-			const _bb = document.getElementById("backBtn");
-			if (_bb) { _bb.style.display = "none"; }
-			if (controlsBar) { controlsBar.classList.add("hidden"); }
-			const setThumbBtn = document.getElementById("setThumbBtn");
-			if (setThumbBtn) { setThumbBtn.style.display = "none"; }
-			const setMarkerBtn = document.getElementById("setMarkerBtn");
-			if (setMarkerBtn) { setMarkerBtn.style.display = "none"; }
+			togglePlayerUI(false);
 			// Stop Tasks refresh + SSE when leaving
 			if (typeof tasksRefreshTimer !== "undefined" && tasksRefreshTimer) {
 				clearInterval(tasksRefreshTimer);
@@ -1198,63 +1376,38 @@
 			catch (_) { }
 			try { setIndeterminateActive(false); } catch (_) { }
 		}
+		const TAB_ENTER = {
+			Player: () => {
+				// Show back + player UI and ensure a file is loaded
+				togglePlayerUI(true);
+				if (selectedFile) {
+					const currentSrc = videoEl.querySelector("source")?.src || "";
+					const shouldLoad = !currentSrc.endsWith(encodeURIComponent(selectedFile.path)) && !currentSrc.endsWith(selectedFile.path);
+					if (shouldLoad) { play(selectedFile); }
+				}
+			},
+			Tasks: () => {
+				try { startJobsSSE(); } catch(_) {}
+				try { updateTasksStats(); } catch(_) {}
+				try { updatePollingInterval(); } catch(_) {}
+				try { setIndeterminateActive(window.__jobsActive === true); } catch(_) {}
+			},
+			Stats: () => { try { loadStats(); } catch(_) {} },
+			Similar: () => { try { loadSimilar(); } catch(_) {} },
+			List: () => { try { loadList(); } catch(_) {} },
+			Image: () => { try { loadFaces(); } catch(_) {} },
+			Settings: () => { try { loadSettings(); } catch(_) {} },
+			Setup: () => { try { loadSetup(); } catch(_) {} },
+		};
 		function showTab(tab, fromRouter) {
 			hideAllTabs();
 			try { window.activeTab = tab; } catch(_) {}
 			const id = TAB_CONTAINERS[tab] || TAB_CONTAINERS.Grid;
 			const container = document.getElementById(id);
 			if (container) { container.classList.remove("hidden"); }
-			// Per-tab actions
-			if (tab === "Player") {
-				// Show back + player UI and ensure a file is loaded
-				const _bb = document.getElementById("backBtn");
-				if (_bb) { _bb.style.display = ""; }
-				const setThumbBtn = document.getElementById("setThumbBtn");
-				// TODO @copilot: can't you do this more programmatically?
-				if (setThumbBtn) { setThumbBtn.style.display = ""; }
-				const setMarkerBtn = document.getElementById("setMarkerBtn");
-				// TODO @copilot: can't you do this more programmatically?
-				if (setMarkerBtn) { setMarkerBtn.style.display = ""; }
-				if (selectedFile) {
-					const currentSrc = videoEl.querySelector("source")?.src || "";
-					const shouldLoad = !currentSrc.endsWith(encodeURIComponent(selectedFile.path)) && !currentSrc.endsWith(selectedFile.path);
-					if (shouldLoad) { play(selectedFile); }
-				}
-			}
-			else if (tab === "Tasks") {
-				try { startJobsSSE(); }
-				catch (_) { }
-				try { updateTasksStats(); }
-				catch (_) { }
-				try { updatePollingInterval(); }
-				catch (_) { }
-				try { setIndeterminateActive(window.__jobsActive === true); }
-				catch (_) { }
-			}
-			else if (tab === "Stats") {
-				try { loadStats(); }
-				catch (_) { }
-			}
-			else if (tab === "Similar") {
-				try { loadSimilar(); }
-				catch (_) { }
-			}
-			else if (tab === "List") {
-				try { loadList(); }
-				catch (_) { }
-			}
-			else if (tab === "Image") {
-				try { loadFaces(); }
-				catch (_) { }
-			}
-			else if (tab === "Settings") {
-				try { loadSettings(); }
-				catch (_) { }
-			}
-			else if (tab === "Setup") {
-				try { loadSetup(); }
-				catch (_) { }
-			}
+			// Per-tab actions via standardized handlers
+			const onEnter = TAB_ENTER[tab];
+			if (typeof onEnter === 'function') { try { onEnter(); } catch(_) {} }
 			// Update URL route after switching (unless invoked by popstate)
 			try { if (!fromRouter) setRouteForTab(tab); }
 			catch (_) { }
@@ -1340,6 +1493,10 @@
 		const coverPct = document.getElementById("coverPct");
 		const hoverProgress = document.getElementById("hoverProgress");
 		const hoverPct = document.getElementById("hoverPct");
+		// Hover knobs
+		const hoverCrfInput = document.getElementById("hoverCrfInput");
+		const hoverPresetSelect = document.getElementById("hoverPresetSelect");
+		const hoverConcurrencyInput = document.getElementById("hoverConcurrencyInput");
 		const metadataProgress = document.getElementById("metaProgress");
 		const metaPct = document.getElementById("metaPct");
 		const phashProgress = document.getElementById("phashProgress");
@@ -1348,6 +1505,14 @@
 		const scenesPct = document.getElementById("scenesPct");
 		const spritesProgress = document.getElementById("spritesProgress");
 		const spritesPct = document.getElementById("spritesPct");
+		// Sprites knobs
+		const spritesIntervalInput = document.getElementById("spritesIntervalInput");
+		const spritesWidthInput = document.getElementById("spritesWidthInput");
+		const spritesColsInput = document.getElementById("spritesColsInput");
+		const spritesRowsInput = document.getElementById("spritesRowsInput");
+		const spritesQualityInput = document.getElementById("spritesQualityInput");
+		const spritesOnlyMissingChk = document.getElementById("spritesOnlyMissingChk");
+		const spritesConcurrencyInput = document.getElementById("spritesConcurrencyInput");
 		const subtitlesProgress = document.getElementById("subsProgress");
 		const subsPct = document.getElementById("subsPct");
 		const generateMissingCoversBtn = document.getElementById("generateMissingCoversBtn");
@@ -1412,19 +1577,66 @@
 			if (!section) return;
 			section.classList.toggle("indeterminate", !!active);
 		}
-		// TODO @copilot: is this necessary?
-		const JOB_SECTION_BY_TYPE = {
-			"metadata": "metadata",
-			"cover": "covers",
-			"hover": "hovers",
-			"phash": "phash",
-			"scenes": "scenes",
-			"sprites": "sprites",
-			"heatmaps": "heatmaps",
-			"subtitles": "subtitles",
-			"faces": "faces",
-		};
-		// TODO @copilot: this should no longer be necessary
+
+		// --- Hover & Sprites knobs helpers ---
+		const HOVER_KNOBS_KEY = "hover.knobs.batch.v1";
+		const SPRITES_KNOBS_KEY = "sprites.knobs.batch.v1";
+		function numVal(v, d, min, max) {
+			let n = parseFloat(String(v));
+			if (!isFinite(n)) n = d;
+			if (min != null) n = Math.max(min, n);
+			if (max != null) n = Math.min(max, n);
+			return n;
+		}
+		function readHoverKnobs() {
+			return {
+				crf: Math.max(0, Math.min(51, parseInt(hoverCrfInput?.value || "28", 10) || 28)),
+				preset: (hoverPresetSelect && hoverPresetSelect.value) || "veryfast",
+				concurrency: Math.max(0, parseInt(hoverConcurrencyInput?.value || "0", 10) || 0),
+			};
+		}
+		function saveHoverKnobs() { try { localStorage.setItem(HOVER_KNOBS_KEY, JSON.stringify(readHoverKnobs())); } catch(_) { } }
+		function restoreHoverKnobs() {
+			try {
+				const raw = localStorage.getItem(HOVER_KNOBS_KEY);
+				if (!raw) return;
+				const k = JSON.parse(raw);
+				if (hoverCrfInput && k.crf != null) hoverCrfInput.value = String(k.crf);
+				if (hoverPresetSelect && k.preset) hoverPresetSelect.value = String(k.preset);
+				if (hoverConcurrencyInput && k.concurrency != null) hoverConcurrencyInput.value = String(k.concurrency);
+			} catch(_) { }
+		}
+		[hoverCrfInput, hoverPresetSelect, hoverConcurrencyInput].forEach(el => { if (el) el.addEventListener('change', saveHoverKnobs); });
+		restoreHoverKnobs();
+		function readSpritesKnobs() {
+			return {
+				interval: numVal(spritesIntervalInput?.value, 10.0, 0.01, 1e6),
+				width: Math.max(32, parseInt(spritesWidthInput?.value || "320", 10) || 320),
+				cols: Math.max(1, parseInt(spritesColsInput?.value || "10", 10) || 10),
+				rows: Math.max(1, parseInt(spritesRowsInput?.value || "10", 10) || 10),
+				quality: Math.max(2, Math.min(31, parseInt(spritesQualityInput?.value || "4", 10) || 4)),
+				only_missing: !!(spritesOnlyMissingChk && spritesOnlyMissingChk.checked),
+				concurrency: Math.max(0, parseInt(spritesConcurrencyInput?.value || "0", 10) || 0),
+			};
+		}
+		function saveSpritesKnobs() { try { localStorage.setItem(SPRITES_KNOBS_KEY, JSON.stringify(readSpritesKnobs())); } catch(_) { } }
+		function restoreSpritesKnobs() {
+			try {
+				const raw = localStorage.getItem(SPRITES_KNOBS_KEY);
+				if (!raw) return;
+				const k = JSON.parse(raw);
+				if (spritesIntervalInput && k.interval != null) spritesIntervalInput.value = String(k.interval);
+				if (spritesWidthInput && k.width != null) spritesWidthInput.value = String(k.width);
+				if (spritesColsInput && k.cols != null) spritesColsInput.value = String(k.cols);
+				if (spritesRowsInput && k.rows != null) spritesRowsInput.value = String(k.rows);
+				if (spritesQualityInput && k.quality != null) spritesQualityInput.value = String(k.quality);
+				if (spritesOnlyMissingChk && k.only_missing != null) spritesOnlyMissingChk.checked = !!k.only_missing;
+				if (spritesConcurrencyInput && k.concurrency != null) spritesConcurrencyInput.value = String(k.concurrency);
+			} catch(_) { }
+		}
+		[spritesIntervalInput, spritesWidthInput, spritesColsInput, spritesRowsInput, spritesQualityInput, spritesOnlyMissingChk, spritesConcurrencyInput].forEach(el => { if (el) el.addEventListener('change', saveSpritesKnobs); });
+		restoreSpritesKnobs();
+		// Normalize job type emitted by backend to a canonical base type
 		function normalizeJobType(type) {
 			let t = (type || "").toLowerCase();
 			// Collapse batch variants to their base type
@@ -1439,7 +1651,10 @@
 		}
 		function getTaskSectionFromJobType(type) {
 			const t = normalizeJobType(type);
-			return JOB_SECTION_BY_TYPE[t] || null;
+			// Default: section id matches type; handle known pluralization
+			if (t === 'cover') return 'covers';
+			if (t === 'hover') return 'hovers';
+			return t || null;
 		}
 		function setIndeterminateForJobType(type, active) {
 			const section = getTaskSectionFromJobType(type);
@@ -1456,43 +1671,38 @@
 				const total = s.total_files || 0;
 				const pct = (n, t) => (t ? Math.floor((n / t) * 100) : 0);
 
-				// TODO @copilot: seems like this section could be DRYer
-				// Covers
-				const covers = s.covers || 0;
-				if (coverProgress) coverProgress.value = pct(covers, total);
-				if (coverPct) coverPct.textContent = `${covers}/${total} (${pct(covers, total)}%)`;
-				// Hovers
-				const hovers = s.hovers || 0;
-				if (hoverProgress) hoverProgress.value = pct(hovers, total);
-				if (hoverPct) hoverPct.textContent = `${hovers}/${total} (${pct(hovers, total)}%)`;
-				// Metadata
-				const metas = s.metadata || 0;
-				if (metadataProgress) metadataProgress.value = pct(metas, total);
-				if (metaPct) metaPct.textContent = `${metas}/${total} (${pct(metas, total)}%)`;
-				// pHash
-				const phashes = s.phash || 0;
-				if (phashProgress) phashProgress.value = pct(phashes, total);
-				if (phashPct) phashPct.textContent = `${phashes}/${total} (${pct(phashes, total)}%)`;
-				// Scenes
-				const scenes = s.scenes || 0;
-				if (scenesProgress) scenesProgress.value = pct(scenes, total);
-				if (scenesPct) scenesPct.textContent = `${scenes}/${total} (${pct(scenes, total)}%)`;
-				// Sprites
-				const sprites = s.sprites || 0;
-				if (spritesProgress) spritesProgress.value = pct(sprites, total);
-				if (spritesPct) spritesPct.textContent = `${sprites}/${total} (${pct(sprites, total)}%)`;
-				// Heatmaps
-				const heatmaps = s.heatmaps || 0;
-				if (heatmapsProgress) heatmapsProgress.value = pct(heatmaps, total);
-				if (heatmapsPct) heatmapsPct.textContent = `${heatmaps}/${total} (${pct(heatmaps, total)}%)`;
-				// Subtitles
-				const subs = s.subtitles || 0;
-				if (subtitlesProgress) subtitlesProgress.value = pct(subs, total);
-				if (subsPct) subsPct.textContent = `${subs}/${total} (${pct(subs, total)}%)`;
-				// Faces
-				const faces = s.faces || 0;
-				if (facesProgress) facesProgress.value = pct(faces, total);
-				if (facesPct) facesPct.textContent = `${faces}/${total} (${pct(faces, total)}%)`;
+				// Helper to apply overlay from active batch progress (if present)
+				function applyOverlay(baseCount, barEl, labelEl, typeKey) {
+					let count = baseCount;
+					const ov = _activeBatchByType.get(typeKey);
+					if (ov && typeof ov.total === 'number' && ov.total > 0) {
+						// optimistic overlay: base + processed so far (clamped to total)
+						const optimistic = Math.min(ov.total, Math.max(baseCount, ov.processed));
+						count = optimistic;
+						// label: include live processed/total and %
+						const livePct = pct(ov.processed, ov.total);
+						if (labelEl) labelEl.textContent = `${optimistic}/${total} (${pct(optimistic, total)}%)  •  live ${ov.processed}/${ov.total} (${livePct}%)`;
+						if (barEl) barEl.value = pct(optimistic, total);
+						return;
+					}
+					// default render with base stats
+					if (barEl) barEl.value = pct(count, total);
+					if (labelEl) labelEl.textContent = `${count}/${total} (${pct(count, total)}%)`;
+				}
+
+				// DRY: map stat keys to their bars/labels and loop
+				const sections = [
+					{ key: 'covers', bar: coverProgress, label: coverPct, type: 'cover' },
+					{ key: 'hovers', bar: hoverProgress, label: hoverPct, type: 'hover' },
+					{ key: 'metadata', bar: metadataProgress, label: metaPct, type: 'metadata' },
+					{ key: 'phash', bar: phashProgress, label: phashPct, type: 'phash' },
+					{ key: 'scenes', bar: scenesProgress, label: scenesPct, type: 'scenes' },
+					{ key: 'sprites', bar: spritesProgress, label: spritesPct, type: 'sprites' },
+					{ key: 'heatmaps', bar: heatmapsProgress, label: heatmapsPct, type: 'heatmaps' },
+					{ key: 'subtitles', bar: subtitlesProgress, label: subsPct, type: 'subtitles' },
+					{ key: 'faces', bar: facesProgress, label: facesPct, type: 'faces' },
+				];
+				sections.forEach(({ key, bar, label, type }) => applyOverlay(s[key] || 0, bar, label, type));
 			}
 			catch (_) { }
 		}
@@ -1597,7 +1807,12 @@
 		if (generateMissingHoversBtn) {
 			generateMissingHoversBtn.onclick = async () => {
 				generateMissingHoversBtn.disabled = true;
-				await fetch("/api/hover/create/batch", {method: "POST" });
+				const k = readHoverKnobs();
+				const qs = new URLSearchParams();
+				if (k.concurrency && k.concurrency > 0) qs.set("concurrency", String(k.concurrency));
+				if (k.crf != null) qs.set("crf", String(k.crf));
+				if (k.preset) qs.set("preset", String(k.preset));
+				await fetch("/api/hover/create/batch" + (qs.toString() ? ("?" + qs.toString()) : ""), {method: "POST" });
 				generateMissingHoversBtn.disabled = false;
 				updateTasksStats();
 				try { await loadStats(); } catch (_) { }
@@ -1613,7 +1828,12 @@
 			recomputeAllHoversBtn.onclick = async () => {
 				recomputeAllHoversBtn.disabled = true;
 				try {
-					await fetch(`/api/hover/create/batch`, { method: "POST" });
+					const k = readHoverKnobs();
+					const qs = new URLSearchParams();
+					if (k.concurrency && k.concurrency > 0) qs.set("concurrency", String(k.concurrency));
+					if (k.crf != null) qs.set("crf", String(k.crf));
+					if (k.preset) qs.set("preset", String(k.preset));
+					await fetch(`/api/hover/create/batch` + (qs.toString()? ("?" + qs.toString()) : ""), { method: "POST" });
 					updateTasksStats();
 					try { await loadStats(); } catch (_) { }
 				} finally { recomputeAllHoversBtn.disabled = false; }
@@ -1705,7 +1925,7 @@
 					for (const f of files) {
 						await fetch(`/api/phash/create?path=${encodeURIComponent(f.path)}`, { method: "POST" });
 					}
-					updateTasksStats(); try { await loadStats(); } catch(_){}
+					updateTasksStats(); try { await loadStats(); } catch(_) { }
 				} finally { recomputeAllPhashBtn.disabled = false; }
 			};
 		}
@@ -1965,7 +2185,7 @@
 					for (const f of files) {
 						await fetch(`/api/scenes/create?path=${encodeURIComponent(f.path)}`, { method: "POST" });
 					}
-					updateTasksStats(); try { await loadStats(); } catch(_){}
+					updateTasksStats(); try { await loadStats(); } catch(_) { }
 				} finally { recomputeAllScenesBtn.disabled = false; }
 			};
 		}
@@ -2005,7 +2225,16 @@
 		if (generateMissingSpritesBtn) {
 			generateMissingSpritesBtn.onclick = async () => {
 				generateMissingSpritesBtn.disabled = true;
-				await fetch("/api/sprites/create/batch", {method: "POST" });
+				const k = readSpritesKnobs();
+				const qs = new URLSearchParams();
+				qs.set("interval", String(k.interval));
+				qs.set("width", String(k.width));
+				qs.set("cols", String(k.cols));
+				qs.set("rows", String(k.rows));
+				qs.set("quality", String(k.quality));
+				qs.set("only_missing", k.only_missing ? "true" : "false");
+				if (k.concurrency && k.concurrency > 0) qs.set("concurrency", String(k.concurrency));
+				await fetch("/api/sprites/create/batch?" + qs.toString(), {method: "POST" });
 				generateMissingSpritesBtn.disabled = false;
 				updateTasksStats();
 				try { await loadStats(); } catch (_) { }
@@ -2015,7 +2244,20 @@
 		if (recomputeAllSpritesBtn) {
 			recomputeAllSpritesBtn.onclick = async () => {
 				recomputeAllSpritesBtn.disabled = true;
-				try { await fetch("/api/sprites/create/batch", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_){} }
+				try {
+					const k = readSpritesKnobs();
+					const qs = new URLSearchParams();
+					qs.set("interval", String(k.interval));
+					qs.set("width", String(k.width));
+					qs.set("cols", String(k.cols));
+					qs.set("rows", String(k.rows));
+					qs.set("quality", String(k.quality));
+					qs.set("only_missing", "false");
+					if (k.concurrency && k.concurrency > 0) qs.set("concurrency", String(k.concurrency));
+					await fetch("/api/sprites/create/batch?" + qs.toString(), { method: "POST" });
+					updateTasksStats();
+					try { await loadStats(); } catch(_) { }
+				}
 				finally { recomputeAllSpritesBtn.disabled = false; }
 			};
 		}
@@ -2035,7 +2277,7 @@
 		if (recomputeAllHeatmapsBtn) {
 			recomputeAllHeatmapsBtn.onclick = async () => {
 				recomputeAllHeatmapsBtn.disabled = true;
-				try { await fetch("/api/heatmaps/create/batch", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_){} }
+				try { await fetch("/api/heatmaps/create/batch", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_) { } }
 				finally { recomputeAllHeatmapsBtn.disabled = false; }
 			};
 		}
@@ -2055,7 +2297,7 @@
 		if (recomputeAllSubsBtn) {
 			recomputeAllSubsBtn.onclick = async () => {
 				recomputeAllSubsBtn.disabled = true;
-				try { await fetch("/api/subtitles/create/batch?overwrite=true", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_){} }
+				try { await fetch("/api/subtitles/create/batch?overwrite=true", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_) { } }
 				finally { recomputeAllSubsBtn.disabled = false; }
 			};
 		}
@@ -2298,17 +2540,24 @@
 				jobsEvtSrc = null;
 			}
 			let triedApiAlias = false;
+			let retries = 0;
 			const openEs = (url) => {
 				const es = new EventSource(url);
 				jobsEvtSrc = es;
-				es.onmessage = (ev) => {
+					es.onmessage = (ev) => {
 					try { 
-						const data = JSON.parse(ev.data || "{}");
-						const line = `[${new Date().toLocaleTimeString()}] ${data.event || "msg"} ${data.id || ""}`;
-						if (typeof jobsBox !== "undefined" && jobsBox) {
-							jobsBox.textContent = (jobsBox.textContent + "\n" + line).trim();
-							jobsBox.scrollTop = jobsBox.scrollHeight;
-						}
+							const data = JSON.parse(ev.data || "{}");
+						const line = `[${new Date().toLocaleTimeString()}] ${data.event || "msg"}`;
+							// Update live row view (one line per job, with task and file)
+							_updateJobRow({
+								id: data.id,
+								event: data.event,
+								type: data.type,
+								path: data.path,
+								processed: data.processed,
+								total: data.total,
+								error: data.error,
+							});
 						// Maintain set of running jobs and update UI cadence
 						const evt = (data.event || "").toLowerCase();
 						const jid = data.id;
@@ -2350,6 +2599,11 @@
 						try { es.close(); } catch (_) { }
 						openEs("/api/jobs/events");
 					}
+					else if (retries < 2) {
+						retries += 1;
+						try { es.close(); } catch (_) { }
+						setTimeout(() => openEs(url), 1000 * retries);
+					}
 				};
 			};
 			openEs("/jobs/events");
@@ -2389,10 +2643,10 @@
 		// Update polling cadence based on job activity (fast when active, slow when idle)
 		function updatePollingInterval() {
 			if (tasksRefreshTimer) clearInterval(tasksRefreshTimer);
-			// Only poll if Tasks tab is visible
-			if (!tasksDiv || tasksDiv.classList.contains("hidden")) return;
 			const intervalMs = window.__jobsActive === true ? 1000 : 5000;
 			tasksRefreshTimer = setInterval(() => {
+				// Only poll if Tasks tab is visible
+				if (!tasksDiv || tasksDiv.classList.contains("hidden")) return;
 				updateTasksStats();
 			}, intervalMs);
 		}
@@ -2418,7 +2672,7 @@
 		const faceBatchMinSizeFracInput = document.getElementById("faceBatchMinSizeFracInput");
 		const faceBatchSimThreshInput = document.getElementById("faceBatchSimThreshInput");
 
-		// TODO @copilot v1 reference
+		// Local storage keys for FaceLab settings (versioned)
 		const FACE_SINGLE_KEY = "face.knobs.single.v1";
 		const FACE_BATCH_KEY = "face.knobs.batch.v1";
 		const FACE_BACKEND_SINGLE_KEY = "face.backend.single.v1";
@@ -2485,8 +2739,8 @@
 		// Persist on change and restore once
 		[faceIntervalInput, faceScaleFactorInput, faceMinNeighborsInput, faceMinSizeFracInput, faceSimThreshInput].forEach(el => { if (el) el.addEventListener('change', saveSingleFaceKnobs); });
 		[faceBatchIntervalInput, faceBatchScaleFactorInput, faceBatchMinNeighborsInput, faceBatchMinSizeFracInput, faceBatchSimThreshInput].forEach(el => { if (el) el.addEventListener('change', saveBatchFaceKnobs); });
-		if (faceBackendSelect) faceBackendSelect.addEventListener('change', () => { try { localStorage.setItem(FACE_BACKEND_SINGLE_KEY, faceBackendSelect.value); } catch(_){} });
-		if (faceBatchBackendSelect) faceBatchBackendSelect.addEventListener('change', () => { try { localStorage.setItem(FACE_BACKEND_BATCH_KEY, faceBatchBackendSelect.value); } catch(_){} });
+		if (faceBackendSelect) faceBackendSelect.addEventListener('change', () => { try { localStorage.setItem(FACE_BACKEND_SINGLE_KEY, faceBackendSelect.value); } catch(_) { } });
+		if (faceBatchBackendSelect) faceBatchBackendSelect.addEventListener('change', () => { try { localStorage.setItem(FACE_BACKEND_BATCH_KEY, faceBatchBackendSelect.value); } catch(_) { } });
 		restoreFaceKnobs();
 
 		function setImageStatus(text) {
@@ -2794,72 +3048,7 @@
 				const meta = s.metadata || 0;
 				const note = [];
 				if (s.duration_files_count != null && scenes) {
-					note.push(
-
-					// --- Setup tab wiring ---
-					function loadSetup() {
-						const perfEl = document.getElementById('setupPerformers');
-						const tagsEl = document.getElementById('setupTags');
-						const saveBtn = document.getElementById('setupSaveBtn');
-						const runBtn = document.getElementById('setupRunBtn');
-						const statusEl = document.getElementById('setupStatus');
-						if (!perfEl || !tagsEl || !saveBtn || !runBtn || !statusEl) return;
-						try { 
-							perfEl.value = (localStorage.getItem('setup.performers') || '').replace(/\r\n/g, '\n');
-							tagsEl.value = (localStorage.getItem('setup.tags') || '').replace(/\r\n/g, '\n');
-						}
-						catch(_) {}
-						saveBtn.onclick = () => {
-							try { 
-								localStorage.setItem('setup.performers', perfEl.value || '');
-								localStorage.setItem('setup.tags', tagsEl.value || '');
-								statusEl.textContent = 'Saved locally';
-								statusEl.style.color = 'green';
-							}
-							catch(_) {
-								statusEl.textContent = 'Failed to save';
-								statusEl.style.color = 'red';
-							}
-						};
-						runBtn.onclick = async () => {
-							const perfs = (perfEl.value || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
-							const tags = (tagsEl.value || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
-							statusEl.textContent = 'Starting…'; 
-							statusEl.style.color = '#666';
-							try { 
-								const body = { path: '', recursive: true, performers: perfs, tags };
-								const res = await fetch('/api/autotag/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-								if (!res.ok) { statusEl.textContent = 'Failed to start'; statusEl.style.color = 'red'; return; }
-								const j = await res.json();
-								const jid = (j.data && j.data.job) || j.job || '';
-								if (!jid) { statusEl.textContent = 'No job id'; statusEl.style.color = 'red'; return; }
-								statusEl.textContent = `Running (job ${jid})…`;
-								// lightweight poll for completion
-								const deadline = Date.now() + 60_000;
-								let done = false;
-								while (!done && Date.now() < deadline) {
-									await new Promise(r => setTimeout(r, 750));
-									try { 
-										const jr = await fetch('/api/jobs?state=recent&limit=50');
-										if (jr.ok) {
-											const jb = await jr.json();
-											const jobs = (jb.data && jb.data.jobs) || jb.jobs || [];
-											const me = jobs.find(x => x.id === jid);
-											if (me && (me.state === 'done' || me.state === 'failed')) {
-												done = true;
-												const r = me.result || {};
-												statusEl.textContent = me.state === 'done' ? `Done. Updated ${r.updated_files || 0} (matched ${r.matched_files || 0})` : 'Failed';
-												statusEl.style.color = me.state === 'done' ? 'green' : 'red';
-											}
-										}
-									} catch(_) {}
-								}
-								if (!done) { statusEl.textContent = 'Started (check Tasks for progress)…'; statusEl.style.color = '#666'; }
-							} catch(_) { statusEl.textContent = 'Error'; statusEl.style.color = 'red'; }
-						};
-					}
-					`${s.duration_files_count}/${scenes} files have duration`,
-					);
+					note.push(`${s.duration_files_count}/${scenes} files have duration`);
 				}
 				document.getElementById("statScenesSize").textContent = size;
 				document.getElementById("statScenes").textContent = scenes;
@@ -2872,6 +3061,69 @@
 				if (noteEl) noteEl.textContent = note.join(" • ");
 			}
 			catch (_) { }
+		}
+
+		// Setup tab wiring (moved out of loadStats)
+		function loadSetup() {
+			const perfEl = document.getElementById('setupPerformers');
+			const tagsEl = document.getElementById('setupTags');
+			const saveBtn = document.getElementById('setupSaveBtn');
+			const runBtn = document.getElementById('setupRunBtn');
+			const statusEl = document.getElementById('setupStatus');
+			if (!perfEl || !tagsEl || !saveBtn || !runBtn || !statusEl) return;
+			try { 
+				perfEl.value = (localStorage.getItem('setup.performers') || '').replace(/\r\n/g, '\n');
+				tagsEl.value = (localStorage.getItem('setup.tags') || '').replace(/\r\n/g, '\n');
+			}
+			catch(_) {}
+			saveBtn.onclick = () => {
+				try { 
+					localStorage.setItem('setup.performers', perfEl.value || '');
+					localStorage.setItem('setup.tags', tagsEl.value || '');
+					statusEl.textContent = 'Saved locally';
+					statusEl.style.color = 'green';
+				}
+				catch(_) {
+					statusEl.textContent = 'Failed to save';
+					statusEl.style.color = 'red';
+				}
+			};
+			runBtn.onclick = async () => {
+				const perfs = (perfEl.value || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
+				const tags = (tagsEl.value || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
+				statusEl.textContent = 'Starting…'; 
+				statusEl.style.color = '#666';
+				try { 
+					const body = { path: '', recursive: true, performers: perfs, tags };
+					const res = await fetch('/api/autotag/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+					if (!res.ok) { statusEl.textContent = 'Failed to start'; statusEl.style.color = 'red'; return; }
+					const j = await res.json();
+					const jid = (j.data && j.data.job) || j.job || '';
+					if (!jid) { statusEl.textContent = 'No job id'; statusEl.style.color = 'red'; return; }
+					statusEl.textContent = `Running (job ${jid})…`;
+					// lightweight poll for completion
+					const deadline = Date.now() + 60_000;
+					let done = false;
+					while (!done && Date.now() < deadline) {
+						await new Promise(r => setTimeout(r, 750));
+						try { 
+							const jr = await fetch('/api/jobs?state=recent&limit=50');
+							if (jr.ok) {
+								const jb = await jr.json();
+								const jobs = (jb.data && jb.data.jobs) || jb.jobs || [];
+								const me = jobs.find(x => x.id === jid);
+								if (me && (me.state === 'done' || me.state === 'failed')) {
+									done = true;
+									const r = me.result || {};
+									statusEl.textContent = me.state === 'done' ? `Done. Updated ${r.updated_files || 0} (matched ${r.matched_files || 0})` : 'Failed';
+									statusEl.style.color = me.state === 'done' ? 'green' : 'red';
+								}
+							}
+						} catch(_) {}
+					}
+					if (!done) { statusEl.textContent = 'Started (check Tasks for progress)…'; statusEl.style.color = '#666'; }
+				} catch(_) { statusEl.textContent = 'Error'; statusEl.style.color = 'red'; }
+			};
 		}
 
 		// SETTINGS TAB
@@ -3557,26 +3809,15 @@
 					}
 				}
 				else {
-					// TODO @copilot: there must be a dryer was to do this
-					document.getElementById("infoDuration").textContent = "";
-					document.getElementById("infoRes").textContent = "";
-					document.getElementById("infoCodec").textContent = "";
-					document.getElementById("infoBitrate").textContent = "";
-					document.getElementById("infoVBitrate").textContent = "";
-					document.getElementById("infoMetaFile").textContent = "❌";
+					clearInfoFields();
 				}
 			}
 			catch (_) {
-				// TODO @copilot: there must be a dryer was to do this
-				document.getElementById("infoDuration").textContent = "";
-				document.getElementById("infoRes").textContent = "";
-				document.getElementById("infoCodec").textContent = "";
-				document.getElementById("infoBitrate").textContent = "";
-				document.getElementById("infoVBitrate").textContent = "";
-				const mf = document.getElementById("infoMetaFile");
-				if (mf) {
-					mf.textContent = "❌";
-				}
+				clearInfoFields();
+			}
+			function clearInfoFields() {
+				const ids = ["infoDuration","infoRes","infoCodec","infoBitrate","infoVBitrate","infoMetaExtra"]; ids.forEach(id => { const el = document.getElementById(id); if (el) el.textContent = ""; });
+				const mf = document.getElementById("infoMetaFile"); if (mf) mf.textContent = "❌";
 			}
 			// Update Heatmaps/Subtitles/Faces indicators dynamically
 			(async () => {
@@ -3897,6 +4138,19 @@
 			status("OK");
 		}
 
+		// Small helper to enforce a max wait for fetch calls
+		async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+			const controller = new AbortController();
+			const to = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
+			try {
+				const res = await fetch(url, { ...options, signal: controller.signal });
+				return res;
+			}
+			finally {
+				clearTimeout(to);
+			}
+		}
+
 		async function ensureHover(file) {
 			// Fast path: backend reported hover preview exists
 			if (file.hoverPreview) return file.hoverPreview + `&t=${Date.now()}`;
@@ -4145,7 +4399,7 @@
 			}
 		}
 		// Resume position storage
-		// TODO @copilot v1 reference
+		// Local storage key for resume/restore is defined above as LAST_VIDEO_KEY
 		function resumeKey(path) {return `resume.v1:${path}`; }
 		let _lastSavedPosTs = 0;
 		function persistPosition() {
@@ -4249,8 +4503,6 @@
 			} catch (_) { }
 			// Persist last played video for reload restore
 			try { 
-				// TODO @copilot: reference to versions
-				const LAST_VIDEO_KEY = 'lastVideo.v1';
 				const name = file.name || (file.path ? file.path.split('/').pop() : '');
 				const payload = {path: file.path, name, title: file.title || '' };
 				localStorage.setItem(LAST_VIDEO_KEY, JSON.stringify(payload));
@@ -4587,7 +4839,7 @@
 					if (orderQ === 'asc' || orderQ === 'desc') {
 						sortOrderToggle.dataset.order = orderQ;
 					}
-				} catch(_){}
+				} catch(_) { }
 				updateSortOrderToggleIcon();
 				sortOrderToggle.addEventListener('click', () => {
 					const cur = sortOrderToggle.dataset.order === 'desc' ? 'desc' : 'asc';
@@ -4680,56 +4932,56 @@
 			}
 			setupControlListeners();
 			mountSpritePreviewInPlayer();
-			// Ensure backend root is set before attempting to restore/load; if not provided, proceed with existing backend root
-			try { 
-				const v = (rootInput && rootInput.value) ? rootInput.value.trim() : "";
-				if (v) {
-					status("Setting root…");
-					// Verify path quickly to avoid hanging on bad roots
-					const tp = await fetch("/api/testpath?" + new URLSearchParams({path: v }).toString(), {method: "POST" });
-					let okToSet = false;
-					if (tp.ok) {
-						const tjson = await tp.json();
-						const tdata = tjson.data || tjson;
-						okToSet = !!(tdata && tdata.exists && tdata.is_dir);
-					}
-					if (okToSet) {
-						const params = new URLSearchParams({root: v });
-						const res = await fetch("/api/setroot?" + params.toString(), {method: "POST" });
-						if (res.ok) {
-							currentPage = 1;
-							cwd = "";
+			// Show the requested tab immediately so UI is responsive while network starts
+			const initialTab = getTabFromLocation() || "Grid";
+			try { showTab(initialTab, true); } catch(_) { try { showTab("Grid", true); } catch(_) { } }
+			try { setRouteForTab(initialTab, true); } catch (_) { }
+			// Kick off root validation + initial load in the background to avoid blocking refresh
+			void (async () => {
+				try {
+					const v = (rootInput && rootInput.value) ? rootInput.value.trim() : "";
+					if (v) {
+						status("Setting root…");
+						const tp = await fetchWithTimeout("/api/testpath?" + new URLSearchParams({ path: v }).toString(), { method: "POST" }, 6000);
+						let okToSet = false;
+						if (tp.ok) {
+							const tjson = await tp.json();
+							const tdata = tjson.data || tjson;
+							okToSet = !!(tdata && tdata.exists && tdata.is_dir);
+						}
+						if (okToSet) {
+							const params = new URLSearchParams({ root: v });
+							const res = await fetchWithTimeout("/api/setroot?" + params.toString(), { method: "POST" }, 6000);
+							if (res.ok) {
+								currentPage = 1;
+								cwd = "";
+								await load("");
+							} else {
+								// Fall back to current root
+								await load("");
+							}
+						} else {
+							// Invalid path typed; just load current root
 							await load("");
 						}
-						else {
-							// Fall back to current root
-							await load("");
-						}
-					}
-					else {
-						// Invalid path typed; just load current root
+					} else {
+						// No root provided; use existing server root
 						await load("");
 					}
+				} catch (_) {
+					// On any error, attempt to load current root rather than hang
+					try { await load(""); } catch (_) { }
 				}
-				else {
-					// No root provided; use existing server root
-					await load("");
-				}
-			}
-			catch (_) {
-				// On any error, attempt to load current root rather than hang
-				try { await load(""); }
-				catch (_) { }
-			}
-			// Initialize tab from URL (hash) or default to Grid without pushing a new history entry
-			const initialTab = getTabFromLocation() || "Grid";
-			showTab(initialTab, true);
-			try { setRouteForTab(initialTab, true); }
-			catch (_) { }
+			})();
+			// Fallback: if content hasn't rendered after a short delay, try a lightweight reload
+			setTimeout(() => {
+				try {
+					const hasTiles = !!document.querySelector('.tile');
+					if (!hasTiles) { void load(""); }
+				} catch(_) { }
+			}, 3500);
 			// Restore last played video (set selection always; autoplay only when on Player)
 			try { 
-				// TODO @copilot v1 reference
-				const LAST_VIDEO_KEY = 'lastVideo.v1';
 				const raw = localStorage.getItem(LAST_VIDEO_KEY);
 				if (raw) {
 					const rec = JSON.parse(raw);
@@ -4799,13 +5051,15 @@
 		}
 
 		const gridSizeInput = document.getElementById("gridSize");
+		function applyGridColumns(cols) {
+			const n = Math.max(1, parseInt(cols, 10) || 4);
+			filesEl.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+		}
 		if (gridSizeInput) {
 			gridSizeInput.onchange = () => {
-				const cols = parseInt(gridSizeInput.value, 10) || 4;
-				// TODO @copilot: there must be a better way to do this
-				filesEl.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+				applyGridColumns(gridSizeInput.value);
 			};
-			filesEl.style.gridTemplateColumns = `repeat(${gridSizeInput.value}, 1fr)`;
+			applyGridColumns(gridSizeInput.value);
 		}
 
 		document.addEventListener("keydown", (e) => {
@@ -4917,9 +5171,7 @@
 					params.set("page", String(page));
 					params.set("page_size", String(pageSize));
 					// Use current filters (search only)
-					const searchVal = document
-					.getElementById("searchInput")
-					?.value?.trim();
+					const searchVal = document.getElementById("searchInput")?.value?.trim();
 					if (searchVal) params.set("search", searchVal);
 					params.set("sort", "name"); // Always fetch all, don't sort random here
 					const res = await fetch("/api/library?" + params.toString(), {
@@ -4990,7 +5242,7 @@
 			const panel = document.getElementById("listColumnsPanel");
 			if (!panel) return;
 			const cols = getListCols();
-			// TODO @copilot: avoid this. use static html that's hidden until needed
+			// Build columns panel content dynamically
 			panel.innerHTML = `
 				<div class="row"><strong>Columns</strong><span class="muted">(drag to reorder)</span></div>
 				<div class="section">
@@ -5018,7 +5270,6 @@
 				wrap.style.gap = "8px";
 				wrap.draggable = true;
 				wrap.dataset.index = String(idx);
-				// TODO @copilot: avoid this. use static html that's hidden until needed
 				wrap.innerHTML = `<input type="checkbox" id="${id}" ${c.visible ? "checked" : ""}/><label for="${id}">${esc(c.label)}</label>`;
 				// drag to reorder
 				wrap.addEventListener("dragstart", (e) => {
@@ -5086,7 +5337,6 @@
 					row.style.alignItems = 'center';
 					row.style.gap = '8px';
 					const existing = getListCols().find(c => c.source === 'meta' && c.key === k);
-					// TODO @copilot: avoid this. use static html that's hidden until needed
 					row.innerHTML = `<input type="checkbox" id="${id}" ${existing ? 'checked' : ''}/><label for="${id}">${esc(k)}</label>`;
 					metaChoices.appendChild(row);
 					const cb = row.querySelector('input');
@@ -5137,7 +5387,6 @@
 				th.dataset.key = c.key;
 				th.dataset.index = String(idx);
 				if (c.width) th.style.width = c.width + "px";
-				// TODO @copilot: avoid this. use static html that's hidden until needed
 				th.innerHTML = `<span class="th-label">${esc(c.label)}</span><span class="col-resizer" data-idx="${idx}"></span>`;
 				// drag reorder
 				th.addEventListener("dragstart", (e) => {
@@ -5258,18 +5507,25 @@
 			if (col.source === 'artifact') {
 				const art = v.artifacts || {};
 				const key = col.key.replace('art.', '');
-				// TODO @copilot: fix these. hover as hover, scenes as scenes. is this even necessary? 
-				const alt = v[key] || v[{
-					cover: 'cover', 
-					hover: 'hoverPreview', 
-					sprites: 'scrubThumbs', 
-					subtitles: 'subtitles', 
-					phash: 'phash', 
-					heatmaps: 'heatmaps', 
-					scenes: 'chapters', 
-					faces: 'faces'
-				}[key]];
-				const val = (art[key] !== undefined ? art[key] : (alt !== undefined ? alt : false));
+				function resolveSynonym(k) {
+					const synonyms = {
+						cover: ['cover'],
+						hover: ['hover', 'hoverPreview'],
+						sprites: ['sprites', 'scrubThumbs'],
+						subtitles: ['subtitles'],
+						phash: ['phash'],
+						heatmaps: ['heatmaps'],
+						scenes: ['scenes', 'chapters'],
+						faces: ['faces'],
+					};
+					const list = synonyms[k] || [k];
+					for (const name of list) {
+						if (art[name] !== undefined) return art[name];
+						if (v[name] !== undefined) return v[name];
+					}
+					return false;
+				}
+				const val = resolveSynonym(key);
 				return val ? '✅' : '—';
 			}
 			if (col.source === 'meta') {
@@ -5403,20 +5659,29 @@
 		// Rotate headers toggle
 		const toggleRotateHeadersBtn = document.getElementById('toggleRotateHeadersBtn');
 		const listTableEl = document.getElementById('listTable');
-		const ROTATE_HDRS_KEY = 'list.rotateHeaders.v1';
+		const ROTATE_HDRS_KEY = 'list.rotateHeaders';
+		// Migrate from older versioned key
+		try {
+			const oldKey = 'list.rotateHeaders.v1';
+			const oldVal = localStorage.getItem(oldKey);
+			if (oldVal != null && localStorage.getItem(ROTATE_HDRS_KEY) == null) {
+				localStorage.setItem(ROTATE_HDRS_KEY, oldVal);
+			}
+			localStorage.removeItem(oldKey);
+		} catch (_) {}
 		function applyRotateHeaders(flag) {
 			if (!listTableEl) return;
 			listTableEl.classList.toggle('rotate-headers', !!flag);
 			if (toggleRotateHeadersBtn) toggleRotateHeadersBtn.textContent = `Rotate headers: ${flag ? 'On' : 'Off'}`;
 		}
 		(function initRotateHeaders(){
-			try { applyRotateHeaders(localStorage.getItem(ROTATE_HDRS_KEY) === '1'); } catch(_){}
+			try { applyRotateHeaders(localStorage.getItem(ROTATE_HDRS_KEY) === '1'); } catch(_) { }
 		})();
 		if (toggleRotateHeadersBtn) toggleRotateHeadersBtn.onclick = () => {
 			const cur = listTableEl?.classList.contains('rotate-headers');
 			const next = !cur;
 			applyRotateHeaders(next);
-			try { localStorage.setItem(ROTATE_HDRS_KEY, next ? '1' : '0'); } catch(_){}
+			try { localStorage.setItem(ROTATE_HDRS_KEY, next ? '1' : '0'); } catch(_) { }
 		};
 
 		// Column/Row selection logic

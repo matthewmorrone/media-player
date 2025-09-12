@@ -12,6 +12,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 from collections import defaultdict
 from typing import Any, Dict, Iterator, List, Optional, Callable
@@ -38,6 +39,23 @@ except Exception:  # pragma: no cover
 STATE: dict[str, Any] = {
     "root": Path.cwd().resolve(),
 }
+
+# Initialize app-wide defaults from environment (can be overridden via /api/config)
+try:
+    # Concurrency defaults
+    _env_workers = os.environ.get("MEDIA_WORKERS") or os.environ.get("APP_WORKERS")
+    STATE["workers_default"] = max(1, int(_env_workers)) if _env_workers and str(_env_workers).isdigit() else None
+except Exception:
+    STATE["workers_default"] = None
+try:
+    # FFmpeg encoding defaults
+    STATE["ffmpeg_defaults"] = {
+        "x264_preset": os.environ.get("X264_PRESET", "veryfast"),
+        "x264_crf": int(os.environ.get("X264_CRF", "23") or 23),
+        "vp9_crf": int(os.environ.get("VP9_CRF", "32") or 32),
+    }
+except Exception:
+    STATE["ffmpeg_defaults"] = {"x264_preset": "veryfast", "x264_crf": 23, "vp9_crf": 32}
 
 
 def ffmpeg_available() -> bool:
@@ -119,6 +137,16 @@ HIDDEN_DIR_SUFFIX_PREVIEWS = ".previews"
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True)
+
+def _cpu_workers(default: int = 4) -> int:
+    try:
+        cfg = STATE.get("workers_default")
+        if isinstance(cfg, int) and cfg > 0:
+            return int(cfg)
+        n = os.cpu_count() or 2
+        return max(1, min(int(default), int(n)))
+    except Exception:
+        return max(1, int(default))
 
 def metadata_single(video: Path, *, force: bool = False) -> None:
     out = metadata_path(video)
@@ -237,11 +265,12 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
     t = parse_time_spec(time_spec, duration)
     # Use mjpeg to write jpg
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
         "-ss", f"{t:.3f}",
         "-i", str(video),
         "-frames:v", "1",
         "-q:v", str(max(2, min(31, int(quality)))),
+        "-threads", "0",
         str(out),
     ]
     proc = _run(cmd)
@@ -251,7 +280,7 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
 # ----------------------
 # Hover preview generator
 # ----------------------
-def generate_hover_preview(video: Path, *, segments: int = 9, seg_dur: float = 1.0, width: int = 320, fmt: str = "webm", out: Optional[Path] = None) -> Path:
+def generate_hover_preview(video: Path, *, segments: int = 9, seg_dur: float = 1.0, width: int = 320, fmt: str = "webm", out: Optional[Path] = None, crf: Optional[int] = None, preset: Optional[str] = None) -> Path:
     out = out or (artifact_dir(video) / f"{video.stem}.preview.{fmt}")
     out.parent.mkdir(parents=True, exist_ok=True)
     if os.environ.get("FFPROBE_DISABLE"):
@@ -284,16 +313,20 @@ def generate_hover_preview(video: Path, *, segments: int = 9, seg_dur: float = 1
         parts.append(f"{concat_inputs}concat=n={segs}:v=1:a=0,scale={int(width)}:-1:force_original_aspect_ratio=decrease[outv]")
         filter_complex = ";".join(parts)
         cmd = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
             "-i", str(video),
             "-filter_complex", filter_complex,
             "-map", "[outv]",
             "-an",
         ]
+        ffdef = STATE.get("ffmpeg_defaults", {}) if isinstance(STATE.get("ffmpeg_defaults"), dict) else {}
         if fmt == "mp4":
-            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-movflags", "+faststart", str(out)]
+            x_crf = int(crf) if isinstance(crf, int) and crf > 0 else int(ffdef.get("x264_crf", 23))
+            x_preset = (preset or ffdef.get("x264_preset", "veryfast"))
+            cmd += ["-c:v", "libx264", "-preset", str(x_preset), "-crf", str(x_crf), "-movflags", "+faststart", "-threads", "0", str(out)]
         else:
-            cmd += ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32", str(out)]
+            v_crf = int(crf) if isinstance(crf, int) and crf > 0 else int(ffdef.get("vp9_crf", 32))
+            cmd += ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(v_crf), "-threads", "0", str(out)]
         proc = _run(cmd)
         if proc.returncode == 0 and out.exists():
             return out
@@ -310,15 +343,18 @@ def generate_hover_preview(video: Path, *, segments: int = 9, seg_dur: float = 1
             clip = Path(td) / f"seg_{i:02d}.{fmt}"
             vfilter = f"scale={width}:-1:force_original_aspect_ratio=decrease"
             cmd = [
-                "ffmpeg", "-y",
+                "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
                 "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{seg_dur:.3f}",
                 "-vf", vfilter,
                 "-an",
             ]
             if fmt == "mp4":
-                cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-movflags", "+faststart", str(clip)]
+                x_crf = int(crf) if isinstance(crf, int) and crf > 0 else int(ffdef.get("x264_crf", 23))
+                x_preset = (preset or ffdef.get("x264_preset", "veryfast"))
+                cmd += ["-c:v", "libx264", "-preset", str(x_preset), "-crf", str(x_crf), "-movflags", "+faststart", "-threads", "0", str(clip)]
             else:
-                cmd += ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32", str(clip)]
+                v_crf = int(crf) if isinstance(crf, int) and crf > 0 else int(ffdef.get("vp9_crf", 32))
+                cmd += ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(v_crf), "-threads", "0", str(clip)]
             proc = _run(cmd)
             if proc.returncode != 0:
                 raise RuntimeError(proc.stderr.strip() or "ffmpeg segment failed")
@@ -327,15 +363,18 @@ def generate_hover_preview(video: Path, *, segments: int = 9, seg_dur: float = 1
             for cp in clip_paths:
                 f.write(f"file '{cp.as_posix()}'\n")
         cmd2 = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
             "-f", "concat", "-safe", "0",
             "-i", str(list_path),
             "-an",
         ]
         if fmt == "mp4":
-            cmd2 += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-movflags", "+faststart", str(out)]
+            x_crf = int(crf) if isinstance(crf, int) and crf > 0 else int(ffdef.get("x264_crf", 23))
+            x_preset = (preset or ffdef.get("x264_preset", "veryfast"))
+            cmd2 += ["-c:v", "libx264", "-preset", str(x_preset), "-crf", str(x_crf), "-movflags", "+faststart", "-threads", "0", str(out)]
         else:
-            cmd2 += ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32", str(out)]
+            v_crf = int(crf) if isinstance(crf, int) and crf > 0 else int(ffdef.get("vp9_crf", 32))
+            cmd2 += ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(v_crf), "-threads", "0", str(out)]
         proc2 = _run(cmd2)
         if proc2.returncode != 0:
             raise RuntimeError(proc2.stderr.strip() or "ffmpeg concat failed")
@@ -384,10 +423,12 @@ def generate_sprite_sheet(video: Path, *, interval: float, width: int, cols: int
         # Build filter: fps (one frame per interval), scale to desired width, tile to mosaic
         vf = f"fps=1/{max(0.001, float(interval))},scale={int(width)}:-1:flags=lanczos,tile={int(cols)}x{int(rows)}"
         cmd = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
             "-i", str(video),
             "-vf", vf,
             "-frames:v", "1",
+            "-q:v", str(max(2, min(31, int(quality)))),
+            "-threads", "0",
             str(sheet),
         ]
         try:
@@ -2207,6 +2248,7 @@ def cover_create_batch(
     t: Optional[str | float] = Query(default=10),
     quality: int = Query(default=2),
     overwrite: bool = Query(default=False),
+    concurrency: int = Query(default=0),
 ):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
@@ -2227,16 +2269,14 @@ def cover_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            max_workers = int(concurrency) if int(concurrency) > 0 else _cpu_workers(4)
+            def _proc_one(p: Path):
                 try:
-                    # Skip if exists and not overwriting
                     if thumbs_path(p).exists() and not force:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     try:
                         generate_thumbnail(p, force=force, time_spec=time_spec, quality=q)
                     except Exception:
-                        # Best-effort stub
                         out = thumbs_path(p)
                         out.parent.mkdir(parents=True, exist_ok=True)
                         try:
@@ -2250,6 +2290,9 @@ def cover_create_batch(
                                 pass
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                for p in vids:
+                    ex.submit(_proc_one, p)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -2291,7 +2334,7 @@ def _hover_concat_path(video: Path) -> Path:
     
 
 @api.post("/hover/create")
-def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=1.0), width: int = Query(default=320), overwrite: bool = Query(default=False)):
+def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=1.0), width: int = Query(default=320), overwrite: bool = Query(default=False), crf: Optional[int] = Query(default=None), preset: Optional[str] = Query(default=None)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
     def _do():
@@ -2299,7 +2342,7 @@ def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_d
         out = _hover_concat_path(video)
         if out.exists() and not overwrite:
             return api_success({"created": False, "path": str(out), "reason": "exists"})
-        generate_hover_preview(video, segments=int(segments), seg_dur=float(seg_dur), width=int(width), fmt="webm", out=out)
+        generate_hover_preview(video, segments=int(segments), seg_dur=float(seg_dur), width=int(width), fmt="webm", out=out, crf=crf, preset=preset)
         return api_success({"created": True, "path": str(out)})
     try:
         return _wrap_job("hover", str(video.relative_to(STATE["root"])), _do)
@@ -2314,6 +2357,9 @@ def hover_create_batch(
     segments: int = Query(default=9),
     seg_dur: float = Query(default=1.0),
     width: int = Query(default=320),
+    concurrency: int = Query(default=0),
+    crf: Optional[int] = Query(default=None),
+    preset: Optional[str] = Query(default=None),
 ):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
@@ -2335,19 +2381,21 @@ def hover_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            max_workers = int(concurrency) if int(concurrency) > 0 else _cpu_workers(4)
+            def _proc_one(p: Path):
                 try:
                     jid = _new_job("hover", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
-                        generate_hover_preview(p, segments=int(segments), seg_dur=float(seg_dur), width=int(width), fmt="webm")
+                        generate_hover_preview(p, segments=int(segments), seg_dur=float(seg_dur), width=int(width), fmt="webm", crf=crf, preset=preset)
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                for p in vids:
+                    ex.submit(_proc_one, p)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -2572,7 +2620,7 @@ def sprites_create(path: str = Query(...), interval: float = Query(default=10.0)
 
 
 @api.post("/sprites/create/batch")
-def sprites_create_batch(path: str = Query(default=""), recursive: bool = Query(default=True), interval: float = Query(default=10.0), width: int = Query(default=320), cols: int = Query(default=10), rows: int = Query(default=10), quality: int = Query(default=4)):
+def sprites_create_batch(path: str = Query(default=""), recursive: bool = Query(default=True), interval: float = Query(default=10.0), width: int = Query(default=320), cols: int = Query(default=10), rows: int = Query(default=10), quality: int = Query(default=4), concurrency: int = Query(default=0), only_missing: bool = Query(default=True)):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
@@ -2586,8 +2634,13 @@ def sprites_create_batch(path: str = Query(default=""), recursive: bool = Query(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            max_workers = int(concurrency) if int(concurrency) > 0 else _cpu_workers(4)
+            def _proc_one(p: Path):
                 try:
+                    if only_missing:
+                        s_sheet, s_json = sprite_sheet_paths(p)
+                        if s_sheet.exists() and s_json.exists():
+                            return
                     jid = _new_job("sprites", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
@@ -2595,10 +2648,11 @@ def sprites_create_batch(path: str = Query(default=""), recursive: bool = Query(
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                for p in vids:
+                    ex.submit(_proc_one, p)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -2688,7 +2742,7 @@ def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0)
 
 
 @api.post("/heatmaps/create/batch")
-def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query(default=True), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=False), force: bool = Query(default=False)):
+def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query(default=True), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=False), force: bool = Query(default=False), concurrency: int = Query(default=0), only_missing: bool = Query(default=True)):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
@@ -2702,8 +2756,11 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            max_workers = int(concurrency) if int(concurrency) > 0 else _cpu_workers(4)
+            def _proc_one(p: Path):
                 try:
+                    if only_missing and heatmaps_json_path(p).exists():
+                        return
                     jid = _new_job("heatmaps", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
@@ -2711,10 +2768,11 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                for p in vids:
+                    ex.submit(_proc_one, p)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -2986,6 +3044,7 @@ def subtitles_create_batch(
     overwrite: bool = Query(default=False),
     language: str = Query(default="en"),
     translate: bool = Query(default=False),
+    concurrency: int = Query(default=0),
 ):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
@@ -3000,12 +3059,12 @@ def subtitles_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            max_workers = int(concurrency) if int(concurrency) > 0 else _cpu_workers(4)
+            def _proc_one(p: Path):
                 try:
                     out_file = artifact_dir(p) / f"{p.stem}{SUFFIX_SUBTITLES_SRT}"
                     if out_file.exists() and not overwrite:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     jid = _new_job("subtitles", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
@@ -3013,10 +3072,11 @@ def subtitles_create_batch(
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                for p in vids:
+                    ex.submit(_proc_one, p)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -3051,6 +3111,47 @@ def set_root(root: str = Query(...)):
         raise_api_error("Root does not exist or is not a directory", status_code=400, data={"path": str(p)})
     STATE["root"] = p.resolve()
     return api_success({"root": str(STATE["root"])})
+
+
+# --- Config ---
+@api.get("/config")
+def get_config():
+    try:
+        cfg = {
+            "root": str(STATE.get("root")),
+            "workers_default": STATE.get("workers_default"),
+            "ffmpeg_defaults": STATE.get("ffmpeg_defaults"),
+        }
+    except Exception:
+        cfg = {"root": None}
+    return api_success(cfg)
+
+
+@api.post("/config")
+def set_config(
+    workers_default: Optional[int] = Query(default=None),
+    x264_preset: Optional[str] = Query(default=None),
+    x264_crf: Optional[int] = Query(default=None),
+    vp9_crf: Optional[int] = Query(default=None),
+):
+    try:
+        if isinstance(workers_default, int) and workers_default > 0:
+            STATE["workers_default"] = int(workers_default)
+        ff = dict(STATE.get("ffmpeg_defaults") or {})
+        if x264_preset:
+            ff["x264_preset"] = str(x264_preset)
+        if isinstance(x264_crf, int) and x264_crf > 0:
+            ff["x264_crf"] = int(x264_crf)
+        if isinstance(vp9_crf, int) and vp9_crf > 0:
+            ff["vp9_crf"] = int(vp9_crf)
+        STATE["ffmpeg_defaults"] = ff
+        out = {
+            "workers_default": STATE.get("workers_default"),
+            "ffmpeg_defaults": STATE.get("ffmpeg_defaults"),
+        }
+        return api_success(out)
+    except Exception as e:
+        raise_api_error(f"Failed to update config: {e}", status_code=400)
 
 
 @api.post("/testpath")
@@ -3285,6 +3386,7 @@ def faces_create_batch(
     min_size_frac: float = Query(default=0.10),
     backend: str = Query(default="auto", pattern="^(auto|opencv|insightface)$"),
     only_missing: bool = Query(default=True),
+    concurrency: int = Query(default=0),
 ):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
@@ -3304,12 +3406,11 @@ def faces_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            max_workers = int(concurrency) if int(concurrency) > 0 else _cpu_workers(4)
+            def _proc_one(p: Path):
                 try:
                     if only_missing and faces_path(p).exists():
-                        # Skip already-generated faces when only_missing=True
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     jid = _new_job("faces", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
@@ -3326,10 +3427,11 @@ def faces_create_batch(
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                for p in vids:
+                    ex.submit(_proc_one, p)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
