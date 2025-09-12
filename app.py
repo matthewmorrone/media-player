@@ -1718,7 +1718,8 @@ def v2_update_video_tags(name: str, payload: TagUpdate, directory: str = Query("
 def v2_tags_summary(directory: str = Query("."), recursive: bool = Query(False)):
     root = Path(directory).expanduser().resolve()
     if not root.is_dir():
-        raise HTTPException(404, "directory not found")
+        # Be forgiving: return empty summary rather than 404 so callers can ignore
+        return {"tags": {}, "performers": {}}
     vids = _find_mp4s(root, recursive)
     tag_counts: dict[str, int] = {}
     perf_counts: dict[str, int] = {}
@@ -2676,7 +2677,7 @@ def heatmaps_png_head(path: str = Query(...)):
 
 
 @api.post("/heatmaps/create")
-def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=False), force: bool = Query(default=False)):
+def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=True), force: bool = Query(default=False)):
     fp = safe_join(STATE["root"], path)
     def _do():
         d = compute_heatmaps(fp, float(interval), str(mode), bool(png))
@@ -4172,9 +4173,19 @@ def api_update_video_tags(name: str, payload: TagUpdate, directory: str = Query(
 
 @api.get("/tags/summary")
 def api_tags_summary(path: str = Query(default=""), recursive: bool = Query(default=False)):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    """Summarize tags and performers under a directory.
+
+    Be forgiving if the path is empty or invalid: return empty counts instead of 404
+    so the UI can render without error during initialization.
+    """
+    try:
+        base = safe_join(STATE["root"], path) if path else STATE["root"]
+    except Exception:
+        # Invalid path outside root; treat as empty
+        return {"tags": {}, "performers": {}}
     if not base.is_dir():
-        raise_api_error("directory not found", status_code=404)
+        # Non-directory path provided; treat as empty rather than erroring
+        return {"tags": {}, "performers": {}}
     vids = _find_mp4s(base, bool(recursive))
     tag_counts: dict[str, int] = {}
     perf_counts: dict[str, int] = {}

@@ -981,6 +981,27 @@
 				</div>
 			</div>
 			<div id="tasksDiv" class="hidden mt-12">
+				<!-- Jobs Activity: live, one-row-per-job table updated via SSE -->
+				<div class="mb-18" id="taskSection-jobs" data-task-section="jobs">
+					<div class="small flex items-center gap-8 wrap">
+						<strong>Jobs Activity</strong>
+						<span class="muted small">Live updates as jobs are queued and completed</span>
+					</div>
+					<div class="mt-6" style="max-height: 220px; overflow: auto; border: 1px solid #333; border-radius: 6px;">
+						<table id="jobsTable" class="small" style="width: 100%; border-collapse: collapse;">
+							<thead style="position: sticky; top: 0; background: #111;">
+								<tr>
+									<th class="small" style="text-align:left; padding: 6px 8px; border-bottom: 1px solid #333; width: 10rem;">When</th>
+									<th class="small" style="text-align:left; padding: 6px 8px; border-bottom: 1px solid #333; width: 8rem;">Task</th>
+									<th class="small" style="text-align:left; padding: 6px 8px; border-bottom: 1px solid #333;">File</th>
+									<th class="small" style="text-align:left; padding: 6px 8px; border-bottom: 1px solid #333; width: 7rem;">State</th>
+									<th class="small" style="text-align:left; padding: 6px 8px; border-bottom: 1px solid #333; width: 14rem;">Progress</th>
+								</tr>
+							</thead>
+							<tbody id="jobsTableBody"></tbody>
+						</table>
+					</div>
+				</div>
 				<div class="mb-18" id="taskSection-metadata" data-task-section="metadata">
 					<div class="small"><strong>JSON Metadata</strong></div>
 					<progress id="metaProgress" max="100" value="0" class="progress-lg"></progress>
@@ -1003,6 +1024,17 @@
 				</div>
 				<div class="mb-18" id="taskSection-hovers" data-task-section="hovers">
 					<div class="small"><strong>Hover Previews</strong></div>
+					<div class="row items-center gap-12 wrap mt-6">
+						<label class="small">Segments
+							<input id="hoverSegmentsInput" type="number" min="3" max="30" step="1" value="9" class="w-80" />
+						</label>
+						<label class="small">Segment duration (s)
+							<input id="hoverSegDurInput" type="number" min="0.2" max="10" step="0.1" value="1.0" class="w-80" />
+						</label>
+						<label class="small">Width (px)
+							<input id="hoverWidthInput" type="number" min="120" max="1280" step="10" value="320" class="w-80" />
+						</label>
+					</div>
 					<progress id="hoverProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="hoverPct" class="small"></span>
 					<button id="generateMissingHoversBtn" class="btn">Generate missing hovers</button>
@@ -1027,6 +1059,23 @@
 				</div>
 				<div class="mb-18" id="taskSection-sprites" data-task-section="sprites">
 					<div class="small"><strong>Scrubbing Thumbnails</strong></div>
+					<div class="row items-center gap-12 wrap mt-6">
+						<label class="small">Interval (s)
+							<input id="spriteIntervalInput" type="number" min="1" step="1" value="10" class="w-80" />
+						</label>
+						<label class="small">Width (px)
+							<input id="spriteWidthInput" type="number" min="160" max="1920" step="10" value="320" class="w-80" />
+						</label>
+						<label class="small">Cols
+							<input id="spriteColsInput" type="number" min="3" max="40" step="1" value="10" class="w-80" />
+						</label>
+						<label class="small">Rows
+							<input id="spriteRowsInput" type="number" min="3" max="40" step="1" value="10" class="w-80" />
+						</label>
+						<label class="small">Quality (0-8)
+							<input id="spriteQualityInput" type="number" min="0" max="8" step="1" value="4" class="w-80" />
+						</label>
+					</div>
 					<progress id="spritesProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="spritesPct" class="small"></span>
 					<button id="generateMissingSpritesBtn" class="btn">Generate missing sprites</button>
@@ -1035,6 +1084,19 @@
 				</div>
 				<div class="mb-18" id="taskSection-heatmaps" data-task-section="heatmaps">
 					<div class="small"><strong>Heatmaps</strong></div>
+					<div class="row items-center gap-12 wrap mt-6">
+						<label class="small">Interval (s)
+							<input id="heatmapsIntervalInput" type="number" min="0.5" step="0.5" value="5.0" class="w-80" />
+						</label>
+						<label class="small">Mode
+							<select id="heatmapsModeSelect" class="w-80">
+								<option value="both" selected>Both</option>
+								<option value="brightness">Brightness</option>
+								<option value="motion">Motion</option>
+							</select>
+						</label>
+						<label class="row items-center gap-6 small"><input id="heatmapsPngChk" type="checkbox" checked /> Save PNG</label>
+					</div>
 					<progress id="heatmapsProgress" max="100" value="0" class="progress-lg"></progress>
 					<span id="heatmapsPct" class="small"></span>
 					<button id="generateMissingHeatmapsBtn" class="btn">Generate missing heatmaps</button>
@@ -1373,6 +1435,18 @@
 		const generateMissingSpritesBtn = document.getElementById("generateMissingSpritesBtn");
 		const recomputeAllSpritesBtn = document.getElementById("recomputeAllSpritesBtn");
 		const clearSpritesBtn = document.getElementById("clearSpritesBtn");
+		// Task knobs for hovers/sprites/heatmaps
+		const hoverSegmentsInput = document.getElementById("hoverSegmentsInput");
+		const hoverSegDurInput = document.getElementById("hoverSegDurInput");
+		const hoverWidthInput = document.getElementById("hoverWidthInput");
+		const spriteIntervalInput = document.getElementById("spriteIntervalInput");
+		const spriteWidthInput = document.getElementById("spriteWidthInput");
+		const spriteColsInput = document.getElementById("spriteColsInput");
+		const spriteRowsInput = document.getElementById("spriteRowsInput");
+		const spriteQualityInput = document.getElementById("spriteQualityInput");
+		const heatmapsIntervalInput = document.getElementById("heatmapsIntervalInput");
+		const heatmapsModeSelect = document.getElementById("heatmapsModeSelect");
+		const heatmapsPngChk = document.getElementById("heatmapsPngChk");
 		const generateMissingSubsBtn = document.getElementById("generateMissingSubsBtn");
 		const recomputeAllSubsBtn = document.getElementById("recomputeAllSubsBtn");
 		const clearSubsBtn = document.getElementById("clearSubsBtn");
@@ -1388,6 +1462,8 @@
 		const cleanupDryRunBtn = document.getElementById("cleanupDryRunBtn");
 		const cleanupRunBtn = document.getElementById("cleanupRunBtn");
 		const cleanupSummary = document.getElementById("cleanupSummary");
+		// Jobs Activity DOM
+		const jobsTableBody = document.getElementById("jobsTableBody");
 		let tasksRefreshTimer = null;
 		// Collect all Tasks progress elements for animation toggling
 		const _allProgressEls = [
@@ -1405,6 +1481,49 @@
 		function setIndeterminateActive(active) {
 			// No-op to avoid animating all progress bars; we use per-task animation instead.
 			// Left in place for compatibility with callers.
+		}
+		// Quick helpers to start a batch in a resilient way (avoid waiting on long-held HTTP)
+		async function postWithTimeout(url, ms = 3000) {
+			const ctrl = new AbortController();
+			const t = setTimeout(() => ctrl.abort(), ms);
+			try {
+				const r = await fetch(url, { method: 'POST', signal: ctrl.signal });
+				return !!r && r.ok;
+			} catch (_) {
+				// Treat abort as success (likely job accepted and server kept connection open)
+				return false;
+			} finally { clearTimeout(t); }
+		}
+		function burstStatsRefresh(ticks = 6, intervalMs = 800) {
+			let n = 0;
+			const id = setInterval(() => {
+				try { updateTasksStats(); } catch (_) {}
+				if (++n >= ticks) clearInterval(id);
+			}, intervalMs);
+		}
+		async function startBatchFlow(jobType, startUrl) {
+			try { setIndeterminateForJobType(jobType, true); } catch (_) {}
+			try { startJobsSSE(); } catch (_) {}
+			// Fire request with short timeout; don't block UI
+			postWithTimeout(startUrl, 2500).then(() => {}).catch(() => {});
+			// Try to detect activity quickly and keep stats fresh
+			burstStatsRefresh();
+			// Opportunistic active jobs check (non-blocking)
+			try {
+				setTimeout(async () => {
+					try {
+						const res = await fetch('/api/jobs?state=active');
+						if (res.ok) {
+							const body = await res.json();
+							const list = (body.data && body.data.jobs) || body.jobs || [];
+							if (Array.isArray(list) && list.some(j => (j.type||'').toLowerCase().includes(String(jobType)))) {
+								window.__jobsActive = true;
+								try { updatePollingInterval(); } catch(_){}
+							}
+						}
+					} catch(_){}
+				}, 600);
+			} catch (_) {}
 		}
 		// Scope indeterminate animation to a specific task section by name
 		function setTaskIndeterminate(taskName, active) {
@@ -1446,6 +1565,88 @@
 			if (section) {
 				setTaskIndeterminate(section, active);
 			}
+		}
+
+		// --- Jobs Activity table helpers ---
+		const __jobRows = new Map(); // id -> {tr, cells, last}
+		function __shortName(p) {
+			try {
+				if (!p) return "";
+				const u = decodeURIComponent(p);
+				const parts = u.split(/[\\/]/);
+				return parts[parts.length - 1] || u;
+			} catch (_) { return p || ""; }
+		}
+		function __stateFromEvent(evt, error) {
+			const e = (evt || '').toLowerCase();
+			if (e === 'created' || e === 'queued') return 'queued';
+			if (e === 'started' || e === 'progress') return 'running';
+			if (e === 'cancel') return 'canceled';
+			if (e === 'finished') return error ? 'failed' : 'done';
+			return e || 'unknown';
+		}
+		function upsertJobRow(data) {
+			if (!jobsTableBody) return;
+			const id = data.id;
+			if (!id) return;
+			const nowStr = new Date().toLocaleTimeString();
+			const t = normalizeJobType(data.type || '');
+			const path = data.path || '';
+			const state = (data.state) || __stateFromEvent(data.event, data.error);
+			const total = data.total != null ? parseInt(data.total, 10) : null;
+			const processed = data.processed != null ? parseInt(data.processed, 10) : null;
+			let row = __jobRows.get(id);
+			if (!row) {
+				const tr = document.createElement('tr');
+				tr.dataset.jobId = id;
+				const tdWhen = document.createElement('td');
+				tdWhen.className = 'small'; tdWhen.style.padding = '4px 8px';
+				const tdTask = document.createElement('td');
+				tdTask.className = 'small'; tdTask.style.padding = '4px 8px';
+				const tdFile = document.createElement('td');
+				tdFile.className = 'small'; tdFile.style.padding = '4px 8px'; tdFile.style.maxWidth = '40vw'; tdFile.style.whiteSpace = 'nowrap'; tdFile.style.overflow = 'hidden'; tdFile.style.textOverflow = 'ellipsis';
+				const tdState = document.createElement('td');
+				tdState.className = 'small'; tdState.style.padding = '4px 8px';
+				const tdProg = document.createElement('td');
+				tdProg.className = 'small'; tdProg.style.padding = '4px 8px';
+				const prog = document.createElement('progress'); prog.max = 100; prog.value = 0; prog.className = 'progress-sm'; prog.style.minWidth = '140px';
+				const progText = document.createElement('div'); progText.className = 'small muted';
+				tdProg.appendChild(prog); tdProg.appendChild(progText);
+				tr.appendChild(tdWhen); tr.appendChild(tdTask); tr.appendChild(tdFile); tr.appendChild(tdState); tr.appendChild(tdProg);
+				jobsTableBody.insertBefore(tr, jobsTableBody.firstChild);
+				row = { tr, cells: { tdWhen, tdTask, tdFile, tdState, prog, progText }, last: {} };
+				__jobRows.set(id, row);
+				// keep at most 300 rows to avoid unbounded growth
+				while (jobsTableBody.children.length > 300) {
+					const last = jobsTableBody.lastElementChild;
+					if (!last) break;
+					__jobRows.delete(last.dataset.jobId);
+					jobsTableBody.removeChild(last);
+				}
+			}
+			const { tdWhen, tdTask, tdFile, tdState, prog, progText } = row.cells;
+			// Update cells (only if changed to minimize layout work)
+			if (row.last.when !== nowStr) { tdWhen.textContent = nowStr; row.last.when = nowStr; }
+			if (row.last.task !== t) { tdTask.textContent = t || (data.type || ''); row.last.task = t; }
+			const fileShort = __shortName(path);
+			if (row.last.file !== fileShort) { tdFile.textContent = fileShort || ''; tdFile.title = path || ''; row.last.file = fileShort; }
+			if (row.last.state !== state) { tdState.textContent = state || ''; row.last.state = state; }
+			let pct = null;
+			if (total != null && total > 0 && processed != null) pct = Math.max(0, Math.min(100, Math.floor((processed / total) * 100)));
+			if (pct == null && (state === 'running' || state === 'queued')) {
+				prog.removeAttribute('value'); // indeterminate
+				progText.textContent = processed != null ? `${processed}/${total ?? '?'}` : '';
+			} else if (pct != null) {
+				prog.value = pct;
+				progText.textContent = `${processed ?? 0}/${total ?? 0} (${pct}%)`;
+			} else {
+				prog.value = 0;
+				progText.textContent = '';
+			}
+			// Dim done/failed rows slightly
+			if (state === 'done') row.tr.style.opacity = '0.85';
+			else if (state === 'failed') row.tr.style.opacity = '0.95';
+			else row.tr.style.opacity = '';
 		}
 		async function updateTasksStats() {
 			try { 
@@ -1542,8 +1743,7 @@
 			recomputeAllCoversBtn.onclick = async () => {
 				recomputeAllCoversBtn.disabled = true;
 				try {
-					await fetch(`/api/cover/create/batch?overwrite=true`, { method: "POST" });
-					updateTasksStats();
+					await startBatchFlow('cover', `/api/cover/create/batch?overwrite=true`);
 					try { await loadStats(); } catch (_) { }
 				} finally { recomputeAllCoversBtn.disabled = false; }
 			};
@@ -1552,11 +1752,11 @@
 			generateMissingCoversBtn.onclick = async () => {
 				generateMissingCoversBtn.disabled = true;
 				try { 
-					// Prefer server-side batch endpoint if available
+					// Prefer server-side batch; don't block on long-held connection
 					let usedBatch = false;
-					try { 
-						const r = await fetch("/api/cover/create/batch", { method: "POST" });
-						usedBatch = r.ok;
+					try {
+						startBatchFlow('cover', `/api/cover/create/batch`);
+						usedBatch = true;
 					} catch (_) { usedBatch = false; }
 					if (!usedBatch) {
 						// Fallback: iterate client-side
@@ -1597,7 +1797,16 @@
 		if (generateMissingHoversBtn) {
 			generateMissingHoversBtn.onclick = async () => {
 				generateMissingHoversBtn.disabled = true;
-				await fetch("/api/hover/create/batch", {method: "POST" });
+				try {
+					const qs = new URLSearchParams();
+					if (hoverSegmentsInput) qs.set("segments", String(parseInt(hoverSegmentsInput.value || "9", 10)));
+					if (hoverSegDurInput) qs.set("seg_dur", String(parseFloat(hoverSegDurInput.value || "1.0")));
+					if (hoverWidthInput) qs.set("width", String(parseInt(hoverWidthInput.value || "320", 10)));
+					await startBatchFlow('hover', `/api/hover/create/batch?${qs.toString()}`);
+				}
+				catch (_) {
+					await startBatchFlow('hover', `/api/hover/create/batch`);
+				}
 				generateMissingHoversBtn.disabled = false;
 				updateTasksStats();
 				try { await loadStats(); } catch (_) { }
@@ -1613,9 +1822,12 @@
 			recomputeAllHoversBtn.onclick = async () => {
 				recomputeAllHoversBtn.disabled = true;
 				try {
-					await fetch(`/api/hover/create/batch`, { method: "POST" });
-					updateTasksStats();
-					try { await loadStats(); } catch (_) { }
+					const qs = new URLSearchParams();
+					if (hoverSegmentsInput) qs.set("segments", String(parseInt(hoverSegmentsInput.value || "9", 10)));
+					if (hoverSegDurInput) qs.set("seg_dur", String(parseFloat(hoverSegDurInput.value || "1.0")));
+					if (hoverWidthInput) qs.set("width", String(parseInt(hoverWidthInput.value || "320", 10)));
+					await startBatchFlow('hover', `/api/hover/create/batch?${qs.toString()}`);
+					updateTasksStats(); try { await loadStats(); } catch (_) { }
 				} finally { recomputeAllHoversBtn.disabled = false; }
 			};
 		}
@@ -2005,7 +2217,18 @@
 		if (generateMissingSpritesBtn) {
 			generateMissingSpritesBtn.onclick = async () => {
 				generateMissingSpritesBtn.disabled = true;
-				await fetch("/api/sprites/create/batch", {method: "POST" });
+				try {
+					const qs = new URLSearchParams();
+					if (spriteIntervalInput) qs.set("interval", String(parseFloat(spriteIntervalInput.value || "10")));
+					if (spriteWidthInput) qs.set("width", String(parseInt(spriteWidthInput.value || "320", 10)));
+					if (spriteColsInput) qs.set("cols", String(parseInt(spriteColsInput.value || "10", 10)));
+					if (spriteRowsInput) qs.set("rows", String(parseInt(spriteRowsInput.value || "10", 10)));
+					if (spriteQualityInput) qs.set("quality", String(parseInt(spriteQualityInput.value || "4", 10)));
+					await startBatchFlow('sprites', `/api/sprites/create/batch?${qs.toString()}`);
+				}
+				catch (_) {
+					await startBatchFlow('sprites', `/api/sprites/create/batch`);
+				}
 				generateMissingSpritesBtn.disabled = false;
 				updateTasksStats();
 				try { await loadStats(); } catch (_) { }
@@ -2015,7 +2238,16 @@
 		if (recomputeAllSpritesBtn) {
 			recomputeAllSpritesBtn.onclick = async () => {
 				recomputeAllSpritesBtn.disabled = true;
-				try { await fetch("/api/sprites/create/batch", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_){} }
+				try {
+					const qs = new URLSearchParams();
+					if (spriteIntervalInput) qs.set("interval", String(parseFloat(spriteIntervalInput.value || "10")));
+					if (spriteWidthInput) qs.set("width", String(parseInt(spriteWidthInput.value || "320", 10)));
+					if (spriteColsInput) qs.set("cols", String(parseInt(spriteColsInput.value || "10", 10)));
+					if (spriteRowsInput) qs.set("rows", String(parseInt(spriteRowsInput.value || "10", 10)));
+					if (spriteQualityInput) qs.set("quality", String(parseInt(spriteQualityInput.value || "4", 10)));
+					await startBatchFlow('sprites', `/api/sprites/create/batch?${qs.toString()}`);
+					updateTasksStats(); try { await loadStats(); } catch(_){}
+				}
 				finally { recomputeAllSpritesBtn.disabled = false; }
 			};
 		}
@@ -2024,7 +2256,16 @@
 		if (generateMissingHeatmapsBtn) {
 			generateMissingHeatmapsBtn.onclick = async () => {
 				generateMissingHeatmapsBtn.disabled = true;
-				await fetch("/api/heatmaps/create/batch", {method: "POST" });
+				try {
+					const qs = new URLSearchParams();
+					if (heatmapsIntervalInput) qs.set("interval", String(parseFloat(heatmapsIntervalInput.value || "5.0")));
+					if (heatmapsModeSelect) qs.set("mode", String(heatmapsModeSelect.value || "both"));
+					qs.set("png", (heatmapsPngChk && heatmapsPngChk.checked) ? "true" : "false");
+					await startBatchFlow('heatmaps', `/api/heatmaps/create/batch?${qs.toString()}`);
+				}
+				catch (_) {
+					await startBatchFlow('heatmaps', `/api/heatmaps/create/batch`);
+				}
 				generateMissingHeatmapsBtn.disabled = false;
 				updateTasksStats();
 				try { await loadStats(); }
@@ -2035,7 +2276,14 @@
 		if (recomputeAllHeatmapsBtn) {
 			recomputeAllHeatmapsBtn.onclick = async () => {
 				recomputeAllHeatmapsBtn.disabled = true;
-				try { await fetch("/api/heatmaps/create/batch", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_){} }
+				try {
+					const qs = new URLSearchParams();
+					if (heatmapsIntervalInput) qs.set("interval", String(parseFloat(heatmapsIntervalInput.value || "5.0")));
+					if (heatmapsModeSelect) qs.set("mode", String(heatmapsModeSelect.value || "both"));
+					qs.set("png", (heatmapsPngChk && heatmapsPngChk.checked) ? "true" : "false");
+					await startBatchFlow('heatmaps', `/api/heatmaps/create/batch?${qs.toString()}`);
+					updateTasksStats(); try { await loadStats(); } catch(_){}
+				}
 				finally { recomputeAllHeatmapsBtn.disabled = false; }
 			};
 		}
@@ -2044,7 +2292,7 @@
 		if (generateMissingSubsBtn) {
 			generateMissingSubsBtn.onclick = async () => {
 				generateMissingSubsBtn.disabled = true;
-				await fetch("/api/subtitles/create/batch", {method: "POST" });
+				await startBatchFlow('subtitles', `/api/subtitles/create/batch`);
 				generateMissingSubsBtn.disabled = false;
 				updateTasksStats();
 				try { await loadStats(); }
@@ -2055,7 +2303,7 @@
 		if (recomputeAllSubsBtn) {
 			recomputeAllSubsBtn.onclick = async () => {
 				recomputeAllSubsBtn.disabled = true;
-				try { await fetch("/api/subtitles/create/batch?overwrite=true", { method: "POST" }); updateTasksStats(); try { await loadStats(); } catch(_){} }
+				try { await startBatchFlow('subtitles', `/api/subtitles/create/batch?overwrite=true`); updateTasksStats(); try { await loadStats(); } catch(_){} }
 				finally { recomputeAllSubsBtn.disabled = false; }
 			};
 		}
@@ -2301,7 +2549,7 @@
 			const openEs = (url) => {
 				const es = new EventSource(url);
 				jobsEvtSrc = es;
-				es.onmessage = (ev) => {
+					es.onmessage = (ev) => {
 					try { 
 						const data = JSON.parse(ev.data || "{}");
 						const line = `[${new Date().toLocaleTimeString()}] ${data.event || "msg"} ${data.id || ""}`;
@@ -2309,6 +2557,8 @@
 							jobsBox.textContent = (jobsBox.textContent + "\n" + line).trim();
 							jobsBox.scrollTop = jobsBox.scrollHeight;
 						}
+							// Update one-row-per-job activity table
+							try { upsertJobRow(data); } catch (_) {}
 						// Maintain set of running jobs and update UI cadence
 						const evt = (data.event || "").toLowerCase();
 						const jid = data.id;
@@ -2322,7 +2572,7 @@
 							__runningJobIds.add(jid);
 							setIndeterminateForJobType(data.type, true);
 						}
-						else if ((evt === "finished" || evt === "cancel") && jid) {
+							else if ((evt === "finished" || evt === "cancel") && jid) {
 							__runningJobIds.delete(jid);
 							setIndeterminateForJobType(data.type, false);
 						}
@@ -2366,6 +2616,7 @@
 							const jid = j.id;
 							if (jid && !__runningJobIds.has(jid)) __runningJobIds.add(jid);
 							setIndeterminateForJobType(j.type, true);
+							try { upsertJobRow(j); } catch (_) {}
 							anyActive = true;
 						}
 						if (anyActive) {
@@ -2378,6 +2629,15 @@
 					}
 				}
 				catch (_) { }
+				// Also seed recent finished jobs for quick context
+				try {
+					const r2 = await fetch("/api/jobs?state=recent");
+					if (r2.ok) {
+						const b2 = await r2.json();
+						const list2 = (b2.data && b2.data.jobs) || b2.jobs || [];
+						for (const j of list2) { try { upsertJobRow(j); } catch (_) {} }
+					}
+				} catch (_) {}
 			})();
 		}
 
@@ -3441,6 +3701,12 @@
 			playBtnEl.textContent = "Play";
 			actions.appendChild(playBtnEl);
 			frag.appendChild(actions);
+			// First, render the fragment so elements exist in the DOM
+			infoPanel.appendChild(frag);
+			// Wire Play button
+			try {
+				playBtnEl.onclick = () => { showTab("Player"); play(file); };
+			} catch (_) {}
 			// Make status values clickable to generate artifacts
 			const setClickable = (id, title, handler) => {
 				const el = document.getElementById(id);
@@ -3476,7 +3742,12 @@
 				await fetch(`/api/sprites/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
 			});
 			setClickable("infoHeatmaps", "Click to (re)generate heatmaps", async () => {
-				await fetch(`/api/heatmaps/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
+				const qs = new URLSearchParams({ path: file.path });
+				try {
+					const chk = document.getElementById('heatmapsPngChk');
+					if (chk && chk.checked) qs.set('png', 'true');
+				} catch(_){}
+				await fetch(`/api/heatmaps/create?${qs.toString()}`, { method: 'POST' });
 			});
 			setClickable("infoSubtitles", "Click to (re)generate subtitles", async () => {
 				await fetch(`/api/subtitles/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
@@ -3495,6 +3766,53 @@
                         setClickable("infoScenes", "Click to (re)generate chapters", async () => {
                                 await fetch(`/api/scenes/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
                         });
+						// After wiring actions, asynchronously verify artifact presence and update statuses
+						(async function refreshArtifactStatuses(f) {
+							const headOk = async (url) => {
+								try { const r = await fetch(url, { method: 'HEAD', cache: 'no-store' }); return r.ok; } catch(_) { return false; }
+							};
+							const getJson = async (url) => {
+								try { const r = await fetch(url, { method: 'GET', cache: 'no-store' }); if (!r.ok) return null; return await r.json(); } catch(_) { return null; }
+							};
+							const setCheck = (id, ok) => { const el = document.getElementById(id); if (el) el.textContent = ok ? '✅' : '❌'; };
+							// Thumbnail
+							const coverOk = await headOk(`/api/cover/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+							setCheck('infoThumbStatus', coverOk);
+							if (coverOk) {
+								const img = document.getElementById('infoThumb');
+								if (img && img.tagName === 'IMG') { img.src = `/api/cover/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`; }
+							}
+							// Hover preview
+							const hoverOk = await headOk(`/api/hover/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+							setCheck('infoHoverPreview', hoverOk);
+							// Sprites
+							const spritesJson = await getJson(`/api/sprites/json?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+							const spritesOk = !!(spritesJson && (spritesJson.index || spritesJson.data?.index));
+							setCheck('infoSprites', spritesOk);
+							// Scenes / chapters
+							const scenesJson = await getJson(`/api/scenes/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+							const scenesArr = (scenesJson && (scenesJson.data?.markers || scenesJson.markers || scenesJson.data?.scenes)) || [];
+							setCheck('infoScenes', Array.isArray(scenesArr) && scenesArr.length > 0);
+							// Heatmaps
+							let heatOk = await headOk(`/api/heatmaps/png?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+							if (!heatOk) {
+								const hm = await getJson(`/api/heatmaps/json?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+								heatOk = !!(hm && ((hm.data?.heatmaps?.samples?.length || 0) > 0 || (hm.heatmaps?.samples?.length || 0) > 0 || (hm.samples?.length || 0) > 0));
+							}
+							setCheck('infoHeatmaps', heatOk);
+							// Subtitles
+							const subsOk = await headOk(`/api/subtitles/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+							setCheck('infoSubtitles', subsOk);
+							// pHash: try a lightweight metadata get and look for a phash-like field
+							const meta = await getJson(`/api/metadata/get?path=${encodeURIComponent(f.path)}&view=1&t=${Date.now()}`);
+							const metaBody = meta?.data || meta || {};
+							const phashOk = !!(metaBody.phash || metaBody.pHash || metaBody.hash || metaBody.artifacts?.phash);
+							setCheck('infoPhash', phashOk);
+							// Faces
+							const faces = await getJson(`/api/faces/json?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+							const faceArr = (faces && (faces.data?.faces || faces.faces)) || [];
+							setCheck('infoFaces', Array.isArray(faceArr) && faceArr.length > 0);
+						})(file);
                         infoPanel.appendChild(frag);
                         renderTagEditor(file);
                         try { 
@@ -3633,6 +3951,12 @@
 			}
 			selectedTile = tile;
 			selectedFile = file;
+			// Persist last selected file for sidebar restore on Grid/List
+			try {
+				const LAST_SELECTED_KEY = 'lastSelected.v1';
+				const payload = { path: file.path, name: file.name, title: file.title || '' };
+				localStorage.setItem(LAST_SELECTED_KEY, JSON.stringify(payload));
+			} catch (_) {}
 			tile.classList.add("selected");
 			// On demand cover generation and display
 			let coverDiv = tile.querySelector(".placeholder");
@@ -3883,6 +4207,8 @@
 			totalPages = data.total_pages || 1;
 			totalFiles = data.total_files || 0;
 			pageSize = data.page_size || pageSize;
+			// Render directories list in sidebar
+			try { renderDirs(data.dirs || []); } catch (_) {}
 			// Only use current page's files for rendering
 			renderFiles(data.files || []);
 			// Always display backend's total_files and total_pages in paginator
@@ -3892,9 +4218,42 @@
 			selectedTile = null;
 			selectedFile = null;
 			if (infoPanel) {
-				infoPanel.innerHTML = "";
+				// Show a friendly placeholder until a file is selected
+				infoPanel.innerHTML = "<div class=\"small\">Select a video from the grid to see details here.</div>";
 			}
+			// If on Grid/List and nothing is selected, auto-select the first visible tile to populate the sidebar
+			try {
+				const tabNow = getTabFromLocation() || 'Grid';
+				if ((tabNow === 'Grid' || tabNow === 'List') && !document.querySelector('.tile.selected')) {
+					const first = document.querySelector('.tile');
+					if (first) {
+						const p = first.dataset.path || '';
+						const name = first.querySelector('.name')?.textContent || (p.split('/').pop() || p);
+						first.classList.add('selected');
+						const f = { path: p, name, title: '' };
+						selectedTile = first; selectedFile = f;
+						showInfo(f);
+					}
+				}
+			} catch (_) {}
 			status("OK");
+		}
+
+		// Helper: attempt to select a file's tile by its relative path. Returns true if selected.
+		async function selectFileInGridByPath(relPath, fallbackName, fallbackTitle) {
+			try {
+				const tiles = Array.from(document.querySelectorAll('.tile'));
+				const match = tiles.find(t => (t.dataset && t.dataset.path) === relPath);
+				if (match) {
+					match.classList.add('selected');
+					const f = { path: relPath, name: fallbackName || (relPath.split('/').pop() || relPath), title: fallbackTitle || '' };
+					selectedTile = match; selectedFile = f;
+					showInfo(f);
+					try { match.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
+					return true;
+				}
+			} catch (_) { }
+			return false;
 		}
 
 		async function ensureHover(file) {
@@ -3975,6 +4334,8 @@
 			files.forEach((file) => {
 				const tile = document.createElement("div");
 				tile.className = "tile";
+				// Tag with file path for restoration
+				try { tile.dataset.path = file.path || ""; } catch (_) {}
 				// Basic structure: name and placeholder (build with DOM APIs)
 				const displayTitle = file.title || file.name;
 				const placeholder = document.createElement("div");
@@ -4106,6 +4467,36 @@
 			});
 		}
 
+		function renderDirs(dirs) {
+			if (!dirsEl) return;
+			dirsEl.innerHTML = "";
+			// Add an "Up" entry when not at root
+			try {
+				if (cwd && typeof cwd === 'string' && cwd.length > 0) {
+					const up = document.createElement('li');
+					up.textContent = "..";
+					up.title = "Up one level";
+					up.onclick = async () => {
+						const parent = cwd.includes('/') ? cwd.substring(0, cwd.lastIndexOf('/')) : "";
+						currentPage = 1;
+						await load(parent);
+					};
+					dirsEl.appendChild(up);
+				}
+			} catch (_) {}
+			if (!Array.isArray(dirs)) return;
+			dirs.forEach(d => {
+				const li = document.createElement('li');
+				li.textContent = d.name || d.path || "(folder)";
+				li.title = d.path || d.name || "";
+				li.onclick = async () => {
+					currentPage = 1;
+					await load(d.path || "");
+				};
+				dirsEl.appendChild(li);
+			});
+		}
+
 		if (toggleHoversBtn) {
 			toggleHoversBtn.onclick = () => {
 				hoverPreviewsEnabled = !hoverPreviewsEnabled;
@@ -4180,6 +4571,14 @@
 			}
 			source.src = src;
 			videoEl.appendChild(source);
+			// Ensure sidebar shows details for the playing file and persist selection
+			try {
+				showInfo(file);
+				// TODO @copilot
+				const LAST_SELECTED_KEY = 'lastSelected.v1';
+				const payload = { path: file.path, name: file.name || (file.path.split('/').pop() || ''), title: file.title || '' };
+				localStorage.setItem(LAST_SELECTED_KEY, JSON.stringify(payload));
+			} catch(_) {}
 			// Helper to force-enable our subtitles track
 			const ensureCaptionsVisible = () => {
 				try { 
@@ -4344,7 +4743,11 @@
 					const resJ = await fetch( `/api/heatmaps/json?path=${encodeURIComponent(file.path)}`);
 					if (resJ.ok) {
 						const body = await resJ.json();
-						const data = (body.data && body.data.heatmaps) || body.heatmaps;
+						// Support multiple shapes:
+						// - { data: { heatmaps: { samples: [...] } } }
+						// - { heatmaps: { samples: [...] } }
+						// - { samples: [...] }
+						let data = (body.data && body.data.heatmaps) || body.heatmaps || body;
 						renderHeatmapStripe({type: "json", data });
 					}
 					else {
@@ -4400,14 +4803,15 @@
 			}
 			if (payload.type === "json" && payload.data) {
 				const data = payload.data;
-				const samples = data.samples || [];
+				const samples = data.samples || (data.heatmaps && data.heatmaps.samples) || [];
 				if (!samples.length) return;
-				// Build CSS gradient; use brightness by default, overlay motion as stripes
+				// Build CSS gradient using value 'v' (0..1) or brightness (0..255)
+				const lastIdx = samples.length - 1;
 				const stops = samples.map((s, i) => {
-					const t = s.t ?? s.time ?? (i / samples.length) * 100;
-					const brightness = Math.max(0, Math.min(255, s.brightness ?? 0));
-					const color = `rgb(${brightness},${brightness},${brightness})`;
-					const pct = Math.max(0, Math.min(100, (i / (samples.length - 1)) * 100));
+					const v = s.v != null ? Number(s.v) : (s.brightness != null ? Number(s.brightness) / 255 : 0);
+					const g = Math.max(0, Math.min(255, Math.round((isFinite(v) ? v : 0) * 255)));
+					const color = `rgb(${g},${g},${g})`;
+					const pct = lastIdx > 0 ? (i / lastIdx) * 100 : 0;
 					return `${color} ${pct}%`;
 				});
 				heatmapStripe.style.backgroundImage = `linear-gradient(to right, ${stops.join(",")})`;
@@ -4615,6 +5019,47 @@
 					}
 				});
 			}
+
+			// Wire explicit Set button to apply the root path from the input
+			if (setRootBtn) {
+				setRootBtn.onclick = async () => {
+					try {
+						const v = (rootInput && rootInput.value) ? rootInput.value.trim() : "";
+						if (!v) {
+							alert("Enter a root folder path.");
+							return;
+						}
+						status("Setting root…");
+						// Validate path first to avoid server-side errors
+						let okToSet = false;
+						try {
+							const tp = await fetch("/api/testpath?" + new URLSearchParams({ path: v }).toString(), { method: "POST" });
+							if (tp.ok) {
+								const tjson = await tp.json();
+								const tdata = tjson.data || tjson;
+								okToSet = !!(tdata && tdata.exists && tdata.is_dir);
+							}
+						} catch (_) { okToSet = false; }
+						if (!okToSet) {
+							status("");
+							alert("Path does not exist or is not a directory.");
+							return;
+						}
+						const res = await fetch("/api/setroot?" + new URLSearchParams({ root: v }).toString(), { method: "POST" });
+						if (res.ok) {
+							currentPage = 1;
+							cwd = "";
+							await load("");
+							status("OK");
+						} else {
+							status("");
+							alert("Failed to set root.");
+						}
+					} catch (_) {
+						status("");
+					}
+				};
+			}
 		}
 
 		// Auto-load root folder on page load
@@ -4726,22 +5171,72 @@
 			showTab(initialTab, true);
 			try { setRouteForTab(initialTab, true); }
 			catch (_) { }
-			// Restore last played video (set selection always; autoplay only when on Player)
+			// Restore last played/selected video (set selection always; autoplay only when on Player)
 			try { 
 				// TODO @copilot v1 reference
 				const LAST_VIDEO_KEY = 'lastVideo.v1';
+				const LAST_SELECTED_KEY = 'lastSelected.v1';
 				const raw = localStorage.getItem(LAST_VIDEO_KEY);
 				if (raw) {
 					const rec = JSON.parse(raw);
 					if (rec && rec.path) {
-						const file = {
-							path: rec.path,
-							name: rec.name || (rec.path.split('/').pop() || rec.path),
-							title: rec.title || '',
-						};
+						const file = { path: rec.path, name: rec.name || (rec.path.split('/').pop() || rec.path), title: rec.title || '' };
 						selectedFile = file;
 						if (initialTab === 'Player') {
 							await play(file);
+						} else {
+							// If landing on Grid/List, ensure the sidebar shows the last video
+							// by loading its directory and selecting its tile. If not on page 1,
+							// paginate until found (bounded by totalPages from backend response).
+							const lastDir = rec.path.includes('/') ? rec.path.substring(0, rec.path.lastIndexOf('/')) : '';
+							try { await load(lastDir || ""); } catch (_) {}
+							let found = await selectFileInGridByPath(rec.path, file.name, file.title);
+							if (!found) {
+								try {
+									const maxPages = totalPages || 1;
+									for (let p = 2; p <= maxPages; p++) {
+										await load(lastDir || "", p);
+										found = await selectFileInGridByPath(rec.path, file.name, file.title);
+										if (found) break;
+									}
+								} catch (_) {}
+							}
+						}
+					}
+				}
+				// If no lastVideo or selection unsuccessful, try lastSelected fallback on Grid/List
+				if ((initialTab === 'Grid' || initialTab === 'List') && (!selectedFile || !document.querySelector('.tile.selected'))) {
+					const r2 = localStorage.getItem(LAST_SELECTED_KEY);
+					if (r2) {
+						try {
+							const rec2 = JSON.parse(r2);
+							if (rec2 && rec2.path) {
+								const dir2 = rec2.path.includes('/') ? rec2.path.substring(0, rec2.path.lastIndexOf('/')) : '';
+								await load(dir2 || "");
+								let ok = await selectFileInGridByPath(rec2.path, rec2.name, rec2.title);
+								if (!ok) {
+									const maxPages = totalPages || 1;
+									for (let p = 2; p <= maxPages; p++) {
+										await load(dir2 || "", p);
+										ok = await selectFileInGridByPath(rec2.path, rec2.name, rec2.title);
+										if (ok) break;
+									}
+								}
+							}
+						} catch (_) {}
+					}
+					// Final fallback: select first visible tile to ensure sidebar isn't empty
+					if (!document.querySelector('.tile.selected')) {
+						const first = document.querySelector('.tile');
+						if (first) {
+							try {
+								const p = first.dataset.path || '';
+								const name = first.querySelector('.name')?.textContent || (p.split('/').pop() || p);
+								first.classList.add('selected');
+								const f = { path: p, name, title: '' };
+								selectedTile = first; selectedFile = f;
+								showInfo(f);
+							} catch (_) {}
 						}
 					}
 				}
