@@ -1,10 +1,5 @@
+from tests.test_utils import write_video
 from pathlib import Path
-
-def write_video(tmp_path: Path, name: str) -> Path:
-    p = tmp_path / name
-    p.write_bytes(b"00")
-    return p
-
 def test_saved_searches(client, tmp_path):
     write_video(tmp_path, "clip.mp4")
     r = client.post("/api/setroot", params={"root": str(tmp_path)})
