@@ -1236,7 +1236,9 @@ def _new_job(job_type: str, path: str) -> str:
         JOB_CANCEL_EVENTS[jid] = threading.Event()
     _publish_job_event({"event": "created", "id": jid, "type": base_type, "path": path})
     _publish_job_event({"event": "queued", "id": jid, "type": base_type, "path": path})
-    # Emit an initial progress event so clients see the job immediately
+    # Emit an initial progress event so clients can immediately see the job in their UI
+    # before any processing begins. This improves responsiveness and ensures the job
+    # appears in client-side job lists as soon as it is created.
     _set_job_progress(jid, processed_set=0)
     return jid
 
