@@ -46,6 +46,18 @@ def test_autotag_scan_updates_tags_and_summary(client, tmp_path):
     jid = r.json()["data"]["job"]
     assert isinstance(jid, str) and jid
 
+    # The job should appear immediately with zero progress
+    r_queued = client.get("/api/jobs", params={"state": "queued"})
+    assert r_queued.status_code == 200
+    jobs = r_queued.json()["data"]["jobs"]
+    j0 = next((j for j in jobs if j.get("id") == jid), None)
+    if j0 is None:
+        r_active = client.get("/api/jobs", params={"state": "active"})
+        assert r_active.status_code == 200
+        jobs = r_active.json()["data"]["jobs"]
+        j0 = next((j for j in jobs if j.get("id") == jid), None)
+    assert j0 is not None and j0.get("processed") is not None
+
     # Wait for background job to complete
     j = _poll_job_done(client, jid, timeout=3.0)
     assert j is not None, "Job not found in recent list"
@@ -84,3 +96,18 @@ def test_autotag_scan_updates_tags_and_summary(client, tmp_path):
     assert tags.get("Drama", 0) >= 1
     assert perfs.get("Alice", 0) >= 1
     assert perfs.get("Bob", 0) >= 1
+
+    # Tag search API should find tags and performers by substring
+    r = client.get("/api/tags/search", params={"path": str(tmp_path), "q": "a"})
+    assert r.status_code == 200
+    data = r.json()
+    assert "Action" in data.get("tags", [])
+    assert "Alice" in data.get("performers", [])
+
+    # Global search should return tags, performers, and files
+    r = client.get("/api/search", params={"path": str(tmp_path), "q": "a"})
+    assert r.status_code == 200
+    data = r.json()
+    assert "Action" in data.get("tags", [])
+    assert "Alice" in data.get("performers", [])
+    assert any(f.endswith("Alice Action-One.mp4") for f in data.get("files", []))

@@ -760,7 +760,8 @@
 			<div class="controls">
 				<input id="rootInput" type="text" value="/Volumes/media/PornMin" placeholder="Root folder" />
 				<input id="hiddenDirPicker" type="file" style="display:none;" webkitdirectory directory />
-				<button id="setRootBtn">Set</button>
+                                <button id="setRootBtn">Set</button>
+                                <button id="scanBtn">Scan</button>
 			</div>
 			<div id="infoPanel" class="small"></div>
 			<ul id="dirs"></ul>
@@ -3438,7 +3439,8 @@
 					$('#performersInput').on('itemAdded itemRemoved', debouncedSave);
 				}
 		const rootInput = document.getElementById("rootInput");
-		const setRootBtn = document.getElementById("setRootBtn");
+           const setRootBtn = document.getElementById("setRootBtn");
+           const scanBtn = document.getElementById("scanBtn");
 		const prevBtn = document.getElementById("prevBtn");
 		const nextBtn = document.getElementById("nextBtn");
 		const pageInfo = document.getElementById("pageInfo");
@@ -5020,46 +5022,60 @@
 				});
 			}
 
-			// Wire explicit Set button to apply the root path from the input
-			if (setRootBtn) {
-				setRootBtn.onclick = async () => {
-					try {
-						const v = (rootInput && rootInput.value) ? rootInput.value.trim() : "";
-						if (!v) {
-							alert("Enter a root folder path.");
-							return;
-						}
-						status("Setting root…");
-						// Validate path first to avoid server-side errors
-						let okToSet = false;
-						try {
-							const tp = await fetch("/api/testpath?" + new URLSearchParams({ path: v }).toString(), { method: "POST" });
-							if (tp.ok) {
-								const tjson = await tp.json();
-								const tdata = tjson.data || tjson;
-								okToSet = !!(tdata && tdata.exists && tdata.is_dir);
-							}
-						} catch (_) { okToSet = false; }
-						if (!okToSet) {
-							status("");
-							alert("Path does not exist or is not a directory.");
-							return;
-						}
-						const res = await fetch("/api/setroot?" + new URLSearchParams({ root: v }).toString(), { method: "POST" });
-						if (res.ok) {
-							currentPage = 1;
-							cwd = "";
-							await load("");
-							status("OK");
-						} else {
-							status("");
-							alert("Failed to set root.");
-						}
-					} catch (_) {
-						status("");
-					}
-				};
-			}
+                        // Wire explicit Set button to apply the root path from the input
+                        if (setRootBtn) {
+                                setRootBtn.onclick = async () => {
+                                        try {
+                                                const v = (rootInput && rootInput.value) ? rootInput.value.trim() : "";
+                                                if (!v) {
+                                                        alert("Enter a root folder path.");
+                                                        return;
+                                                }
+                                                status("Setting root…");
+                                                // Validate path first to avoid server-side errors
+                                                let okToSet = false;
+                                                try {
+                                                        const tp = await fetch("/api/testpath?" + new URLSearchParams({ path: v }).toString(), { method: "POST" });
+                                                        if (tp.ok) {
+                                                                const tjson = await tp.json();
+                                                                const tdata = tjson.data || tjson;
+                                                                okToSet = !!(tdata && tdata.exists && tdata.is_dir);
+                                                        }
+                                                } catch (_) { okToSet = false; }
+                                                if (!okToSet) {
+                                                        status("");
+                                                        alert("Path does not exist or is not a directory.");
+                                                        return;
+                                                }
+                                                const res = await fetch("/api/setroot?" + new URLSearchParams({ root: v }).toString(), { method: "POST" });
+                                                if (res.ok) {
+                                                        currentPage = 1;
+                                                        cwd = "";
+                                                        await load("");
+                                                        status("OK");
+                                                } else {
+                                                        status("");
+                                                        alert("Failed to set root.");
+                                                }
+                                        } catch (_) {
+                                                status("");
+                                        }
+                                };
+                        }
+
+                        if (scanBtn) {
+                                scanBtn.onclick = async () => {
+                                        const v = (rootInput && rootInput.value) ? rootInput.value.trim() : "";
+                                        if (!v) return;
+                                        try {
+                                                await fetch("/api/scan", {
+                                                        method: "POST",
+                                                        headers: {"Content-Type": "application/json"},
+                                                        body: JSON.stringify({ path: v })
+                                                });
+                                        } catch (_) { /* ignore */ }
+                                };
+                        }
 		}
 
 		// Auto-load root folder on page load

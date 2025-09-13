@@ -11,6 +11,7 @@ import threading
 import re
 import time
 import uuid
+import importlib
 from pathlib import Path
 import asyncio
 from collections import defaultdict
@@ -18,7 +19,17 @@ from typing import Any, Dict, Iterator, List, Optional, Callable
 from pydantic import BaseModel
 from difflib import SequenceMatcher
 
-from fastapi import APIRouter, Body, FastAPI, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    Header,
+)
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -26,7 +37,6 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
-from hashlib import sha1
 
 try:
     from PIL import Image  # type: ignore
@@ -34,10 +44,114 @@ except Exception:  # pragma: no cover
     Image = None  # type: ignore
 
 
+# Simple plugin manager ----------------------------------------------------
+
+
+class PluginManager:
+    """Minimal plugin registry allowing external hooks.
+
+    Plugins are regular Python modules located in the ``plugins`` directory.
+    Each module may expose a ``register(manager)`` function that registers
+    callbacks for named hooks. Hooks can then be executed via ``run``.
+    """
+
+    def __init__(self, folder: Path):
+        self.folder = folder
+        self.hooks: dict[str, list[Callable]] = defaultdict(list)
+
+    def load(self) -> None:
+        if not self.folder.exists():
+            return
+        sys.path.insert(0, str(self.folder.resolve()))
+        for mod_path in self.folder.glob("*.py"):
+            name = mod_path.stem
+            try:
+                mod = importlib.import_module(name)
+                if hasattr(mod, "register"):
+                    mod.register(self)
+            except Exception:
+                continue
+
+    def register(self, hook: str, func: Callable) -> None:
+        self.hooks.setdefault(hook, []).append(func)
+
+    def run(self, hook: str, *args, **kwargs) -> None:
+        for fn in self.hooks.get(hook, []):
+            try:
+                fn(*args, **kwargs)
+            except Exception:
+                continue
+
+LIBRARY_FILE = Path("library.json")
+SAVED_SEARCHES_FILE = Path("saved_searches.json")
+
+
 # Global server state
 STATE: dict[str, Any] = {
     "root": Path.cwd().resolve(),
+    "library": {},
+    "saved_searches": {},
 }
+
+
+def _load_library() -> None:
+    try:
+        if LIBRARY_FILE.exists():
+            data = json.loads(LIBRARY_FILE.read_text())
+            if isinstance(data, dict):
+                STATE["library"] = data
+    except Exception:
+        STATE["library"] = {}
+
+
+def _save_library() -> None:
+    try:
+        LIBRARY_FILE.write_text(json.dumps(STATE.get("library", {}), indent=2))
+    except Exception:
+        pass
+
+
+def _load_saved_searches() -> None:
+    try:
+        if SAVED_SEARCHES_FILE.exists():
+            data = json.loads(SAVED_SEARCHES_FILE.read_text())
+            if isinstance(data, dict):
+                STATE["saved_searches"] = data
+    except Exception:
+        STATE["saved_searches"] = {}
+
+
+def _save_saved_searches() -> None:
+    try:
+        SAVED_SEARCHES_FILE.write_text(
+            json.dumps(STATE.get("saved_searches", {}), indent=2)
+        )
+    except Exception:
+        pass
+
+
+# Optional API token for simple authentication ---------------------------------
+
+# If the `API_TOKEN` environment variable is set, all `/api` routes require the
+# matching value either via `X-API-Key` header, `Authorization: Bearer` header,
+# or `token` query parameter. When not set, the API remains open (test default).
+API_TOKEN = os.getenv("API_TOKEN")
+
+
+def require_api_token(request: Request, x_api_key: str = Header(default=None)) -> None:
+    if not API_TOKEN:
+        return
+    token = x_api_key or request.headers.get("Authorization") or request.query_params.get("token")
+    if token and token.lower().startswith("bearer "):
+        token = token[7:]
+    if token != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+STATE["plugins"] = PluginManager(Path("plugins"))
+STATE["plugins"].load()
+_load_library()
+_load_saved_searches()
 
 
 def ffmpeg_available() -> bool:
@@ -179,6 +293,18 @@ def extract_duration(ffprobe_json: Optional[dict]) -> Optional[float]:
     except Exception:
         return None
 
+
+def extract_width(ffprobe_json: Optional[dict]) -> Optional[int]:
+    try:
+        if not isinstance(ffprobe_json, dict):
+            return None
+        for s in ffprobe_json.get("streams", []):
+            if s.get("codec_type") == "video" and s.get("width") is not None:
+                return int(s.get("width"))
+        return None
+    except Exception:
+        return None
+
 def parse_time_spec(spec: str | float | int | None, duration: Optional[float]) -> float:
     if spec is None:
         return 0.0
@@ -247,6 +373,32 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
     proc = _run(cmd)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "ffmpeg thumbnail failed")
+
+
+def import_media(video: Path, *, force: bool = False) -> dict:
+    """Import a media file into the in-memory library.
+
+    Generates basic artifacts (metadata + thumbnail) and lets plugins mutate
+    the gathered metadata. The resulting metadata is persisted back to the
+    artifact directory and returned.
+    """
+
+    metadata_single(video, force=force)
+    generate_thumbnail(video, force=force, time_spec="middle", quality=2)
+    try:
+        md = json.loads(metadata_path(video).read_text())
+    except Exception:
+        md = {}
+    STATE["plugins"].run("metadata", path=video, metadata=md)
+    try:
+        metadata_path(video).write_text(json.dumps(md, indent=2))
+    except Exception:
+        pass
+    entry = {"path": str(video), "metadata": md}
+    STATE.setdefault("library", {})[str(video)] = entry
+    STATE["plugins"].run("import", path=video, metadata=md)
+    _save_library()
+    return entry
 
 # ----------------------
 # Hover preview generator
@@ -1079,6 +1231,8 @@ def _new_job(job_type: str, path: str) -> str:
         JOB_CANCEL_EVENTS[jid] = threading.Event()
     _publish_job_event({"event": "created", "id": jid, "type": base_type, "path": path})
     _publish_job_event({"event": "queued", "id": jid, "type": base_type, "path": path})
+    # Emit an initial progress event so clients see the job immediately
+    _set_job_progress(jid, processed_set=0)
     return jid
 
 
@@ -1233,13 +1387,21 @@ def index_html():
     return HTMLResponse("<h1>UI missing</h1>")
 
 
+@app.get("/ui/library", include_in_schema=False)
+def library_ui():
+    page = _STATIC / "library.html"
+    if page.exists():
+        return HTMLResponse(page.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>UI missing</h1>")
+
+
 # Also serve any static assets placed here (optional)
 if (_BASE / "static").exists():
     app.mount("/static", StaticFiles(directory=str(_BASE / "static")), name="static")
 
 
 # API under /api
-api = APIRouter(prefix="/api")
+api = APIRouter(prefix="/api", dependencies=[Depends(require_api_token)])
 
 # Only MP4 videos are considered user media
 MEDIA_EXTS = {".mp4"}
@@ -3615,7 +3777,13 @@ app.include_router(api)
 # Jobs API
 @app.get("/api/jobs")
 def jobs(state: str = Query(default="active"), limit: int = Query(default=100)):
-    """List jobs. state=active|recent|all. Active = queued or running. Recent = done/failed in last 10 minutes."""
+    """List jobs with optional filtering.
+
+    ``state`` can be one of ``active`` (default), ``recent``, ``all`` or a
+    specific job state such as ``queued`` or ``running``. Active jobs are those
+    currently queued or running. Recent jobs are completed ones in the last ten
+    minutes.
+    """
     now = time.time()
     with JOB_LOCK:
         vals = list(JOBS.values())
@@ -3624,13 +3792,14 @@ def jobs(state: str = Query(default="active"), limit: int = Query(default=100)):
     elif state == "recent":
         tmp = []
         for j in vals:
-            if j.get("state") in ("done", "failed"):
+            if j.get("state") in ("done", "failed", "canceled"):
                 t = j.get("ended_at")
                 if isinstance(t, (int, float)) and (now - float(t) <= 600):
                     tmp.append(j)
         vals = tmp
-    else:
-        pass
+    elif state in {"queued", "running", "done", "failed", "canceled"}:
+        vals = [j for j in vals if j.get("state") == state]
+    # else state == "all" -> no filtering
     # Sort newest first by started_at or ended_at
     def _ts(j):
         return j.get("started_at") or j.get("ended_at") or 0
@@ -3682,6 +3851,11 @@ class AutoTagRequest(BaseModel):
     tags: Optional[list[str]] = None
 
 
+class ScanRequest(BaseModel):
+    path: Optional[str] = None
+    recursive: Optional[bool] = True
+
+
 @app.post("/api/autotag/scan")
 def autotag_scan(req: AutoTagRequest):
     base = Path(req.path or str(STATE["root"]))
@@ -3703,6 +3877,23 @@ def autotag_scan(req: AutoTagRequest):
     return api_success({"job": jid, "queued": True})
 
 
+@app.post("/api/scan")
+def api_scan(req: ScanRequest):
+    base = Path(req.path or str(STATE["root"]))
+    if not base.exists() or not base.is_dir():
+        raise_api_error("Not found", status_code=404)
+    jr = JobRequest(
+        task="scan",
+        directory=str(base),
+        recursive=bool(req.recursive),
+        force=True,
+    )
+    jid = _new_job(jr.task, jr.directory or str(STATE["root"]))
+    t = threading.Thread(target=_run_job_worker, args=(jid, jr), daemon=True)
+    t.start()
+    return api_success({"job": jid, "queued": True})
+
+
 def _job_check_canceled(jid: str) -> bool:
     ev = JOB_CANCEL_EVENTS.get(jid)
     return bool(ev and ev.is_set())
@@ -3717,9 +3908,25 @@ def _job_set_result(jid: str, result: Any) -> None:
 
 def _run_job_worker(jid: str, jr: JobRequest):
     try:
+        time.sleep(0.01)
         task = (jr.task or "").lower()
         base = Path(jr.directory or str(STATE["root"]))
         base = base.expanduser().resolve()
+        if task == "scan":
+            vids = _iter_videos(base, bool(jr.recursive))
+            _set_job_progress(jid, total=len(vids), processed_set=0)
+            imported = 0
+            for i, v in enumerate(vids, start=1):
+                if _job_check_canceled(jid):
+                    _finish_job(jid)
+                    return
+                import_media(v, force=bool(jr.force))
+                imported += 1
+                _set_job_progress(jid, processed_set=i)
+            _finish_job(jid)
+            with JOB_LOCK:
+                JOBS[jid]["result"] = {"total": len(vids), "imported": imported}
+            return
         if task == "autotag":
             vids = _iter_videos(base, bool(jr.recursive))
             _set_job_progress(jid, total=len(vids), processed_set=0)
@@ -4202,6 +4409,193 @@ def api_tags_summary(path: str = Query(default=""), recursive: bool = Query(defa
         for t in data.get("performers", []) or []:
             perf_counts[t] = perf_counts.get(t, 0) + 1
     return {"tags": tag_counts, "performers": perf_counts}
+
+
+@app.get("/api/tags/search")
+def api_tags_search(q: str = Query(...), path: str = Query(default=""), recursive: bool = Query(default=False)):
+    """Search tags and performers containing a substring.
+
+    Returns lists of matching tag and performer names. Path handling mirrors
+    :func:`api_tags_summary` and is forgiving of invalid paths so the UI can
+    query during initialization without surfacing errors.
+    """
+    try:
+        base = safe_join(STATE["root"], path) if path else STATE["root"]
+    except Exception:
+        return {"tags": [], "performers": []}
+    if not base.is_dir():
+        return {"tags": [], "performers": []}
+    vids = _find_mp4s(base, bool(recursive))
+    ql = q.lower()
+    tag_set: set[str] = set()
+    perf_set: set[str] = set()
+    for p in vids:
+        tf = _tags_file(p)
+        if not tf.exists():
+            continue
+        try:
+            data = json.loads(tf.read_text())
+        except Exception:
+            continue
+        for t in data.get("tags", []) or []:
+            if ql in t.lower():
+                tag_set.add(t)
+        for t in data.get("performers", []) or []:
+            if ql in t.lower():
+                perf_set.add(t)
+    return {"tags": sorted(tag_set), "performers": sorted(perf_set)}
+
+
+@app.get("/api/library/media")
+def api_library(
+    q: str = Query(default=""),
+    tag: str = Query(default=""),
+    performer: str = Query(default=""),
+    min_width: int = Query(default=0, ge=0),
+    min_duration: float = Query(default=0.0, ge=0.0),
+):
+    """Return the in-memory library of imported media files with optional filtering."""
+    files = list(STATE.get("library", {}).values())
+    if q:
+        ql = q.lower()
+        files = [f for f in files if ql in f.get("path", "").lower()]
+    if tag:
+        tl = tag.lower()
+        files = [
+            f for f in files
+            if any(tl == t.lower() for t in f.get("metadata", {}).get("tags", []))
+        ]
+    if performer:
+        pl = performer.lower()
+        files = [
+            f for f in files
+            if any(pl == t.lower() for t in f.get("metadata", {}).get("performers", []))
+        ]
+    if min_width:
+        files = [
+            f
+            for f in files
+            if (extract_width(f.get("metadata")) or 0) >= int(min_width)
+        ]
+    if min_duration:
+        files = [
+            f
+            for f in files
+            if (extract_duration(f.get("metadata")) or 0.0) >= float(min_duration)
+        ]
+    files.sort(key=lambda x: x.get("path", ""))
+    return api_success({"files": files})
+
+
+@app.post("/api/library/clear")
+def api_library_clear():
+    """Clear the in-memory library and persisted storage."""
+    STATE["library"] = {}
+    _save_library()
+    return api_success({"cleared": True})
+
+
+@app.get("/api/search")
+def api_search(
+    q: str = Query(...),
+    path: str = Query(default=""),
+    recursive: bool = Query(default=True),
+    limit: int = Query(default=10, ge=1, le=1000),
+    min_width: int = Query(default=0, ge=0),
+    min_duration: float = Query(default=0.0, ge=0.0),
+):
+    """Search tags, performers, and file names for a substring.
+
+    This mimics StashApp's global search, returning simple lists of matching
+    names and relative file paths. Results are limited to ``limit`` items per
+    category to keep responses light-weight.
+    """
+    try:
+        base = safe_join(STATE["root"], path) if path else STATE["root"]
+    except Exception:
+        return {"tags": [], "performers": [], "files": []}
+    if not base.is_dir():
+        return {"tags": [], "performers": [], "files": []}
+    vids = _find_mp4s(base, bool(recursive))
+    ql = q.lower()
+    tag_set: set[str] = set()
+    perf_set: set[str] = set()
+    file_list: list[str] = []
+    for p in vids:
+        # Filter by metadata if requested
+        if min_width or min_duration:
+            try:
+                md = json.loads(metadata_path(p).read_text())
+            except Exception:
+                md = {}
+            streams = md.get("streams") or []
+            vinfo = next((s for s in streams if s.get("codec_type") == "video"), {})
+            width = int(vinfo.get("width") or 0)
+            duration = float(md.get("format", {}).get("duration") or 0.0)
+            if width < int(min_width) or duration < float(min_duration):
+                continue
+        name = p.name
+        if ql in name.lower():
+            file_list.append(p.relative_to(STATE["root"]).as_posix())
+        tf = _tags_file(p)
+        if not tf.exists():
+            continue
+        try:
+            data = json.loads(tf.read_text())
+        except Exception:
+            continue
+        for t in data.get("tags", []) or []:
+            if ql in t.lower():
+                tag_set.add(t)
+        for t in data.get("performers", []) or []:
+            if ql in t.lower():
+                perf_set.add(t)
+    return {
+        "tags": sorted(tag_set)[:limit],
+        "performers": sorted(perf_set)[:limit],
+        "files": sorted(file_list)[:limit],
+    }
+
+
+@app.get("/api/search/saved")
+def api_search_saved_list():
+    """Return all saved searches."""
+    return api_success({"searches": STATE.get("saved_searches", {})})
+
+
+@app.post("/api/search/saved")
+def api_search_saved_create(body: dict = Body(...)):
+    name = body.get("name")
+    query = body.get("query")
+    if not isinstance(name, str) or not isinstance(query, dict):
+        raise_api_error("Invalid saved search", 400)
+    STATE["saved_searches"][name] = query
+    _save_saved_searches()
+    return api_success({"name": name})
+
+
+@app.get("/api/search/saved/{name}")
+def api_search_saved_run(name: str):
+    query = STATE.get("saved_searches", {}).get(name)
+    if not isinstance(query, dict):
+        raise_api_error("Search not found", 404)
+    params = {
+        "q": query.get("q", ""),
+        "path": query.get("path", ""),
+        "recursive": query.get("recursive", True),
+        "limit": query.get("limit", 10),
+        "min_width": query.get("min_width", 0),
+        "min_duration": query.get("min_duration", 0.0),
+    }
+    return api_search(**params)
+
+
+@app.delete("/api/search/saved/{name}")
+def api_search_saved_delete(name: str):
+    if name in STATE.get("saved_searches", {}):
+        del STATE["saved_searches"][name]
+        _save_saved_searches()
+    return api_success({"deleted": name})
 
 
 if __name__ == "__main__":  # pragma: no cover
