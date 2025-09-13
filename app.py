@@ -14,22 +14,11 @@ import uuid
 import importlib
 from pathlib import Path
 import asyncio
-from collections import defaultdict
 from typing import Any, Dict, Iterator, List, Optional, Callable
 from pydantic import BaseModel
 from difflib import SequenceMatcher
 
-from fastapi import (
-    APIRouter,
-    Body,
-    Depends,
-    FastAPI,
-    HTTPException,
-    Query,
-    Request,
-    Response,
-    Header,
-)
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -37,7 +26,6 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
-from hashlib import sha1
 
 try:
     from PIL import Image  # type: ignore
