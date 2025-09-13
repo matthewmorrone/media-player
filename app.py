@@ -3854,7 +3854,7 @@ class AutoTagRequest(BaseModel):
 
 class ScanRequest(BaseModel):
     path: Optional[str] = None
-    recursive: Optional[bool] = True
+    recursive: bool = True
 
 
 @app.post("/api/autotag/scan")
