@@ -14,7 +14,6 @@ import uuid
 import importlib
 from pathlib import Path
 import asyncio
-from collections import defaultdict
 from typing import Any, Dict, Iterator, List, Optional, Callable
 from pydantic import BaseModel
 from difflib import SequenceMatcher
