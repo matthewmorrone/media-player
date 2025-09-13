@@ -26,7 +26,6 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
-from hashlib import sha1
 
 try:
     from PIL import Image  # type: ignore
