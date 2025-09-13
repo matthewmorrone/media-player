@@ -298,10 +298,15 @@ def extract_width(ffprobe_json: Optional[dict]) -> Optional[int]:
     try:
         if not isinstance(ffprobe_json, dict):
             return None
-        for s in ffprobe_json.get("streams", []):
-            if s.get("codec_type") == "video" and s.get("width") is not None:
-                return int(s.get("width"))
-        return None
+        return next(
+            (
+                int(s.get("width"))
+                for s in ffprobe_json.get("streams", [])
+                if s.get("codec_type") == "video"
+                and s.get("width") is not None
+            ),
+            None,
+        )
     except Exception:
         return None
 
