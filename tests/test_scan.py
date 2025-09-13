@@ -18,7 +18,7 @@ def _poll_job_done(client, jid: str, timeout: float = 3.0):
         for j in jobs:
             if j.get("id") == jid:
                 last = j
-                if j.get("state") in ("done", "failed", "canceled"):
+                if last.get("state") in ("done", "failed", "canceled"):
                     return last
         time.sleep(0.05)
     return last
