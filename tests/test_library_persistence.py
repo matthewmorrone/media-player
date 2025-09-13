@@ -28,8 +28,8 @@ def test_library_query_filter(client, tmp_path):
     assert r.json()["data"]["files"] == []
 
 
-def test_library_filter_by_dims(client):
-    vid = Path("dim.mp4")
+def test_library_filter_by_dims(client, tmp_path):
+    vid = tmp_path / "dim.mp4"
     vid.write_bytes(b"00")
     import_media(vid)
     # Patch metadata with custom width and duration for filtering tests
