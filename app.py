@@ -56,22 +56,26 @@ class PluginManager:
     """
 
     def __init__(self, folder: Path):
-        self.folder = folder
-        self.hooks: dict[str, list[Callable]] = defaultdict(list)
-
-    def load(self) -> None:
-        if not self.folder.exists():
-            return
-        sys.path.insert(0, str(self.folder.resolve()))
-        for mod_path in self.folder.glob("*.py"):
-            name = mod_path.stem
-            try:
-                mod = importlib.import_module(name)
-                if hasattr(mod, "register"):
-                    mod.register(self)
-            except Exception:
-                continue
-
++        self.folder = folder
++        self.hooks: dict[str, list[Callable]] = defaultdict(list)
++
++import logging
++logger = logging.getLogger(__name__)
++
++    def load(self) -> None:
++        if not self.folder.exists():
++            return
++        sys.path.insert(0, str(self.folder.resolve()))
++        for mod_path in self.folder.glob("*.py"):
++            name = mod_path.stem
++            try:
++                mod = importlib.import_module(name)
++                if hasattr(mod, "register"):
++                    mod.register(self)
++            except Exception as exc:
++                logger.exception(f"Failed to load plugin '{name}': {exc}")
++                continue
++
     def register(self, hook: str, func: Callable) -> None:
         self.hooks.setdefault(hook, []).append(func)
 
