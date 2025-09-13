@@ -2,10 +2,7 @@ import time
 from pathlib import Path
 
 
-def write_video(tmp_path: Path, name: str) -> Path:
-    p = tmp_path / name
-    p.write_bytes(b"00")
-    return p
+from tests.utils import write_video
 
 
 def _poll_job_done(client, jid: str, timeout: float = 3.0):
