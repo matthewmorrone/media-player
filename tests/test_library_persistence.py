@@ -15,8 +15,8 @@ def test_library_persisted(tmp_path):
     assert str(vid) in STATE.get("library", {})
 
 
-def test_library_query_filter(client):
-    vid = Path("one.mp4")
+def test_library_query_filter(client, tmp_path):
+    vid = tmp_path / "one.mp4"
     vid.write_bytes(b"00")
     import_media(vid)
     r = client.get("/api/library/media", params={"q": "one"})
