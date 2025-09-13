@@ -13,12 +13,11 @@ import time
 import uuid
 from pathlib import Path
 import asyncio
-from collections import defaultdict
 from typing import Any, Dict, Iterator, List, Optional, Callable
 from pydantic import BaseModel
 from difflib import SequenceMatcher
 
-from fastapi import APIRouter, Body, FastAPI, HTTPException, Query, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
