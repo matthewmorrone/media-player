@@ -2,13 +2,11 @@
 <html>
 
 <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <title>Local Media</title>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-tagsinput/0.8.0/bootstrap-tagsinput.css" />
-        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-tagsinput/0.8.0/bootstrap-tagsinput.min.js"></script>
-        <style>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width,initial-scale=1" />
+	<title>Local Media</title>
+
+	<style>
 		body {
 			font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 			margin: 0;
@@ -16,23 +14,23 @@
 			grid-template-rows: auto 1fr auto;
 			height: 100vh;
 		}
-
+		
 		header, footer {
 			padding: 12px 16px;
 			border-bottom: 1px solid #ddd;
 		}
-
+		
 		footer {
 			border-top: 1px solid #ddd;
 			border-bottom: 0;
 		}
-
+		
 		#container {
 			display: grid;
 			grid-template-columns: 320px 1fr;
 			height: 100%;
 		}
-
+		
 		#sidebar {
 			border-right: 1px solid #eee;
 			padding: 18px 16px 16px 16px;
@@ -43,7 +41,7 @@
 			flex-direction: column;
 			gap: 18px;
 		}
-
+		
 		#infoPanel {
 			background: #fff;
 			border-radius: 10px;
@@ -55,67 +53,103 @@
 			color: #222;
 			line-height: 1.7;
 		}
-
+		
 		.infoTitle {
 			font-size: 18px;
 			font-weight: 600;
 			margin-bottom: 2px;
 			color: #222;
 		}
-
+		
 		.infoRow {
 			display: flex;
 			gap: 8px;
 			align-items: center;
 			margin-bottom: 2px;
 		}
-
+		
 		.infoLabel {
 			color: #888;
 			font-size: 13px;
 			min-width: 70px;
 		}
-
-                .infoValue {
-                        color: #222;
-                        font-size: 14px;
-                        font-family: monospace;
-                }
-
-                .bootstrap-tagsinput {
-                        width: 100%;
-                }
-
-                .star {
-                        cursor: pointer;
-                        font-size: 20px;
-                        color: #ccc;
-                }
-
-                .star.selected {
-                        color: gold;
-                }
-
+		
+		.infoValue {
+			color: #222;
+			font-size: 14px;
+			font-family: monospace;
+		}
+		
+		/* Simple chips input (vanilla replacement for tagsinput) */
+		.chips {
+			min-height: 32px;
+			border: 1px solid #ddd;
+			border-radius: 6px;
+			padding: 4px 6px;
+			background: #fff;
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
+		}
+		.chips input {
+			border: none;
+			outline: none;
+			flex: 1;
+			min-width: 120px;
+			font-size: 14px;
+			padding: 4px 2px;
+		}
+		.chip {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			background: #f0f3ff;
+			border: 1px solid #cfd8ff;
+			color: #223;
+			border-radius: 999px;
+			padding: 2px 8px;
+			font-size: 12px;
+		}
+		.chip button {
+			border: none;
+			background: transparent;
+			cursor: pointer;
+			color: #667;
+			padding: 0 2px;
+			font-size: 14px;
+			line-height: 1;
+		}
+		
+		.star {
+			cursor: pointer;
+			font-size: 20px;
+			color: #ccc;
+		}
+		
+		.star.selected {
+			color: gold;
+		}
+		
 		#main {
 			padding: 12px;
 			overflow: auto;
 		}
-
+		
 		ul {
 			list-style: none;
 			padding: 0;
 			margin: 0;
 		}
-
+		
 		li {
 			padding: 6px 4px;
 			cursor: pointer;
 		}
-
+		
 		li:hover {
 			background: #f6f6f6;
 		}
-
+		
 		.badge {
 			font-size: 11px;
 			padding: 2px 6px;
@@ -123,7 +157,7 @@
 			border-radius: 999px;
 			margin-left: 6px;
 		}
-
+		
 		#video {
 			width: 100%;
 			max-height: 70vh;
@@ -131,7 +165,7 @@
 			display: block;
 			cursor: pointer;
 		}
-
+		
 		/* Remove reserved padding; controls are absolutely positioned */
 		/* #player.player {padding-bottom: 84px; } */
 		.file {
@@ -140,127 +174,127 @@
 			gap: 8px;
 			align-items: center;
 		}
-
+		
 		.small {
 			color: #666;
 			font-size: 12px;
 		}
-
+		
 		/* Utility classes for layout/spacing/typography */
 		.flex {
 			display: flex;
 		}
-
+		
 		.flex-col {
 			display: flex;
 			flex-direction: column;
 		}
-
+		
 		.items-center {
 			align-items: center;
 		}
-
+		
 		.items-start {
 			align-items: flex-start;
 		}
-
+		
 		.justify-between {
 			justify-content: space-between;
 		}
-
+		
 		.gap-6 {
 			gap: 6px;
 		}
-
+		
 		.gap-8 {
 			gap: 8px;
 		}
-
+		
 		.gap-12 {
 			gap: 12px;
 		}
-
+		
 		.gap-16 {
 			gap: 16px;
 		}
-
+		
 		.wrap {
 			flex-wrap: wrap;
 		}
-
+		
 		.mb-8 {
 			margin-bottom: 8px;
 		}
-
+		
 		.mb-18 {
 			margin-bottom: 18px;
 		}
-
+		
 		.mt-8 {
 			margin-top: 8px;
 		}
-
+		
 		.mt-12 {
 			margin-top: 12px;
 		}
-
+		
 		.w-80 {
 			width: 80px;
 		}
-
+		
 		.w-120 {
 			width: 120px;
 		}
-
+		
 		.w-220 {
 			width: 220px;
 		}
-
+		
 		.block {
 			display: block;
 		}
-
+		
 		.prewrap {
 			white-space: pre-wrap;
 		}
-
+		
 		.stat-val {
 			font-size: 20px;
 			font-weight: 600;
 		}
-
+		
 		.grid-auto-180 {
 			grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
 		}
-
+		
 		.player-actions {
 			display: flex;
 			gap: 8px;
 			align-items: center;
 			margin: 8px 0;
 		}
-
+		
 		.header-bar {
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
 		}
-
+		
 		.tab-bar {
 			display: flex;
 			gap: 8px;
 			align-items: center;
 		}
-
+		
 		.scroll-60 {
 			overflow: auto;
 			max-height: 60vh;
 		}
-
+		
 		.tile-no-pad {
 			padding: 0;
 		}
-
+		
 		.image-cover {
 			max-width: 360px;
 			max-height: 240px;
@@ -268,13 +302,13 @@
 			border-radius: 8px;
 			background: #111;
 		}
-
+		
 		.progress-lg {
 			width: 220px;
 			margin-right: 8px;
 			vertical-align: middle;
 		}
-
+		
 		.fixed-menu {
 			position: fixed;
 			z-index: 1000;
@@ -284,13 +318,13 @@
 			border-radius: 8px;
 			box-shadow: 0 2px 8px #0002;
 		}
-
+		
 		.meta-extra {
 			margin-top: 4px;
 			white-space: pre-wrap;
 			line-height: 1.4;
 		}
-
+		
 		.thumb-img {
 			width: 100%;
 			max-width: 220px;
@@ -298,7 +332,7 @@
 			margin-bottom: 10px;
 			object-fit: cover;
 		}
-
+		
 		.thumb-placeholder {
 			width: 100%;
 			max-width: 220px;
@@ -311,21 +345,21 @@
 			color: #666;
 			border-radius: 8px;
 		}
-
+		
 		.w-full {
 			width: 100%;
 		}
-
+		
 		.table-collapse {
 			border-collapse: collapse;
 		}
-
+		
 		.thead-sticky {
 			position: sticky;
 			top: 0;
 			background: #fafafa;
 		}
-
+		
 		/* List column config + resizing */
 		#listControls {
 			display: flex;
@@ -351,7 +385,7 @@
 		#listColumnsPanel .section strong {display:block; margin-bottom:6px; }
 		#listColumnsPanel .choices {max-height: 220px; overflow: auto; border: 1px solid #eee; padding: 6px; border-radius: 6px; }
 		#listColumnsPanel input[type="text"] {width: 220px; }
-
+		
 		#listTable {
 			table-layout: fixed;
 			width: 100%;
@@ -389,25 +423,25 @@
 		/* Drag indicators in the Columns panel */
 		#listColumnsPanel .drop-before { border-top: 3px solid #2e8cff; }
 		#listColumnsPanel .drop-after { border-bottom: 3px solid #2e8cff; }
-
+		
 		.text-left {
 			text-align: left;
 		}
-
+		
 		.text-right {
 			text-align: right;
 		}
-
+		
 		.th {
 			padding: 8px;
 			border-bottom: 1px solid #eee;
 		}
-
+		
 		.td {
 			padding: 6px 8px;
 			border-bottom: 1px solid #f0f0f0;
 		}
-
+		
 		.back-btn {
 			margin: 8px 8px 8px 0;
 			font-size: 18px;
@@ -417,12 +451,12 @@
 			align-items: center;
 			gap: 10px;
 		}
-
+		
 		.back-icon {
 			font-size: 20px;
 			opacity: 0.8;
 		}
-
+		
 		.player-title {
 			font-size: 22px;
 			font-weight: 800;
@@ -432,12 +466,12 @@
 			text-overflow: ellipsis;
 			white-space: nowrap;
 		}
-
+		
 		/* Ensure controls anchor to the video box */
 		.player-media {
 			position: relative;
 		}
-
+		
 		.sprite-preview {
 			position: absolute;
 			bottom: 48px;
@@ -455,35 +489,35 @@
 			display: none;
 			z-index: 7;
 		}
-
+		
 		/* #infoPanel spacing handled in main panel styles */
-
+		
 		.controls {
 			display: flex;
 			gap: 8px;
 			align-items: center;
 			margin-bottom: 12px;
 		}
-
+		
 		.controls input[type="text"] {
 			flex: 1;
 			padding: 6px 8px;
 			font-size: 14px;
 		}
-
+		
 		.controls button {
 			padding: 6px 10px;
 			font-size: 14px;
 			cursor: pointer;
 		}
-
+		
 		.grid {
 			display: grid;
 			grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
 			gap: 12px;
 			align-items: start;
 		}
-
+		
 		.tile {
 			border: 1px solid #eee;
 			border-radius: 8px;
@@ -493,25 +527,25 @@
 			flex-direction: column;
 			gap: 6px;
 		}
-
+		
 		.tile.selected {
 			outline: 2px solid #06f;
 			box-shadow: 0 0 0 2px #06f inset;
 		}
-
+		
 		.tile video {
 			width: 100%;
 			height: 120px;
 			background: #000;
 			object-fit: cover;
 		}
-
+		
 		.tile .name {
 			font-size: 12px;
 			color: #333;
 			word-break: break-word;
 		}
-
+		
 		.tile .thumb {
 			width: 100%;
 			height: 120px;
@@ -519,7 +553,7 @@
 			background: #111;
 			display: block;
 		}
-
+		
 		.btn {
 			font-size: 12px;
 			padding: 4px 8px;
@@ -528,14 +562,14 @@
 			background: #f8f8f8;
 			cursor: pointer;
 		}
-
+		
 		.row {
 			display: flex;
 			gap: 8px;
 			align-items: end;
 			flex-wrap: wrap;
 		}
-
+		
 		.pager {
 			display: flex;
 			gap: 8px;
@@ -543,17 +577,17 @@
 			justify-content: flex-start;
 			margin: 8px 0;
 		}
-
+		
 		.pager input[type="number"] {
 			width: 72px;
 			padding: 4px 6px;
 			font-size: 12px;
 		}
-
+		
 		.hidden {
 			display: none !important;
 		}
-
+		
 		.placeholder {
 			width: 100%;
 			height: 120px;
@@ -566,7 +600,7 @@
 			border-radius: 4px;
 			border: 1px dashed #333;
 		}
-
+		
 		.swatch {
 			width: 20px;
 			height: 20px;
@@ -576,12 +610,12 @@
 			vertical-align: middle;
 			margin-right: 6px;
 		}
-
+		
 		/* Player overlays */
 		.player {
 			position: relative;
 		}
-
+		
 		/* Scrub visuals sit inside the progress bar now */
 		#heatmapStripe {
 			position: absolute;
@@ -595,7 +629,7 @@
 			border-radius: 10px;
 			background-color: transparent;
 		}
-
+		
 		#chaptersBar {
 			position: absolute;
 			left: 0;
@@ -604,7 +638,7 @@
 			bottom: 0;
 			pointer-events: none;
 		}
-
+		
 		#chaptersBar .marker {
 			position: absolute;
 			top: 0;
@@ -613,7 +647,7 @@
 			background: #ff4081;
 			opacity: 0.9;
 		}
-
+		
 		#chaptersBar .marker::after {
 			content: "";
 			position: absolute;
@@ -624,7 +658,7 @@
 			background: linear-gradient(to bottom, #ff4081, #ffc107);
 			opacity: 0.5;
 		}
-
+		
 		/* Custom player controls */
 		#controlsBar {
 			position: absolute;
@@ -645,7 +679,7 @@
 			opacity: 1;
 			transition: opacity 0.15s ease;
 		}
-
+		
 		#btnPlayPause,
 		#btnCC {
 			padding: 6px 10px;
@@ -656,19 +690,19 @@
 			border-radius: 6px;
 			cursor: pointer;
 		}
-
+		
 		#btnPlayPause:hover,
 		#btnCC:hover {
 			background: #ffffff33;
 		}
-
+		
 		#timeLabel {
 			font-size: 12px;
 			color: #fff;
 			min-width: 100px;
 			text-align: right;
 		}
-
+		
 		#controlsProgress {
 			position: relative;
 			height: 10px;
@@ -678,7 +712,7 @@
 			cursor: pointer;
 			overflow: hidden;
 		}
-
+		
 		#controlsProgressFill {
 			position: absolute;
 			left: 0;
@@ -688,7 +722,7 @@
 			background: #2e8cff;
 			border-radius: 999px;
 		}
-
+		
 		/* Right-side queue panel */
 		/* queue removed */
 		/* Generic tiny progress bar */
@@ -699,20 +733,25 @@
 			border-radius: 999px;
 			overflow: hidden;
 		}
-
+		
 		.progress .bar {
 			height: 100%;
 			width: 0;
 			background: #06f;
 			transition: width 0.15s linear;
 		}
-
+		
+		/* Filter chips */
+		.filter-chips { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+		.chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid #ddd; border-radius: 999px; font-size: 12px; background: #f7f7f7; }
+		.chip .x { cursor: pointer; color: #a00; font-weight: 700; }
+		
 		/* Indeterminate animation */
 		.indeterminate {
 			position: relative;
 			overflow: hidden;
 		}
-
+		
 		.indeterminate::before {
 			content: "";
 			position: absolute;
@@ -726,12 +765,12 @@
 			transparent);
 			animation: slide 1s linear infinite;
 		}
-
+		
 		@keyframes slide {
 			0% {
 				left: -40%;
 			}
-
+			
 			100% {
 				left: 100%;
 			}
@@ -751,6 +790,7 @@
 			<button class="btn" id="tabSimilar">Similar</button>
 			<button class="btn" id="tabSettings">Settings</button>
 			<button class="btn" id="tabSetup">Setup</button>
+			<button class="btn" id="tabRegistry">Registry</button>
 			<button class="btn" id="playRandomBtn">Random</button>
 			<button class="btn" id="tabImage">Image</button>
 		</div>
@@ -970,6 +1010,12 @@
 					</select>
 					<!-- Sort order toggle: replaces asc/desc dropdown -->
 					<button id="sortOrderToggle" class="btn" title="Toggle sort order (Asc/Desc)">↑</button>
+					<!-- Tag/Performer filters -->
+					<input id="filterTagInput" type="text" placeholder="Add tag…" list="filterTagsList" class="w-120" />
+					<datalist id="filterTagsList"></datalist>
+					<input id="filterPerfInput" type="text" placeholder="Add performer…" list="filterPerfsList" class="w-120" />
+					<datalist id="filterPerfsList"></datalist>
+					<div id="filterChips" class="filter-chips"></div>
 					<button id="prevBtn" class="btn">Prev</button>
 					<div id="pageInfo" class="small"></div>
 					<button id="nextBtn" class="btn">Next</button>
@@ -1000,6 +1046,45 @@
 							</thead>
 							<tbody id="jobsTableBody"></tbody>
 						</table>
+					</div>
+				</div>
+				<!-- Registry Tab Content -->
+				<div id="registryTab" class="hidden flex-col gap-12">
+					<div class="row items-center gap-12 wrap">
+						<strong>Registry</strong>
+						<button id="refreshRegistryBtn" class="btn">Refresh</button>
+					</div>
+					<div class="tile">
+						<div class="small"><strong>Tags</strong></div>
+						<div class="row gap-8 mt-8">
+							<input id="newTagName" type="text" placeholder="New tag…" class="w-220" />
+							<button id="createTagBtn" class="btn">Create</button>
+							<input id="renameTagFrom" type="text" placeholder="Rename from…" class="w-220" />
+							<input id="renameTagTo" type="text" placeholder="…to" class="w-220" />
+							<button id="renameTagBtn" class="btn">Rename</button>
+							<input id="mergeTagFrom" type="text" placeholder="Merge from…" class="w-220" />
+							<input id="mergeTagTo" type="text" placeholder="…into" class="w-220" />
+							<button id="mergeTagBtn" class="btn">Merge</button>
+							<input id="deleteTagName" type="text" placeholder="Delete tag…" class="w-220" />
+							<button id="deleteTagBtn" class="btn">Delete</button>
+						</div>
+						<div id="tagsRegistryList" class="mt-12 small" style="max-height:240px; overflow:auto;"></div>
+					</div>
+					<div class="tile">
+						<div class="small"><strong>Performers</strong></div>
+						<div class="row gap-8 mt-8">
+							<input id="newPerfName" type="text" placeholder="New performer…" class="w-220" />
+							<button id="createPerfBtn" class="btn">Create</button>
+							<input id="renamePerfFrom" type="text" placeholder="Rename from…" class="w-220" />
+							<input id="renamePerfTo" type="text" placeholder="…to" class="w-220" />
+							<button id="renamePerfBtn" class="btn">Rename</button>
+							<input id="mergePerfFrom" type="text" placeholder="Merge from…" class="w-220" />
+							<input id="mergePerfTo" type="text" placeholder="…into" class="w-220" />
+							<button id="mergePerfBtn" class="btn">Merge</button>
+							<input id="deletePerfName" type="text" placeholder="Delete performer…" class="w-220" />
+							<button id="deletePerfBtn" class="btn">Delete</button>
+						</div>
+						<div id="performersRegistryList" class="mt-12 small" style="max-height:240px; overflow:auto;"></div>
 					</div>
 				</div>
 				<div class="mb-18" id="taskSection-metadata" data-task-section="metadata">
@@ -1174,7 +1259,7 @@
 		const tasksDiv = document.getElementById("tasksDiv");
 		const toggleHoversBtn = document.getElementById("toggleHoversBtn");
 		let hoverPreviewsEnabled = true; // default enabled
-
+		
 		const TAB_SLUGS = {
 			Player: "player",
 			Grid: "grid",
@@ -1219,7 +1304,7 @@
 				history.pushState({tab }, "", target);
 			}
 		}
-
+		
 		// DRY tab switching: hide all, then show the requested one
 		// TODO @copilot: these should be standardized
 		const TAB_CONTAINERS = {
@@ -1232,6 +1317,7 @@
 			Settings: "settingsTab",
 			Image: "imageTab",
 			Setup: "setupTab",
+			Registry: "registryTab",
 		};
 		function hideAllTabs() {
 			Object.values(TAB_CONTAINERS).forEach((id) => {
@@ -1309,6 +1395,10 @@
 				try { loadFaces(); }
 				catch (_) { }
 			}
+			else if (tab === "Registry") {
+				try { loadRegistry(); }
+				catch (_) { }
+			}
 			else if (tab === "Settings") {
 				try { loadSettings(); }
 				catch (_) { }
@@ -1321,7 +1411,7 @@
 			try { if (!fromRouter) setRouteForTab(tab); }
 			catch (_) { }
 		}
-
+		
 		// Ensure sprite preview is positioned within player-media for z-index stacking
 		function mountSpritePreviewInPlayer() {
 			const preview = document.querySelector('.sprite-preview');
@@ -1330,7 +1420,7 @@
 				wrap.appendChild(preview);
 			}
 		}
-
+		
 		// DRY bindings for top nav; detailed side effects live in showTab
 		document.getElementById("tabPlayer").onclick = () => showTab("Player");
 		document.getElementById("tabGrid").onclick = () => showTab("Grid");
@@ -1339,6 +1429,7 @@
 		document.getElementById("tabSimilar").onclick = () => showTab("Similar");
 		document.getElementById("tabImage").onclick = () => showTab("Image");
 		document.getElementById("tabSetup").onclick = () => showTab("Setup");
+		document.getElementById("tabRegistry").onclick = () => showTab("Registry");
 		const _tabListBtn = document.getElementById("tabList");
 		if (_tabListBtn) {
 			_tabListBtn.onclick = () => showTab("List");
@@ -1396,7 +1487,7 @@
 			showTab("Player");
 			play(file);
 		};
-
+		
 		// --- TASKS PAGE LOGIC ---
 		const coverProgress = document.getElementById("coverProgress");
 		const coverPct = document.getElementById("coverPct");
@@ -1467,16 +1558,16 @@
 		let tasksRefreshTimer = null;
 		// Collect all Tasks progress elements for animation toggling
 		const _allProgressEls = [
-			coverProgress,
-			facesProgress,
-			hoverProgress,
-			metadataProgress,
-			phashProgress,
-			scenesProgress,
-			heatmapsProgress,
-			subtitlesProgress,
-			spritesProgress,
-			cleanupProgress,
+		coverProgress,
+		facesProgress,
+		hoverProgress,
+		metadataProgress,
+		phashProgress,
+		scenesProgress,
+		heatmapsProgress,
+		subtitlesProgress,
+		spritesProgress,
+		cleanupProgress,
 		].filter(Boolean);
 		function setIndeterminateActive(active) {
 			// No-op to avoid animating all progress bars; we use per-task animation instead.
@@ -1566,7 +1657,7 @@
 				setTaskIndeterminate(section, active);
 			}
 		}
-
+		
 		// --- Jobs Activity table helpers ---
 		const __jobRows = new Map(); // id -> {tr, cells, last}
 		function __shortName(p) {
@@ -1656,7 +1747,7 @@
 				const s = body.data || body;
 				const total = s.total_files || 0;
 				const pct = (n, t) => (t ? Math.floor((n / t) * 100) : 0);
-
+				
 				// TODO @copilot: seems like this section could be DRYer
 				// Covers
 				const covers = s.covers || 0;
@@ -1737,7 +1828,7 @@
 				catch (_) { }
 			};
 		}
-
+		
 		// Recompute ALL covers (batch with overwrite)
 		if (recomputeAllCoversBtn) {
 			recomputeAllCoversBtn.onclick = async () => {
@@ -1958,7 +2049,7 @@
 				catch (_) { }
 			};
 		}
-
+		
 		// --- Artifacts Cleanup wiring ---
 		async function pollJobUntilDone(jobId, onProgress) {
 			// Poll /jobs/{id} for status and results
@@ -2064,7 +2155,7 @@
 		}
 		if (cleanupDryRunBtn) cleanupDryRunBtn.onclick = () => runArtifactsCleanup(true);
 		if (cleanupRunBtn) cleanupRunBtn.onclick = () => runArtifactsCleanup(false);
-
+		
 		// pHash buttons
 		if (generateMissingPhashBtn) {
 			generateMissingPhashBtn.onclick = async () => {
@@ -2128,7 +2219,7 @@
 				try { await loadStats(); } catch (_) { }
 			};
 		}
-
+		
 		// Scenes buttons
 		if (generateMissingScenesBtn) {
 			generateMissingScenesBtn.onclick = async () => {
@@ -2212,7 +2303,7 @@
 				try { await loadStats(); } catch (_) { }
 			};
 		}
-
+		
 		// Sprites buttons
 		if (generateMissingSpritesBtn) {
 			generateMissingSpritesBtn.onclick = async () => {
@@ -2251,7 +2342,7 @@
 				finally { recomputeAllSpritesBtn.disabled = false; }
 			};
 		}
-
+		
 		// Heatmaps buttons
 		if (generateMissingHeatmapsBtn) {
 			generateMissingHeatmapsBtn.onclick = async () => {
@@ -2287,7 +2378,7 @@
 				finally { recomputeAllHeatmapsBtn.disabled = false; }
 			};
 		}
-
+		
 		// Subtitles buttons
 		if (generateMissingSubsBtn) {
 			generateMissingSubsBtn.onclick = async () => {
@@ -2307,7 +2398,7 @@
 				finally { recomputeAllSubsBtn.disabled = false; }
 			};
 		}
-
+		
 		if (clearSubsBtn) {
 			clearSubsBtn.onclick = async () => {
 				clearSubsBtn.disabled = true;
@@ -2402,7 +2493,7 @@
 				try { await loadStats(); } catch (_) { }
 			};
 		}
-
+		
 		// Faces buttons
 		if (generateMissingFacesBtn) {
 			generateMissingFacesBtn.onclick = async () => {
@@ -2535,7 +2626,7 @@
 				try { await loadStats(); } catch (_) { }
 			};
 		}
-
+		
 		let jobsEvtSrc = null;
 		// Track active job IDs to switch polling cadence and animations
 		let __runningJobIds = new Set();
@@ -2549,7 +2640,7 @@
 			const openEs = (url) => {
 				const es = new EventSource(url);
 				jobsEvtSrc = es;
-					es.onmessage = (ev) => {
+				es.onmessage = (ev) => {
 					try { 
 						const data = JSON.parse(ev.data || "{}");
 						const line = `[${new Date().toLocaleTimeString()}] ${data.event || "msg"} ${data.id || ""}`;
@@ -2557,8 +2648,8 @@
 							jobsBox.textContent = (jobsBox.textContent + "\n" + line).trim();
 							jobsBox.scrollTop = jobsBox.scrollHeight;
 						}
-							// Update one-row-per-job activity table
-							try { upsertJobRow(data); } catch (_) {}
+						// Update one-row-per-job activity table
+						try { upsertJobRow(data); } catch (_) {}
 						// Maintain set of running jobs and update UI cadence
 						const evt = (data.event || "").toLowerCase();
 						const jid = data.id;
@@ -2572,7 +2663,7 @@
 							__runningJobIds.add(jid);
 							setIndeterminateForJobType(data.type, true);
 						}
-							else if ((evt === "finished" || evt === "cancel") && jid) {
+						else if ((evt === "finished" || evt === "cancel") && jid) {
 							__runningJobIds.delete(jid);
 							setIndeterminateForJobType(data.type, false);
 						}
@@ -2640,7 +2731,7 @@
 				} catch (_) {}
 			})();
 		}
-
+		
 		// Refresh stats and jobs every 1 second in Tasks tab
 		function startTasksRefresh() {
 			updateTasksStats();
@@ -2656,8 +2747,8 @@
 				updateTasksStats();
 			}, intervalMs);
 		}
-	// Wire up tabs: use DRY showTab; per-tab side effects happen inside showTab
-	document.getElementById("tabTasks").onclick = () => {showTab("Tasks"); };
+		// Wire up tabs: use DRY showTab; per-tab side effects happen inside showTab
+		document.getElementById("tabTasks").onclick = () => {showTab("Tasks"); };
 		// --- IMAGE TAB LOGIC (FaceLab) ---
 		const imageStatus = document.getElementById("imageStatus");
 		const facesList = document.getElementById("facesList");
@@ -2665,7 +2756,7 @@
 		const createFacesBtn = document.getElementById("createFacesBtn");
 		const faceBackendSelect = document.getElementById("faceBackendSelect");
 		const faceBatchBackendSelect = document.getElementById("faceBatchBackendSelect");
-
+		
 		// Face tuning inputs and helpers
 		const faceIntervalInput = document.getElementById("faceIntervalInput");
 		const faceScaleFactorInput = document.getElementById("faceScaleFactorInput");
@@ -2677,7 +2768,7 @@
 		const faceBatchMinNeighborsInput = document.getElementById("faceBatchMinNeighborsInput");
 		const faceBatchMinSizeFracInput = document.getElementById("faceBatchMinSizeFracInput");
 		const faceBatchSimThreshInput = document.getElementById("faceBatchSimThreshInput");
-
+		
 		// TODO @copilot v1 reference
 		const FACE_SINGLE_KEY = "face.knobs.single.v1";
 		const FACE_BATCH_KEY = "face.knobs.batch.v1";
@@ -2716,14 +2807,14 @@
 			try { 
 				const beS = localStorage.getItem(FACE_BACKEND_SINGLE_KEY);
 				if (beS && faceBackendSelect) faceBackendSelect.value = beS;
-					const sraw = localStorage.getItem(FACE_SINGLE_KEY);
-						if (sraw) {
-						const s = JSON.parse(sraw);
-						if (faceIntervalInput && s.interval != null) faceIntervalInput.value = String(s.interval);
-						if (faceScaleFactorInput && s.scale_factor != null) faceScaleFactorInput.value = String(s.scale_factor);
-						if (faceMinNeighborsInput && s.min_neighbors != null) faceMinNeighborsInput.value = String(s.min_neighbors);
-						if (faceMinSizeFracInput && s.min_size_frac != null) faceMinSizeFracInput.value = String(s.min_size_frac);
-						if (faceSimThreshInput && s.sim_thresh != null) faceSimThreshInput.value = String(s.sim_thresh);
+				const sraw = localStorage.getItem(FACE_SINGLE_KEY);
+				if (sraw) {
+					const s = JSON.parse(sraw);
+					if (faceIntervalInput && s.interval != null) faceIntervalInput.value = String(s.interval);
+					if (faceScaleFactorInput && s.scale_factor != null) faceScaleFactorInput.value = String(s.scale_factor);
+					if (faceMinNeighborsInput && s.min_neighbors != null) faceMinNeighborsInput.value = String(s.min_neighbors);
+					if (faceMinSizeFracInput && s.min_size_frac != null) faceMinSizeFracInput.value = String(s.min_size_frac);
+					if (faceSimThreshInput && s.sim_thresh != null) faceSimThreshInput.value = String(s.sim_thresh);
 				}
 			}
 			catch (_) {}
@@ -2748,27 +2839,27 @@
 		if (faceBackendSelect) faceBackendSelect.addEventListener('change', () => { try { localStorage.setItem(FACE_BACKEND_SINGLE_KEY, faceBackendSelect.value); } catch(_){} });
 		if (faceBatchBackendSelect) faceBatchBackendSelect.addEventListener('change', () => { try { localStorage.setItem(FACE_BACKEND_BATCH_KEY, faceBatchBackendSelect.value); } catch(_){} });
 		restoreFaceKnobs();
-
+		
 		function setImageStatus(text) {
 			if (imageStatus) imageStatus.textContent = text || "";
 		}
-
+		
 		function getFaceNameKey(filePath, embedding) {
 			// Persist a name per (file, embedding hash) in localStorage
 			const sig = Array.isArray(embedding) && embedding.length ? embedding.map(x => Number(x).toFixed(3)).join(",") : "stub";
 			return `facelab:name:${filePath}:${sig}`;
 		}
-
+		
 		function getFaceName(filePath, embedding) {
 			const key = getFaceNameKey(filePath, embedding);
 			return localStorage.getItem(key) || "";
 		}
-
+		
 		function setFaceName(filePath, embedding, name) {
 			const key = getFaceNameKey(filePath, embedding);
 			if (name) localStorage.setItem(key, name); else localStorage.removeItem(key);
 		}
-
+		
 		async function loadFaces() {
 			if (!selectedFile || !selectedFile.path) {
 				if (facesList) {
@@ -2848,7 +2939,7 @@
 				setImageStatus("");
 			}
 		}
-
+		
 		if (refreshFacesBtn) refreshFacesBtn.onclick = loadFaces;
 		if (createFacesBtn) createFacesBtn.onclick = async () => {
 			if (!selectedFile || !selectedFile.path) return;
@@ -2907,7 +2998,7 @@
 			catch (_) { setImageStatus("Face compute failed"); }
 			finally { createFacesBtn.disabled = false; }
 		};
-
+		
 		// --- STATS TAB LOGIC ---
 		// --- SIMILAR TAB LOGIC ---
 		async function loadSimilar() {
@@ -2921,24 +3012,27 @@
 			const recursive = !!document.getElementById('similarRecursive')?.checked;
 			const qs = new URLSearchParams();
 			qs.set('directory', dir);
-			qs.set('threshold', isFinite(thresh) ? String(thresh) : '0.9');
+			qs.set('phash_threshold', isFinite(thresh) ? String(thresh) : '0.9');
 			if (recursive) qs.set('recursive', 'true'); else qs.set('recursive', 'false');
-			if (isFinite(limitVal) && limitVal > 0) qs.set('limit', String(limitVal));
+			// page/page_size supported; keep using page_size via limit input
+			if (isFinite(limitVal) && limitVal > 0) qs.set('page_size', String(limitVal));
 			statusEl.textContent = 'Loading…';
 			statusEl.style.color = '#666';
 			grid.innerHTML = '';
 			try { 
-				const res = await fetch(`/phash/duplicates?${qs.toString()}`);
+				const res = await fetch(`/api/duplicates/list?${qs.toString()}`);
 				if (!res.ok) { statusEl.textContent = 'Failed to load'; statusEl.style.color = 'red'; return; }
 				const j = await res.json();
-				const pairs = j.pairs || [];
+				const payload = j && j.status === 'success' ? (j.data || {}) : (j || {});
+				const pairs = payload.pairs || [];
 				if (!pairs.length) {
 					statusEl.textContent = 'No similar pairs found at this threshold.';
 					statusEl.style.color = '#666';
 					grid.innerHTML = '';
 					return;
 				}
-				statusEl.textContent = `${pairs.length} pairs ≥ ${(thresh*100).toFixed(0)}%`;
+				const total = (payload.total_pairs ?? pairs.length);
+				statusEl.textContent = `${total} pairs ≥ ${(thresh*100).toFixed(0)}%`;
 				statusEl.style.color = '#333';
 				for (const p of pairs) {
 					const tile = document.createElement('div');
@@ -3055,7 +3149,7 @@
 				const note = [];
 				if (s.duration_files_count != null && scenes) {
 					note.push(
-
+					
 					// --- Setup tab wiring ---
 					function loadSetup() {
 						const perfEl = document.getElementById('setupPerformers');
@@ -3133,17 +3227,17 @@
 			}
 			catch (_) { }
 		}
-
+		
 		// SETTINGS TAB
 		async function loadSettings() {
 			try { 
 				const [h, c] = await Promise.all([
-					fetch("/health")
-						.then((r) => r.json())
-						.catch(() => ({})),
-					fetch("/config")
-						.then((r) => r.json())
-						.catch(() => ({})),
+				fetch("/health")
+				.then((r) => r.json())
+				.catch(() => ({})),
+				fetch("/config")
+				.then((r) => r.json())
+				.catch(() => ({})),
 				]);
 				const hi = document.getElementById("healthInfo");
 				const ci = document.getElementById("configInfo");
@@ -3183,7 +3277,7 @@
 					if (selectedFile && selectedFile.path) {
 						const t = Math.max(0, Math.min(videoEl.duration || 0, videoEl.currentTime || 0));
 						fetch(`/api/marker?path=${encodeURIComponent(selectedFile.path)}&time=${encodeURIComponent(t)}`, { method: 'POST' })
-							.then(() => { try { renderOverlaysForFile(selectedFile); } catch (_) {} });
+						.then(() => { try { renderOverlaysForFile(selectedFile); } catch (_) {} });
 					}
 				} catch (_) {}
 			}
@@ -3310,13 +3404,13 @@
 			menu.style.left = x + "px";
 			menu.style.top = y + "px";
 		}
-
+		
 		function hideFileMenu() {
 			const menu = document.getElementById("fileMenu");
 			menu.classList.add("hidden");
 			selectedFile = null;
 		}
-
+		
 		document.getElementById("closeMenuBtn").onclick = hideFileMenu;
 		document.getElementById("coverBtn").onclick = async () => {
 			if (!selectedFile) {
@@ -3339,104 +3433,176 @@
 			}
 			hideFileMenu();
 		};
-                const dirsEl = document.getElementById("dirs");
-                const filesEl = document.getElementById("files");
-                const crumbsEl = document.getElementById("crumbs");
-                const infoPanel = document.getElementById("infoPanel");
-                const statusEl = document.getElementById("status");
+		const dirsEl = document.getElementById("dirs");
+		const filesEl = document.getElementById("files");
+		const crumbsEl = document.getElementById("crumbs");
+		const infoPanel = document.getElementById("infoPanel");
+		const statusEl = document.getElementById("status");
+		
+		async function renderTagEditor(file) {
+			if (!infoPanel) return;
+			const old = document.getElementById("tagEditorSection");
+			if (old) old.remove();
+			const section = document.createElement("div");
+			section.id = "tagEditorSection";
+			section.className = "mt-8";
+			section.innerHTML = `
+					<div class="infoRow"><span class="infoLabel">Tags</span><div id="tagsInput" class="chips"></div></div>
+					<div class="infoRow"><span class="infoLabel">Performers</span><div id="performersInput" class="chips"></div></div>
+					<div class="infoRow items-start"><span class="infoLabel" style="padding-top:6px;">Description</span>
+						<textarea id="descInput" rows="4" style="flex:1; width:100%;"></textarea>
+					</div>
+					<datalist id="tagsList"></datalist>
+					<datalist id="performersList"></datalist>
+					<div class="infoRow"><span class="infoLabel">Rating</span><div id="ratingContainer"></div></div>
+					<div id="saveTagsFeedback" class="small mt-8"></div>`;
+			infoPanel.appendChild(section);
+			const tagsListEl = section.querySelector('#tagsList');
+			const perfListEl = section.querySelector('#performersList');
+			const descEl = section.querySelector('#descInput');
+			const saveFeedback = section.querySelector('#saveTagsFeedback');
+			const baseDir = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : '';
 
-				async function renderTagEditor(file) {
-					if (!infoPanel) return;
-					const old = document.getElementById("tagEditorSection");
-					if (old) old.remove();
-					const section = document.createElement("div");
-					section.id = "tagEditorSection";
-					section.className = "mt-8";
-					section.innerHTML = `
-						<div class="infoRow"><span class="infoLabel">Tags</span><input id="tagsInput" type="text" list="tagsList" /></div>
-						<div class="infoRow"><span class="infoLabel">Performers</span><input id="performersInput" type="text" list="performersList" /></div>
-						<datalist id="tagsList"></datalist>
-						<datalist id="performersList"></datalist>
-						<div class="infoRow"><span class="infoLabel">Rating</span><div id="ratingContainer"></div></div>
-						<div id="saveTagsFeedback" class="small mt-8"></div>`;
-					infoPanel.appendChild(section);
-					// Allow spaces by using comma as the only delimiter
-					$('#tagsInput').tagsinput({ trimValue: true, confirmKeys: [13, 188] /* Enter, Comma */ });
-					$('#performersInput').tagsinput({ trimValue: true, confirmKeys: [13, 188] });
-					const tagsListEl = section.querySelector('#tagsList');
-					const perfListEl = section.querySelector('#performersList');
-					const saveFeedback = section.querySelector('#saveTagsFeedback');
-					const baseDir = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : '';
-					// Populate autocomplete lists from summary
-					try { 
-						const s = await fetch(`/api/tags/summary?path=${encodeURIComponent(baseDir)}`);
-						if (s.ok) {
-							const js = await s.json();
-							const tagNames = Object.keys(js.tags || {});
-							const perfNames = Object.keys(js.performers || {});
-							tagNames.sort((a,b) => a.localeCompare(b));
-							perfNames.sort((a,b) => a.localeCompare(b));
-							tagNames.forEach(t => { const o = document.createElement('option'); o.value = t; tagsListEl.appendChild(o); });
-							perfNames.forEach(p => { const o = document.createElement('option'); o.value = p; perfListEl.appendChild(o); });
-						}
-					} catch (_) { /* ignore */ }
-
-					let currentRating = 0;
-					const ratingEl = section.querySelector('#ratingContainer');
-					let _saveTimer;
-					async function saveTags() {
-						// Show inline, lightweight feedback
-						if (saveFeedback) { saveFeedback.textContent = 'Saving…'; saveFeedback.style.color = '#666'; }
-						const payload = {
-							replace: true,
-							add: $('#tagsInput').tagsinput('items'),
-							performers_add: $('#performersInput').tagsinput('items'),
-							rating: currentRating,
-						};
-						try { 
-							const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(baseDir)}`, {
-								method: 'PATCH',
-								headers: { 'Content-Type': 'application/json' },
-								body: JSON.stringify(payload),
-							});
-							if (saveFeedback) {
-								saveFeedback.textContent = resp.ok ? 'Saved' : 'Failed to save';
-								saveFeedback.style.color = resp.ok ? 'green' : 'red';
-							}
-						} catch (_) {
-							if (saveFeedback) { saveFeedback.textContent = 'Error saving'; saveFeedback.style.color = 'red'; }
-						}
-					}
-					function debouncedSave() {
-						clearTimeout(_saveTimer);
-						_saveTimer = setTimeout(saveTags, 600);
-					}
-					function renderStars(r) {
-						ratingEl.innerHTML = '';
-						for (let i = 1; i <= 5; i++) {
-							const s = document.createElement('span');
-							s.className = 'star' + (i <= r ? ' selected' : '');
-							s.textContent = i <= r ? '★' : '☆';
-							s.dataset.val = String(i);
-							s.addEventListener('click', () => { currentRating = i; renderStars(currentRating); debouncedSave(); });
-							ratingEl.appendChild(s);
-						}
-					}
-					// Load existing tags/performers/rating
-					try { 
-						const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(baseDir)}`);
-						if (resp.ok) {
-							const t = await resp.json();
-							(t.tags || []).forEach(v => $('#tagsInput').tagsinput('add', v));
-							(t.performers || []).forEach(v => $('#performersInput').tagsinput('add', v));
-							currentRating = t.rating || 0;
-						}
-					} catch (_) { /* ignore */ }
-					renderStars(currentRating);
-					// Autosave on changes (debounced)
-					$('#tagsInput').on('itemAdded itemRemoved', debouncedSave);
-					$('#performersInput').on('itemAdded itemRemoved', debouncedSave);
+			// Minimal chips input factory
+			function makeChips(container, listEl) {
+				const input = document.createElement('input');
+				if (listEl && listEl.id) input.setAttribute('list', listEl.id);
+				container.appendChild(input);
+				const values = [];
+				let onChange = null;
+				// UX niceties
+				input.placeholder = container.id === 'tagsInput' ? 'Add tag…' : (container.id === 'performersInput' ? 'Add performer…' : 'Add…');
+				container.addEventListener('click', () => input.focus());
+				function notify() { if (typeof onChange === 'function') onChange(values.slice()); }
+				function render() {
+					// remove all chips except input
+					[...container.querySelectorAll('.chip')].forEach(c => c.remove());
+					values.forEach(v => {
+						const chip = document.createElement('span');
+						chip.className = 'chip';
+						chip.textContent = v;
+						const btn = document.createElement('button');
+						btn.type = 'button';
+						btn.title = 'Remove';
+						btn.textContent = '×';
+						btn.addEventListener('click', () => { const i = values.indexOf(v); if (i >= 0) { values.splice(i, 1); render(); notify(); } });
+						chip.appendChild(btn);
+						container.insertBefore(chip, input);
+					});
 				}
+				function add(val) {
+					const s = String(val || '').trim();
+					if (!s) return;
+					if (!values.includes(s)) { values.push(s); render(); notify(); }
+					input.value = '';
+				}
+				input.addEventListener('keydown', (e) => {
+					if (e.key === 'Enter' || e.key === ',') {
+						e.preventDefault();
+						add(input.value);
+					}
+					else if (e.key === ';') {
+						e.preventDefault();
+						add(input.value);
+					}
+					else if (e.key === 'Backspace' && !input.value) {
+						const v = values.pop();
+						if (v !== undefined) { render(); notify(); }
+					}
+				});
+				input.addEventListener('blur', () => { if (input.value.trim()) add(input.value); });
+				input.addEventListener('paste', (e) => {
+					const text = (e.clipboardData || window.clipboardData)?.getData('text');
+					if (text && (text.includes(',') || text.includes('\n') || text.includes(';'))) {
+						e.preventDefault();
+						text.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean).forEach(tok => add(tok));
+					}
+				});
+				return {
+					get values() { return values.slice(); },
+					add,
+					setValues(arr) { values.splice(0, values.length, ...Array.from(new Set((arr||[]).map(x => String(x).trim()).filter(Boolean)))); render(); notify(); },
+					onChange(cb) { onChange = cb; },
+				};
+			}
+
+			const tagsContainer = section.querySelector('#tagsInput');
+			const perfContainer = section.querySelector('#performersInput');
+			const tagsChips = makeChips(tagsContainer, tagsListEl);
+			const perfChips = makeChips(perfContainer, perfListEl);
+			// Populate autocomplete lists from summary
+			try { 
+				const s = await fetch(`/api/tags/summary?path=${encodeURIComponent(baseDir)}`);
+				if (s.ok) {
+					const js = await s.json();
+					const tagNames = Object.keys(js.tags || {});
+					const perfNames = Object.keys(js.performers || {});
+					tagNames.sort((a,b) => a.localeCompare(b));
+					perfNames.sort((a,b) => a.localeCompare(b));
+					tagNames.forEach(t => { const o = document.createElement('option'); o.value = t; tagsListEl.appendChild(o); });
+					perfNames.forEach(p => { const o = document.createElement('option'); o.value = p; perfListEl.appendChild(o); });
+				}
+			} catch (_) { /* ignore */ }
+			
+			let currentRating = 0;
+			const ratingEl = section.querySelector('#ratingContainer');
+			let _saveTimer;
+			async function saveTags() {
+				// Show inline, lightweight feedback
+				if (saveFeedback) { saveFeedback.textContent = 'Saving…'; saveFeedback.style.color = '#666'; }
+				const payload = {
+					replace: true,
+					add: tagsChips.values,
+					performers_add: perfChips.values,
+					rating: currentRating,
+					description: (descEl?.value || ""),
+				};
+				try { 
+					const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(baseDir)}`, {
+						method: 'PATCH',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify(payload),
+					});
+					if (saveFeedback) {
+						saveFeedback.textContent = resp.ok ? 'Saved' : 'Failed to save';
+						saveFeedback.style.color = resp.ok ? 'green' : 'red';
+					}
+				} catch (_) {
+					if (saveFeedback) { saveFeedback.textContent = 'Error saving'; saveFeedback.style.color = 'red'; }
+				}
+			}
+			function debouncedSave() {
+				clearTimeout(_saveTimer);
+				_saveTimer = setTimeout(saveTags, 600);
+			}
+			function renderStars(r) {
+				ratingEl.innerHTML = '';
+				for (let i = 1; i <= 5; i++) {
+					const s = document.createElement('span');
+					s.className = 'star' + (i <= r ? ' selected' : '');
+					s.textContent = i <= r ? '★' : '☆';
+					s.dataset.val = String(i);
+					s.addEventListener('click', () => { currentRating = i; renderStars(currentRating); debouncedSave(); });
+					ratingEl.appendChild(s);
+				}
+			}
+			// Load existing tags/performers/rating
+			try { 
+				const resp = await fetch(`/api/videos/${encodeURIComponent(file.name)}/tags?directory=${encodeURIComponent(baseDir)}`);
+				if (resp.ok) {
+					const t = await resp.json();
+					tagsChips.setValues(t.tags || []);
+					perfChips.setValues(t.performers || []);
+					if (descEl) descEl.value = t.description || '';
+					currentRating = t.rating || 0;
+				}
+			} catch (_) { /* ignore */ }
+			renderStars(currentRating);
+			// Autosave on changes (debounced)
+			tagsChips.onChange(debouncedSave);
+			perfChips.onChange(debouncedSave);
+			if (descEl) descEl.addEventListener('input', debouncedSave);
+		}
 		const rootInput = document.getElementById("rootInput");
 		const setRootBtn = document.getElementById("setRootBtn");
 		const prevBtn = document.getElementById("prevBtn");
@@ -3447,13 +3613,79 @@
 		const status = (text) => {
 			if (statusEl) statusEl.textContent = text || "";
 		};
-
+		
+		// --- Filters (tags/performers) ---
+		window.__filters = window.__filters || { tags: [], performers: [], matchAny: true };
+		async function _ensureRegistryLists() {
+			try {
+				const [tRes, pRes] = await Promise.all([
+				fetch('/api/registry/tags'), fetch('/api/registry/performers')
+				]);
+				if (tRes.ok) {
+					const tl = document.getElementById('filterTagsList');
+					if (tl) {
+						tl.innerHTML = '';
+						const j = await tRes.json();
+						(j.data?.tags || j.tags || []).forEach(it => {
+							const o = document.createElement('option'); o.value = it.name || ''; if (o.value) tl.appendChild(o);
+						});
+					}
+				}
+				if (pRes.ok) {
+					const pl = document.getElementById('filterPerfsList');
+					if (pl) {
+						pl.innerHTML = '';
+						const j = await pRes.json();
+						(j.data?.performers || j.performers || []).forEach(it => {
+							const o = document.createElement('option'); o.value = it.name || ''; if (o.value) pl.appendChild(o);
+						});
+					}
+				}
+			} catch(_) {}
+		}
+		function _renderFilterChips() {
+			const box = document.getElementById('filterChips'); if (!box) return;
+			box.innerHTML = '';
+			const addChip = (type, val) => {
+				const chip = document.createElement('span'); chip.className = 'chip';
+				chip.innerHTML = `${type}: ${val} <span class="x" title="Remove">×</span>`;
+				chip.querySelector('.x').onclick = () => {
+					const arr = (type === 'tag') ? window.__filters.tags : window.__filters.performers;
+					const idx = arr.indexOf(val); if (idx >= 0) arr.splice(idx, 1);
+					_renderFilterChips(); load(cwd || '');
+				};
+				box.appendChild(chip);
+			};
+			(window.__filters.tags || []).forEach(v => addChip('tag', v));
+			(window.__filters.performers || []).forEach(v => addChip('perf', v));
+		}
+		function _wireFilterInputs() {
+			const t = document.getElementById('filterTagInput');
+			const p = document.getElementById('filterPerfInput');
+			if (t && !t.dataset.wired) {
+				t.dataset.wired = '1';
+				t.addEventListener('change', () => {
+					const v = (t.value || '').trim();
+					if (!v) return; if (!window.__filters.tags.includes(v)) window.__filters.tags.push(v);
+					t.value = ''; _renderFilterChips(); load(cwd || '');
+				});
+			}
+			if (p && !p.dataset.wired) {
+				p.dataset.wired = '1';
+				p.addEventListener('change', () => {
+					const v = (p.value || '').trim();
+					if (!v) return; if (!window.__filters.performers.includes(v)) window.__filters.performers.push(v);
+					p.value = ''; _renderFilterChips(); load(cwd || '');
+				});
+			}
+		}
+		
 		videoEl.classList.add("hidden");
 		metaEl.textContent = "";
-
+		
 		// Removed duplicate declaration of cwd
 		let cwd = "";
-
+		
 		let currentPage = 1;
 		// Initialize from URL (?page=#)
 		currentPage = getPageFromLocation();
@@ -3468,7 +3700,7 @@
 		const metaCache = new Map();
 		let visibleStart = 0,
 		visibleEnd = 0;
-
+		
 		function human(n) {
 			if (n< 1024) {
 				return n + " B";
@@ -3482,7 +3714,7 @@
 			while (n >= 1024 && i< u.length - 1);
 			return n.toFixed(1) + " " + u[i];
 		}
-
+		
 		// Allow double-click on the root input to open a folder picker
 		if (rootInput) {
 			const hiddenDirPicker = document.getElementById("hiddenDirPicker");
@@ -3593,11 +3825,11 @@
 				catch (_) {/* ignore */ }
 			});
 		}
-
+		
 		function esc(s) {
 			return String(s == null ? "" : s);
 		}
-
+		
 		function baseName(name) {
 			const i = name.lastIndexOf(".");
 			return i >0 ? name.slice(0, i) : name;
@@ -3613,7 +3845,7 @@
 			const pad = (n) => String(n).padStart(2, "0");
 			return h >0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 		}
-
+		
 		async function showInfo(file) {
 			if (!infoPanel) {
 				return;
@@ -3763,63 +3995,63 @@
 			setClickable("infoMetaFile", "Click to (re)generate metadata", async () => {
 				await fetch(`/api/metadata/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
 			});
-                        setClickable("infoScenes", "Click to (re)generate chapters", async () => {
-                                await fetch(`/api/scenes/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
-                        });
-						// After wiring actions, asynchronously verify artifact presence and update statuses
-						(async function refreshArtifactStatuses(f) {
-							const headOk = async (url) => {
-								try { const r = await fetch(url, { method: 'HEAD', cache: 'no-store' }); return r.ok; } catch(_) { return false; }
-							};
-							const getJson = async (url) => {
-								try { const r = await fetch(url, { method: 'GET', cache: 'no-store' }); if (!r.ok) return null; return await r.json(); } catch(_) { return null; }
-							};
-							const setCheck = (id, ok) => { const el = document.getElementById(id); if (el) el.textContent = ok ? '✅' : '❌'; };
-							// Thumbnail
-							const coverOk = await headOk(`/api/cover/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
-							setCheck('infoThumbStatus', coverOk);
-							if (coverOk) {
-								const img = document.getElementById('infoThumb');
-								if (img && img.tagName === 'IMG') { img.src = `/api/cover/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`; }
-							}
-							// Hover preview
-							const hoverOk = await headOk(`/api/hover/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
-							setCheck('infoHoverPreview', hoverOk);
-							// Sprites
-							const spritesJson = await getJson(`/api/sprites/json?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
-							const spritesOk = !!(spritesJson && (spritesJson.index || spritesJson.data?.index));
-							setCheck('infoSprites', spritesOk);
-							// Scenes / chapters
-							const scenesJson = await getJson(`/api/scenes/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
-							const scenesArr = (scenesJson && (scenesJson.data?.markers || scenesJson.markers || scenesJson.data?.scenes)) || [];
-							setCheck('infoScenes', Array.isArray(scenesArr) && scenesArr.length > 0);
-							// Heatmaps
-							let heatOk = await headOk(`/api/heatmaps/png?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
-							if (!heatOk) {
-								const hm = await getJson(`/api/heatmaps/json?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
-								heatOk = !!(hm && ((hm.data?.heatmaps?.samples?.length || 0) > 0 || (hm.heatmaps?.samples?.length || 0) > 0 || (hm.samples?.length || 0) > 0));
-							}
-							setCheck('infoHeatmaps', heatOk);
-							// Subtitles
-							const subsOk = await headOk(`/api/subtitles/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
-							setCheck('infoSubtitles', subsOk);
-							// pHash: try a lightweight metadata get and look for a phash-like field
-							const meta = await getJson(`/api/metadata/get?path=${encodeURIComponent(f.path)}&view=1&t=${Date.now()}`);
-							const metaBody = meta?.data || meta || {};
-							const phashOk = !!(metaBody.phash || metaBody.pHash || metaBody.hash || metaBody.artifacts?.phash);
-							setCheck('infoPhash', phashOk);
-							// Faces
-							const faces = await getJson(`/api/faces/json?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
-							const faceArr = (faces && (faces.data?.faces || faces.faces)) || [];
-							setCheck('infoFaces', Array.isArray(faceArr) && faceArr.length > 0);
-						})(file);
-                        infoPanel.appendChild(frag);
-                        renderTagEditor(file);
-                        try { 
-                                const res = await fetch(
-                                `/api/metadata/get?path=${encodeURIComponent(file.path)}`,
-                                {method: "GET" },
-                                );
+			setClickable("infoScenes", "Click to (re)generate chapters", async () => {
+				await fetch(`/api/scenes/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
+			});
+			// After wiring actions, asynchronously verify artifact presence and update statuses
+			(async function refreshArtifactStatuses(f) {
+				const headOk = async (url) => {
+					try { const r = await fetch(url, { method: 'HEAD', cache: 'no-store' }); return r.ok; } catch(_) { return false; }
+				};
+				const getJson = async (url) => {
+					try { const r = await fetch(url, { method: 'GET', cache: 'no-store' }); if (!r.ok) return null; return await r.json(); } catch(_) { return null; }
+				};
+				const setCheck = (id, ok) => { const el = document.getElementById(id); if (el) el.textContent = ok ? '✅' : '❌'; };
+				// Thumbnail
+				const coverOk = await headOk(`/api/cover/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+				setCheck('infoThumbStatus', coverOk);
+				if (coverOk) {
+					const img = document.getElementById('infoThumb');
+					if (img && img.tagName === 'IMG') { img.src = `/api/cover/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`; }
+				}
+				// Hover preview
+				const hoverOk = await headOk(`/api/hover/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+				setCheck('infoHoverPreview', hoverOk);
+				// Sprites
+				const spritesJson = await getJson(`/api/sprites/json?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+				const spritesOk = !!(spritesJson && (spritesJson.index || spritesJson.data?.index));
+				setCheck('infoSprites', spritesOk);
+				// Scenes / chapters
+				const scenesJson = await getJson(`/api/scenes/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+				const scenesArr = (scenesJson && (scenesJson.data?.markers || scenesJson.markers || scenesJson.data?.scenes)) || [];
+				setCheck('infoScenes', Array.isArray(scenesArr) && scenesArr.length > 0);
+				// Heatmaps
+				let heatOk = await headOk(`/api/heatmaps/png?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+				if (!heatOk) {
+					const hm = await getJson(`/api/heatmaps/json?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+					heatOk = !!(hm && ((hm.data?.heatmaps?.samples?.length || 0) > 0 || (hm.heatmaps?.samples?.length || 0) > 0 || (hm.samples?.length || 0) > 0));
+				}
+				setCheck('infoHeatmaps', heatOk);
+				// Subtitles
+				const subsOk = await headOk(`/api/subtitles/get?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+				setCheck('infoSubtitles', subsOk);
+				// pHash: try a lightweight metadata get and look for a phash-like field
+				const meta = await getJson(`/api/metadata/get?path=${encodeURIComponent(f.path)}&view=1&t=${Date.now()}`);
+				const metaBody = meta?.data || meta || {};
+				const phashOk = !!(metaBody.phash || metaBody.pHash || metaBody.hash || metaBody.artifacts?.phash);
+				setCheck('infoPhash', phashOk);
+				// Faces
+				const faces = await getJson(`/api/faces/json?path=${encodeURIComponent(f.path)}&t=${Date.now()}`);
+				const faceArr = (faces && (faces.data?.faces || faces.faces)) || [];
+				setCheck('infoFaces', Array.isArray(faceArr) && faceArr.length > 0);
+			})(file);
+			infoPanel.appendChild(frag);
+			renderTagEditor(file);
+			try { 
+				const res = await fetch(
+				`/api/metadata/get?path=${encodeURIComponent(file.path)}`,
+				{method: "GET" },
+				);
 				if (res.ok) {
 					const body = await res.json();
 					const j = body.data || body;
@@ -3944,7 +4176,7 @@
 				playBtn.onclick = () => play(file);
 			}
 		}
-
+		
 		function selectTile(tile, file) {
 			if (selectedTile && selectedTile !== tile) {
 				selectedTile.classList.remove("selected");
@@ -3997,7 +4229,7 @@
 			}
 			showInfo(file);
 		}
-
+		
 		// --- Subtitles: SRT parsing and track injection ---
 		function parseSrtToCues(srtText) {
 			// Returns array of { start, end, text }
@@ -4029,7 +4261,7 @@
 			}
 			return cues;
 		}
-
+		
 		function clearAllTextTracks(video) {
 			try { 
 				const tracks = video.textTracks || [];
@@ -4048,7 +4280,7 @@
 				try { video._subsTrack = null; } catch (_) {}
 			} catch (_) {}
 		}
-
+		
 		let _io;
 		function observeLazy(el) {
 			if (!_io) {
@@ -4069,7 +4301,7 @@
 			}
 			_io.observe(el);
 		}
-
+		
 		let _ioMeta;
 		function observeMeta(el, file) {
 			if (!_ioMeta) {
@@ -4140,7 +4372,7 @@
 			el.dataset.metakey = file.path;
 			_ioMeta.observe(el);
 		}
-
+		
 		async function generateCover(file, overrideOffset) {
 			const off = overrideOffset != null ? Number(overrideOffset) : parseFloat(
 			document.getElementById("coverOffset")?.value || "0", ) || 0;
@@ -4151,7 +4383,7 @@
 			});
 			return res.ok;
 		}
-
+		
 		async function load(path = "", pageOverride) {
 			status("Loading…");
 			const params = new URLSearchParams();
@@ -4176,6 +4408,13 @@
 			let orderVal = (orderBtn && orderBtn.dataset.order) || "asc";
 			if (orderBtn && !orderBtn.dataset.order) { orderBtn.dataset.order = orderVal; }
 			params.set("order", orderVal);
+			// Add tag/performer filters from chips
+			if (window.__filters) {
+				const f = window.__filters;
+				if (f.tags && f.tags.length) params.set("tags", f.tags.join(","));
+				if (f.performers && f.performers.length) params.set("performers", f.performers.join(","));
+				if (f.matchAny) params.set("match_any", "1");
+			}
 			// Fetch with timeout to avoid hanging UI on slow network/back-end
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), 10000);
@@ -4238,7 +4477,7 @@
 			} catch (_) {}
 			status("OK");
 		}
-
+		
 		// Helper: attempt to select a file's tile by its relative path. Returns true if selected.
 		async function selectFileInGridByPath(relPath, fallbackName, fallbackTitle) {
 			try {
@@ -4255,7 +4494,7 @@
 			} catch (_) { }
 			return false;
 		}
-
+		
 		async function ensureHover(file) {
 			// Fast path: backend reported hover preview exists
 			if (file.hoverPreview) return file.hoverPreview + `&t=${Date.now()}`;
@@ -4292,7 +4531,7 @@
 			}
 			return null;
 		}
-
+		
 		// Ensure no tiles are currently showing a hover video
 		function stopAllTileHovers(exceptTile = null) {
 			try { 
@@ -4325,7 +4564,7 @@
 			}
 			catch (_) { }
 		}
-
+		
 		function renderFiles(files) {
 			// Render file tiles with preview (image/video/placeholder)
 			if (!Array.isArray(files)) return;
@@ -4466,7 +4705,7 @@
 				}, 0);
 			});
 		}
-
+		
 		function renderDirs(dirs) {
 			if (!dirsEl) return;
 			dirsEl.innerHTML = "";
@@ -4496,7 +4735,7 @@
 				dirsEl.appendChild(li);
 			});
 		}
-
+		
 		if (toggleHoversBtn) {
 			toggleHoversBtn.onclick = () => {
 				hoverPreviewsEnabled = !hoverPreviewsEnabled;
@@ -4513,7 +4752,7 @@
 			toggleHoversBtn.textContent = hoverPreviewsEnabled ? "Hovers: On" : "Hovers: Off";
 			toggleHoversBtn.classList.toggle("active", hoverPreviewsEnabled);
 		}
-
+		
 		function renderPager() {
 			if (!pageInfo) {
 				return;
@@ -4556,7 +4795,7 @@
 			videoEl.addEventListener('timeupdate', persistPosition);
 			window.addEventListener('beforeunload', persistPosition);
 		}
-
+		
 		async function play(file) {
 			selectedFile = file;
 			const src = `/api/stream?path=${encodeURIComponent(file.path)}`;
@@ -4627,8 +4866,8 @@
 						const setThumbBtn = document.getElementById("setThumbBtn");
 						if (setThumbBtn) {
 							setThumbBtn.parentNode.insertBefore(
-								toggleSubsBtn,
-								setThumbBtn.nextSibling,
+							toggleSubsBtn,
+							setThumbBtn.nextSibling,
 							);
 						}
 					}
@@ -4704,10 +4943,10 @@
 					}
 				} catch (_) {}
 				if (controlsBar && getTabFromLocation() === "Player")
-					controlsBar.classList.remove("hidden");
+				controlsBar.classList.remove("hidden");
 			};
 		}
-
+		
 		async function renderOverlaysForFile(file) {
 			if (!file) return;
 			// Scenes
@@ -4717,8 +4956,8 @@
 				if (res.ok) {
 					const body = await res.json();
 					scenes = (body.data && (body.data.markers || body.data.scenes || body.data.markers)) 
-						|| body.markers 
-						|| null;
+					|| body.markers 
+					|| null;
 					if (Array.isArray(body.data?.markers)) scenes = body.data.markers;
 				}
 			}
@@ -4761,7 +5000,7 @@
 			if (controlsBar && getTabFromLocation() === "Player")
 			controlsBar.classList.remove("hidden");
 		}
-
+		
 		function renderChapters(scenes, file) {
 			if (!chaptersBar) return;
 			chaptersBar.innerHTML = "";
@@ -4789,7 +5028,7 @@
 				chaptersBar.appendChild(m);
 			});
 		}
-
+		
 		function renderHeatmapStripe(payload) {
 			if (!heatmapStripe) return;
 			heatmapStripe.style.backgroundImage = "";
@@ -4817,7 +5056,7 @@
 				heatmapStripe.style.backgroundImage = `linear-gradient(to right, ${stops.join(",")})`;
 			}
 		}
-
+		
 		// Seek behavior on overlay
 		if (controlsProgress) {
 			const seekFromEvent = (ev) => {
@@ -4950,10 +5189,10 @@
 			});
 			window.addEventListener("mouseup", () => (dragging = false));
 			controlsProgress.addEventListener("touchstart",
-				(e) => {
-					dragging = true;
-					seekFromEvent(e);
-				},
+			(e) => {
+				dragging = true;
+				seekFromEvent(e);
+			},
 			{passive: true});
 			controlsProgress.addEventListener("touchmove",
 			(e) => {
@@ -4963,9 +5202,9 @@
 				passive: true,
 			});
 		}
-
+		
 		/* duplicate startJobsSSE removed: using the primary implementation in Tasks section */
-
+		
 		// Control listeners setup
 		function setupControlListeners() {
 			document.getElementById("searchInput").addEventListener("input", () => {
@@ -5019,7 +5258,7 @@
 					}
 				});
 			}
-
+			
 			// Wire explicit Set button to apply the root path from the input
 			if (setRootBtn) {
 				setRootBtn.onclick = async () => {
@@ -5061,7 +5300,7 @@
 				};
 			}
 		}
-
+		
 		// Auto-load root folder on page load
 		window.addEventListener("DOMContentLoaded", async () => {
 			// Wire up set thumbnail button logic
@@ -5125,6 +5364,10 @@
 			}
 			setupControlListeners();
 			mountSpritePreviewInPlayer();
+			// Initialize filter registries and inputs
+			try { await _ensureRegistryLists(); } catch(_) {}
+			try { _wireFilterInputs(); } catch(_) {}
+			try { _renderFilterChips(); } catch(_) {}
 			// Ensure backend root is set before attempting to restore/load; if not provided, proceed with existing backend root
 			try { 
 				const v = (rootInput && rootInput.value) ? rootInput.value.trim() : "";
@@ -5243,7 +5486,7 @@
 			}
 			catch (_) { }
 		});
-
+		
 		// Handle back/forward navigation for tabs
 		window.addEventListener("popstate", async () => {
 			const t = getTabFromLocation() || "Grid";
@@ -5259,7 +5502,7 @@
 			const t = getTabFromLocation() || "Grid";
 			await showTab(t, true);
 		});
-
+		
 		if (prevBtn) {
 			prevBtn.onclick = async () => {
 				if (currentPage >1) {
@@ -5292,7 +5535,7 @@
 				}
 			};
 		}
-
+		
 		const gridSizeInput = document.getElementById("gridSize");
 		if (gridSizeInput) {
 			gridSizeInput.onchange = () => {
@@ -5302,7 +5545,7 @@
 			};
 			filesEl.style.gridTemplateColumns = `repeat(${gridSizeInput.value}, 1fr)`;
 		}
-
+		
 		document.addEventListener("keydown", (e) => {
 			// Always allow space/arrow keys for player and grid navigation
 			if (document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
@@ -5384,7 +5627,7 @@
 				}
 			}
 		});
-
+		
 		// Add 'Random' to sort dropdown
 		const sortBySelect = document.getElementById("sortBy");
 		if ( sortBySelect && !Array.from(sortBySelect.options).some((opt) => opt.value === "random") ) {
@@ -5437,25 +5680,25 @@
 				play(file);
 			};
 		}
-
+		
 		// List tab logic
 		// Column config
 		const LIST_COLS_KEY = "listCols.v2";
 		const defaultListCols = [
-			{key: "name", label: "Name", align: "left", width: 320, visible: true, source: "basic" },
-			{key: "size", label: "Size", align: "right", width: 100, visible: true, source: "basic" },
-			{key: "duration", label: "Duration", align: "right", width: 110, visible: true, source: "basic" },
-			{key: "codecs", label: "Codecs", align: "left", width: 160, visible: true, source: "basic" },
-			{key: "tags", label: "Tags", align: "left", width: 200, visible: true, source: "basic" },
-			// Artifacts (hidden by default)
-			{key: "art.cover", label: "Cover", align: "center", width: 80, visible: false, source: "artifact" },
-			{key: "art.hover", label: "Hover", align: "center", width: 80, visible: false, source: "artifact" },
-			{key: "art.sprites", label: "Sprites", align: "center", width: 80, visible: false, source: "artifact" },
-			{key: "art.subtitles", label: "Subtitles", align: "center", width: 92, visible: false, source: "artifact" },
-			{key: "art.phash", label: "pHash", align: "center", width: 80, visible: false, source: "artifact" },
-			{key: "art.heatmaps", label: "Heatmaps", align: "center", width: 92, visible: false, source: "artifact" },
-			{key: "art.scenes", label: "Scenes", align: "center", width: 80, visible: false, source: "artifact" },
-			{key: "art.faces", label: "Faces", align: "center", width: 80, visible: false, source: "artifact" },
+		{key: "name", label: "Name", align: "left", width: 320, visible: true, source: "basic" },
+		{key: "size", label: "Size", align: "right", width: 100, visible: true, source: "basic" },
+		{key: "duration", label: "Duration", align: "right", width: 110, visible: true, source: "basic" },
+		{key: "codecs", label: "Codecs", align: "left", width: 160, visible: true, source: "basic" },
+		{key: "tags", label: "Tags", align: "left", width: 200, visible: true, source: "basic" },
+		// Artifacts (hidden by default)
+		{key: "art.cover", label: "Cover", align: "center", width: 80, visible: false, source: "artifact" },
+		{key: "art.hover", label: "Hover", align: "center", width: 80, visible: false, source: "artifact" },
+		{key: "art.sprites", label: "Sprites", align: "center", width: 80, visible: false, source: "artifact" },
+		{key: "art.subtitles", label: "Subtitles", align: "center", width: 92, visible: false, source: "artifact" },
+		{key: "art.phash", label: "pHash", align: "center", width: 80, visible: false, source: "artifact" },
+		{key: "art.heatmaps", label: "Heatmaps", align: "center", width: 92, visible: false, source: "artifact" },
+		{key: "art.scenes", label: "Scenes", align: "center", width: 80, visible: false, source: "artifact" },
+		{key: "art.faces", label: "Faces", align: "center", width: 80, visible: false, source: "artifact" },
 		];
 		function getListCols() {
 			try { 
@@ -5480,30 +5723,30 @@
 		// Metadata discovery cache
 		const metaRawCache = new Map(); // path ->raw ffprobe json
 		let discoveredMetaKeys = new Set();
-
+		
 		function renderListColumnsPanel() {
 			const panel = document.getElementById("listColumnsPanel");
 			if (!panel) return;
 			const cols = getListCols();
 			// TODO @copilot: avoid this. use static html that's hidden until needed
 			panel.innerHTML = `
-				<div class="row"><strong>Columns</strong><span class="muted">(drag to reorder)</span></div>
-				<div class="section">
-					<div class="muted">Basics & Artifacts</div>
-					<div id="listColsChoices" class="choices"></div>
-				</div>
-				<div class="section">
-					<div class="row">
-						<strong>ffprobe metadata</strong>
-						<input id="metaFilter" type="text" placeholder="filter…" />
-						<button id="discoverMetaBtn" class="btn">Discover ffprobe keys</button>
-					</div>
-					<div id="metaColsChoices" class="choices"></div>
-				</div>
+			<div class="row"><strong>Columns</strong><span class="muted">(drag to reorder)</span></div>
+			<div class="section">
+				<div class="muted">Basics & Artifacts</div>
+				<div id="listColsChoices" class="choices"></div>
+			</div>
+			<div class="section">
 				<div class="row">
-					<button id="resetListColsBtn" class="btn">Reset</button>
+					<strong>ffprobe metadata</strong>
+					<input id="metaFilter" type="text" placeholder="filter…" />
+					<button id="discoverMetaBtn" class="btn">Discover ffprobe keys</button>
 				</div>
-			`;
+				<div id="metaColsChoices" class="choices"></div>
+			</div>
+			<div class="row">
+				<button id="resetListColsBtn" class="btn">Reset</button>
+			</div>
+		`;
 			const choices = panel.querySelector("#listColsChoices");
 			cols.forEach((c, idx) => {
 				const id = `col_${c.key}`;
@@ -5782,9 +6025,9 @@
 		function getByPath(obj, path) {
 			try { 
 				const parts = String(path)
-					.replace(/\[(\d+)\]/g, '.$1')
-					.split('.')
-					.filter(p => p.length > 0);
+				.replace(/\[(\d+)\]/g, '.$1')
+				.split('.')
+				.filter(p => p.length > 0);
 				let cur = obj;
 				for (const p of parts) {
 					if (/^\d+$/.test(p)) {
@@ -5894,7 +6137,79 @@
 		}
 		const reloadListBtn = document.getElementById("reloadListBtn");
 		if (reloadListBtn) reloadListBtn.onclick = () => loadList();
-
+		
+		// --- Registry Tab Logic ---
+		async function loadRegistry() {
+			async function fetchJSON(url, opts) {
+				try { const r = await fetch(url, opts || {}); if (!r.ok) return null; return await r.json(); } catch(_) { return null; }
+			}
+			const tagsBox = document.getElementById('tagsRegistryList');
+			const perfBox = document.getElementById('performersRegistryList');
+			if (tagsBox) tagsBox.textContent = 'Loading…';
+			if (perfBox) perfBox.textContent = 'Loading…';
+			const [t, p] = await Promise.all([
+			fetchJSON('/api/registry/tags'), fetchJSON('/api/registry/performers')
+			]);
+			if (tagsBox) {
+				const arr = (t && (t.data?.tags || t.tags)) || [];
+				arr.sort((a,b) => (a.name||'').localeCompare(b.name||''));
+				tagsBox.innerHTML = arr.map(x => `<div>${(x.id!=null?`#${x.id} `:'')}${x.name} <span class="small muted">(${x.slug||''})</span></div>`).join('');
+			}
+			if (perfBox) {
+				const arr = (p && (p.data?.performers || p.performers)) || [];
+				arr.sort((a,b) => (a.name||'').localeCompare(b.name||''));
+				perfBox.innerHTML = arr.map(x => `<div>${(x.id!=null?`#${x.id} `:'')}${x.name} <span class="small muted">(${x.slug||''})</span></div>`).join('');
+			}
+			// Update filter registries as well
+			try { await _ensureRegistryLists(); } catch(_) {}
+		}
+		(function wireRegistryButtons(){
+			const _ = (id) => document.getElementById(id);
+			_('refreshRegistryBtn')?.addEventListener('click', () => loadRegistry());
+			_('createTagBtn')?.addEventListener('click', async () => {
+				const name = (_('newTagName')?.value || '').trim(); if (!name) return;
+				await fetch('/api/registry/tags/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+				_('newTagName').value = ''; await loadRegistry();
+			});
+			_('renameTagBtn')?.addEventListener('click', async () => {
+				const name = (_('renameTagFrom')?.value || '').trim(); const new_name = (_('renameTagTo')?.value || '').trim(); if (!name || !new_name) return;
+				await fetch('/api/registry/tags/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, new_name }) });
+				_('renameTagFrom').value = ''; _('renameTagTo').value = ''; await loadRegistry();
+			});
+			_('mergeTagBtn')?.addEventListener('click', async () => {
+				const from_name = (_('mergeTagFrom')?.value || '').trim(); const into_name = (_('mergeTagTo')?.value || '').trim(); if (!from_name || !into_name) return;
+				const qs = new URLSearchParams({ from_name, into_name, rewrite_sidecars: '1' });
+				await fetch('/api/registry/tags/merge?' + qs.toString(), { method: 'POST' });
+				_('mergeTagFrom').value = ''; _('mergeTagTo').value = ''; await loadRegistry();
+			});
+			_('deleteTagBtn')?.addEventListener('click', async () => {
+				const name = (_('deleteTagName')?.value || '').trim(); if (!name) return;
+				await fetch('/api/registry/tags/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+				_('deleteTagName').value = ''; await loadRegistry();
+			});
+			_('createPerfBtn')?.addEventListener('click', async () => {
+				const name = (_('newPerfName')?.value || '').trim(); if (!name) return;
+				await fetch('/api/registry/performers/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+				_('newPerfName').value = ''; await loadRegistry();
+			});
+			_('renamePerfBtn')?.addEventListener('click', async () => {
+				const name = (_('renamePerfFrom')?.value || '').trim(); const new_name = (_('renamePerfTo')?.value || '').trim(); if (!name || !new_name) return;
+				await fetch('/api/registry/performers/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, new_name }) });
+				_('renamePerfFrom').value = ''; _('renamePerfTo').value = ''; await loadRegistry();
+			});
+			_('mergePerfBtn')?.addEventListener('click', async () => {
+				const from_name = (_('mergePerfFrom')?.value || '').trim(); const into_name = (_('mergePerfTo')?.value || '').trim(); if (!from_name || !into_name) return;
+				const qs = new URLSearchParams({ from_name, into_name, rewrite_sidecars: '1' });
+				await fetch('/api/registry/performers/merge?' + qs.toString(), { method: 'POST' });
+				_('mergePerfFrom').value = ''; _('mergePerfTo').value = ''; await loadRegistry();
+			});
+			_('deletePerfBtn')?.addEventListener('click', async () => {
+				const name = (_('deletePerfName')?.value || '').trim(); if (!name) return;
+				await fetch('/api/registry/performers/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+				_('deletePerfName').value = ''; await loadRegistry();
+			});
+		})();
+		
 		// Rotate headers toggle
 		const toggleRotateHeadersBtn = document.getElementById('toggleRotateHeadersBtn');
 		const listTableEl = document.getElementById('listTable');
@@ -5913,7 +6228,7 @@
 			applyRotateHeaders(next);
 			try { localStorage.setItem(ROTATE_HDRS_KEY, next ? '1' : '0'); } catch(_){}
 		};
-
+		
 		// Column/Row selection logic
 		const enableColSelectChk = document.getElementById('enableColSelectChk');
 		const enableRowSelectChk = document.getElementById('enableRowSelectChk');
@@ -5953,7 +6268,7 @@
 				if (cells[index]) cells[index].classList.toggle('drag-hover', !!on);
 			});
 		}
-
+		
 		function wireSelectionHandlers() {
 			const table = document.getElementById('listTable');
 			if (!table) return;
@@ -6006,7 +6321,7 @@
 			rowSelectEnabled = !!enableRowSelectChk.checked;
 			if (!rowSelectEnabled) clearRowSelections();
 		});
-
+		
 		// Columns control
 		const toggleListColumnsBtn = document.getElementById("toggleListColumnsBtn");
 		if (toggleListColumnsBtn) {
@@ -6061,7 +6376,7 @@
 			discoveredMetaKeys = new Set(Array.from(found).filter(k => !!k && typeof k === 'string' && k.trim().length > 0));
 			return found;
 		}
-
+		
 		load();
 	</script>
 </body>

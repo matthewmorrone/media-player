@@ -33,8 +33,21 @@ except Exception:  # pragma: no cover
 
 
 # Global server state
+# Initialize root from MEDIA_ROOT if provided and valid; otherwise fall back to CWD
+def _init_media_root() -> Path:
+    env_root = os.environ.get("MEDIA_ROOT")
+    if env_root:
+        try:
+            p = Path(env_root).expanduser().resolve()
+            if p.exists() and p.is_dir():
+                return p
+        except Exception:
+            pass
+    return Path.cwd().resolve()
+
+
 STATE: dict[str, Any] = {
-    "root": Path.cwd().resolve(),
+    "root": _init_media_root(),
 }
 
 
@@ -1033,6 +1046,9 @@ JOB_LOCK = threading.Lock()
 JOB_EVENT_SUBS: list[tuple[asyncio.Queue[str], asyncio.AbstractEventLoop]] = []
 JOB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 
+# Registry lock for centralized tags/performers files
+REGISTRY_LOCK = threading.Lock()
+
 
 def _normalize_job_type(job_type: str) -> str:
     """Normalize backend job-type variants to base types for the UI and tests."""
@@ -1276,6 +1292,92 @@ def _is_original_media_file(p: Path, base: Path) -> bool:
     return True
 
 
+# -----------------------------
+# Central registry (tags/performers)
+# -----------------------------
+
+def _registry_dir() -> Path:
+    root = STATE.get("root") or Path.cwd()
+    d = Path(root) / ".artifacts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _tags_registry_path() -> Path:
+    return _registry_dir() / "tags.json"
+
+
+def _performers_registry_path() -> Path:
+    return _registry_dir() / "performers.json"
+
+
+def _slugify(name: str) -> str:
+    s = (name or "").strip().lower()
+    # replace non-alnum with '-'
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = re.sub(r"-+", "-", s)
+    return s.strip("-")
+
+
+def _load_registry(path: Path, kind: str) -> dict:
+    """Load a registry file, creating a minimal skeleton if missing.
+    kind: 'tags' or 'performers'
+    """
+    skel = {"version": 1, "next_id": 1, kind: []}
+    if not path.exists():
+        return skel
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            return skel
+        # ensure keys
+        data.setdefault("version", 1)
+        data.setdefault("next_id", 1)
+        data.setdefault(kind, [])
+        return data
+    except Exception:
+        return skel
+
+
+def _save_registry(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+
+
+class TagCreate(BaseModel):
+    name: str
+
+
+class TagRename(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+    new_name: str
+
+
+class TagDelete(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+
+
+class PerformerCreate(BaseModel):
+    name: str
+    images: Optional[List[str]] = None
+    image: Optional[str] = None
+
+
+class PerformerUpdate(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+    new_name: Optional[str] = None
+    add_images: Optional[List[str]] = None
+    remove_images: Optional[List[str]] = None
+
+
+class PerformerDelete(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+
+
 ############################
 # Core API
 ############################
@@ -1360,7 +1462,21 @@ def _tags_file(p: Path) -> Path:
 
 @app.get("/tags/export")
 def tags_export(directory: str = Query("."), recursive: bool = Query(False)):
-    root = Path(directory).expanduser().resolve()
+    # Enforce root scoping
+    if directory in (".", ""):
+        root = STATE.get("root")
+    else:
+        p = Path(directory).expanduser()
+        if p.is_absolute():
+            # must be inside STATE["root"]
+            try:
+                p.resolve().relative_to(STATE["root"])  # type: ignore[arg-type]
+            except Exception:
+                raise HTTPException(400, "invalid directory")
+            root = p
+        else:
+            root = safe_join(STATE["root"], directory)
+    root = Path(str(root)).resolve()
     if not root.is_dir():
         raise HTTPException(404, "directory not found")
     vids = _find_mp4s(root, recursive)
@@ -1400,6 +1516,11 @@ def tags_import(payload: TagsImport):
         for item in payload.videos:
             try:
                 p = Path(item.get("path") or "").expanduser().resolve()
+                # Only allow files within configured root
+                try:
+                    p.relative_to(STATE["root"])  # type: ignore[arg-type]
+                except Exception:
+                    continue
                 items.append((p, item))
             except Exception:
                 continue
@@ -1407,6 +1528,10 @@ def tags_import(payload: TagsImport):
         for k, v in payload.mapping.items():
             try:
                 p = Path(k).expanduser().resolve()
+                try:
+                    p.relative_to(STATE["root"])  # type: ignore[arg-type]
+                except Exception:
+                    continue
                 items.append((p, v))
             except Exception:
                 continue
@@ -1552,108 +1677,9 @@ def _collect_media_and_meta(root: Path) -> tuple[dict[str, Path], dict[str, dict
         meta[v.stem] = summaries.get(rel) or {}
     return media, meta
 
-# TODO @copilot v2 reference, unnecessary backwards compatibility
-@app.get("/videos")
-def v2_list_videos(request: Request, directory: str = Query("."), recursive: bool = Query(False), offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000), q: Optional[str] = Query(None), tags: Optional[str] = Query(None), performers: Optional[str] = Query(None), match_any: bool = Query(False), detail: bool = Query(False)):
-    root = Path(directory).expanduser().resolve()
-    if not root.is_dir():
-        raise HTTPException(404, "directory not found")
-    vids_all = [p for p in _find_mp4s(root, recursive)]
-    summaries = _load_meta_summary(root, recursive)
-    if q:
-        qlow = q.lower()
-        vids_all = [p for p in vids_all if qlow in p.name.lower()]
-    # Tag filtering
-    if tags or performers:
-        tag_set = {t.strip() for t in (tags.split(',') if tags else []) if t.strip()}
-        perf_set = {t.strip() for t in (performers.split(',') if performers else []) if t.strip()}
-        filtered: list[Path] = []
-        for p in vids_all:
-            data = {"tags": [], "performers": []}
-            tf = _tags_file(p)
-            if tf.exists():
-                try:
-                    tdata = json.loads(tf.read_text())
-                    data["tags"] = tdata.get("tags", [])
-                    data["performers"] = tdata.get("performers", [])
-                except Exception:
-                    pass
-            vt = set(data.get("tags") or [])
-            vp = set(data.get("performers") or [])
-            cond_tags = not tag_set or ((vt & tag_set) if match_any else tag_set.issubset(vt))
-            cond_perf = not perf_set or ((vp & perf_set) if match_any else perf_set.issubset(vp))
-            if cond_tags and cond_perf:
-                filtered.append(p)
-        vids_all = filtered
-    total = len(vids_all)
-    slice_v = vids_all[offset: offset + limit]
-    import hashlib
-    etag_base = f"{root}:{recursive}:{total}:{offset}:{limit}:{q or ''}:{tags or ''}:{performers or ''}:{int(match_any)}".encode()
-    etag = hashlib.sha1(etag_base).hexdigest()
-    inm = request.headers.get("if-none-match")
-    if inm and inm.strip('"') == etag:
-        raise HTTPException(status_code=304, detail="not modified")
-    videos_out: List[Dict[str, Any]] = [
-        {"path": str(p), "name": p.name, "size": p.stat().st_size} for p in slice_v
-    ]
-    if detail:
-        for i, info in enumerate(videos_out):
-            p = slice_v[i]
-            # tags
-            tf = _tags_file(p)
-            if tf.exists():
-                try:
-                    tdata = json.loads(tf.read_text())
-                    info["tags"] = tdata.get("tags", [])
-                    info["performers"] = tdata.get("performers", [])
-                    info["description"] = tdata.get("description", "")
-                    info["rating"] = tdata.get("rating", 0)
-                except Exception:
-                    info["tags"] = []
-                    info["performers"] = []
-                    info["description"] = ""
-                    info["rating"] = 0
-            else:
-                info["tags"] = []
-                info["performers"] = []
-                info["description"] = ""
-                info["rating"] = 0
-            # duration / codecs from summary cache
-            rel = None
-            try:
-                rel = str(p.relative_to(root))
-            except Exception:
-                rel = p.name
-            summ = summaries.get(rel) or {}
-            if summ.get("duration") is not None:
-                info["duration"] = summ.get("duration")
-            if summ.get("vcodec") is not None:
-                info["vcodec"] = summ.get("vcodec")
-            if summ.get("acodec") is not None:
-                info["acodec"] = summ.get("acodec")
-            info["artifacts"] = _build_artifacts_info(p)
-    resp = {"directory": str(root), "count": total, "videos": videos_out, "offset": offset, "limit": limit, "etag": etag}
-    return resp
+## Removed legacy: /videos endpoint
 
-# TODO @copilot v2 reference, unnecessary backwards compatibility
-@app.get("/videos/{name}/tags")
-def v2_get_video_tags(name: str, directory: str = Query(".")):
-    root = Path(directory).expanduser().resolve()
-    path = root / name
-    if not path.exists():
-        raise HTTPException(404, "video not found")
-    tfile = _tags_file(path)
-    if not tfile.exists():
-        return {"video": name, "tags": [], "performers": [], "description": "", "rating": 0}
-    try:
-        data = json.loads(tfile.read_text())
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(500, "invalid tags file") from e
-    if "description" not in data:
-        data["description"] = ""
-    if "rating" not in data:
-        data["rating"] = 0
-    return data
+## Removed legacy: GET /videos/{name}/tags
 
 
 class TagUpdate(BaseModel):
@@ -1665,229 +1691,11 @@ class TagUpdate(BaseModel):
     description: str | None = None
     rating: int | None = None
 
-# TODO @copilot v2 reference, unnecessary backwards compatibility
-@app.patch("/videos/{name}/tags")
-def v2_update_video_tags(name: str, payload: TagUpdate, directory: str = Query(".")):
-    root = Path(directory).expanduser().resolve()
-    path = root / name
-    if not path.exists():
-        raise HTTPException(404, "video not found")
-    tfile = _tags_file(path)
-    if tfile.exists():
-        try:
-            data = json.loads(tfile.read_text())
-        except Exception:
-            data = {"video": name, "tags": [], "performers": [], "description": "", "rating": 0}
-    else:
-        data = {"video": name, "tags": [], "performers": [], "description": "", "rating": 0}
-    data.setdefault("description", "")
-    data.setdefault("rating", 0)
-    if payload.replace and payload.add is not None:
-        data["tags"] = []
-    if payload.replace:
-        data["performers"] = []
-    if payload.add:
-        for t in payload.add:
-            if t not in data["tags"]:
-                data["tags"].append(t)
-    if payload.remove:
-        data["tags"] = [t for t in data["tags"] if t not in payload.remove]
-    if payload.performers_add:
-        for t in payload.performers_add:
-            if t not in data["performers"]:
-                data["performers"].append(t)
-    if payload.performers_remove:
-        data["performers"] = [t for t in data["performers"] if t not in payload.performers_remove]
-    if payload.description is not None:
-        data["description"] = payload.description
-    if payload.rating is not None:
-        try:
-            data["rating"] = max(0, min(5, int(payload.rating)))
-        except (ValueError, TypeError):
-            data["rating"] = 0
-    try:
-        tfile.write_text(json.dumps(data, indent=2))
-    except Exception:
-        raise HTTPException(500, "failed to write tags")
-    return data
+## Removed legacy: PATCH /videos/{name}/tags
 
-# TODO @copilot v2 reference, unnecessary backwards compatibility
-@app.get("/tags/summary")
-def v2_tags_summary(directory: str = Query("."), recursive: bool = Query(False)):
-    root = Path(directory).expanduser().resolve()
-    if not root.is_dir():
-        # Be forgiving: return empty summary rather than 404 so callers can ignore
-        return {"tags": {}, "performers": {}}
-    vids = _find_mp4s(root, recursive)
-    tag_counts: dict[str, int] = {}
-    perf_counts: dict[str, int] = {}
-    for p in vids:
-        tf = _tags_file(p)
-        if not tf.exists():
-            continue
-        try:
-            data = json.loads(tf.read_text())
-        except Exception:
-            continue
-        for t in data.get("tags", []) or []:
-            tag_counts[t] = tag_counts.get(t, 0) + 1
-        for t in data.get("performers", []) or []:
-            perf_counts[t] = perf_counts.get(t, 0) + 1
-    return {"tags": tag_counts, "performers": perf_counts}
+## Removed legacy: GET /tags/summary (use /api/tags/summary)
 
-# TODO @copilot v2 reference, unnecessary backwards compatibility
-@app.get("/phash/duplicates")
-def v2_phash_duplicates(directory: str = Query("."), recursive: bool = Query(False), threshold: float = Query(0.90), limit: int = Query(0)):
-    # Duplicate detector that considers pHash plus metadata (duration, resolution, bitrate, size, title)
-    root = Path(directory).expanduser().resolve()
-    if not root.is_dir():
-        raise HTTPException(404, "directory not found")
-    videos = _find_mp4s(root, recursive)
-    entries: list[dict] = []
-    for v in videos:
-        p = phash_path(v)
-        if not p.exists():
-            continue
-        try:
-            data = json.loads(p.read_text())
-            h_hex = data.get("phash")
-            if not isinstance(h_hex, str):
-                continue
-            # Gather lightweight metadata signals
-            meta: dict | None = None
-            mpath = metadata_path(v)
-            if mpath.exists():
-                try:
-                    meta = json.loads(mpath.read_text())
-                except Exception:
-                    meta = None
-            else:
-                # opportunistically compute metadata if ffprobe is available
-                try:
-                    metadata_single(v, force=False)
-                    if mpath.exists():
-                        meta = json.loads(mpath.read_text())
-                except Exception:
-                    meta = None
-            # Extract comparable features
-            dur = extract_duration(meta) if meta else None
-            width = height = None
-            v_bitrate = None
-            a_bitrate = None
-            title = None
-            try:
-                if isinstance(meta, dict):
-                    fmt = meta.get("format", {}) or {}
-                    try:
-                        _vb = fmt.get("bit_rate")
-                        v_bitrate = float(_vb) if _vb is not None else None
-                    except Exception:
-                        v_bitrate = None
-                    try:
-                        title = (fmt.get("tags", {}) or {}).get("title")
-                    except Exception:
-                        title = None
-                    for st in meta.get("streams", []) or []:
-                        if (st or {}).get("codec_type") == "video":
-                            try:
-                                width = int(st.get("width") or 0) or None
-                                height = int(st.get("height") or 0) or None
-                            except Exception:
-                                width = width or None
-                                height = height or None
-                            try:
-                                vb = st.get("bit_rate")
-                                if vb is not None:
-                                    v_bitrate = float(vb)
-                            except Exception:
-                                pass
-                        elif (st or {}).get("codec_type") == "audio":
-                            try:
-                                ab = st.get("bit_rate")
-                                if ab is not None:
-                                    a_bitrate = float(ab)
-                            except Exception:
-                                pass
-            except Exception:
-                pass
-            size_bytes = None
-            try:
-                size_bytes = v.stat().st_size
-            except Exception:
-                size_bytes = None
-            entries.append({
-                "video": v.name,
-                "path": str(v),
-                "hex": h_hex,
-                "duration": dur,
-                "width": width,
-                "height": height,
-                "bitrate_v": v_bitrate,
-                "bitrate_a": a_bitrate,
-                "size": size_bytes,
-                "title": title,
-            })
-        except Exception:
-            continue
-    pairs: list[dict] = []
-    def hamming(a: str, b: str) -> int:
-        ia = int(a, 16)
-        ib = int(b, 16)
-        return (ia ^ ib).bit_count()
-    for i in range(len(entries)):
-        for j in range(i + 1, len(entries)):
-            a = entries[i]
-            b = entries[j]
-            bits = max(len(a["hex"]), len(b["hex"])) * 4
-            dist = hamming(a["hex"], b["hex"]) if bits else 0
-            sim = 1.0 - (dist / bits) if bits else 0.0
-            if sim >= float(threshold):
-                # Compute metadata affinity bonus (0..~0.1)
-                bonus = 0.0
-                try:
-                    def frac_close(x, y, tol=0.05):
-                        if x is None or y is None:
-                            return 0.0
-                        if x == 0 or y == 0:
-                            return 0.0
-                        f = abs(float(x) - float(y)) / max(abs(float(x)), abs(float(y)))
-                        return 1.0 if f <= tol else max(0.0, 1.0 - (f - tol) * 5)
-                    # duration closeness within 5%
-                    bonus += 0.04 * frac_close(a.get("duration"), b.get("duration"), tol=0.05)
-                    # resolution match
-                    res_match = 1.0 if (a.get("width") and a.get("height") and a.get("width") == b.get("width") and a.get("height") == b.get("height")) else 0.0
-                    bonus += 0.02 * res_match
-                    # filesize closeness within 10%
-                    bonus += 0.02 * frac_close(a.get("size"), b.get("size"), tol=0.10)
-                    # bitrate closeness within 15%
-                    vb = frac_close(a.get("bitrate_v"), b.get("bitrate_v"), tol=0.15)
-                    ab = frac_close(a.get("bitrate_a"), b.get("bitrate_a"), tol=0.20)
-                    bonus += 0.01 * vb + 0.005 * ab
-                    # title token similarity if present
-                    ta = (a.get("title") or a.get("video") or "").lower()
-                    tb = (b.get("title") or b.get("video") or "").lower()
-                    if ta and tb:
-                        try:
-                            s = SequenceMatcher(None, ta, tb).ratio()
-                            bonus += 0.005 * s
-                        except Exception:
-                            pass
-                except Exception:
-                    bonus += 0.0
-                final_score = min(1.0, sim + bonus)
-                pairs.append({
-                    "a": a["path"],
-                    "b": b["path"],
-                    "similarity": final_score,
-                    "bits": bits,
-                    "distance": dist,
-                    "phash_similarity": sim,
-                    "meta_bonus": round(bonus, 4),
-                })
-    pairs.sort(key=lambda x: x["similarity"], reverse=True)
-    if limit and limit > 0:
-        pairs = pairs[: int(limit)]
-    return {"pairs": pairs, "count": len(pairs)}
+## Removed legacy: GET /phash/duplicates (replaced by /api/duplicates/list)
 
 
 def _list_dir(root: Path, rel: str):
@@ -1995,6 +1803,11 @@ def get_library(
     ext: Optional[str] = Query(default=None),
     sort: Optional[str] = Query(default=None),
     order: Optional[str] = Query(default="asc"),
+    tags: Optional[str] = Query(default=None),
+    tags_ids: Optional[str] = Query(default=None),
+    performers: Optional[str] = Query(default=None),
+    performers_ids: Optional[str] = Query(default=None),
+    match_any: bool = Query(default=False),
 ):
     data = _list_dir(STATE["root"], path)
     files = data.get("files", [])
@@ -2003,6 +1816,94 @@ def get_library(
         files = [f for f in files if search.lower() in f["name"].lower()]
     if ext:
         files = [f for f in files if f["name"].lower().endswith(ext.lower())]
+    # Registry-backed tag/performer filters
+    # Build required slug sets from names and ids
+    def _parse_ids(s: Optional[str]) -> list[int]:
+        out: list[int] = []
+        if not s:
+            return out
+        for part in s.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.append(int(part))
+            except Exception:
+                continue
+        return out
+
+    tag_slugs_req: set[str] = set()
+    perf_slugs_req: set[str] = set()
+    # From names
+    for s in (tags.split(',') if tags else []):
+        ss = _slugify(s)
+        if ss:
+            tag_slugs_req.add(ss)
+    for s in (performers.split(',') if performers else []):
+        ss = _slugify(s)
+        if ss:
+            perf_slugs_req.add(ss)
+    # From ids
+    tag_ids = _parse_ids(tags_ids)
+    perf_ids = _parse_ids(performers_ids)
+    if tag_ids or perf_ids:
+        # load registries once
+        with REGISTRY_LOCK:
+            tdata = _load_registry(_tags_registry_path(), "tags")
+            pdata = _load_registry(_performers_registry_path(), "performers")
+        t_items = {int(t.get("id")): (t.get("slug") or "") for t in (tdata.get("tags") or []) if t.get("id") is not None}
+        p_items = {int(p.get("id")): (p.get("slug") or "") for p in (pdata.get("performers") or []) if p.get("id") is not None}
+        for i in tag_ids:
+            sl = t_items.get(int(i))
+            if sl:
+                tag_slugs_req.add(sl)
+        for i in perf_ids:
+            sl = p_items.get(int(i))
+            if sl:
+                perf_slugs_req.add(sl)
+
+    def _load_sidecar_sets(rel_path: str) -> tuple[set[str], set[str]]:
+        fp = safe_join(STATE["root"], rel_path)
+        tf = _tags_file(fp)
+        vt: set[str] = set()
+        vp: set[str] = set()
+        if tf.exists():
+            try:
+                tdata = json.loads(tf.read_text())
+                for t in (tdata.get("tags") or []):
+                    ss = _slugify(str(t))
+                    if ss:
+                        vt.add(ss)
+                for p in (tdata.get("performers") or []):
+                    ss = _slugify(str(p))
+                    if ss:
+                        vp.add(ss)
+            except Exception:
+                pass
+        return vt, vp
+
+    if tag_slugs_req or perf_slugs_req:
+        filtered = []
+        for f in files:
+            try:
+                vt, vp = _load_sidecar_sets(f.get("path"))
+            except Exception:
+                vt, vp = set(), set()
+            ok_tags = True
+            ok_perfs = True
+            if tag_slugs_req:
+                if match_any:
+                    ok_tags = bool(vt & tag_slugs_req)
+                else:
+                    ok_tags = tag_slugs_req.issubset(vt)
+            if perf_slugs_req:
+                if match_any:
+                    ok_perfs = bool(vp & perf_slugs_req)
+                else:
+                    ok_perfs = perf_slugs_req.issubset(vp)
+            if ok_tags and ok_perfs:
+                filtered.append(f)
+        files = filtered
     # Sort
     reverse = (order == "desc")
     if sort == "name":
@@ -2032,11 +1933,230 @@ def get_library(
 
 
 # -----------------
+# Duplicates (API wrapper)
+# -----------------
+@api.get("/duplicates/list")
+def api_duplicates_list(
+    directory: str = Query(".", description="Directory under root to scan ('.' for root)"),
+    recursive: bool = Query(False, description="Recurse into subdirectories"),
+    phash_threshold: float = Query(0.90, ge=0.0, le=1.0, description="Minimum pHash similarity (0..1) before metadata bonus"),
+    min_similarity: Optional[float] = Query(None, ge=0.0, le=1.0, description="Filter on final combined similarity (0..1) after metadata bonus"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=1000),
+):
+    """List potential duplicate video pairs.
+
+    Computes pairs using pHash similarity with a small metadata-based bonus, then
+    applies an optional minimum final-similarity filter and returns paginated results.
+    """
+    # Resolve and guard root directory within configured STATE["root"]
+    if directory in (".", ""):
+        root = STATE.get("root")
+    else:
+        p = Path(directory).expanduser()
+        if p.is_absolute():
+            try:
+                p.resolve().relative_to(STATE["root"])  # type: ignore[arg-type]
+            except Exception:
+                raise HTTPException(400, "invalid directory")
+            root = p
+        else:
+            root = safe_join(STATE["root"], directory)
+    root = Path(str(root)).resolve()
+    if not root.is_dir():
+        raise HTTPException(404, "directory not found")
+
+    # Build entries from videos that have pHash sidecars (opportunistically load metadata)
+    videos = _find_mp4s(root, recursive)
+    entries: list[dict] = []
+    for v in videos:
+        p = phash_path(v)
+        if not p.exists():
+            continue
+        try:
+            data = json.loads(p.read_text())
+            h_hex = data.get("phash")
+            if not isinstance(h_hex, str):
+                continue
+            # Gather lightweight metadata signals
+            meta: dict | None = None
+            mpath = metadata_path(v)
+            if mpath.exists():
+                try:
+                    meta = json.loads(mpath.read_text())
+                except Exception:
+                    meta = None
+            else:
+                # opportunistically compute metadata if ffprobe is available
+                try:
+                    metadata_single(v, force=False)
+                    if mpath.exists():
+                        meta = json.loads(mpath.read_text())
+                except Exception:
+                    meta = None
+            # Extract comparable features
+            dur = extract_duration(meta) if meta else None
+            width = height = None
+            v_bitrate = None
+            a_bitrate = None
+            title = None
+            try:
+                if isinstance(meta, dict):
+                    fmt = meta.get("format", {}) or {}
+                    try:
+                        _vb = fmt.get("bit_rate")
+                        v_bitrate = float(_vb) if _vb is not None else None
+                    except Exception:
+                        v_bitrate = None
+                    try:
+                        title = (fmt.get("tags", {}) or {}).get("title")
+                    except Exception:
+                        title = None
+                    for st in meta.get("streams", []) or []:
+                        if (st or {}).get("codec_type") == "video":
+                            try:
+                                width = int(st.get("width") or 0) or None
+                                height = int(st.get("height") or 0) or None
+                            except Exception:
+                                width = width or None
+                                height = height or None
+                            try:
+                                vb = st.get("bit_rate")
+                                if vb is not None:
+                                    v_bitrate = float(vb)
+                            except Exception:
+                                pass
+                        elif (st or {}).get("codec_type") == "audio":
+                            try:
+                                ab = st.get("bit_rate")
+                                if ab is not None:
+                                    a_bitrate = float(ab)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            size_bytes = None
+            try:
+                size_bytes = v.stat().st_size
+            except Exception:
+                size_bytes = None
+            entries.append({
+                "video": v.name,
+                "path": str(v),
+                "hex": h_hex,
+                "duration": dur,
+                "width": width,
+                "height": height,
+                "bitrate_v": v_bitrate,
+                "bitrate_a": a_bitrate,
+                "size": size_bytes,
+                "title": title,
+            })
+        except Exception:
+            continue
+
+    # Pairwise compare using pHash similarity augmented with small metadata bonus
+    pairs: list[dict] = []
+    def hamming(a: str, b: str) -> int:
+        ia = int(a, 16)
+        ib = int(b, 16)
+        return (ia ^ ib).bit_count()
+
+    for i in range(len(entries)):
+        for j in range(i + 1, len(entries)):
+            a = entries[i]
+            b = entries[j]
+            bits = max(len(a["hex"]), len(b["hex"])) * 4
+            dist = hamming(a["hex"], b["hex"]) if bits else 0
+            sim = 1.0 - (dist / bits) if bits else 0.0
+            if sim >= float(phash_threshold):
+                # Compute metadata affinity bonus (0..~0.1)
+                bonus = 0.0
+                try:
+                    def frac_close(x, y, tol=0.05):
+                        if x is None or y is None:
+                            return 0.0
+                        if x == 0 or y == 0:
+                            return 0.0
+                        f = abs(float(x) - float(y)) / max(abs(float(x)), abs(float(y)))
+                        return 1.0 if f <= tol else max(0.0, 1.0 - (f - tol) * 5)
+                    # duration closeness within 5%
+                    bonus += 0.04 * frac_close(a.get("duration"), b.get("duration"), tol=0.05)
+                    # resolution match
+                    res_match = 1.0 if (a.get("width") and a.get("height") and a.get("width") == b.get("width") and a.get("height") == b.get("height")) else 0.0
+                    bonus += 0.02 * res_match
+                    # filesize closeness within 10%
+                    bonus += 0.02 * frac_close(a.get("size"), b.get("size"), tol=0.10)
+                    # bitrate closeness within 15%
+                    vb = frac_close(a.get("bitrate_v"), b.get("bitrate_v"), tol=0.15)
+                    ab = frac_close(a.get("bitrate_a"), b.get("bitrate_a"), tol=0.20)
+                    bonus += 0.01 * vb + 0.005 * ab
+                    # title token similarity if present
+                    ta = (a.get("title") or a.get("video") or "").lower()
+                    tb = (b.get("title") or b.get("video") or "").lower()
+                    if ta and tb:
+                        try:
+                            s = SequenceMatcher(None, ta, tb).ratio()
+                            bonus += 0.005 * s
+                        except Exception:
+                            pass
+                except Exception:
+                    bonus += 0.0
+                final_score = min(1.0, sim + bonus)
+                pairs.append({
+                    "a": a["path"],
+                    "b": b["path"],
+                    "similarity": final_score,
+                    "bits": bits,
+                    "distance": dist,
+                    "phash_similarity": sim,
+                    "meta_bonus": round(bonus, 4),
+                })
+    pairs.sort(key=lambda x: x["similarity"], reverse=True)
+
+    # Optional post-filter on final combined similarity
+    if isinstance(min_similarity, (int, float)):
+        pairs = [p for p in pairs if float(p.get("similarity", 0.0)) >= float(min_similarity)]
+
+    total_pairs = len(pairs)
+    total_pages = max(1, (total_pairs + page_size - 1) // page_size)
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = pairs[start:end]
+
+    return api_success({
+        "directory": directory,
+        "recursive": recursive,
+        "phash_threshold": phash_threshold,
+        "min_similarity": min_similarity,
+        "page": page,
+        "page_size": page_size,
+        "total_pairs": total_pairs,
+        "total_pages": total_pages,
+        "pairs": page_items,
+    })
+
+
+# -----------------
 # Report
 # -----------------
 @app.get("/report")
 def report(directory: str = Query("."), recursive: bool = Query(False)):
-    root = Path(directory).expanduser().resolve()
+    if directory in (".", ""):
+        root = STATE.get("root")
+    else:
+        p = Path(directory).expanduser()
+        if p.is_absolute():
+            try:
+                p.resolve().relative_to(STATE["root"])  # type: ignore[arg-type]
+            except Exception:
+                raise HTTPException(400, "invalid directory")
+            root = p
+        else:
+            root = safe_join(STATE["root"], directory)
+    root = Path(str(root)).resolve()
     if not root.is_dir():
         raise HTTPException(404, "directory not found")
     vids = _find_mp4s(root, recursive)
@@ -3606,8 +3726,7 @@ def set_marker(path: str = Query(...), time: float = Query(...)):
  
 
 
-# Wire router
-app.include_router(api)
+# Wire router (moved to end after all routes are defined)
 
 
 # Jobs API
@@ -3656,6 +3775,407 @@ def artifacts_cleanup(
     t = threading.Thread(target=_run_job_worker, args=(jid, req), daemon=True)
     t.start()
     return api_success({"job": jid, "queued": True})
+
+
+# --------------------------
+# Registry API (tags, performers)
+# --------------------------
+
+@api.get("/registry/tags")
+def registry_tags_list():
+    path = _tags_registry_path()
+    with REGISTRY_LOCK:
+        data = _load_registry(path, "tags")
+        items = list(data.get("tags") or [])
+    items.sort(key=lambda x: (x.get("name") or "").lower())
+    return api_success({"tags": items, "count": len(items)})
+
+
+@api.post("/registry/tags/create")
+def registry_tags_create(payload: TagCreate):
+    name = (payload.name or "").strip()
+    if not name:
+        return api_error("name is required", status_code=400)
+    slug = _slugify(name)
+    path = _tags_registry_path()
+    with REGISTRY_LOCK:
+        data = _load_registry(path, "tags")
+        items: list[dict] = data.get("tags") or []
+        # conflict if slug exists
+        for t in items:
+            if (t.get("slug") or "") == slug:
+                return api_error("tag already exists", status_code=409)
+        tid = int(data.get("next_id") or 1)
+        item = {"id": tid, "name": name, "slug": slug}
+        items.append(item)
+        data["tags"] = items
+        data["next_id"] = tid + 1
+        _save_registry(path, data)
+    return api_success(item, status_code=201)
+
+
+@api.post("/registry/tags/rename")
+def registry_tags_rename(payload: TagRename):
+    if not payload.new_name:
+        return api_error("new_name is required", status_code=400)
+    path = _tags_registry_path()
+    new_slug = _slugify(payload.new_name)
+    with REGISTRY_LOCK:
+        data = _load_registry(path, "tags")
+        items: list[dict] = data.get("tags") or []
+        # locate target
+        target = None
+        if payload.id is not None:
+            for t in items:
+                if int(t.get("id") or 0) == int(payload.id):
+                    target = t
+                    break
+        elif payload.name:
+            s = _slugify(payload.name)
+            for t in items:
+                if (t.get("slug") or "") == s:
+                    target = t
+                    break
+        if target is None:
+            return api_error("tag not found", status_code=404)
+        # conflict
+        for t in items:
+            if t is target:
+                continue
+            if (t.get("slug") or "") == new_slug:
+                return api_error("tag with new_name already exists", status_code=409)
+        target["name"] = payload.new_name
+        target["slug"] = new_slug
+        _save_registry(path, data)
+    return api_success(target)
+
+
+@api.post("/registry/tags/delete")
+def registry_tags_delete(payload: TagDelete):
+    path = _tags_registry_path()
+    with REGISTRY_LOCK:
+        data = _load_registry(path, "tags")
+        items: list[dict] = data.get("tags") or []
+        idx = None
+        if payload.id is not None:
+            for i, t in enumerate(items):
+                if int(t.get("id") or 0) == int(payload.id):
+                    idx = i
+                    break
+        elif payload.name:
+            s = _slugify(payload.name)
+            for i, t in enumerate(items):
+                if (t.get("slug") or "") == s:
+                    idx = i
+                    break
+        if idx is None:
+            return api_error("tag not found", status_code=404)
+        removed = items.pop(idx)
+        data["tags"] = items
+        _save_registry(path, data)
+    return api_success({"deleted": True, "tag": removed})
+
+
+@api.post("/registry/tags/rewrite-sidecars")
+def registry_tags_rewrite_sidecars(path: str = Query(default=""), recursive: bool = Query(default=True)):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    if not base.exists() or not base.is_dir():
+        raise_api_error("Not found", status_code=404)
+    with REGISTRY_LOCK:
+        tdata = _load_registry(_tags_registry_path(), "tags")
+        by_slug = { (t.get("slug") or ""): t for t in (tdata.get("tags") or []) }
+    changed = 0
+    it = base.rglob("*") if recursive else base.iterdir()
+    for p in it:
+        if _is_original_media_file(p, base):
+            tf = _tags_file(p)
+            if not tf.exists():
+                continue
+            try:
+                data = json.loads(tf.read_text())
+            except Exception:
+                continue
+            tags = data.get("tags") or []
+            new_tags: list[str] = []
+            seen = set()
+            for t in tags:
+                s = _slugify(str(t))
+                # Use canonical registry name if present
+                canon = by_slug.get(s)
+                name = (canon.get("name") if canon else str(t)).strip()
+                if name.lower() not in seen:
+                    new_tags.append(name)
+                    seen.add(name.lower())
+            if new_tags != tags:
+                data["tags"] = new_tags
+                try:
+                    tf.write_text(json.dumps(data, indent=2))
+                    changed += 1
+                except Exception:
+                    pass
+    return api_success({"updated_files": changed})
+
+
+@api.get("/registry/performers")
+def registry_performers_list():
+    path = _performers_registry_path()
+    with REGISTRY_LOCK:
+        data = _load_registry(path, "performers")
+        items = list(data.get("performers") or [])
+    items.sort(key=lambda x: (x.get("name") or "").lower())
+    return api_success({"performers": items, "count": len(items)})
+
+
+@api.post("/registry/performers/create")
+def registry_performers_create(payload: PerformerCreate):
+    name = (payload.name or "").strip()
+    if not name:
+        return api_error("name is required", status_code=400)
+    slug = _slugify(name)
+    path = _performers_registry_path()
+    with REGISTRY_LOCK:
+        data = _load_registry(path, "performers")
+        items: list[dict] = data.get("performers") or []
+        for p in items:
+            if (p.get("slug") or "") == slug:
+                return api_error("performer already exists", status_code=409)
+        pid = int(data.get("next_id") or 1)
+        images: list[str] = []
+        if payload.image:
+            images.append(str(payload.image))
+        if payload.images:
+            for u in payload.images:
+                if u and u not in images:
+                    images.append(str(u))
+        item = {"id": pid, "name": name, "slug": slug, "images": images}
+        items.append(item)
+        data["performers"] = items
+        data["next_id"] = pid + 1
+        _save_registry(path, data)
+    return api_success(item, status_code=201)
+
+
+@api.post("/registry/performers/update")
+def registry_performers_update(payload: PerformerUpdate):
+    if not (payload.id is not None or payload.name is not None):
+        return api_error("id or name required", status_code=400)
+    path = _performers_registry_path()
+    with REGISTRY_LOCK:
+        data = _load_registry(path, "performers")
+        items: list[dict] = data.get("performers") or []
+        target = None
+        if payload.id is not None:
+            for p in items:
+                if int(p.get("id") or 0) == int(payload.id):
+                    target = p
+                    break
+        else:
+            s = _slugify(payload.name or "")
+            for p in items:
+                if (p.get("slug") or "") == s:
+                    target = p
+                    break
+        if target is None:
+            return api_error("performer not found", status_code=404)
+        # Rename if requested
+        if payload.new_name:
+            new_slug = _slugify(payload.new_name)
+            # conflict check
+            for p in items:
+                if p is target:
+                    continue
+                if (p.get("slug") or "") == new_slug:
+                    return api_error("performer with new_name already exists", status_code=409)
+            target["name"] = payload.new_name
+            target["slug"] = new_slug
+        # Images updates
+        imgs: list[str] = list(target.get("images") or [])
+        changed = False
+        for u in (payload.add_images or []):
+            if u and u not in imgs:
+                imgs.append(str(u))
+                changed = True
+        if payload.remove_images:
+            before = set(imgs)
+            imgs = [x for x in imgs if x not in set(payload.remove_images or [])]
+            changed = changed or (set(imgs) != before)
+        if changed:
+            target["images"] = imgs
+        _save_registry(path, data)
+    return api_success(target)
+
+
+@api.post("/registry/performers/delete")
+def registry_performers_delete(payload: PerformerDelete):
+    path = _performers_registry_path()
+    with REGISTRY_LOCK:
+        data = _load_registry(path, "performers")
+        items: list[dict] = data.get("performers") or []
+        idx = None
+        if payload.id is not None:
+            for i, p in enumerate(items):
+                if int(p.get("id") or 0) == int(payload.id):
+                    idx = i
+                    break
+        elif payload.name:
+            s = _slugify(payload.name)
+            for i, p in enumerate(items):
+                if (p.get("slug") or "") == s:
+                    idx = i
+                    break
+        if idx is None:
+            return api_error("performer not found", status_code=404)
+        removed = items.pop(idx)
+        data["performers"] = items
+        _save_registry(path, data)
+    return api_success({"deleted": True, "performer": removed})
+
+
+@api.post("/registry/performers/rewrite-sidecars")
+def registry_performers_rewrite_sidecars(path: str = Query(default=""), recursive: bool = Query(default=True)):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    if not base.exists() or not base.is_dir():
+        raise_api_error("Not found", status_code=404)
+    with REGISTRY_LOCK:
+        pdata = _load_registry(_performers_registry_path(), "performers")
+        by_slug = { (p.get("slug") or ""): p for p in (pdata.get("performers") or []) }
+    changed = 0
+    it = base.rglob("*") if recursive else base.iterdir()
+    for p in it:
+        if _is_original_media_file(p, base):
+            tf = _tags_file(p)
+            if not tf.exists():
+                continue
+            try:
+                data = json.loads(tf.read_text())
+            except Exception:
+                continue
+            perfs = data.get("performers") or []
+            new_perfs: list[str] = []
+            seen = set()
+            for nm in perfs:
+                s = _slugify(str(nm))
+                canon = by_slug.get(s)
+                name = (canon.get("name") if canon else str(nm)).strip()
+                if name.lower() not in seen:
+                    new_perfs.append(name)
+                    seen.add(name.lower())
+            if new_perfs != perfs:
+                data["performers"] = new_perfs
+                try:
+                    tf.write_text(json.dumps(data, indent=2))
+                    changed += 1
+                except Exception:
+                    pass
+    return api_success({"updated_files": changed})
+
+
+# Simple merges that update registry only (optional sidecar rewrite via flag)
+@api.post("/registry/tags/merge")
+def registry_tags_merge(from_name: str = Query(...), into_name: str = Query(...), rewrite_sidecars: bool = Query(default=True), path: str = Query(default=""), recursive: bool = Query(default=True)):
+    f_slug = _slugify(from_name)
+    i_slug = _slugify(into_name)
+    if f_slug == i_slug:
+        return api_error("from and into are the same", status_code=400)
+    with REGISTRY_LOCK:
+        data = _load_registry(_tags_registry_path(), "tags")
+        items: list[dict] = data.get("tags") or []
+        fr = next((t for t in items if (t.get("slug") or "") == f_slug), None)
+        to = next((t for t in items if (t.get("slug") or "") == i_slug), None)
+        if not fr or not to:
+            return api_error("tag not found", status_code=404)
+        # remove 'from'
+        items = [t for t in items if t is not fr]
+        data["tags"] = items
+        _save_registry(_tags_registry_path(), data)
+    updated = None
+    if rewrite_sidecars:
+        res = registry_tags_rewrite_sidecars(path=path, recursive=recursive)  # type: ignore
+        # Extract JSON payload from the response instead of returning raw bytes
+        try:
+            updated = json.loads(bytes(res.body).decode("utf-8")) if hasattr(res, "body") else None
+        except Exception:
+            updated = None
+    return api_success({"merged": True, "from": fr, "into": to, "sidecars": updated})
+
+
+@api.post("/registry/performers/merge")
+def registry_performers_merge(from_name: str = Query(...), into_name: str = Query(...), rewrite_sidecars: bool = Query(default=True), path: str = Query(default=""), recursive: bool = Query(default=True)):
+    f_slug = _slugify(from_name)
+    i_slug = _slugify(into_name)
+    if f_slug == i_slug:
+        return api_error("from and into are the same", status_code=400)
+    with REGISTRY_LOCK:
+        data = _load_registry(_performers_registry_path(), "performers")
+        items: list[dict] = data.get("performers") or []
+        fr = next((p for p in items if (p.get("slug") or "") == f_slug), None)
+        to = next((p for p in items if (p.get("slug") or "") == i_slug), None)
+        if not fr or not to:
+            return api_error("performer not found", status_code=404)
+        items = [p for p in items if p is not fr]
+        data["performers"] = items
+        _save_registry(_performers_registry_path(), data)
+    updated = None
+    if rewrite_sidecars:
+        res = registry_performers_rewrite_sidecars(path=path, recursive=recursive)  # type: ignore
+        # Extract JSON payload from the response instead of returning raw bytes
+        try:
+            updated = json.loads(bytes(res.body).decode("utf-8")) if hasattr(res, "body") else None
+        except Exception:
+            updated = None
+    return api_success({"merged": True, "from": fr, "into": to, "sidecars": updated})
+
+
+# Export/import for registries
+@api.get("/registry/export")
+def registry_export():
+    with REGISTRY_LOCK:
+        tdata = _load_registry(_tags_registry_path(), "tags")
+        pdata = _load_registry(_performers_registry_path(), "performers")
+    return api_success({"tags": tdata, "performers": pdata})
+
+
+class RegistryImport(BaseModel):
+    tags: Optional[dict] = None
+    performers: Optional[dict] = None
+    replace: bool = False
+
+
+@api.post("/registry/import")
+def registry_import(payload: RegistryImport):
+    with REGISTRY_LOCK:
+        if payload.tags is not None:
+            if payload.replace:
+                _save_registry(_tags_registry_path(), payload.tags)
+            else:
+                cur = _load_registry(_tags_registry_path(), "tags")
+                merged = cur
+                # naive merge: append new uniques by slug, keep next_id max
+                cur_items = { (t.get("slug") or ""): t for t in (cur.get("tags") or []) }
+                for t in (payload.tags.get("tags") or []):
+                    sl = t.get("slug") or _slugify(t.get("name") or "")
+                    if sl and sl not in cur_items:
+                        cur.setdefault("tags", []).append({"id": int(cur.get("next_id") or 1), "name": t.get("name"), "slug": sl})
+                        cur["next_id"] = int(cur["next_id"]) + 1
+                _save_registry(_tags_registry_path(), merged)
+        if payload.performers is not None:
+            if payload.replace:
+                _save_registry(_performers_registry_path(), payload.performers)
+            else:
+                cur = _load_registry(_performers_registry_path(), "performers")
+                merged = cur
+                cur_items = { (p.get("slug") or ""): p for p in (cur.get("performers") or []) }
+                for p in (payload.performers.get("performers") or []):
+                    sl = p.get("slug") or _slugify(p.get("name") or "")
+                    if sl and sl not in cur_items:
+                        cur.setdefault("performers", []).append({"id": int(cur.get("next_id") or 1), "name": p.get("name"), "slug": sl, "images": list(p.get("images") or [])})
+                        cur["next_id"] = int(cur["next_id"]) + 1
+                _save_registry(_performers_registry_path(), merged)
+    return api_success({"imported": True})
+
+
+# Final router wiring
+app.include_router(api)
 
 
 # --------------------------
@@ -3716,8 +4236,20 @@ def _job_set_result(jid: str, result: Any) -> None:
 def _run_job_worker(jid: str, jr: JobRequest):
     try:
         task = (jr.task or "").lower()
-        base = Path(jr.directory or str(STATE["root"]))
-        base = base.expanduser().resolve()
+        # Enforce job working directory within root
+        if jr.directory:
+            cand = Path(jr.directory).expanduser()
+            if cand.is_absolute():
+                try:
+                    cand.resolve().relative_to(STATE["root"])  # type: ignore[arg-type]
+                except Exception:
+                    _finish_job(jid, error="invalid directory")
+                    return
+                base = cand.resolve()
+            else:
+                base = safe_join(STATE["root"], jr.directory)
+        else:
+            base = STATE["root"].resolve()  # type: ignore[attr-defined]
         if task == "autotag":
             vids = _iter_videos(base, bool(jr.recursive))
             _set_job_progress(jid, total=len(vids), processed_set=0)
@@ -3858,12 +4390,19 @@ def _run_job_worker(jid: str, jr: JobRequest):
         if task == "clip":
             prm = jr.params or {}
             _src_val = prm.get("file")
-            src = Path(str(_src_val)) if _src_val else None
+            src = Path(str(_src_val)).expanduser().resolve() if _src_val else None
             ranges = prm.get("ranges") or []
             _dest_val = prm.get("dest")
-            dest = Path(str(_dest_val)) if _dest_val else None
+            dest = Path(str(_dest_val)).expanduser().resolve() if _dest_val else None
             if not src or not src.exists() or not dest:
                 _finish_job(jid, error="invalid clip params")
+                return
+            # Guard: src and dest must be within root
+            try:
+                src.relative_to(STATE["root"])  # type: ignore[arg-type]
+                dest.relative_to(STATE["root"])  # type: ignore[arg-type]
+            except Exception:
+                _finish_job(jid, error="paths outside root")
                 return
             dest.mkdir(parents=True, exist_ok=True)
             files_out: list[str] = []
