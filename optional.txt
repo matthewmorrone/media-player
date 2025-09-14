@@ -1,0 +1,13 @@
+# Optional ML/vision extras. Install only if needed and supported on your platform.
+# NOTE: These are heavy on Raspberry Pi; many do not have wheels for 32-bit OS.
+
+# OpenCV (vision utilities)
+opencv-python
+
+# Whisper-based subtitle extraction (either)
+faster-whisper
+openai-whisper
+
+# Face pipeline (detector + embeddings)
+insightface
+onnxruntime
