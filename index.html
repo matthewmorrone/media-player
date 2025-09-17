@@ -21,6 +21,9 @@
     
     <!-- Tab Navigation -->
     <nav class="tab-nav" role="tablist" aria-label="Main navigation">
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="player-panel" id="player-tab" data-tab="player">
+        Player
+      </button>
       <button class="tab-button active" role="tab" aria-selected="true" aria-controls="library-panel" id="library-tab" data-tab="library">
         Library
       </button>
@@ -36,6 +39,102 @@
   <main>
     <!-- Tab Panels -->
     <div class="tab-panels">
+      <!-- Player Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="player-tab" id="player-panel" hidden>
+        <div id="playerLayout" style="display:flex; gap:12px; align-items:stretch; padding: 8px 0;">
+          <!-- Sidebar -->
+          <aside id="playerSidebar" style="width: 280px; min-width: 240px; max-width: 360px; background: #0f1320; border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 12px; display:flex; flex-direction:column; gap:12px;">
+            <div>
+              <div id="sbFileName" style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">No file</div>
+              <div id="sbMeta" style="color: var(--muted, #7a859f); font-size:12px;">—</div>
+            </div>
+            <div style="height:1px; background: rgba(255,255,255,0.06);"></div>
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div style="display:flex; align-items:center; justify-content:space-between;">
+                <div style="font-weight:600;">Artifacts</div>
+                <button id="sbReloadBtn" class="btn-sm" title="Reload artifact info">Reload</button>
+              </div>
+              <!-- Heatmap -->
+              <div style="display:flex; flex-direction:column; gap:6px;">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                  <div>Heatmap</div>
+                  <span id="sbHeatmapStatus" class="muted" style="font-size:12px; color: var(--muted, #7a859f);">Missing</span>
+                </div>
+                <div id="sbHeatmapPreview" style="display:none; cursor:pointer; border-radius:6px; overflow:hidden; border:1px solid rgba(255,255,255,0.08);">
+                  <img id="sbHeatmapImg" alt="Heatmap" style="display:block; width:100%; height:auto;" />
+                </div>
+                <button id="sbHeatmapOpen" class="btn-sm" style="display:none;">Open Preview</button>
+              </div>
+              <!-- Scenes -->
+              <div style="display:flex; flex-direction:column; gap:6px;">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                  <div>Scenes</div>
+                  <span id="sbScenesStatus" class="muted" style="font-size:12px; color: var(--muted, #7a859f);">0</span>
+                </div>
+                <div id="sbScenesList" style="max-height: 200px; overflow:auto; border:1px solid rgba(255,255,255,0.06); border-radius:6px; padding:6px; display:flex; flex-direction:column; gap:4px;"></div>
+              </div>
+              <!-- Subtitles -->
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                <div>Subtitles</div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span id="sbSubStatus" class="muted" style="font-size:12px; color: var(--muted, #7a859f);">Missing</span>
+                  <label style="display:flex; align-items:center; gap:6px;">
+                    <input id="sbSubToggle" type="checkbox" />
+                    <span style="font-size:12px;">Show</span>
+                  </label>
+                </div>
+              </div>
+              <!-- Sprites -->
+              <div style="display:flex; align-items:center; justify-content:space-between;">
+                <div>Sprites</div>
+                <span id="sbSpritesStatus" class="muted" style="font-size:12px; color: var(--muted, #7a859f);">Missing</span>
+              </div>
+            </div>
+          </aside>
+          
+          <!-- Main Player Area -->
+          <div id="playerContainer" style="display:flex; flex-direction:column; gap:10px; padding: 0; flex:1;">
+            <div class="player-header" style="display:flex; align-items:center; gap:12px; justify-content:space-between;">
+              <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+                <div id="playerTitle" style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">No file</div>
+                <div id="playerMeta" style="color: var(--muted, #7a859f); font-size:12px;">—</div>
+              </div>
+              <div class="player-actions" style="display:flex; gap:8px;">
+                <button id="btnSetThumb" class="btn-sm" title="Set the cover thumbnail to current frame">Set Thumbnail</button>
+                <button id="btnAddMarker" class="btn-sm" title="Add a scene marker at current time">Add Marker</button>
+              </div>
+            </div>
+            <div class="player-video" style="position:relative; background:#000;">
+              <video id="playerVideo" playsinline controls style="display:block; width:100%; max-height:72vh; background:#000;"></video>
+              <!-- Sprite preview tooltip -->
+              <div id="spritePreview" style="position:absolute; top:8px; left:8px; width:240px; height:135px; background:#111 center/cover no-repeat; border:1px solid rgba(255,255,255,0.15); border-radius:6px; display:none; pointer-events:none; box-shadow:0 4px 16px rgba(0,0,0,0.4);"></div>
+            </div>
+            <div class="player-timeline" style="display:flex; flex-direction:column; gap:8px;">
+              <div id="timeline" style="position:relative; height:24px; border-radius:6px; background: #121624; overflow:hidden; cursor:pointer;">
+                <!-- Heatmap background image will be applied here -->
+                <div id="timelineHeatmap" style="position:absolute; inset:0; background-position: left center; background-size: 100% 100%; opacity:0.85;"></div>
+                <!-- Progress fill -->
+                <div id="timelineProgress" style="position:absolute; inset:0; width:0%; background: linear-gradient(90deg, rgba(79,140,255,0.6), rgba(79,140,255,0.25)); mix-blend-mode: screen;"></div>
+                <!-- Scene markers container -->
+                <div id="timelineMarkers" style="position:absolute; inset:0;"></div>
+              </div>
+              <div style="display:flex; align-items:center; justify-content:space-between; font-size:12px; color: var(--muted, #7a859f);">
+                <div>
+                  <span id="curTime">00:00</span>
+                  <span style="opacity:0.5;"> / </span>
+                  <span id="totalTime">00:00</span>
+                </div>
+                <div id="playerBadges" style="display:flex; gap:8px;">
+                  <span id="badgeSubtitles" style="display:none; padding:2px 6px; border-radius:4px; background:#1b2235; color:#9fb7ff;">CC</span>
+                  <span id="badgeSprites" style="display:none; padding:2px 6px; border-radius:4px; background:#1b2235; color:#9fb7ff;">Sprites</span>
+                  <span id="badgeHeatmap" style="display:none; padding:2px 6px; border-radius:4px; background:#1b2235; color:#9fb7ff;">Heatmap</span>
+                  <span id="badgeScenes" style="display:none; padding:2px 6px; border-radius:4px; background:#1b2235; color:#9fb7ff;">Scenes</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
       
       <!-- Library Tab Panel -->
       <div class="tab-panel active" role="tabpanel" aria-labelledby="library-tab" id="library-panel">

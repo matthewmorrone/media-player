@@ -120,7 +120,11 @@ imgModal.innerHTML = `
 document.body.appendChild(imgModal);
 const imgModalClose = imgModal.querySelector('#imgModalClose');
 const imgModalImage = imgModal.querySelector('#imgModalImage');
-imgModal.addEventListener('click', (e)=>{ if (e.target === imgModal) imgModal.hidden = true; });
+imgModal.addEventListener('click', (e) => { 
+  if (e.target === imgModal) {
+    imgModal.hidden = true;
+  }
+});
 imgModalClose.addEventListener('click', ()=> imgModal.hidden = true);
 
 function fmtSize(bytes) {
@@ -294,7 +298,10 @@ function videoCard(v) {
       newImg.src = imgSrc;
       newImg.alt = v.title || v.name;
       newImg.dataset.fallback = PLACEHOLDER_IMG;
-      newImg.onerror = function() { this.onerror = null; this.src = this.dataset.fallback; };
+      newImg.onerror = function() { 
+        this.onerror = null; 
+        this.src = this.dataset.fallback; 
+      };
       video.replaceWith(newImg);
     }
   });
@@ -306,7 +313,7 @@ function videoCard(v) {
   el.querySelector('.duration').textContent = dur;
   el.querySelector('.size').textContent = size;
   el.addEventListener('click', (event) => {
-        handleCardClick(event, v.path);
+    handleCardClick(event, v.path);
   });
   return el;
 }
@@ -633,8 +640,8 @@ function handleCardClick(event, path) {
       lastSelectedPath = path;
     }
   } else {
-    // No items selected and no modifiers: open video (future functionality)
-    console.log('open', path);
+    // No items selected and no modifiers: open in Player tab
+    Player.open(path);
   }
 }
 
@@ -1159,6 +1166,431 @@ window.TabRouter = TabRouter;
 window.TabSystem = TabSystem;
 window.tabSystem = tabSystem;
 
+// -----------------------------
+// Player Manager
+// -----------------------------
+const Player = (() => {
+  // DOM refs
+  let videoEl, titleEl, metaEl, curEl, totalEl, timelineEl, heatmapEl, progressEl, markersEl, spriteTooltipEl;
+  // Sidebar refs
+  let sbFileNameEl, sbMetaEl, sbReloadBtn, sbHeatmapStatus, sbHeatmapPreview, sbHeatmapImg, sbHeatmapOpen,
+      sbScenesStatus, sbScenesList, sbSubStatus, sbSubToggle, sbSpritesStatus;
+  let badgeCC, badgeSprites, badgeHeatmap, badgeScenes;
+  let btnSetThumb, btnAddMarker;
+
+  // State
+  let currentPath = null; // relative path from /api library
+  let duration = 0;
+  let sprites = null; // { index, sheet }
+  let scenes = [];
+  let hasHeatmap = false;
+  let subtitlesUrl = null;
+  let timelineMouseDown = false;
+
+  function qs(id) { return document.getElementById(id); }
+  function fmtTime(sec) {
+    if (!Number.isFinite(sec) || sec < 0) return '00:00';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    return (h ? h + ':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  }
+
+  function initDom() {
+    if (videoEl) return; // already
+    videoEl = qs('playerVideo');
+    titleEl = qs('playerTitle');
+    metaEl = qs('playerMeta');
+    curEl = qs('curTime');
+    totalEl = qs('totalTime');
+    timelineEl = qs('timeline');
+    heatmapEl = qs('timelineHeatmap');
+    progressEl = qs('timelineProgress');
+    markersEl = qs('timelineMarkers');
+    spriteTooltipEl = qs('spritePreview');
+    badgeCC = qs('badgeSubtitles');
+    badgeSprites = qs('badgeSprites');
+    badgeHeatmap = qs('badgeHeatmap');
+    badgeScenes = qs('badgeScenes');
+    btnSetThumb = qs('btnSetThumb');
+    btnAddMarker = qs('btnAddMarker');
+
+  // Sidebar
+  sbFileNameEl = qs('sbFileName');
+  sbMetaEl = qs('sbMeta');
+  sbReloadBtn = qs('sbReloadBtn');
+  sbHeatmapStatus = qs('sbHeatmapStatus');
+  sbHeatmapPreview = qs('sbHeatmapPreview');
+  sbHeatmapImg = qs('sbHeatmapImg');
+  sbHeatmapOpen = qs('sbHeatmapOpen');
+  sbScenesStatus = qs('sbScenesStatus');
+  sbScenesList = qs('sbScenesList');
+  sbSubStatus = qs('sbSubStatus');
+  sbSubToggle = qs('sbSubToggle');
+  sbSpritesStatus = qs('sbSpritesStatus');
+
+    // Wire basic events
+    if (videoEl) {
+      videoEl.addEventListener('timeupdate', () => {
+        const t = videoEl.currentTime || 0;
+        curEl.textContent = fmtTime(t);
+        if (duration > 0) {
+          const pct = Math.max(0, Math.min(100, (t / duration) * 100));
+          progressEl.style.width = pct + '%';
+        }
+      });
+      videoEl.addEventListener('loadedmetadata', () => {
+        duration = Number(videoEl.duration) || 0;
+        totalEl.textContent = fmtTime(duration);
+      });
+    }
+    if (timelineEl) {
+      const seekTo = (evt) => {
+        if (!duration || !videoEl) return;
+        const rect = timelineEl.getBoundingClientRect();
+        const x = Math.max(0, Math.min(evt.clientX - rect.left, rect.width));
+        const pct = x / rect.width;
+        const t = pct * duration;
+        videoEl.currentTime = t;
+      };
+      timelineEl.addEventListener('mousedown', (e) => { timelineMouseDown = true; seekTo(e); });
+      window.addEventListener('mousemove', (e) => {
+        if (timelineMouseDown) seekTo(e);
+        handleSpriteHover(e);
+      });
+      window.addEventListener('mouseup', () => { timelineMouseDown = false; });
+      timelineEl.addEventListener('mouseleave', () => { hideSprite(); });
+      timelineEl.addEventListener('mousemove', (e) => handleSpriteHover(e));
+    }
+    if (btnSetThumb && !btnSetThumb._wired) {
+      btnSetThumb._wired = true;
+      btnSetThumb.addEventListener('click', async () => {
+        if (!currentPath || !videoEl) return;
+        const t = Math.max(0, videoEl.currentTime || 0);
+        try {
+          const url = new URL('/api/cover/create', window.location.origin);
+          url.searchParams.set('path', currentPath);
+          url.searchParams.set('t', String(t.toFixed(3)));
+          url.searchParams.set('overwrite', 'true');
+          const r = await fetch(url, { method: 'POST' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          notify('Cover updated from current frame.', 'success');
+          // Refresh library tile if visible by reloading page 1 quickly
+          setTimeout(() => loadLibrary(), 200);
+        } catch (e) {
+          notify('Failed to set thumbnail', 'error');
+        }
+      });
+    }
+    if (btnAddMarker && !btnAddMarker._wired) {
+      btnAddMarker._wired = true;
+      btnAddMarker.addEventListener('click', async () => {
+        if (!currentPath || !videoEl) return;
+        const t = Math.max(0, videoEl.currentTime || 0);
+        try {
+          const url = new URL('/api/marker', window.location.origin);
+          url.searchParams.set('path', currentPath);
+          url.searchParams.set('time', String(t.toFixed(3)));
+          const r = await fetch(url, { method: 'POST' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          notify('Marker added', 'success');
+          await loadScenes();
+          renderMarkers();
+        } catch (e) {
+          notify('Failed to add marker', 'error');
+        }
+      });
+    }
+    if (sbReloadBtn && !sbReloadBtn._wired) {
+      sbReloadBtn._wired = true;
+      sbReloadBtn.addEventListener('click', async () => {
+        await Promise.all([loadHeatmap(), loadSprites(), loadScenes(), loadSubtitles()]);
+      });
+    }
+    if (sbHeatmapOpen && !sbHeatmapOpen._wired) {
+      sbHeatmapOpen._wired = true;
+      sbHeatmapOpen.addEventListener('click', async () => {
+        try {
+          // Reuse modal from tasks heatmap preview when available
+          const head = await fetch('/api/heatmaps/png?path=' + encodeURIComponent(currentPath), { method: 'HEAD' });
+          if (!head.ok) return notify('Heatmap not available for this file', 'error');
+          imgModalImage.src = '/api/heatmaps/png?path=' + encodeURIComponent(currentPath) + `&t=${Date.now()}`;
+          imgModal.hidden = false;
+        } catch (_) { notify('Failed to open heatmap preview', 'error'); }
+      });
+    }
+    if (sbSubToggle && !sbSubToggle._wired) {
+      sbSubToggle._wired = true;
+      sbSubToggle.addEventListener('change', () => {
+        try {
+          const tracks = videoEl ? Array.from(videoEl.querySelectorAll('track')) : [];
+          tracks.forEach(t => t.mode = sbSubToggle.checked ? 'showing' : 'disabled');
+        } catch (_) {}
+      });
+    }
+  }
+
+  function open(path) {
+    initDom();
+    currentPath = path;
+    // Switch to Player tab
+    if (window.tabSystem) window.tabSystem.switchToTab('player');
+    // Load video source
+    if (videoEl) {
+      const src = new URL('/files/' + path, window.location.origin);
+      // Cache-bust on change
+      videoEl.src = src.toString() + `?t=${Date.now()}`;
+      videoEl.play().catch(()=>{});
+    }
+    // Metadata and title
+    (async () => {
+      try {
+        const url = new URL('/api/metadata/get', window.location.origin);
+        url.searchParams.set('path', path);
+        const r = await fetch(url);
+        const j = await r.json();
+        const d = j?.data || {};
+        titleEl.textContent = path.split('/').pop() || path;
+        const wh = (d.width && d.height) ? `${d.width}x${d.height}` : '';
+        const vc = d.vcodec || '';
+        const ac = d.acodec || '';
+        metaEl.textContent = [fmtTime(Number(d.duration)||0), wh, vc, ac].filter(Boolean).join(' • ');
+        // Sidebar mirrors
+        if (sbFileNameEl) sbFileNameEl.textContent = titleEl.textContent;
+        if (sbMetaEl) sbMetaEl.textContent = metaEl.textContent;
+      } catch (_) {
+        titleEl.textContent = path.split('/').pop() || path;
+        metaEl.textContent = '—';
+        if (sbFileNameEl) sbFileNameEl.textContent = titleEl.textContent;
+        if (sbMetaEl) sbMetaEl.textContent = metaEl.textContent;
+      }
+    })();
+    // Artifacts
+    loadHeatmap();
+    loadSprites();
+    loadScenes();
+    loadSubtitles();
+  }
+
+  async function loadHeatmap() {
+    badgeHeatmap.style.display = 'none';
+    if (!currentPath) return;
+    try {
+      const head = await fetch('/api/heatmaps/png?path=' + encodeURIComponent(currentPath), { method: 'HEAD' });
+      if (head.ok) {
+        const url = '/api/heatmaps/png?path=' + encodeURIComponent(currentPath) + `&t=${Date.now()}`;
+        heatmapEl.style.backgroundImage = `url('${url}')`;
+        hasHeatmap = true;
+        badgeHeatmap.style.display = '';
+        if (sbHeatmapStatus) sbHeatmapStatus.textContent = 'Available';
+        if (sbHeatmapPreview) sbHeatmapPreview.style.display = '';
+        if (sbHeatmapImg) sbHeatmapImg.src = url;
+        if (sbHeatmapOpen) sbHeatmapOpen.style.display = '';
+      } else {
+        heatmapEl.style.backgroundImage = '';
+        hasHeatmap = false;
+        if (sbHeatmapStatus) sbHeatmapStatus.textContent = 'Missing';
+        if (sbHeatmapPreview) sbHeatmapPreview.style.display = 'none';
+        if (sbHeatmapOpen) sbHeatmapOpen.style.display = 'none';
+      }
+    } catch (_) {
+      heatmapEl.style.backgroundImage = '';
+      hasHeatmap = false;
+      if (sbHeatmapStatus) sbHeatmapStatus.textContent = 'Missing';
+      if (sbHeatmapPreview) sbHeatmapPreview.style.display = 'none';
+      if (sbHeatmapOpen) sbHeatmapOpen.style.display = 'none';
+    }
+  }
+
+  async function loadSprites() {
+    badgeSprites.style.display = 'none';
+    sprites = null;
+    if (!currentPath) return;
+    try {
+      const u = new URL('/api/sprites/json', window.location.origin);
+      u.searchParams.set('path', currentPath);
+      const r = await fetch(u);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      const index = data?.data?.index;
+      const sheet = data?.data?.sheet;
+      if (index && sheet) {
+        sprites = { index, sheet };
+        badgeSprites.style.display = '';
+        if (sbSpritesStatus) sbSpritesStatus.textContent = 'Available';
+      }
+    } catch (_) { sprites = null; }
+    if (!sprites && sbSpritesStatus) sbSpritesStatus.textContent = 'Missing';
+  }
+
+  async function loadScenes() {
+    badgeScenes.style.display = 'none';
+    scenes = [];
+    if (!currentPath) return;
+    try {
+      const u = new URL('/api/scenes/get', window.location.origin);
+      u.searchParams.set('path', currentPath);
+      const r = await fetch(u);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      const d = data?.data || {};
+      const arr = (d.scenes && Array.isArray(d.scenes)) ? d.scenes : (d.markers || []);
+      scenes = arr.map(s => ({ time: Number(s.time || s.t || s.start || 0) })).filter(s => Number.isFinite(s.time));
+      renderMarkers();
+      if (scenes.length) {
+        badgeScenes.style.display = '';
+        if (sbScenesStatus) sbScenesStatus.textContent = String(scenes.length);
+      } else {
+        if (sbScenesStatus) sbScenesStatus.textContent = '0';
+      }
+      renderSidebarScenes();
+    } catch (_) { scenes = []; renderMarkers(); }
+  }
+
+  async function loadSubtitles() {
+    badgeCC.style.display = 'none';
+    subtitlesUrl = null;
+    if (!currentPath || !videoEl) return;
+    // Remove existing tracks
+    Array.from(videoEl.querySelectorAll('track')).forEach(t => t.remove());
+    try {
+      const head = await fetch('/api/subtitles/get?path=' + encodeURIComponent(currentPath), { method: 'HEAD' });
+      if (head.ok) {
+        const src = '/api/subtitles/get?path=' + encodeURIComponent(currentPath) + `&t=${Date.now()}`;
+        subtitlesUrl = src;
+        const track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = 'Subtitles';
+        track.srclang = 'en';
+        track.default = true;
+        track.src = src; // browser will parse SRT in many cases; if not, still downloadable
+        videoEl.appendChild(track);
+        badgeCC.style.display = '';
+        if (sbSubStatus) sbSubStatus.textContent = 'Available';
+        if (sbSubToggle) sbSubToggle.checked = true;
+      }
+    } catch (_) { /* ignore */ }
+    if (!subtitlesUrl) {
+      if (sbSubStatus) sbSubStatus.textContent = 'Missing';
+      if (sbSubToggle) sbSubToggle.checked = false;
+    }
+  }
+
+  function renderMarkers() {
+    if (!markersEl) return;
+    markersEl.innerHTML = '';
+    if (!duration || !scenes || scenes.length === 0) return;
+    const rect = timelineEl.getBoundingClientRect();
+    for (const s of scenes) {
+      const t = Math.max(0, Math.min(duration, Number(s.time)));
+      const pct = (t / duration) * 100;
+      const mark = document.createElement('div');
+      mark.style.position = 'absolute';
+      mark.style.left = `calc(${pct}% - 2px)`;
+      mark.style.top = '0';
+      mark.style.width = '4px';
+      mark.style.height = '100%';
+      mark.style.background = 'rgba(255,255,255,0.7)';
+      mark.style.mixBlendMode = 'screen';
+      mark.title = fmtTime(t);
+      markersEl.appendChild(mark);
+    }
+  }
+
+  function renderSidebarScenes() {
+    if (!sbScenesList) return;
+    sbScenesList.innerHTML = '';
+    if (!duration || !scenes || scenes.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'muted';
+      empty.style.color = 'var(--muted, #7a859f)';
+      empty.textContent = 'No markers';
+      sbScenesList.appendChild(empty);
+      return;
+    }
+    scenes
+      .slice()
+      .sort((a,b)=>a.time-b.time)
+      .forEach((s, idx) => {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.alignItems = 'center';
+        row.style.justifyContent = 'space-between';
+        row.style.gap = '8px';
+        const left = document.createElement('button');
+        left.className = 'btn-sm';
+        left.textContent = fmtTime(Math.max(0, Math.min(duration, Number(s.time))));
+        left.title = 'Seek to ' + left.textContent;
+        left.addEventListener('click', () => {
+          if (videoEl) videoEl.currentTime = Math.max(0, Math.min(duration, Number(s.time)));
+        });
+        const del = document.createElement('button');
+        del.className = 'btn-sm';
+        del.textContent = '×';
+        del.title = 'Remove marker';
+        del.addEventListener('click', async () => {
+          try {
+            const u = new URL('/api/marker', window.location.origin);
+            u.searchParams.set('path', currentPath);
+            u.searchParams.set('time', String(Number(s.time)));
+            const r = await fetch(u, { method: 'DELETE' });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            notify('Marker removed', 'success');
+            await loadScenes();
+          } catch (e) { notify('Failed to remove marker', 'error'); }
+        });
+        row.appendChild(left);
+        row.appendChild(del);
+        sbScenesList.appendChild(row);
+      });
+  }
+
+  function handleSpriteHover(evt) {
+    if (!sprites || !sprites.index || !sprites.sheet) { hideSprite(); return; }
+    const rect = timelineEl.getBoundingClientRect();
+    const x = evt.clientX - rect.left;
+    if (x < 0 || x > rect.width) { hideSprite(); return; }
+    const pct = x / rect.width;
+    const t = pct * (duration || 0);
+    // Position tooltip
+    const left = Math.max(8, Math.min(rect.width - 248, x - 120));
+    spriteTooltipEl.style.left = left + 'px';
+    spriteTooltipEl.style.display = 'block';
+    // Compute background position based on sprite metadata
+    try {
+      const idx = sprites.index;
+      const cols = Number(idx.cols || (idx.grid && idx.grid[0]) || 0);
+      const rows = Number(idx.rows || (idx.grid && idx.grid[1]) || 0);
+      const interval = Number(idx.interval || 10);
+      const tw = Number(idx.tile_width || (idx.tile && idx.tile[0]) || 240);
+      const th = Number(idx.tile_height || (idx.tile && idx.tile[1]) || 135);
+      const totalFrames = Math.max(1, Number(idx.frames || cols * rows));
+      const frame = Math.min(totalFrames - 1, Math.floor((t / Math.max(0.1, interval))));
+      const col = frame % cols;
+      const row = Math.floor(frame / cols);
+      const xOff = -(col * tw);
+      const yOff = -(row * th);
+      spriteTooltipEl.style.width = tw + 'px';
+      spriteTooltipEl.style.height = th + 'px';
+      spriteTooltipEl.style.backgroundImage = `url('${sprites.sheet}')`;
+      spriteTooltipEl.style.backgroundPosition = `${xOff}px ${yOff}px`;
+      spriteTooltipEl.style.backgroundSize = `${tw * cols}px ${th * rows}px`;
+    } catch (_) {
+      // If anything goes wrong, hide the preview gracefully
+      hideSprite();
+    }
+  }
+
+  function hideSprite() {
+    if (spriteTooltipEl) spriteTooltipEl.style.display = 'none';
+  }
+
+  // Public API
+  return { open };
+})();
+
+window.Player = Player;
+
 // Tasks System
 class TasksManager {
   constructor() {
@@ -1637,7 +2069,7 @@ class TasksManager {
     // Toggle action buttons based on current state
     const clearBtn = document.getElementById('clearCompletedBtn');
     const cancelQueuedBtn = document.getElementById('cancelQueuedBtn');
-  const cancelAllBtn = document.getElementById('cancelAllBtn');
+    const cancelAllBtn = document.getElementById('cancelAllBtn');
     if (clearBtn) {
       const hasCompleted = Array.from(this.jobs.values()).some(j => this.normalizeStatus(j) === 'completed');
       clearBtn.style.display = hasCompleted ? 'inline-block' : 'none';
@@ -1712,8 +2144,8 @@ class TasksManager {
     const fileCell = row.querySelector('.cell-file');
     fileCell.textContent = fileName;
     fileCell.title = job.file || '';
-  // Status
-  let status = this.normalizeStatus(job);
+    // Status
+    let status = this.normalizeStatus(job);
     const statusEl = row.querySelector('.job-status');
     statusEl.className = 'job-status ' + status;
     statusEl.textContent = status;
@@ -1735,7 +2167,9 @@ class TasksManager {
     bar.style.width = (status !== 'queued' ? pct : 0) + '%';
     row.querySelector('.pct').textContent = (status === 'queued') ? 'Queued' : (status === 'completed' ? '100%' : `${pct}%`);
     const fname = row.querySelector('.fname');
-    fname.textContent = (status === 'running' && fileName) ? fileName : '';
+    // Show the target path+file when available; otherwise leave blank to avoid duplication
+    const targetPath = (job && typeof job.target === 'string' && job.target) ? job.target : '';
+    fname.textContent = (status === 'running' && targetPath) ? targetPath : '';
     // Action
     const action = row.querySelector('.cell-action');
     action.innerHTML = '';

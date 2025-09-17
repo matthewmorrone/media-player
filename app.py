@@ -89,6 +89,73 @@ def ffmpeg_available() -> bool:
 def ffprobe_available() -> bool:
     return shutil.which("ffprobe") is not None
 
+
+def _ffmpeg_threads_flags() -> list[str]:
+    """Global threads control for ffmpeg encoders/filters.
+    - If FFMPEG_THREADS is set: use that value when > 0.
+    - Otherwise: pick a reasonable default based on CPU (min(4, cpu_count or 2)).
+    Always returns a ["-threads", N] pair to enable multi-threading by default.
+    """
+    try:
+        v = os.environ.get("FFMPEG_THREADS")
+        n = int(v) if v is not None and str(v).strip() != "" else 0
+    except Exception:
+        n = 0
+    if n <= 0:
+        try:
+            cpu = os.cpu_count() or 2
+        except Exception:
+            cpu = 2
+        n = max(1, min(4, int(cpu)))
+    return ["-threads", str(n)]
+
+
+def _ffmpeg_hwaccel_flags() -> list[str]:
+    """Optional decoder hwaccel hint before -i via FFMPEG_HWACCEL env (e.g., 'auto', 'videotoolbox', 'vaapi').
+    Only used when set to avoid compatibility issues on devices without support.
+    """
+    v = os.environ.get("FFMPEG_HWACCEL")
+    if v:
+        return ["-hwaccel", str(v)]
+    return []
+
+
+def _vp9_realtime_flags() -> list[str]:
+    """Aggressive realtime flags for libvpx-vp9/VP8 to favor speed over quality for small previews.
+    Tunable via VP9_CPU_USED env (default 8). Also enables row-mt and tile-columns when available.
+    """
+    cpu = os.environ.get("VP9_CPU_USED")
+    try:
+        cpu_val = int(cpu) if cpu is not None else 8
+    except Exception:
+        cpu_val = 8
+    cpu_val = max(-8, min(15, cpu_val))  # libvpx range
+    return ["-deadline", "realtime", "-cpu-used", str(cpu_val), "-row-mt", "1", "-tile-columns", "2"]
+
+# -----------------------------
+# Size/quality env tunables
+# -----------------------------
+def _env_int(name: str, default: int) -> int:
+    try:
+        v = os.environ.get(name)
+        return int(v) if v is not None and str(v).strip() != "" else int(default)
+    except Exception:
+        return int(default)
+
+def _default_preview_crf_vp9() -> int:
+    # Larger = smaller file. Default favors smaller, faster encodes now.
+    return max(10, min(63, _env_int("PREVIEW_CRF_VP9", 42)))
+
+def _default_preview_crf_h264() -> int:
+    return max(10, min(51, _env_int("PREVIEW_CRF_H264", 32)))
+
+def _default_scene_thumb_q() -> int:
+    # JPEG/MJPEG scale: 2(best)..31(worst)
+    return max(2, min(31, _env_int("SCENE_THUMB_QUALITY", 8)))
+
+def _default_scene_clip_crf() -> int:
+    return max(10, min(51, _env_int("SCENE_CLIP_CRF", 32)))
+
 def artifact_dir(video: Path) -> Path:
     d = video.parent / ".artifacts"
     d.mkdir(parents=True, exist_ok=True)
@@ -338,12 +405,19 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
         duration = None
     t = parse_time_spec(time_spec, duration)
     # Use mjpeg to write jpg
+    # Allow env override when API callers pass default quality (2)
+    if int(quality) == 2:
+        # Default to more compressed thumbnails unless overridden via env
+        quality = _env_int("THUMBNAIL_QUALITY", 8)
     cmd = [
         "ffmpeg", "-y",
+        *(_ffmpeg_hwaccel_flags()),
+        "-noaccurate_seek",
         "-ss", f"{t:.3f}",
         "-i", str(video),
         "-frames:v", "1",
         "-q:v", str(max(2, min(31, int(quality)))),
+        *(_ffmpeg_threads_flags()),
         str(out),
     ]
     proc = _run(cmd)
@@ -357,8 +431,8 @@ def generate_hover_preview(
     video: Path,
     *,
     segments: int = 9,
-    seg_dur: float = 1.0,
-    width: int = 320,
+    seg_dur: float = 0.8,
+    width: int = 240,
     fmt: str = "webm",
     out: Optional[Path] = None,
     progress_cb: Optional[Callable[[int, int], None]] = None,
@@ -411,6 +485,7 @@ def generate_hover_preview(
             filter_complex = ";".join(parts)
             base_cmd = [
                 "ffmpeg", "-y",
+                *(_ffmpeg_hwaccel_flags()),
                 "-i", str(video),
                 "-filter_complex", filter_complex,
                 "-map", "[outv]",
@@ -418,14 +493,24 @@ def generate_hover_preview(
             ]
             # Try vp9 first, then fall back to libvpx if not available
             if fmt == "mp4":
-                cmd = base_cmd + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-movflags", "+faststart", str(out)]
+                cmd = base_cmd + [
+                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                    "-movflags", "+faststart",
+                    *(_ffmpeg_threads_flags()),
+                    str(out),
+                ]
                 try:
                     print("[hover] ffmpeg:", " ".join(cmd))
                 except Exception:
                     pass
                 proc = _run(cmd)
             else:
-                cmd = base_cmd + ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32", str(out)]
+                cmd = base_cmd + [
+                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                    *_vp9_realtime_flags(),
+                    *(_ffmpeg_threads_flags()),
+                    str(out),
+                ]
                 try:
                     print("[hover] ffmpeg:", " ".join(cmd))
                 except Exception:
@@ -433,7 +518,12 @@ def generate_hover_preview(
                 proc = _run(cmd)
                 if (proc.returncode != 0 or not out.exists()):
                     # Fallback to libvpx
-                    cmd = base_cmd + ["-c:v", "libvpx", "-b:v", "0", "-crf", "32", str(out)]
+                    cmd = base_cmd + [
+                        "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                        *_vp9_realtime_flags(),
+                        *(_ffmpeg_threads_flags()),
+                        str(out),
+                    ]
                     try:
                         print("[hover] ffmpeg (fallback):", " ".join(cmd))
                     except Exception:
@@ -457,19 +547,31 @@ def generate_hover_preview(
             vfilter = f"scale={width}:-1:force_original_aspect_ratio=decrease"
             cmd = [
                 "ffmpeg", "-y",
+                *(_ffmpeg_hwaccel_flags()),
+                "-noaccurate_seek",
                 "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{seg_dur:.3f}",
                 "-vf", vfilter,
                 "-an",
             ]
             if fmt == "mp4":
-                cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-movflags", "+faststart", str(clip)]
+                cmd += [
+                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                    "-movflags", "+faststart",
+                    *(_ffmpeg_threads_flags()),
+                    str(clip),
+                ]
                 try:
                     print("[hover] ffmpeg seg:", " ".join(cmd))
                 except Exception:
                     pass
                 proc = _run(cmd)
             else:
-                cmd += ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32", str(clip)]
+                cmd += [
+                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                    *_vp9_realtime_flags(),
+                    *(_ffmpeg_threads_flags()),
+                    str(clip),
+                ]
                 try:
                     print("[hover] ffmpeg seg:", " ".join(cmd))
                 except Exception:
@@ -479,10 +581,15 @@ def generate_hover_preview(
                     # Fallback to libvpx
                     cmd = [
                         "ffmpeg", "-y",
+                        *(_ffmpeg_hwaccel_flags()),
+                        "-noaccurate_seek",
                         "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{seg_dur:.3f}",
                         "-vf", vfilter,
                         "-an",
-                        "-c:v", "libvpx", "-b:v", "0", "-crf", "32", str(clip)
+                        "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                        *_vp9_realtime_flags(),
+                        *(_ffmpeg_threads_flags()),
+                        str(clip)
                     ]
                     try:
                         print("[hover] ffmpeg seg (fallback):", " ".join(cmd))
@@ -502,19 +609,30 @@ def generate_hover_preview(
                 f.write(f"file '{cp.as_posix()}'\n")
         cmd2 = [
             "ffmpeg", "-y",
+            *(_ffmpeg_hwaccel_flags()),
             "-f", "concat", "-safe", "0",
             "-i", str(list_path),
             "-an",
         ]
         if fmt == "mp4":
-            cmd2 += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-movflags", "+faststart", str(out)]
+            cmd2 += [
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                "-movflags", "+faststart",
+                *(_ffmpeg_threads_flags()),
+                str(out),
+            ]
             try:
                 print("[hover] ffmpeg concat:", " ".join(cmd2))
             except Exception:
                 pass
             proc2 = _run(cmd2)
         else:
-            cmd2 += ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32", str(out)]
+            cmd2 += [
+                "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                *_vp9_realtime_flags(),
+                *(_ffmpeg_threads_flags()),
+                str(out),
+            ]
             try:
                 print("[hover] ffmpeg concat:", " ".join(cmd2))
             except Exception:
@@ -524,10 +642,14 @@ def generate_hover_preview(
                 # Fallback to libvpx
                 cmd2 = [
                     "ffmpeg", "-y",
+                    *(_ffmpeg_hwaccel_flags()),
                     "-f", "concat", "-safe", "0",
                     "-i", str(list_path),
                     "-an",
-                    "-c:v", "libvpx", "-b:v", "0", "-crf", "32", str(out)
+                    "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                    *_vp9_realtime_flags(),
+                    *(_ffmpeg_threads_flags()),
+                    str(out)
                 ]
                 try:
                     print("[hover] ffmpeg concat (fallback):", " ".join(cmd2))
@@ -685,10 +807,13 @@ def phash_create_single(
             frame_path = Path(td) / f"phash_{idx:02d}.jpg"
             cmd = [
                 "ffmpeg", "-y",
+                *(_ffmpeg_hwaccel_flags()),
+                "-noaccurate_seek",
                 "-ss", f"{t:.3f}",
                 "-i", str(video),
                 "-frames:v", "1",
                 "-vf", "scale=128:-1",
+                *(_ffmpeg_threads_flags()),
                 str(frame_path),
             ]
             proc = _run(cmd)
@@ -774,6 +899,7 @@ def generate_scene_artifacts(
     thr = max(0.0, min(1.0, float(threshold)))
     cmd = [
         "ffmpeg", "-hide_banner",
+        *(_ffmpeg_hwaccel_flags()),
         "-i", str(video),
         "-filter_complex", f"select='gt(scene,{thr})',showinfo",
         "-f", "null", "-",
@@ -805,10 +931,13 @@ def generate_scene_artifacts(
             thumb = out_dir / f"{video.stem}.scene_{i:03d}.jpg"
             cmd_t = [
                 "ffmpeg", "-y",
+                *(_ffmpeg_hwaccel_flags()),
+                "-noaccurate_seek",
                 "-ss", f"{t:.3f}", "-i", str(video),
                 "-frames:v", "1",
                 "-vf", f"scale={int(thumbs_width)}:-1",
-                "-q:v", "2",
+                "-q:v", str(_default_scene_thumb_q()),
+                *(_ffmpeg_threads_flags()),
                 str(thumb),
             ]
             _run(cmd_t)
@@ -824,11 +953,14 @@ def generate_scene_artifacts(
             clip = out_dir / f"{video.stem}.scene_{i:03d}.mp4"
             cmd_c = [
                 "ffmpeg", "-y",
+                *(_ffmpeg_hwaccel_flags()),
+                "-noaccurate_seek",
                 "-ss", f"{t:.3f}", "-i", str(video),
                 "-t", f"{max(0.1, float(clip_duration)):.3f}",
                 "-an",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_scene_clip_crf()),
                 "-movflags", "+faststart",
+                *(_ffmpeg_threads_flags()),
                 str(clip),
             ]
             _run(cmd_c)
@@ -887,12 +1019,14 @@ def generate_sprite_sheet(
         cap_secs = max(0.5, float(interval) * float(cols) * float(rows) + min(float(interval), 2.0))
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
+            *(_ffmpeg_hwaccel_flags()),
             "-t", f"{cap_secs:.3f}",
             "-i", str(video),
             "-an",  # no audio processing
             "-vf", vf,
             "-vsync", "vfr",
             "-frames:v", "1",
+            *(_ffmpeg_threads_flags()),
             str(sheet),
         ]
         try:
@@ -1066,46 +1200,101 @@ def compute_heatmaps(
         return data
 
     samples: list[dict] = []
-    with tempfile.TemporaryDirectory() as td:
-        t = 0.0
-        idx = 0
-        total_steps = 0
+    # Fast path: single ffmpeg pass sampling frames and computing brightness via signalstats
+    total_steps = 0
+    try:
         if duration and interval:
-            try:
-                total_steps = max(1, int(float(duration) / max(0.1, float(interval))) + 1)
-            except Exception:
-                total_steps = 0
-        while t <= float(duration) + 1e-6:
-            if cancel_check and cancel_check():
-                raise RuntimeError("canceled")
-            frame_path = Path(td) / f"heat_{idx:04d}.jpg"
-            cmd = [
-                "ffmpeg", "-y",
-                "-ss", f"{t:.3f}", "-i", str(video),
-                "-frames:v", "1",
-                "-vf", "scale=160:-1,format=gray",
-                str(frame_path),
-            ]
-            proc = _run(cmd)
-            if proc.returncode == 0 and frame_path.exists():
+            total_steps = max(1, int(float(duration) / max(0.1, float(interval))) + 1)
+        vf = f"fps=1/{max(0.1, float(interval))},scale=160:-1,signalstats,metadata=print"
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "info", "-nostdin",
+            *(_ffmpeg_hwaccel_flags()),
+            "-i", str(video),
+            "-vf", vf,
+            "-f", "null", "-",
+        ]
+        # Run and parse YAVG (average luma) from metadata print lines
+        proc = _run(cmd)
+        if proc.returncode == 0:
+            # Parse lines like: frame: pts:... pts_time:... lavfi.signalstats.YAVG:XX.X ...
+            for line in (proc.stderr or proc.stdout or "").splitlines():
+                if "signalstats" in line and "YAVG" in line:
+                    try:
+                        # Extract pts_time if available for timestamp
+                        m_ts = re.search(r"pts_time:([0-9]+\.[0-9]+)", line)
+                        t_val = float(m_ts.group(1)) if m_ts else None
+                        m = re.search(r"YAVG:([0-9]+\.?[0-9]*)", line)
+                        if not m:
+                            # alt format via metadata=print: lavfi.signalstats.YAVG=XX.X
+                            m = re.search(r"lavfi\.signalstats\.YAVG[=:]([0-9]+\.?[0-9]*)", line)
+                        if m:
+                            yavg = float(m.group(1))
+                            v = max(0.0, min(1.0, yavg / 255.0))
+                            samples.append({"t": round(t_val, 3) if t_val is not None else None, "v": v})
+                            if progress_cb and total_steps:
+                                try:
+                                    progress_cb(min(len(samples), total_steps), total_steps)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        # Skip malformed line
+                        continue
+            # Backfill timestamps if not provided
+            if samples and samples[0].get("t") is None:
+                t = 0.0
+                step = max(0.1, float(interval))
+                for i in range(len(samples)):
+                    samples[i]["t"] = round(t, 3)
+                    t += step
+        else:
+            samples = []  # force fallback
+    except Exception:
+        samples = []
+
+    # Fallback: per-sample extraction (slower)
+    if not samples:
+        with tempfile.TemporaryDirectory() as td:
+            t = 0.0
+            idx = 0
+            total_steps = 0
+            if duration and interval:
                 try:
-                    img = Image.open(frame_path)
-                    # Mean brightness 0..1
-                    px = list(img.getdata())
-                    img.close()
-                    v = (sum(px) / (len(px) * 255.0)) if px else 0.0
-                    samples.append({"t": round(t, 3), "v": max(0.0, min(1.0, float(v)))})
+                    total_steps = max(1, int(float(duration) / max(0.1, float(interval))) + 1)
                 except Exception:
+                    total_steps = 0
+            while t <= float(duration) + 1e-6:
+                if cancel_check and cancel_check():
+                    raise RuntimeError("canceled")
+                frame_path = Path(td) / f"heat_{idx:04d}.jpg"
+                cmd = [
+                    "ffmpeg", "-y",
+                    *(_ffmpeg_hwaccel_flags()),
+                    "-noaccurate_seek",
+                    "-ss", f"{t:.3f}", "-i", str(video),
+                    "-frames:v", "1",
+                    "-vf", "scale=160:-1,format=gray",
+                    *(_ffmpeg_threads_flags()),
+                    str(frame_path),
+                ]
+                proc = _run(cmd)
+                if proc.returncode == 0 and frame_path.exists():
+                    try:
+                        img = Image.open(frame_path)
+                        px = list(img.getdata())
+                        img.close()
+                        v = (sum(px) / (len(px) * 255.0)) if px else 0.0
+                        samples.append({"t": round(t, 3), "v": max(0.0, min(1.0, float(v)))})
+                    except Exception:
+                        samples.append({"t": round(t, 3), "v": 0.0})
+                else:
                     samples.append({"t": round(t, 3), "v": 0.0})
-            else:
-                samples.append({"t": round(t, 3), "v": 0.0})
-            idx += 1
-            t += max(0.1, float(interval))
-            if progress_cb and total_steps:
-                try:
-                    progress_cb(idx, total_steps)
-                except Exception:
-                    pass
+                idx += 1
+                t += max(0.1, float(interval))
+                if progress_cb and total_steps:
+                    try:
+                        progress_cb(idx, total_steps)
+                    except Exception:
+                        pass
 
     data = {"interval": float(interval), "samples": samples}
     heatmaps_json_path(video).write_text(json.dumps(data, indent=2))
@@ -1119,7 +1308,11 @@ def compute_heatmaps(
             val = float(s.get("v", 0.0))
             h = int(val * (H - 2))
             dr.line([(x, H - 1), (x, H - 1 - h)], fill=(79, 140, 255))
-        img.save(heatmaps_png_path(video))
+        try:
+            img.save(heatmaps_png_path(video), optimize=True, compress_level=9)
+        except Exception:
+            # Fallback: save without options if Pillow lacks these params
+            img.save(heatmaps_png_path(video))
     if progress_cb and total_steps:
         try:
             progress_cb(total_steps, total_steps)
@@ -1763,6 +1956,138 @@ JOB_RUN_SEM = threading.Semaphore(JOB_MAX_CONCURRENCY)
 # Registry lock for centralized tags/performers files
 REGISTRY_LOCK = threading.Lock()
 
+# -----------------------------
+# Jobs persistence (survive restarts)
+# -----------------------------
+
+def _jobs_state_dir() -> Path:
+    """Directory where job state is persisted across restarts.
+    Defaults to MEDIA_PLAYER_STATE_DIR/.jobs or <root>/.jobs.
+    """
+    try:
+        base = os.environ.get("MEDIA_PLAYER_STATE_DIR")
+        base_path = Path(base).expanduser().resolve() if base else STATE["root"].resolve()
+    except Exception:
+        base_path = STATE["root"].resolve()
+    d = base_path / ".jobs"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+def _job_file_path(jid: str) -> Path:
+    return _jobs_state_dir() / f"{jid}.json"
+
+def _json_dump_atomic(path: Path, data: dict) -> None:
+    """Write JSON atomically to avoid partial files."""
+    try:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(path)
+    except Exception:
+        # Best-effort; ignore IO errors
+        try:
+            path.write_text(json.dumps(data, indent=2))
+        except Exception:
+            pass
+
+def _persist_job(jid: str) -> None:
+    if os.environ.get("JOB_PERSIST_DISABLE"):
+        return
+    with JOB_LOCK:
+        j = dict(JOBS.get(jid) or {})
+    if not j:
+        return
+    # Avoid persisting volatile fields that churn rapidly
+    j.pop("current", None)
+    # Ensure minimal keys
+    payload = {
+        "id": j.get("id"),
+        "type": j.get("type"),
+        "path": j.get("path"),
+        "state": j.get("state"),
+        "started_at": j.get("started_at"),
+        "ended_at": j.get("ended_at"),
+        "error": j.get("error"),
+        "total": j.get("total"),
+        "processed": j.get("processed"),
+        "label": j.get("label"),
+        "request": j.get("request"),
+        "result": j.get("result"),
+    }
+    _json_dump_atomic(_job_file_path(str(j.get("id") or "")), payload)  # type: ignore[arg-type]
+
+def _delete_persisted_job(jid: str) -> None:
+    try:
+        p = _job_file_path(jid)
+        if p.exists():
+            p.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+def _restore_jobs_on_start() -> None:
+    if os.environ.get("JOB_PERSIST_DISABLE"):
+        return
+    d = _jobs_state_dir()
+    try:
+        files = list(d.glob("*.json"))
+    except Exception:
+        files = []
+    for fp in files:
+        try:
+            data = json.loads(fp.read_text())
+            jid = str(data.get("id") or fp.stem)
+            base_type = _normalize_job_type(str(data.get("type") or ""))
+            # Restore job state
+            with JOB_LOCK:
+                JOBS[jid] = {
+                    "id": jid,
+                    "type": base_type,
+                    "path": data.get("path"),
+                    "state": data.get("state") or "queued",
+                    "started_at": data.get("started_at"),
+                    "ended_at": data.get("ended_at"),
+                    "error": data.get("error"),
+                    "total": data.get("total"),
+                    "processed": data.get("processed"),
+                    "label": data.get("label"),
+                    "result": data.get("result"),
+                    "request": data.get("request"),
+                }
+                JOB_CANCEL_EVENTS[jid] = threading.Event()
+            # If the previous state was running, treat it as queued for resume
+            prev = str(data.get("state") or "").lower()
+            if prev == "running":
+                with JOB_LOCK:
+                    JOBS[jid]["state"] = "queued"
+                _persist_job(jid)
+        except Exception:
+            continue
+
+    # Optionally auto-resume queued jobs that have a saved request
+    if os.environ.get("JOB_AUTORESTORE_DISABLE"):
+        return
+    with JOB_LOCK:
+        items = list(JOBS.items())
+    for jid, j in items:
+        try:
+            if j.get("state") == "queued" and isinstance(j.get("request"), dict):
+                req_data = j["request"]
+                # Validate minimal fields
+                task = str(req_data.get("task") or j.get("type") or "")
+                directory = req_data.get("directory") or j.get("path") or str(STATE["root"])  # type: ignore[assignment]
+                recursive = bool(req_data.get("recursive", False))
+                force = bool(req_data.get("force", False))
+                params = dict(req_data.get("params") or {})
+                jr = JobRequest(task=task, directory=directory, recursive=recursive, force=force, params=params)
+                def _runner(jid=jid, jr=jr):
+                    with JOB_RUN_SEM:
+                        _run_job_worker(jid, jr)
+                threading.Thread(target=_runner, name=f"job-restore-{task}-{jid}", daemon=True).start()
+        except Exception:
+            continue
+
 
 def _normalize_job_type(job_type: str) -> str:
     """Normalize backend job-type variants to base types for the UI and tests."""
@@ -1822,6 +2147,7 @@ def _new_job(job_type: str, path: str) -> str:
             "result": None,
         }
         JOB_CANCEL_EVENTS[jid] = threading.Event()
+    _persist_job(jid)
     _publish_job_event({"event": "created", "id": jid, "type": base_type, "path": path})
     _publish_job_event({"event": "queued", "id": jid, "type": base_type, "path": path})
     return jid
@@ -1833,6 +2159,7 @@ def _start_job(jid: str):
         if j:
             j["state"] = "running"
             j["started_at"] = time.time()
+    _persist_job(jid)
     with JOB_LOCK:
         j = JOBS.get(jid) or {}
         jtype = j.get("type")
@@ -1854,6 +2181,7 @@ def _finish_job(jid: str, error: Optional[str] = None):
                 j["state"] = "done"
             j["ended_at"] = time.time()
             j["error"] = error
+    _persist_job(jid)
     with JOB_LOCK:
         j = JOBS.get(jid) or {}
         jtype = j.get("type")
@@ -1893,6 +2221,8 @@ def _set_job_progress(jid: str, *, total: Optional[int] = None, processed_inc: i
         except Exception:
             # Best-effort clamping; ignore errors
             pass
+    # Persist infrequently changing counters (safe to write each update; small files)
+    _persist_job(jid)
     # lightweight progress event (throttling left to clients)
     with JOB_LOCK:
         j = JOBS.get(jid) or {}
@@ -2020,6 +2350,15 @@ def old_index_html():
 # Also serve any static assets placed here (optional)
 if (_BASE / "static").exists():
     app.mount("/static", StaticFiles(directory=str(_BASE / "static")), name="static")
+
+# Restore persisted jobs on startup (best-effort, controlled by env flags)
+@app.on_event("startup")
+async def _on_startup_restore_jobs():
+    try:
+        _restore_jobs_on_start()
+    except Exception:
+        # Non-fatal: continue without restore on any error
+        pass
 
 
 # API under /api - mount BEFORE catch-all static handler
@@ -3195,7 +3534,7 @@ def _hover_concat_path(video: Path) -> Path:
     
 
 @api.post("/hover/create")
-def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=1.0), width: int = Query(default=320), overwrite: bool = Query(default=False)):
+def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
     def _do():
@@ -3216,8 +3555,8 @@ def hover_create_batch(
     path: str = Query(default=""),
     recursive: bool = Query(default=True),
     segments: int = Query(default=9),
-    seg_dur: float = Query(default=1.0),
-    width: int = Query(default=320),
+    seg_dur: float = Query(default=0.8),
+    width: int = Query(default=240),
 ):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
@@ -3464,7 +3803,7 @@ def sprites_sheet(path: str = Query(...)):
 
 
 @api.post("/sprites/create")
-def sprites_create(path: str = Query(...), interval: float = Query(default=10.0), width: int = Query(default=320), cols: int = Query(default=10), rows: int = Query(default=10), quality: int = Query(default=4)):
+def sprites_create(path: str = Query(...), interval: float = Query(default=12.0), width: int = Query(default=240), cols: int = Query(default=8), rows: int = Query(default=8), quality: int = Query(default=6)):
     fp = safe_join(STATE["root"], path)
     def _do():
         generate_sprite_sheet(fp, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality))
@@ -4353,7 +4692,9 @@ def frame_crop(path: str = Query(...), t: float = Query(...), x: int = Query(...
         if Image is None:
             raise RuntimeError("PIL not available")
         cmd = [
-            "ffmpeg", "-y", "-ss", str(float(t)), "-i", str(fp),
+            "ffmpeg", "-y",
+            *(_ffmpeg_hwaccel_flags()),
+            "-noaccurate_seek", "-ss", str(float(t)), "-i", str(fp),
             "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-",
         ]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -4389,7 +4730,9 @@ def frame_crop(path: str = Query(...), t: float = Query(...), x: int = Query(...
         cy = max(0, int(y))
         vf = f"crop={cw}:{ch}:{cx}:{cy},scale={int(scale)}:-1"
         cmd = [
-            "ffmpeg", "-y", "-ss", str(float(t)), "-i", str(fp),
+            "ffmpeg", "-y",
+            *(_ffmpeg_hwaccel_flags()),
+            "-noaccurate_seek", "-ss", str(float(t)), "-i", str(fp),
             "-vf", vf, "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
         ]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -4423,7 +4766,9 @@ def frame_boxed(
         if Image is None:
             raise RuntimeError("PIL not available")
         cmd = [
-            "ffmpeg", "-y", "-ss", str(float(t)), "-i", str(fp),
+            "ffmpeg", "-y",
+            *(_ffmpeg_hwaccel_flags()),
+            "-noaccurate_seek", "-ss", str(float(t)), "-i", str(fp),
             "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-",
         ]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -4464,7 +4809,9 @@ def frame_boxed(
         # drawbox thickness uses absolute pixels in source resolution
         vf = f"drawbox=x={cx}:y={cy}:w={cw}:h={ch}:color=red@0.8:thickness={th},scale={int(scale)}:-1"
         cmd = [
-            "ffmpeg", "-y", "-ss", str(float(t)), "-i", str(fp),
+            "ffmpeg", "-y",
+            *(_ffmpeg_hwaccel_flags()),
+            "-noaccurate_seek", "-ss", str(float(t)), "-i", str(fp),
             "-vf", vf, "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
         ]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -4869,6 +5216,14 @@ def tasks_batch_operation(request: Request):
                 params=job_params,
             )
             jid = _new_job(req.task, req.directory or str(STATE["root"]))
+            # Persist originating request for restore/resume
+            try:
+                with JOB_LOCK:
+                    if jid in JOBS:
+                        JOBS[jid]["request"] = req.dict()
+                _persist_job(jid)
+            except Exception:
+                pass
             def _single_runner():
                 with JOB_RUN_SEM:
                     _run_job_worker(jid, req)
@@ -4897,8 +5252,11 @@ def tasks_batch_operation(request: Request):
                     with JOB_LOCK:
                         if jid in JOBS:
                             JOBS[jid]["label"] = rel
+                            # Persist originating request for restore/resume
+                            JOBS[jid]["request"] = req.dict()
                 except Exception:
                     pass
+                _persist_job(jid)
                 def _runner(jid=jid, req=req):
                     with JOB_RUN_SEM:
                         _run_job_worker(jid, req)
@@ -4924,6 +5282,15 @@ def tasks_jobs():
         
         # Format jobs for frontend
         formatted_jobs = []
+        root = STATE["root"].resolve()
+        def _fmt_rel(p: Path) -> str:
+            try:
+                return p.resolve().relative_to(root).as_posix()
+            except Exception:
+                try:
+                    return p.as_posix()
+                except Exception:
+                    return str(p)
         for job in all_jobs:
             # Map backend job to frontend format
             formatted_job = {
@@ -4939,6 +5306,40 @@ def tasks_jobs():
                 "totalRaw": job.get("total"),
                 "processedRaw": job.get("processed"),
             }
+            # Best-effort target artifact path (relative to root) for the current file, when applicable
+            try:
+                jtype = (job.get("type") or "").lower()
+                cur = job.get("current") or ""
+                target_path_str: Optional[str] = None
+                if cur:
+                    vp = Path(cur)
+                    if not vp.is_absolute():
+                        vp = (STATE["root"] / vp).resolve()
+                    tp: Optional[Path] = None
+                    if jtype == "cover":
+                        tp = thumbs_path(vp)
+                    elif jtype == "hover":
+                        tp = artifact_dir(vp) / f"{vp.stem}{SUFFIX_PREVIEW_WEBM}"
+                    elif jtype == "phash":
+                        tp = phash_path(vp)
+                    elif jtype == "scenes":
+                        tp = scenes_json_path(vp)
+                    elif jtype == "sprites":
+                        tp, _ = sprite_sheet_paths(vp)
+                    elif jtype == "heatmaps":
+                        tp = heatmaps_json_path(vp)
+                    elif jtype == "faces":
+                        tp = faces_path(vp)
+                    elif jtype == "metadata":
+                        tp = metadata_path(vp)
+                    elif jtype == "subtitles":
+                        tp = artifact_dir(vp) / f"{vp.stem}{SUFFIX_SUBTITLES_SRT}"
+                    if tp is not None:
+                        target_path_str = _fmt_rel(tp)
+                if target_path_str:
+                    formatted_job["target"] = target_path_str
+            except Exception:
+                pass
             
             # Calculate progress percentage
             total = job.get("total")
@@ -5099,6 +5500,11 @@ def tasks_clear_completed():
                 ev = JOB_CANCEL_EVENTS.pop(jid, None)
                 # no special cleanup needed for events
                 removed += 1
+                # also remove persisted state on disk
+                try:
+                    _delete_persisted_job(jid)
+                except Exception:
+                    pass
         _publish_job_event({"event": "purge", "removed": removed})
         return api_success({"removed": removed})
     except Exception as e:
@@ -5568,6 +5974,14 @@ def autotag_scan(req: AutoTagRequest):
         },
     )
     jid = _new_job(jr.task, jr.directory or str(STATE["root"]))
+    # Save request for restore/resume
+    try:
+        with JOB_LOCK:
+            if jid in JOBS:
+                JOBS[jid]["request"] = jr.dict()
+        _persist_job(jid)
+    except Exception:
+        pass
     def _runner():
         with JOB_RUN_SEM:
             _run_job_worker(jid, jr)
@@ -6298,6 +6712,14 @@ def _run_job_worker(jid: str, jr: JobRequest):
 @app.post("/jobs")
 def jobs_submit(req: JobRequest):
     jid = _new_job(req.task, req.directory or str(STATE["root"]))
+    # Save request for restore/resume
+    try:
+        with JOB_LOCK:
+            if jid in JOBS:
+                JOBS[jid]["request"] = req.dict()
+        _persist_job(jid)
+    except Exception:
+        pass
     # Start worker thread with global concurrency control
     def _runner():
         with JOB_RUN_SEM:
