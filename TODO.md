@@ -38,4 +38,37 @@ Medium/higher effort but feasible incrementally:
   - Face identities store and labeling endpoints
   - Subtitle full-text index (Whoosh/simple inverted index JSON)
 
+## Feature specs
+
+### Library filters & saved views
+- Extend `GET /api/library` with filters: `tags[]`, `performers[]`, `rating_gte`, `rating_lte`, `dur_min`, `dur_max`.
+- Saved views CRUD: `/api/views` (GET list), `/api/views/{name}` (GET/PUT/DELETE); persisted in `~/.media-player/views.json`.
+- UI: rich filtering on library list (tags, performers, rating, duration range).
+
+### Duplicate manager
+- Wrap pHash duplicates into a paged API: `GET /api/duplicates/list?offset&limit`.
+- Actions: `POST /api/duplicates/action` `{ pairId, action: "keep"|"delete_left"|"delete_right" }`.
+- UI: grid to review pairs; quick actions (open location, delete one).
+
+### Tags & performers management
+- Bulk rename/merge; CRUD over sidecar JSONs.
+- Endpoints: `POST /api/tags/rename`, `POST /api/tags/merge`, `POST /api/performers/rename`, `POST /api/performers/merge`.
+
+### Scenes editor
+- Endpoints: `POST /api/scenes/marker` (add/update), `DELETE /api/scenes/marker/{id}` (remove), `POST /api/scenes/markers/bulk` (set list).
+- UI: scrub to place markers; list, remove; group add/remove/rename.
+- Scenes markers editor UX — build on scenes APIs; support add/remove/rename groups.
+
+
+### Jobs dashboard
+- Live stream: `GET /api/jobs/stream` (SSE).
+- Detail: `GET /api/jobs/{id}`.
+- Control: `POST /api/jobs/{id}/cancel`; ensure worker loops honor cancel flags.
+- File operations — move by tag/performer, safe trash, template-based rename.
+
+### Identity extras
+- Face identities store + labeling endpoints.
+- Face clustering → identities (keep embeddings; simple per-library identity store).
+
+
 

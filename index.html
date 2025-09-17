@@ -4,799 +4,545 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Media Library</title>
-  <style>
-    :root {
-      --bg: #0f1115;
-      --panel: #151923;
-      --text: #e6e6e6;
-      --muted: #a0a0a0;
-      --accent: #4f8cff;
-      --card: #1b2130;
-      --card-hover: #232b3d;
-      --grid-gap: 14px;
-    }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; }
-    body {
-      margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
-      background: var(--bg);
-      color: var(--text);
-      -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
-    }
-    header {
-      position: sticky; top: 0; z-index: 10;
-      display: flex; align-items: center; gap: 12px;
-      padding: 12px 16px; background: rgba(15,17,21,0.85); backdrop-filter: blur(8px);
-      border-bottom: 1px solid #242938;
-    }
-    header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
-    #folderBar { display: flex; align-items: center; gap: 8px; margin-left: 8px; flex: 1; }
-    #folderInput { flex: 0 1 420px; max-width: 60vw; background: var(--panel); color: var(--text); border: 1px solid #2a3144; border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none; }
-    #folderInput::placeholder { color: var(--muted); }
-    #controls { margin-left: auto; display: flex; gap: 8px; }
-    .btn { background: var(--panel); color: var(--text); border: 1px solid #2a3144; border-radius: 8px; padding: 8px 10px; font-size: 13px; cursor: pointer; }
-    .btn:hover { background: #1a2030; }
-    main { padding: 16px; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: var(--grid-gap);
-    }
-    .card { background: var(--card); border: 1px solid #2a3144; border-radius: 10px; overflow: hidden; transition: background .15s ease, transform .06s ease; }
-    .card:hover { background: var(--card-hover); transform: translateY(-1px); }
-    .thumb { aspect-ratio: 16/9; width: 100%; display: block; background: #0e0f14; object-fit: cover; }
-    .meta { padding: 8px 10px 10px; }
-    .title { font-size: 13px; font-weight: 600; line-height: 1.35; margin: 0 0 4px; word-break: break-word; }
-    .sub { font-size: 12px; color: var(--muted); }
-    .empty, .error, .loading { color: var(--muted); padding: 24px; text-align: center; }
-    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    
-    /* Modal */
-    .modal[hidden] { display: none; }
-    .modal { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,0.4); z-index: 50; }
-    .modal .panel { width: min(800px, 92vw); background: var(--panel); border: 1px solid #2a3144; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.4); overflow: hidden; }
-    .modal header { position: static; padding: 12px 14px; background: #161b27; border-bottom: 1px solid #2a3144; }
-    .crumbs { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--muted); }
-    .crumbs .seg { cursor: pointer; color: var(--text); }
-    .crumbs .seg:hover { text-decoration: underline; }
-    .modal .body { padding: 12px 14px; max-height: min(60vh, 520px); overflow: auto; }
-    .dirlist { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
-    .dir { display: flex; align-items: center; gap: 10px; background: #1b2130; border: 1px solid #2a3144; border-radius: 8px; padding: 10px; cursor: pointer; }
-    .dir:hover { background: #20283a; }
-    .dir .icon { width: 20px; height: 16px; background: #6b7aa6; border-radius: 2px; position: relative; }
-    .dir .icon::after { content: ""; position: absolute; left: 0; top: -4px; width: 12px; height: 6px; background: #6b7aa6; border-top-left-radius: 2px; border-top-right-radius: 2px; }
-    .modal .actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 14px; border-top: 1px solid #2a3144; }
-
-    /* Grid controls */
-    .controls-panel { background: var(--panel); border: 1px solid #2a3144; border-radius: 10px; margin-bottom: 16px; padding: 16px; }
-    .controls-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-    .controls-row + .controls-row { margin-top: 12px; }
-    .control-group { display: flex; align-items: center; gap: 6px; }
-    .control-label { font-size: 12px; color: var(--muted); font-weight: 500; min-width: 60px; }
-    .control-input { background: var(--bg); color: var(--text); border: 1px solid #2a3144; border-radius: 6px; padding: 6px 8px; font-size: 12px; outline: none; }
-    .control-input:focus { border-color: var(--accent); }
-    .control-select { background: var(--bg); color: var(--text); border: 1px solid #2a3144; border-radius: 6px; padding: 6px 8px; font-size: 12px; outline: none; }
-    .control-select:focus { border-color: var(--accent); }
-    .btn-sm { background: var(--panel); color: var(--text); border: 1px solid #2a3144; border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
-    .btn-sm:hover { background: #1a2030; }
-    .btn-sm.active { background: var(--accent); border-color: var(--accent); }
-    .grid-size-controls { display: flex; gap: 4px; }
-    .grid-size-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; }
-    .pagination { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-    .page-info { font-size: 12px; color: var(--muted); }
-    .saved-queries { display: flex; align-items: center; gap: 6px; }
-    .query-pill { background: #1e2a3a; border: 1px solid #2a3144; border-radius: 12px; padding: 4px 8px; font-size: 11px; color: var(--text); cursor: pointer; }
-    .query-pill:hover { background: #253141; }
-    .query-pill.active { background: var(--accent); border-color: var(--accent); }
-
-    /* Selection bar */
-    .selection-bar { background: var(--accent); color: white; padding: 12px 16px; display: flex; align-items: center; gap: 12px; margin-bottom: 16px; border-radius: 8px; }
-    .selection-bar[hidden] { display: none; }
-    .selection-count { font-weight: 600; }
-
-    /* Card selection overlay */
-    .card { position: relative; }
-    .card-checkbox { position: absolute; top: 8px; left: 8px; width: 20px; height: 20px; background: rgba(0,0,0,0.7); border: 2px solid white; border-radius: 4px; cursor: pointer; z-index: 2; }
-    .card-checkbox.checked { background: var(--accent); }
-    .card-checkbox.checked::after { content: "✓"; color: white; font-size: 12px; font-weight: bold; position: absolute; top: 1px; left: 3px; }
-  </style>
+  <link rel="stylesheet" href="index.css" />
+  <script src="index.js" defer></script>
 </head>
 <body>
   <header>
-    <h1>Media Library</h1>
-    <div id="folderBar">
-      <input id="folderInput" type="text" placeholder="Type a folder (relative) to browse, or an absolute path to set root — Enter. Double-click to pick." title="Enter a relative folder within the library (e.g., Shows/Season 1), or an absolute path (e.g., /Volumes/Media or ~/Movies) to set the library root. Press Enter. Double-click to open the picker." />
-    </div>
-    <div id="controls">
-      <button id="refresh" class="btn" title="Reload">Reload</button>
-    </div>
-  </header>
-  <main>
-    <div class="controls-panel">
-      <div class="controls-row">
-        <div class="control-group">
-          <span class="control-label">Search</span>
-          <input id="searchInput" type="text" class="control-input" placeholder="Search files..." style="width: 200px;" />
-        </div>
-        <div class="control-group">
-          <span class="control-label">Tags</span>
-          <input id="tagsInput" type="text" class="control-input" placeholder="tag1,tag2..." style="width: 120px;" />
-        </div>
-        <div class="control-group">
-          <span class="control-label">Tag IDs</span>
-          <input id="tagsIdsInput" type="text" class="control-input" placeholder="1,2,3..." style="width: 80px;" />
-        </div>
-        <div class="control-group">
-          <span class="control-label">Performers</span>
-          <input id="performersInput" type="text" class="control-input" placeholder="performer1,performer2..." style="width: 140px;" />
-        </div>
-        <div class="control-group">
-          <span class="control-label">Perf IDs</span>
-          <input id="performersIdsInput" type="text" class="control-input" placeholder="1,2,3..." style="width: 80px;" />
-        </div>
-        <div class="control-group">
-          <span class="control-label">Match</span>
-          <select id="matchAnySelect" class="control-select" style="width: 70px;">
-            <option value="false">All</option>
-            <option value="true">Any</option>
-          </select>
-        </div>
-        <div class="control-group">
-          <span class="control-label">Sort</span>
-          <select id="sortSelect" class="control-select" style="width: 80px;">
-            <option value="date">Date</option>
-            <option value="name">Name</option>
-            <option value="size">Size</option>
-            <option value="random">Random</option>
-          </select>
-        </div>
-        <div class="control-group">
-          <span class="control-label">Order</span>
-          <select id="orderSelect" class="control-select" style="width: 70px;">
-            <option value="desc">Desc</option>
-            <option value="asc">Asc</option>
-          </select>
-        </div>
-        <div class="control-group">
-          <span class="control-label">Page Size</span>
-          <select id="pageSizeSelect" class="control-select" style="width: 60px;">
-            <option value="12">12</option>
-            <option value="24">24</option>
-            <option value="48" selected>48</option>
-            <option value="96">96</option>
-          </select>
-        </div>
-        <div class="control-group">
-          <span class="control-label">Grid</span>
-          <div class="grid-size-controls">
-            <button class="btn-sm grid-size-btn" data-size="small" title="Small tiles">⚏</button>
-            <button class="btn-sm grid-size-btn active" data-size="medium" title="Medium tiles">⚏⚏</button>
-            <button class="btn-sm grid-size-btn" data-size="large" title="Large tiles">⚏⚏⚏</button>
-          </div>
-        </div>
-        <div class="pagination">
-          <button id="prevBtn" class="btn-sm" title="Previous page">‹</button>
-          <span id="pageInfo" class="page-info">Page 1 of 1</span>
-          <button id="nextBtn" class="btn-sm" title="Next page">›</button>
-        </div>
+    <div class="header-top">
+      <h1>Media Library</h1>
+      <div id="folderBar">
+        <input id="folderInput" type="text" placeholder="Type a folder (relative) to browse, or an absolute path to set root — Enter. Double-click to pick." title="Enter a relative folder within the library (e.g., Shows/Season 1), or an absolute path (e.g., /Volumes/Media or ~/Movies) to set the library root. Press Enter. Double-click to open the picker." />
       </div>
-      <div class="controls-row">
-        <div class="control-group">
-          <span class="control-label">Queries</span>
-          <div class="saved-queries">
-            <input id="queryNameInput" type="text" class="control-input" placeholder="Query name..." style="width: 120px;" />
-            <button id="saveQueryBtn" class="btn-sm">Save</button>
-            <div id="queryPills" class="saved-queries"></div>
+      <div id="controls">
+        <button id="refresh" class="btn" title="Reload">Reload</button>
+      </div>
+    </div>
+    
+    <!-- Tab Navigation -->
+    <nav class="tab-nav" role="tablist" aria-label="Main navigation">
+      <button class="tab-button active" role="tab" aria-selected="true" aria-controls="library-panel" id="library-tab" data-tab="library">
+        Library
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="tasks-panel" id="tasks-tab" data-tab="tasks">
+        Tasks
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="settings-panel" id="settings-tab" data-tab="settings">
+        Settings
+      </button>
+    </nav>
+  </header>
+  
+  <main>
+    <!-- Tab Panels -->
+    <div class="tab-panels">
+      
+      <!-- Library Tab Panel -->
+      <div class="tab-panel active" role="tabpanel" aria-labelledby="library-tab" id="library-panel">
+        <div class="controls-panel">
+          <div class="controls-row">
+            <div class="control-group">
+              <!-- <span class="control-label">Search</span> -->
+              <input id="searchInput" type="text" class="control-input" placeholder="Search files..." />
+            </div>
+            <div class="control-group">
+              <!-- <span class="control-label">Sort</span> -->
+              <div class="select">
+                <select id="sortSelect" class="control-select">
+                  <option value="date">Date</option>
+                  <option value="name">Name</option>
+                  <option value="size">Size</option>
+                  <option value="random">Random</option>
+                </select>
+                <span class="chevron">▾</span>
+              </div>
+              <button id="orderToggle" class="btn-sm order-btn" data-order="desc" title="Toggle sort order">▼</button>
+            </div>
+            <div class="pagination-group">
+              <div class="control-group">
+                <!-- <span class="control-label">Density</span> -->
+                <input id="densitySlider" type="range" min="1" max="15" value="12" step="1" class="control-slider" title="Adjust grid density (columns)" />
+              </div>
+              <div class="pagination">
+                <button id="prevBtn" class="btn-sm" title="Previous page">‹</button>
+                <span id="pageInfo" class="page-info">Page 1 of 1</span>
+                <button id="nextBtn" class="btn-sm" title="Next page">›</button>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="control-group" style="margin-left: auto;">
+        <div id="selectionBar" class="selection-bar" hidden>
+          <span id="selectionCount" class="selection-count">0 selected</span>
           <button id="selectAllBtn" class="btn-sm">Select All</button>
           <button id="selectNoneBtn" class="btn-sm">Select None</button>
         </div>
+        
+        <div id="spinner" class="spinner"></div>
+        <div id="status"></div>
+
+        <!-- Card template (hidden) -->
+        <template id="cardTemplate">
+          <div class="card">
+            <div class="card-checkbox"></div>
+            <img class="thumb" loading="lazy" />
+            <div class="meta">
+              <p class="title"></p>
+              <div class="row sub">
+                <span class="duration"></span>
+                <span class="size"></span>
+              </div>
+            </div>
+          </div>
+        </template>
+        
+        <!-- Directory card template (hidden) -->
+        <template id="dirTemplate">
+          <div class="card">
+            <div class="thumb dir-thumb">
+              <div class="dir-thumb-inner">
+                <span class="dir-icon"></span>
+                <span class="dir-name"></span>
+              </div>
+            </div>
+            <div class="meta">
+              <p class="title"></p>
+              <div class="row sub"><span>Folder</span><span></span></div>
+            </div>
+          </div>
+        </template>
+        
+        <div id="grid" class="grid" hidden></div>
       </div>
+      
+      <!-- Tasks Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="tasks-tab" id="tasks-panel" hidden>
+        <div class="tasks-container">
+          
+          <!-- Job Monitor Section -->
+          <div class="task-section">
+            <div class="section-header">
+          <h2>Job Monitor</h2>
+          <div class="section-actions">
+            <button id="cancelAllBtn" class="btn-sm" title="Cancel all queued and running jobs" style="display:none;">Cancel All</button>
+            <button id="cancelQueuedBtn" class="btn-sm" title="Cancel all queued jobs" style="display:none;">Cancel Queued</button>
+            <button id="clearCompletedBtn" class="btn-sm" title="Remove completed jobs from the list" style="display:none;">Clear Completed</button>
+          </div>
+            </div>
+            
+            <div class="job-stats">
+              <div class="stat-card" id="filterQueued" data-filter="queued" title="Show only queued jobs">
+                <span class="stat-label">Queued</span>
+                <span class="stat-value" id="queuedJobsCount">0</span>
+              </div>
+              <div class="stat-card" id="filterActive" data-filter="running" title="Show only active (running) jobs">
+                <span class="stat-label">Active</span>
+                <span class="stat-value" id="activeJobsCount">0</span>
+              </div>
+              <div class="stat-card" id="filterCompleted" data-filter="completed" title="Show completed jobs">
+                <span class="stat-label">Completed</span>
+                <span class="stat-value" id="completedJobsCount">0</span>
+              </div>
+            </div>
+            
+            <div class="job-table-container" id="jobTableContainer">
+              <table class="job-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Task</th>
+                    <th>File</th>
+                    <th>Status</th>
+                    <th>Progress</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="jobTableBody">
+                  <!-- Jobs will be populated here -->
+                </tbody>
+              </table>
+              <div class="resize-handle" id="jobResizeHandle" title="Drag to resize"></div>
+            </div>
+          </div>
+
+          <!-- Artifact Generation Section -->
+          <div class="task-section">
+            <div class="section-header">
+              <h2>Generate Artifacts</h2>
+            </div>
+
+            <!-- File Selection -->
+            <div class="file-selection">
+              <div class="selection-options">
+                <label class="selection-option">
+                  <input type="radio" name="fileSelection" value="all" checked>
+                  All files in library
+                </label>
+                <label class="selection-option">
+                  <input type="radio" name="fileSelection" value="selected">
+                  Selected files (<span id="selectedFileCount">0</span>)
+                </label>
+                <button id="generateAllBtn" class="btn-sm" title="Queue all missing artifacts for the chosen scope" style="margin-left:auto;">Generate All</button>
+              </div>
+            </div>
+
+            <!-- Artifact Types -->
+            <div class="artifact-grid">
+              
+              <div class="artifact-card" data-artifact="metadata">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Metadata</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="metadataCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="metadataFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate" data-operation="metadata-missing">Generate Missing</button>
+                    <button class="btn-recompute" data-operation="metadata-all" style="display:none;">Recompute All</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="artifact-card" data-artifact="thumbnails">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Thumbnails</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="thumbnailsCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="thumbnailsFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate" data-operation="thumbnails-missing" title="Generate missing thumbnails">
+                      Generate Missing
+                    </button>
+                    <button class="btn-recompute" data-operation="thumbnails-all" title="Recompute all thumbnails" style="display:none;">
+                      Recompute All
+                    </button>
+                    <button class="btn-options" data-artifact="thumbnails" title="Options">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip" id="thumbnailsOptions" style="display:none;">
+                  <label>Offset (seconds): <input type="number" id="thumbnailOffset" value="10" min="1" max="3600"></label>
+                </div>
+              </div>
+
+              <div class="artifact-card" data-artifact="sprites">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Sprite Sheets</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="spritesCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="spritesFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate" data-operation="sprites-missing">Generate Missing</button>
+                    <button class="btn-recompute" data-operation="sprites-all" style="display:none;">Recompute All</button>
+                    <button class="btn-options" data-artifact="sprites">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip" id="spritesOptions" style="display:none;">
+                  <label>Interval (sec): <input type="number" id="spriteInterval" value="10" min="1" max="60"></label>
+                  <label>Width (px): <input type="number" id="spriteWidth" value="320" min="160" max="1920"></label>
+                  <label>Columns: <input type="number" id="spriteCols" value="10" min="5" max="20"></label>
+                </div>
+              </div>
+
+              <div class="artifact-card" data-artifact="previews">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Hover Previews</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="previewsCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="previewsFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate" data-operation="previews-missing">Generate Missing</button>
+                    <button class="btn-recompute" data-operation="previews-all" style="display:none;">Recompute All</button>
+                    <button class="btn-options" data-artifact="previews">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip" id="previewsOptions" style="display:none;">
+                  <label>Segments: <input type="number" id="previewSegments" value="9" min="5" max="20"></label>
+                  <label>Duration (sec): <input type="number" id="previewDuration" value="1.0" min="0.5" max="3.0" step="0.1"></label>
+                </div>
+              </div>
+
+              <div class="artifact-card" data-artifact="phash">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Perceptual Hash</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="phashCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="phashFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate" data-operation="phash-missing">Generate Missing</button>
+                    <button class="btn-recompute" data-operation="phash-all" style="display:none;">Recompute All</button>
+                    <button class="btn-options" data-artifact="phash">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip" id="phashOptions" style="display:none;">
+                  <label>Frames: <input type="number" id="phashFrames" value="5" min="3" max="10"></label>
+                  <label>Algorithm: 
+                    <div class="select">
+                      <select id="phashAlgo" class="control-select">
+                        <option value="ahash">Average Hash</option>
+                        <option value="phash">Perceptual Hash</option>
+                        <option value="dhash">Difference Hash</option>
+                      </select>
+                      <span class="chevron">▾</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div class="artifact-card" data-artifact="scenes">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Scene Detection</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="scenesCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="scenesFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate" data-operation="scenes-missing">Generate Missing</button>
+                    <button class="btn-recompute" data-operation="scenes-all" style="display:none;">Recompute All</button>
+                    <button class="btn-options" data-artifact="scenes">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip" id="scenesOptions" style="display:none;">
+                  <label>Threshold: <input type="number" id="sceneThreshold" value="0.4" min="0.1" max="1.0" step="0.1"></label>
+                  <label>Limit: <input type="number" id="sceneLimit" value="0" min="0" max="100"></label>
+                </div>
+              </div>
+
+              <div class="artifact-card" data-artifact="heatmaps">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Heatmaps</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="heatmapsCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="heatmapsFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate" data-operation="heatmaps-missing">Generate Missing</button>
+                    <button class="btn-recompute" data-operation="heatmaps-all" style="display:none;">Recompute All</button>
+                    <button class="btn-preview" id="previewHeatmapsBtn" title="Preview a sample heatmap PNG">Preview</button>
+                    <button class="btn-options" data-artifact="heatmaps">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip" id="heatmapsOptions" style="display:none;">
+                  <label>Interval (sec): <input type="number" id="heatmapInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
+                  <label>Mode: 
+                    <div class="select">
+                      <select id="heatmapMode" class="control-select">
+                        <option value="brightness">Brightness</option>
+                        <option value="motion">Motion</option>
+                        <option value="color">Color</option>
+                      </select>
+                      <span class="chevron">▾</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div class="artifact-card" data-artifact="subtitles">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Subtitles</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="subtitlesCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="subtitlesFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate" data-operation="subtitles-missing">Generate Missing</button>
+                    <button class="btn-recompute" data-operation="subtitles-all" style="display:none;">Recompute All</button>
+                    <button class="btn-options" data-artifact="subtitles">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip" id="subtitlesOptions" style="display:none;">
+                  <label>Model: 
+                    <div class="select">
+                      <select id="subtitleModel" class="control-select">
+                        <option value="tiny">Tiny</option>
+                        <option value="base">Base</option>
+                        <option value="small" selected>Small</option>
+                        <option value="medium">Medium</option>
+                        <option value="large">Large</option>
+                      </select>
+                      <span class="chevron">▾</span>
+                    </div>
+                  </label>
+                  <label>Language: <input type="text" id="subtitleLang" placeholder="auto" maxlength="5"></label>
+                </div>
+              </div>
+
+              <div class="artifact-card" data-artifact="faces">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Face Detection</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="facesCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="facesFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate" data-operation="faces-missing">Generate Missing</button>
+                    <button class="btn-recompute" data-operation="faces-all" style="display:none;">Recompute All</button>
+                    <button class="btn-options" data-artifact="faces">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip" id="facesOptions" style="display:none;">
+                  <label>Interval (sec): <input type="number" id="faceInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
+                  <label>Min Size: <input type="number" id="faceMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Orphaned Artifacts Section -->
+          <div class="task-section">
+            <div class="section-header">
+              <h2>Orphaned Artifacts</h2>
+            </div>
+            
+            <div class="orphan-card">
+              <div class="orphan-header">
+                <div class="orphan-info">
+                  <h3>Orphaned Files</h3>
+                  <div class="orphan-stats">
+                    <span class="orphan-count" id="orphanCount">0</span>
+                    <span class="orphan-label">files without corresponding videos</span>
+                  </div>
+                </div>
+                <div class="orphan-actions">
+                  <button class="btn-cleanup" id="cleanupOrphansBtn" disabled>Clean Up</button>
+                  <button class="btn-preview" id="previewOrphansBtn" disabled>Preview</button>
+                </div>
+              </div>
+              <div class="orphan-details" id="orphanDetails" style="display:none;">
+                <div class="orphan-list" id="orphanList">
+                  <!-- Orphan files will be listed here -->
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Settings Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="settings-tab" id="settings-panel" hidden>
+        <div class="tab-content">
+          <h2>Settings</h2>
+          <div class="task-section" style="margin-top: 12px;">
+            <div class="section-header">
+              <h2>Library Preferences</h2>
+            </div>
+            <div class="file-selection" style="padding: 12px 0;">
+              <label class="selection-option" style="gap: 10px; align-items: flex-start;">
+                <input type="checkbox" id="settingHoverPreviews" />
+                <div>
+                  <div style="font-weight:600;">Enable hover video previews</div>
+                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                    When enabled, cards will play a small preview on hover. Previews are only played if they already exist; no background generation is triggered automatically.
+                  </div>
+                </div>
+              </label>
+              <label class="selection-option" style="gap: 10px; align-items: flex-start; margin-top: 12px;">
+                <input type="checkbox" id="settingHoverOnDemand" />
+                <div>
+                  <div style="font-weight:600;">Generate hover previews on demand</div>
+                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                    When enabled, hovering a card will request the server to create a preview if one doesn’t exist yet. This may start background work and use CPU.
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div class="task-section" style="margin-top: 12px;">
+            <div class="section-header">
+              <h2>Job Processing</h2>
+            </div>
+            <div class="file-selection" style="padding: 12px 0; display:flex; align-items:center; justify-content: space-between; gap:16px;">
+              <div style="display:flex; align-items:center; gap:16px; width:100%;">
+                <div style="font-weight:600;">Max concurrent jobs</div>
+                <input type="number" id="settingConcurrency" min="1" max="16" step="1" value="4" style="width:120px;" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
     </div>
-    <div id="selectionBar" class="selection-bar" hidden>
-      <span id="selectionCount" class="selection-count">0 selected</span>
-      <button id="clearSelectionBtn" class="btn-sm">Clear</button>
-    </div>
-    <div id="status" class="loading">Loading…</div>
-    <div id="grid" class="grid" hidden></div>
   </main>
   
-  <script>
-    const grid = document.getElementById('grid');
-    const statusEl = document.getElementById('status');
-    const refreshBtn = document.getElementById('refresh');
-    const folderInput = document.getElementById('folderInput');
-    
-    // Grid controls
-    const searchInput = document.getElementById('searchInput');
-    const tagsInput = document.getElementById('tagsInput');
-    const tagsIdsInput = document.getElementById('tagsIdsInput');
-    const performersInput = document.getElementById('performersInput');
-    const performersIdsInput = document.getElementById('performersIdsInput');
-    const matchAnySelect = document.getElementById('matchAnySelect');
-    const sortSelect = document.getElementById('sortSelect');
-    const orderSelect = document.getElementById('orderSelect');
-    const pageSizeSelect = document.getElementById('pageSizeSelect');
-    const gridSizeBtns = document.querySelectorAll('.grid-size-btn');
-    const prevBtn = document.getElementById('prevBtn');
-    const nextBtn = document.getElementById('nextBtn');
-    const pageInfo = document.getElementById('pageInfo');
-    
-    // Saved queries
-    const queryNameInput = document.getElementById('queryNameInput');
-    const saveQueryBtn = document.getElementById('saveQueryBtn');
-    const queryPills = document.getElementById('queryPills');
-    
-    // Selection
-    const selectionBar = document.getElementById('selectionBar');
-    const selectionCount = document.getElementById('selectionCount');
-    const clearSelectionBtn = document.getElementById('clearSelectionBtn');
-    const selectAllBtn = document.getElementById('selectAllBtn');
-    const selectNoneBtn = document.getElementById('selectNoneBtn');
-    
-    // State
-    let currentPage = 1;
-    let totalPages = 1;
-    let totalFiles = 0;
-    let selectedItems = new Set();
-    let currentGridSize = 'medium';
-    let savedQueries = JSON.parse(localStorage.getItem('mediaLibraryQueries') || '[]');
-    
-    const PLACEHOLDER_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent(`
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
-        <defs>
-          <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stop-color="#0e1016"/>
-            <stop offset="100%" stop-color="#1a2030"/>
-          </linearGradient>
-        </defs>
-        <rect width="320" height="180" fill="url(#g)"/>
-        <g fill="#3b4663">
-          <rect x="30" y="40" width="260" height="100" rx="8"/>
-          <polygon points="140,90 140,70 200,90 140,110" fill="#6b7aa6"/>
-        </g>
-      </svg>`);
-    
-    // Modal elements
-    const modal = document.createElement('div');
-    modal.className = 'modal';
-    modal.hidden = true;
-    modal.innerHTML = `
-      <div class="panel">
-        <header>
-          <div class="crumbs" id="crumbs"></div>
-        </header>
-        <div class="body">
-          <div class="dirlist" id="dirlist"></div>
-        </div>
-        <div class="actions">
-          <button class="btn" id="chooseBtn">Choose this folder</button>
-          <button class="btn" id="cancelBtn">Cancel</button>
-        </div>
-      </div>`;
-    document.body.appendChild(modal);
-    const crumbsEl = modal.querySelector('#crumbs');
-    const dirlistEl = modal.querySelector('#dirlist');
-    const chooseBtn = modal.querySelector('#chooseBtn');
-    const cancelBtn = modal.querySelector('#cancelBtn');
-    let pickerPath = '';
-    
-    function fmtSize(bytes) {
-      if (!Number.isFinite(bytes)) return '';
-      const units = ['B','KB','MB','GB','TB'];
-      let i = 0; let v = bytes;
-      while (v >= 1024 && i < units.length-1) { v /= 1024; i++; }
-      return v.toFixed(v < 10 ? 1 : 0) + ' ' + units[i];
-    }
-    
-    function fmtDuration(sec) {
-      if (!Number.isFinite(sec) || sec <= 0) return '';
-      const h = Math.floor(sec / 3600);
-      const m = Math.floor((sec % 3600) / 60);
-      const s = Math.floor(sec % 60);
-      return (h ? h+':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-    }
-    
-    function videoCard(v) {
-      const imgSrc = v.cover || PLACEHOLDER_IMG;
-      const dur = fmtDuration(Number(v.duration));
-      const size = fmtSize(Number(v.size));
-      const isSelected = selectedItems.has(v.path);
-      const el = document.createElement('div');
-      el.className = 'card';
-      el.dataset.path = v.path;
-      el.innerHTML = `
-        <div class="card-checkbox ${isSelected ? 'checked' : ''}" onclick="toggleSelection(event, '${v.path}')"></div>
-        <img class="thumb" src="${imgSrc}" alt="${v.title || v.name}" loading="lazy" data-fallback="${PLACEHOLDER_IMG}" onerror="this.onerror=null;this.src=this.dataset.fallback;" />
-        <div class="meta">
-          <p class="title" title="${v.title || v.name}">${v.title || v.name}</p>
-          <div class="row sub">
-            <span>${dur}</span>
-            <span>${size}</span>
-          </div>
-        </div>`;
-      el.addEventListener('click', () => {
-        // Later we’ll navigate to a player screen; for now, no-op
-        console.log('open', v.path);
-      });
-      return el;
-    }
-    
-    function dirCard(d) {
-      const el = document.createElement('div');
-      el.className = 'card';
-      const name = d.name || String(d);
-      const dpath = d.path || name;
-      el.innerHTML = `
-        <div class="thumb" style="display:flex;align-items:center;justify-content:center;background:#121723;color:#aab2c7;font-weight:600;letter-spacing:.2px;">
-          <div style="display:flex;align-items:center;gap:10px;">
-            <span style="display:inline-block;width:20px;height:16px;background:#6b7aa6;border-radius:2px;position:relative;"></span>
-            <span>${name}</span>
-          </div>
-        </div>
-        <div class="meta">
-          <p class="title" title="${name}">${name}</p>
-          <div class="row sub"><span>Folder</span><span></span></div>
-        </div>`;
-      el.addEventListener('click', () => {
-        folderInput.value = dpath;
-        loadLibrary();
-      });
-      el.addEventListener('dblclick', () => {
-        folderInput.value = dpath;
-        loadLibrary();
-      });
-      return el;
-    }
-    
-    function currentPath() {
-      const v = (folderInput.value || '').trim();
-      // When the input contains an absolute path (root), do not treat it as a relative folder
-      if (isAbsolutePath(v)) return '';
-      return v.replace(/^\/+|\/+$/g, '');
-    }
-    
-    async function loadLibrary() {
-      try {
-        statusEl.hidden = false;
-        statusEl.className = 'loading';
-        statusEl.textContent = 'Loading…';
-        grid.hidden = true;
-        
-        const url = new URL('/api/library', window.location.origin);
-        url.searchParams.set('page', String(currentPage));
-        url.searchParams.set('page_size', pageSizeSelect.value || '48');
-        url.searchParams.set('sort', sortSelect.value || 'date');
-        url.searchParams.set('order', orderSelect.value || 'desc');
-        
-        // Add search and filter parameters
-        const searchVal = searchInput.value.trim();
-        if (searchVal) url.searchParams.set('search', searchVal);
-        
-        const tagsVal = tagsInput.value.trim();
-        if (tagsVal) url.searchParams.set('tags', tagsVal);
-        
-        const tagsIdsVal = tagsIdsInput.value.trim();
-        if (tagsIdsVal) url.searchParams.set('tags_ids', tagsIdsVal);
-        
-        const performersVal = performersInput.value.trim();
-        if (performersVal) url.searchParams.set('performers', performersVal);
-        
-        const performersIdsVal = performersIdsInput.value.trim();
-        if (performersIdsVal) url.searchParams.set('performers_ids', performersIdsVal);
-        
-        const matchAnyVal = matchAnySelect.value;
-        if (matchAnyVal === 'true') url.searchParams.set('match_any', 'true');
-        
-        const val = (folderInput.value || '').trim();
-        const p = currentPath();
-        // Only set a relative path; ignore absolute values (those represent the root itself)
-        if (val && !isAbsolutePath(val) && p) url.searchParams.set('path', p);
-        
-        const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const payload = await res.json();
-        if (payload?.status !== 'success') throw new Error(payload?.message || 'Unexpected response');
-        
-        const data = payload.data || {};
-        const files = Array.isArray(data.files) ? data.files : [];
-        const dirs = Array.isArray(data.dirs) ? data.dirs : [];
-        
-        // Update pagination info
-        totalPages = data.total_pages || 1;
-        totalFiles = data.total_files || 0;
-        currentPage = data.page || 1;
-        
-        // Update pagination UI
-        pageInfo.textContent = `Page ${currentPage} of ${totalPages} (${totalFiles} files)`;
-        prevBtn.disabled = currentPage <= 1;
-        nextBtn.disabled = currentPage >= totalPages;
-        
-        grid.innerHTML = '';
-        if (files.length === 0) {
-          // If there are folders, try a shallow fallback: pull videos from a few subfolders
-          if (dirs.length > 0) {
-            // Render folders first for navigation
-            for (const d of dirs) grid.appendChild(dirCard(d));
-            
-            // Then fetch videos from up to N subfolders until we have some tiles
-            const MAX_DIRS = 8;
-            const MAX_TILES = 60;
-            let collected = 0;
-            const subdirs = dirs.slice(0, MAX_DIRS);
-            // Kick off fetches in parallel with a soft cap
-            const promises = subdirs.map(async (d) => {
-              if (collected >= MAX_TILES) return;
-              const dpath = d.path || d.name || '';
-              if (!dpath) return;
-              try {
-                const u = new URL('/api/library', window.location.origin);
-                u.searchParams.set('path', dpath);
-                u.searchParams.set('page', '1');
-                u.searchParams.set('page_size', String(Math.min(24, MAX_TILES)));
-                u.searchParams.set('sort', 'date');
-                u.searchParams.set('order', 'desc');
-                const r = await fetch(u, { headers: { 'Accept': 'application/json' }});
-                if (!r.ok) return;
-                const pl = await r.json();
-                const f2 = Array.isArray(pl?.data?.files) ? pl.data.files : [];
-                for (const f of f2) {
-                  if (collected >= MAX_TILES) break;
-                  grid.appendChild(videoCard(f));
-                  collected++;
-                }
-              } catch (_) { /* ignore sub-errors */ }
-            });
-            await Promise.all(promises);
-            
-            statusEl.hidden = true;
-            grid.hidden = false;
-            return;
-          } else {
-            statusEl.hidden = false;
-            statusEl.className = 'empty';
-            statusEl.textContent = 'No videos found.';
-            grid.hidden = true;
-            return;
-          }
-        }
-        for (const f of files) {
-          grid.appendChild(videoCard(f));
-        }
-        statusEl.hidden = true;
-        grid.hidden = false;
-      } catch (e) {
-        console.error(e);
-        statusEl.hidden = false;
-        statusEl.className = 'error';
-        statusEl.textContent = 'Failed to load library.';
-        grid.hidden = true;
-      }
-    }
-    
-    refreshBtn.addEventListener('click', loadLibrary);
-    
-    // Grid control event listeners
-    searchInput.addEventListener('input', () => { currentPage = 1; loadLibrary(); });
-    tagsInput.addEventListener('input', () => { currentPage = 1; loadLibrary(); });
-    tagsIdsInput.addEventListener('input', () => { currentPage = 1; loadLibrary(); });
-    performersInput.addEventListener('input', () => { currentPage = 1; loadLibrary(); });
-    performersIdsInput.addEventListener('input', () => { currentPage = 1; loadLibrary(); });
-    matchAnySelect.addEventListener('change', () => { currentPage = 1; loadLibrary(); });
-    sortSelect.addEventListener('change', () => { currentPage = 1; loadLibrary(); });
-    orderSelect.addEventListener('change', () => { currentPage = 1; loadLibrary(); });
-    pageSizeSelect.addEventListener('change', () => { currentPage = 1; loadLibrary(); });
-    
-    // Pagination
-    prevBtn.addEventListener('click', () => { if (currentPage > 1) { currentPage--; loadLibrary(); } });
-    nextBtn.addEventListener('click', () => { if (currentPage < totalPages) { currentPage++; loadLibrary(); } });
-    
-    // Grid size controls
-    gridSizeBtns.forEach(btn => {
-      btn.addEventListener('click', () => {
-        gridSizeBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        currentGridSize = btn.dataset.size;
-        updateGridSize();
-      });
-    });
-    
-    // (Removed: simple Enter handler; replaced below with unified behavior)
-    folderInput.addEventListener('dblclick', () => openFolderPicker());
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') loadLibrary();
-    });
-    window.addEventListener('load', () => {
-      // Prefill with current root value, then load library
-      fetch('/api/root').then(r => r.json()).then((p) => {
-        if (p?.status === 'success' && p?.data?.root) {
-          folderInput.value = String(p.data.root);
-        } else {
-          folderInput.value = '';
-        }
-      }).catch(() => {
-        folderInput.value = '';
-      }).finally(loadLibrary);
-    });
-    
-    // Grid size function
-    function updateGridSize() {
-      const root = document.documentElement;
-      switch (currentGridSize) {
-        case 'small':
-          root.style.setProperty('--grid-gap', '10px');
-          grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(140px, 1fr))';
-          break;
-        case 'large':
-          root.style.setProperty('--grid-gap', '18px');
-          grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(220px, 1fr))';
-          break;
-        default: // medium
-          root.style.setProperty('--grid-gap', '14px');
-          grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(180px, 1fr))';
-      }
-    }
-    
-    // Selection functions
-    function toggleSelection(event, path) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (selectedItems.has(path)) {
-        selectedItems.delete(path);
-      } else {
-        selectedItems.add(path);
-      }
-      updateSelectionUI();
-      updateCardSelection(path);
-    }
-    
-    function updateSelectionUI() {
-      const count = selectedItems.size;
-      if (count > 0) {
-        selectionBar.hidden = false;
-        selectionCount.textContent = `${count} selected`;
-      } else {
-        selectionBar.hidden = true;
-      }
-    }
-    
-    function updateCardSelection(path) {
-      const card = document.querySelector(`[data-path="${path}"]`);
-      if (card) {
-        const checkbox = card.querySelector('.card-checkbox');
-        if (selectedItems.has(path)) {
-          checkbox.classList.add('checked');
-        } else {
-          checkbox.classList.remove('checked');
-        }
-      }
-    }
-    
-    // Selection controls
-    selectAllBtn.addEventListener('click', () => {
-      document.querySelectorAll('.card[data-path]').forEach(card => {
-        const path = card.dataset.path;
-        if (path) selectedItems.add(path);
-      });
-      updateSelectionUI();
-      document.querySelectorAll('.card-checkbox').forEach(cb => cb.classList.add('checked'));
-    });
-    
-    selectNoneBtn.addEventListener('click', () => {
-      selectedItems.clear();
-      updateSelectionUI();
-      document.querySelectorAll('.card-checkbox').forEach(cb => cb.classList.remove('checked'));
-    });
-    
-    clearSelectionBtn.addEventListener('click', () => {
-      selectedItems.clear();
-      updateSelectionUI();
-      document.querySelectorAll('.card-checkbox').forEach(cb => cb.classList.remove('checked'));
-    });
-    
-    // Saved queries
-    function saveCurrentQuery() {
-      const name = queryNameInput.value.trim();
-      if (!name) return;
-      
-      const query = {
-        name,
-        search: searchInput.value,
-        tags: tagsInput.value,
-        tags_ids: tagsIdsInput.value,
-        performers: performersInput.value,
-        performers_ids: performersIdsInput.value,
-        match_any: matchAnySelect.value,
-        sort: sortSelect.value,
-        order: orderSelect.value,
-        page_size: pageSizeSelect.value
-      };
-      
-      savedQueries = savedQueries.filter(q => q.name !== name);
-      savedQueries.push(query);
-      localStorage.setItem('mediaLibraryQueries', JSON.stringify(savedQueries));
-      renderQueryPills();
-      queryNameInput.value = '';
-    }
-    
-    function loadQuery(query) {
-      searchInput.value = query.search || '';
-      tagsInput.value = query.tags || '';
-      tagsIdsInput.value = query.tags_ids || '';
-      performersInput.value = query.performers || '';
-      performersIdsInput.value = query.performers_ids || '';
-      matchAnySelect.value = query.match_any || 'false';
-      sortSelect.value = query.sort || 'date';
-      orderSelect.value = query.order || 'desc';
-      pageSizeSelect.value = query.page_size || '48';
-      currentPage = 1;
-      loadLibrary();
-    }
-    
-    function renderQueryPills() {
-      queryPills.innerHTML = '';
-      savedQueries.forEach(query => {
-        const pill = document.createElement('div');
-        pill.className = 'query-pill';
-        pill.textContent = query.name;
-        pill.addEventListener('click', () => loadQuery(query));
-        queryPills.appendChild(pill);
-      });
-    }
-    
-    saveQueryBtn.addEventListener('click', saveCurrentQuery);
-    queryNameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') saveCurrentQuery();
-    });
-    
-    // Initialize on load
-    window.addEventListener('load', () => {
-      renderQueryPills();
-    });
-    
-    // Folder picker
-    async function fetchDirs(path = '') {
-      const url = new URL('/api/library', window.location.origin);
-      if (path) url.searchParams.set('path', path);
-      url.searchParams.set('page', '1');
-      // Large page_size to avoid server-side file pagination affecting perceived results
-      url.searchParams.set('page_size', '500'); // we only need dirs; dirs are not paginated server-side
-      const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const payload = await res.json();
-      if (payload?.status !== 'success') throw new Error(payload?.message || 'Unexpected response');
-      const data = payload.data || {};
-      const dirs = Array.isArray(data.dirs) ? data.dirs : [];
-      return { cwd: String(data.cwd || ''), dirs };
-    }
-    
-    function renderCrumbs(path) {
-      crumbsEl.innerHTML = '';
-      const segs = path.split('/').filter(Boolean);
-      const mkSeg = (label, p) => {
-        const s = document.createElement('span');
-        s.className = 'seg';
-        s.textContent = label;
-        s.addEventListener('click', () => goTo(p));
-        return s;
-      };
-      const divider = document.createTextNode(' / ');
-      crumbsEl.appendChild(mkSeg('root', ''));
-      let acc = '';
-      for (const seg of segs) {
-        crumbsEl.appendChild(divider.cloneNode());
-        acc = acc ? acc + '/' + seg : seg;
-        crumbsEl.appendChild(mkSeg(seg, acc));
-      }
-    }
-    
-    async function renderDir(path) {
-      pickerPath = path;
-      renderCrumbs(path);
-      dirlistEl.innerHTML = '';
-      try {
-        const { dirs } = await fetchDirs(path);
-        if (path) {
-          const up = document.createElement('div');
-          up.className = 'dir';
-          up.innerHTML = `<div class="icon"></div><div>.. (up)</div>`;
-          up.addEventListener('click', () => {
-            const segs = path.split('/').filter(Boolean);
-            segs.pop();
-            goTo(segs.join('/'));
-          });
-          dirlistEl.appendChild(up);
-        }
-        dirs.sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
-        for (const d of dirs) {
-          const item = document.createElement('div');
-          item.className = 'dir';
-          const name = d.name || String(d);
-          const dpath = d.path || (path ? `${path}/${name}` : name);
-          item.innerHTML = `<div class="icon"></div><div>${name}</div>`;
-          item.addEventListener('click', () => goTo(dpath));
-          item.addEventListener('dblclick', () => choose(dpath));
-          dirlistEl.appendChild(item);
-        }
-        if (dirs.length === 0) {
-          const none = document.createElement('div');
-          none.className = 'dir';
-          none.style.opacity = '0.8';
-          none.innerHTML = `<div class="icon" style="opacity:.4"></div><div>No folders here</div>`;
-          dirlistEl.appendChild(none);
-        }
-      } catch (e) {
-        const err = document.createElement('div');
-        err.className = 'dir';
-        err.textContent = 'Failed to list directories.';
-        dirlistEl.appendChild(err);
-      }
-    }
-    
-    function openFolderPicker() {
-      modal.hidden = false;
-      const val = (folderInput.value || '').trim();
-      const start = isAbsolutePath(val) ? '' : currentPath();
-      renderDir(start);
-    }
-    function closeFolderPicker() {
-      modal.hidden = true;
-    }
-    function goTo(path) { renderDir(path); }
-    function choose(path) {
-      folderInput.value = path || '';
-      closeFolderPicker();
-      loadLibrary();
-    }
-    chooseBtn.addEventListener('click', () => choose(pickerPath));
-    cancelBtn.addEventListener('click', () => closeFolderPicker());
-    modal.addEventListener('click', (e) => { if (e.target === modal) closeFolderPicker(); });
-    
-    // Root setter merged into the single input
-    function isAbsolutePath(p) {
-      if (!p) return false;
-      // Allow Unix absolute (/...) and home (~), and Windows drive (C:\ or C:/)
-      return p.startsWith('/') || p.startsWith('~') || /^[A-Za-z]:[\\/]/.test(p);
-    }
-    
-    async function setRoot(val) {
-      const rootVal = (val || '').trim();
-      if (!rootVal) return;
-      if (!isAbsolutePath(rootVal)) {
-        alert('Please enter an absolute path (e.g., /Volumes/Media or ~/Movies).');
-        return;
-      }
-      try {
-        const res = await fetch('/api/root', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ root: rootVal })
-        });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const payload = await res.json();
-        if (payload?.status !== 'success') throw new Error(payload?.message || 'Failed to set root');
-        // Keep the input reflecting the current root
-        folderInput.value = String(payload.data.root || rootVal);
-        await loadLibrary();
-      } catch (err) {
-        alert('Failed to set root. Ensure the directory exists on the server.');
-      }
-    }
-    
-    // Single-input behavior: Enter applies relative browse or sets root if absolute
-    folderInput.addEventListener('keydown', async (e) => {
-      if (e.key !== 'Enter') return;
-      const val = (folderInput.value || '').trim();
-      if (!val) { await loadLibrary(); return; }
-      if (isAbsolutePath(val)) {
-        await setRoot(val);
-      } else {
-        await loadLibrary();
-      }
-    });
-  </script>
+  
 </body>
 </html>
