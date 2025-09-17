@@ -1953,6 +1953,25 @@ JOB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 JOB_MAX_CONCURRENCY = int(os.environ.get("JOB_MAX_CONCURRENCY", "4"))
 JOB_RUN_SEM = threading.Semaphore(JOB_MAX_CONCURRENCY)
 
+# Per-file/task locks to avoid duplicate heavy work on the same target
+FILE_TASK_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+FILE_TASK_LOCKS_GUARD = threading.Lock()
+
+def _file_task_lock(path: Path, task: str) -> threading.Lock:
+    """Return a process-wide lock for (absolute-file-path, task) pairs.
+    Prevents launching multiple ffmpeg/CPU-heavy operations on the same file+task at once.
+    """
+    try:
+        key = (str(path.resolve()), str(_normalize_job_type(task)))
+    except Exception:
+        key = (str(path), str(_normalize_job_type(task)))
+    with FILE_TASK_LOCKS_GUARD:
+        lk = FILE_TASK_LOCKS.get(key)
+        if lk is None:
+            lk = threading.Lock()
+            FILE_TASK_LOCKS[key] = lk
+        return lk
+
 # Registry lock for centralized tags/performers files
 REGISTRY_LOCK = threading.Lock()
 
@@ -2266,7 +2285,12 @@ def _wrap_job_background(job_type: str, path: str, fn):
     _start_job(jid)
     def _runner():
         try:
-            result = fn()
+            # Prevent duplicate heavy work on same (path, task)
+            fp = Path(path)
+            lock = _file_task_lock(fp, job_type)
+            with JOB_RUN_SEM:
+                with lock:
+                    result = fn()
             with JOB_LOCK:
                 if jid in JOBS:
                     JOBS[jid]["result"] = result if not isinstance(result, JSONResponse) else None
@@ -3477,7 +3501,10 @@ def cover_create_batch(
                         _set_job_progress(sup_jid, processed_inc=1)
                         continue
                     try:
-                        generate_thumbnail(p, force=force, time_spec=time_spec, quality=q)
+                        lk = _file_task_lock(p, "cover")
+                        with JOB_RUN_SEM:
+                            with lk:
+                                generate_thumbnail(p, force=force, time_spec=time_spec, quality=q)
                     except Exception:
                         # Best-effort stub
                         out = thumbs_path(p)
@@ -3583,7 +3610,10 @@ def hover_create_batch(
                     jid = _new_job("hover", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
-                        generate_hover_preview(p, segments=int(segments), seg_dur=float(seg_dur), width=int(width), fmt="webm")
+                        lk = _file_task_lock(p, "hover")
+                        with JOB_RUN_SEM:
+                            with lk:
+                                generate_hover_preview(p, segments=int(segments), seg_dur=float(seg_dur), width=int(width), fmt="webm")
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
@@ -3834,7 +3864,10 @@ def sprites_create_batch(path: str = Query(default=""), recursive: bool = Query(
                     jid = _new_job("sprites", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
-                        generate_sprite_sheet(p, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality))
+                        lk = _file_task_lock(p, "sprites")
+                        with JOB_RUN_SEM:
+                            with lk:
+                                generate_sprite_sheet(p, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality))
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
@@ -3954,7 +3987,10 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
                     jid = _new_job("heatmaps", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
-                        compute_heatmaps(p, float(interval), str(mode), bool(png))
+                        lk = _file_task_lock(p, "heatmaps")
+                        with JOB_RUN_SEM:
+                            with lk:
+                                compute_heatmaps(p, float(interval), str(mode), bool(png))
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
@@ -4256,7 +4292,10 @@ def subtitles_create_batch(
                     jid = _new_job("subtitles", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
-                        generate_subtitles(p, out_file, model=model, language=(language or "en"), translate=bool(translate))
+                        lk = _file_task_lock(p, "subtitles")
+                        with JOB_RUN_SEM:
+                            with lk:
+                                generate_subtitles(p, out_file, model=model, language=(language or "en"), translate=bool(translate))
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
@@ -5231,6 +5270,7 @@ def tasks_batch_operation(request: Request):
             created_jobs.append(jid)
         else:
             # Per-file jobs: one JobRequest per video
+            seen_targets: set[tuple[str, str]] = set()
             for v in videos_to_process:
                 try:
                     rel = str(v.relative_to(STATE["root"]))
@@ -5239,6 +5279,11 @@ def tasks_batch_operation(request: Request):
                 per_params = dict(job_params)
                 # Narrow down to a single target for this job
                 per_params["targets"] = [rel]
+                # Deduplicate by (task, target)
+                dedup_key = (task_name, rel)
+                if dedup_key in seen_targets:
+                    continue
+                seen_targets.add(dedup_key)
                 req = JobRequest(
                     task=task_name,
                     directory=str(base),
@@ -6118,10 +6163,12 @@ def _run_job_worker(jid: str, jr: JobRequest):
                     return
                 try:
                     _set_job_current(jid, str(v))
-                    if thumbs_path(v).exists() and not force:
-                        pass
-                    else:
-                        generate_thumbnail(v, force=force, time_spec=time_spec, quality=q)
+                    lk = _file_task_lock(v, "cover")
+                    with lk:
+                        if thumbs_path(v).exists() and not force:
+                            pass
+                        else:
+                            generate_thumbnail(v, force=force, time_spec=time_spec, quality=q)
                 except Exception:
                     pass
                 _set_job_progress(jid, processed_inc=1)
@@ -6150,7 +6197,9 @@ def _run_job_worker(jid: str, jr: JobRequest):
                     return
                 try:
                     _set_job_current(jid, str(v))
-                    metadata_single(v, force=bool(jr.force))
+                    lk = _file_task_lock(v, "metadata")
+                    with lk:
+                        metadata_single(v, force=bool(jr.force))
                 except Exception:
                     pass
                 _set_job_progress(jid, processed_inc=1)
@@ -6182,23 +6231,25 @@ def _run_job_worker(jid: str, jr: JobRequest):
                     return
                 try:
                     _set_job_current(jid, str(v))
-                    if phash_path(v).exists() and not bool(jr.force):
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
-                    else:
-                        def _pcb(i: int, n: int):
-                            try:
-                                n = max(1, int(n))
-                                i = max(0, min(int(i), n))
-                                overall = (done_files * 100) + int((i / n) * 100)
-                                _set_job_progress(jid, processed_set=overall)
-                            except Exception:
-                                pass
-                        def _cc() -> bool:
-                            return _job_check_canceled(jid)
-                        phash_create_single(v, frames=frames, progress_cb=_pcb, cancel_check=_cc)
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
+                    lk = _file_task_lock(v, "phash")
+                    with lk:
+                        if phash_path(v).exists() and not bool(jr.force):
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
+                        else:
+                            def _pcb(i: int, n: int):
+                                try:
+                                    n = max(1, int(n))
+                                    i = max(0, min(int(i), n))
+                                    overall = (done_files * 100) + int((i / n) * 100)
+                                    _set_job_progress(jid, processed_set=overall)
+                                except Exception:
+                                    pass
+                            def _cc() -> bool:
+                                return _job_check_canceled(jid)
+                            phash_create_single(v, frames=frames, progress_cb=_pcb, cancel_check=_cc)
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
                 except Exception:
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
@@ -6439,35 +6490,37 @@ def _run_job_worker(jid: str, jr: JobRequest):
                     return
                 try:
                     _set_job_current(jid, str(v))
-                    # Skip if both sheet and json already exist, unless force=True
-                    s, jj = sprite_sheet_paths(v)
-                    if s.exists() and jj.exists() and not bool(jr.force):
-                        # Count as fully done for progress purposes
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
-                    else:
-                        def _pcb_sprites(step: int, steps: int):
-                            try:
-                                steps = max(1, int(steps))
-                                step = max(0, min(int(step), steps))
-                                overall = (done_files * 100) + int((step / steps) * 100)
-                                _set_job_progress(jid, processed_set=overall)
-                            except Exception:
-                                pass
-                        def _cc() -> bool:
-                            return _job_check_canceled(jid)
-                        generate_sprite_sheet(
-                            v,
-                            interval=interval,
-                            width=width,
-                            cols=cols,
-                            rows=rows,
-                            quality=quality,
-                            progress_cb=_pcb_sprites,
-                            cancel_check=_cc,
-                        )
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
+                    lk = _file_task_lock(v, "sprites")
+                    with lk:
+                        # Skip if both sheet and json already exist, unless force=True
+                        s, jj = sprite_sheet_paths(v)
+                        if s.exists() and jj.exists() and not bool(jr.force):
+                            # Count as fully done for progress purposes
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
+                        else:
+                            def _pcb_sprites(step: int, steps: int):
+                                try:
+                                    steps = max(1, int(steps))
+                                    step = max(0, min(int(step), steps))
+                                    overall = (done_files * 100) + int((step / steps) * 100)
+                                    _set_job_progress(jid, processed_set=overall)
+                                except Exception:
+                                    pass
+                            def _cc() -> bool:
+                                return _job_check_canceled(jid)
+                            generate_sprite_sheet(
+                                v,
+                                interval=interval,
+                                width=width,
+                                cols=cols,
+                                rows=rows,
+                                quality=quality,
+                                progress_cb=_pcb_sprites,
+                                cancel_check=_cc,
+                            )
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
                 except Exception:
                     # On error, still advance to next file; mark this file as completed in progress scale
                     done_files += 1
@@ -6502,23 +6555,25 @@ def _run_job_worker(jid: str, jr: JobRequest):
                     return
                 try:
                     _set_job_current(jid, str(v))
-                    if heatmaps_json_exists(v) and not bool(jr.force):
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
-                    else:
-                        def _pcb_heat(i: int, n: int):
-                            try:
-                                n = max(1, int(n))
-                                i = max(0, min(int(i), n))
-                                overall = (done_files * 100) + int((i / n) * 100)
-                                _set_job_progress(jid, processed_set=overall)
-                            except Exception:
-                                pass
-                        def _cc() -> bool:
-                            return _job_check_canceled(jid)
-                        compute_heatmaps(v, interval=interval, mode=mode, png=png, progress_cb=_pcb_heat, cancel_check=_cc)
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
+                    lk = _file_task_lock(v, "heatmaps")
+                    with lk:
+                        if heatmaps_json_exists(v) and not bool(jr.force):
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
+                        else:
+                            def _pcb_heat(i: int, n: int):
+                                try:
+                                    n = max(1, int(n))
+                                    i = max(0, min(int(i), n))
+                                    overall = (done_files * 100) + int((i / n) * 100)
+                                    _set_job_progress(jid, processed_set=overall)
+                                except Exception:
+                                    pass
+                            def _cc() -> bool:
+                                return _job_check_canceled(jid)
+                            compute_heatmaps(v, interval=interval, mode=mode, png=png, progress_cb=_pcb_heat, cancel_check=_cc)
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
                 except Exception:
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
@@ -6553,32 +6608,34 @@ def _run_job_worker(jid: str, jr: JobRequest):
                 try:
                     _set_job_current(jid, str(v))
                     out_path = _hover_concat_path(v)
-                    if _file_nonempty(out_path) and not bool(jr.force):
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
-                    else:
-                        def _pcb_hover(i: int, n: int):
-                            try:
-                                n = max(1, int(n))
-                                i = max(0, min(int(i), n))
-                                overall = (done_files * 100) + int((i / n) * 100)
-                                _set_job_progress(jid, processed_set=overall)
-                            except Exception:
-                                pass
-                        def _cc() -> bool:
-                            return _job_check_canceled(jid)
-                        generate_hover_preview(
-                            v,
-                            segments=segments,
-                            seg_dur=duration,
-                            width=width,
-                            fmt="webm",
-                            out=out_path,
-                            progress_cb=_pcb_hover,
-                            cancel_check=_cc,
-                        )
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
+                    lk = _file_task_lock(v, "hover")
+                    with lk:
+                        if _file_nonempty(out_path) and not bool(jr.force):
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
+                        else:
+                            def _pcb_hover(i: int, n: int):
+                                try:
+                                    n = max(1, int(n))
+                                    i = max(0, min(int(i), n))
+                                    overall = (done_files * 100) + int((i / n) * 100)
+                                    _set_job_progress(jid, processed_set=overall)
+                                except Exception:
+                                    pass
+                            def _cc() -> bool:
+                                return _job_check_canceled(jid)
+                            generate_hover_preview(
+                                v,
+                                segments=segments,
+                                seg_dur=duration,
+                                width=width,
+                                fmt="webm",
+                                out=out_path,
+                                progress_cb=_pcb_hover,
+                                cancel_check=_cc,
+                            )
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
                 except Exception:
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
@@ -6613,25 +6670,27 @@ def _run_job_worker(jid: str, jr: JobRequest):
                 try:
                     _set_job_current(jid, str(v))
                     out_file = artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}"
-                    if out_file.exists() and not bool(jr.force):
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
-                    else:
-                        def _pcb_sub(frac: float):
-                            try:
-                                frac = max(0.0, min(1.0, float(frac)))
-                                overall = (done_files * 100) + int(frac * 100)
-                                _set_job_progress(jid, processed_set=overall)
-                            except Exception:
-                                pass
-                        def _cc() -> bool:
-                            return _job_check_canceled(jid)
-                        generate_subtitles(
-                            v, out_file, model=model, language=(language or None), translate=translate,
-                            progress_cb=_pcb_sub, cancel_check=_cc,
-                        )
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
+                    lk = _file_task_lock(v, "subtitles")
+                    with lk:
+                        if out_file.exists() and not bool(jr.force):
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
+                        else:
+                            def _pcb_sub(frac: float):
+                                try:
+                                    frac = max(0.0, min(1.0, float(frac)))
+                                    overall = (done_files * 100) + int(frac * 100)
+                                    _set_job_progress(jid, processed_set=overall)
+                                except Exception:
+                                    pass
+                            def _cc() -> bool:
+                                return _job_check_canceled(jid)
+                            generate_subtitles(
+                                v, out_file, model=model, language=(language or None), translate=translate,
+                                progress_cb=_pcb_sub, cancel_check=_cc,
+                            )
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
                 except Exception:
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
@@ -6668,34 +6727,36 @@ def _run_job_worker(jid: str, jr: JobRequest):
                     return
                 try:
                     _set_job_current(jid, str(v))
-                    # Skip if scenes already exist unless recomputing
-                    if scenes_json_exists(v) and not bool(jr.force):
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
-                    else:
-                        def _pcb_scenes(i: int, n: int):
-                            try:
-                                n = max(1, int(n))
-                                i = max(0, min(int(i), n))
-                                overall = (done_files * 100) + int((i / n) * 100)
-                                _set_job_progress(jid, processed_set=overall)
-                            except Exception:
-                                pass
-                        def _cc() -> bool:
-                            return _job_check_canceled(jid)
-                        generate_scene_artifacts(
-                            v,
-                            threshold=threshold,
-                            limit=limit,
-                            gen_thumbs=gen_thumbs,
-                            gen_clips=gen_clips,
-                            thumbs_width=thumbs_width,
-                            clip_duration=clip_duration,
-                            progress_cb=_pcb_scenes,
-                            cancel_check=_cc,
-                        )
-                        done_files += 1
-                        _set_job_progress(jid, processed_set=done_files * 100)
+                    lk = _file_task_lock(v, "scenes")
+                    with lk:
+                        # Skip if scenes already exist unless recomputing
+                        if scenes_json_exists(v) and not bool(jr.force):
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
+                        else:
+                            def _pcb_scenes(i: int, n: int):
+                                try:
+                                    n = max(1, int(n))
+                                    i = max(0, min(int(i), n))
+                                    overall = (done_files * 100) + int((i / n) * 100)
+                                    _set_job_progress(jid, processed_set=overall)
+                                except Exception:
+                                    pass
+                            def _cc() -> bool:
+                                return _job_check_canceled(jid)
+                            generate_scene_artifacts(
+                                v,
+                                threshold=threshold,
+                                limit=limit,
+                                gen_thumbs=gen_thumbs,
+                                gen_clips=gen_clips,
+                                thumbs_width=thumbs_width,
+                                clip_duration=clip_duration,
+                                progress_cb=_pcb_scenes,
+                                cancel_check=_cc,
+                            )
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
                 except Exception:
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
@@ -6722,8 +6783,23 @@ def jobs_submit(req: JobRequest):
         pass
     # Start worker thread with global concurrency control
     def _runner():
-        with JOB_RUN_SEM:
-            _run_job_worker(jid, req)
+        # For single-target operations, acquire per-file lock to avoid duplicate work
+        prm = req.params or {}
+        targets = prm.get("targets") or []
+        lock_ctx = None
+        if isinstance(targets, list) and len(targets) == 1:
+            try:
+                p = safe_join(STATE["root"], targets[0])
+                lock_ctx = _file_task_lock(p, req.task)
+            except Exception:
+                lock_ctx = None
+        if lock_ctx is not None:
+            with JOB_RUN_SEM:
+                with lock_ctx:
+                    _run_job_worker(jid, req)
+        else:
+            with JOB_RUN_SEM:
+                _run_job_worker(jid, req)
     t = threading.Thread(target=_runner, daemon=True)
     t.start()
     return {"id": jid, "status": "queued"}
@@ -6907,7 +6983,18 @@ def api_tags_summary(path: str = Query(default=""), recursive: bool = Query(defa
 
 
 if __name__ == "__main__":  # pragma: no cover
-    import uvicorn
+    try:
+        import uvicorn  # type: ignore
+    except Exception as e:  # pragma: no cover
+        sys.stderr.write("[app] Missing dependency: uvicorn. Install with: pip install uvicorn\n")
+        sys.exit(1)
+    # Require an explicit opt-in to start the server when running this file directly
+    run_flag = os.environ.get("RUN_SERVER") or os.environ.get("RUN_STANDALONE")
+    if str(run_flag).strip().lower() not in {"1", "true", "yes", "y"}:
+        sys.stderr.write(
+            "[app] Not starting server. To run directly, set RUN_SERVER=1 (or RUN_STANDALONE=1).\n"
+        )
+        sys.exit(0)
     root = os.environ.get("MEDIA_ROOT")
     if root:
         try:

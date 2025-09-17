@@ -35,12 +35,34 @@ fi
 # Activate project venv if present (keeps uvicorn/pip off system Python)
 if [ -d ".venv" ] && [ -f ".venv/bin/activate" ]; then
 	# shellcheck source=/dev/null
-	. .venv/bin/activate
+	. .venv/bin/activate || true
 fi
 
-# Best-effort: discover an IP for friendly output
-LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-LAN_IP=${LAN_IP:-$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {print $7; exit}')}
+# Report which Python/venv will be used
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if command -v python >/dev/null 2>&1; then
+	PYTHON_BIN="python"
+fi
+if [ -n "${VIRTUAL_ENV:-}" ]; then
+	echo "[serve.sh] Using venv: $VIRTUAL_ENV"
+else
+	echo "[serve.sh] No venv active; using system Python ($(command -v "$PYTHON_BIN" || echo python3))"
+fi
+
+# Best-effort: discover an IP for friendly output (robust to missing tools)
+LAN_IP=""
+# Try `ip route` (Linux)
+if command -v ip >/dev/null 2>&1; then
+	LAN_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {print $7; exit}' || true)"
+fi
+# Try `hostname -I` (Linux)
+if [ -z "$LAN_IP" ]; then
+	LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+fi
+# Try macOS `ipconfig`
+if [ -z "$LAN_IP" ] && command -v ipconfig >/dev/null 2>&1; then
+	LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
+fi
 echo "[serve.sh] Host:Port  = ${HOST}:${PORT}"
 echo "[serve.sh] Local URL  = http://127.0.0.1:${PORT}/"
 if [ -n "$LAN_IP" ]; then
@@ -55,7 +77,8 @@ if [ -z "${MEDIA_ROOT:-}" ]; then
 	fi
 fi
 
-exec env MEDIA_ROOT="${MEDIA_ROOT}" uvicorn app:app \
+# Prefer module invocation so it works even if PATH doesn't include uvicorn
+exec env MEDIA_ROOT="${MEDIA_ROOT}" "$PYTHON_BIN" -m uvicorn app:app \
 	--reload \
 	--host "$HOST" \
 	--port "$PORT" \
