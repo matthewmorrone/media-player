@@ -2,17 +2,5 @@ fastapi
 uvicorn
 pydantic
 httpx
-
-# Optional but recommended for features
-opencv-python
-numpy
-# One of these for Whisper-based subtitles
-faster-whisper
-openai-whisper
-# For sprite sheet generation
 Pillow
-
-# Optional enhanced face pipeline (detector + embeddings)
-# Install to enable backend=insightface
-insightface
-onnxruntime
+watchfiles

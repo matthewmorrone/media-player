@@ -1,3 +1,6 @@
+#playerControls .btn-sm { height: 32px; padding: 6px 10px; }
+#playerControls select.control-select { height: 32px; padding: 6px 28px 6px 10px; }
+#playerControls input[type="range"] { height: 6px; }
 :root {
   --bg: #0f1115;
   --panel: #151923;
@@ -79,6 +82,12 @@ main { padding: 24px 64px; }
   transition: opacity 0.2s ease;
 }
 
+/* Player overlay adjustments */
+#playerContainer .player-video { position: relative; }
+#timeline { z-index: 5; }
+/* Position of #spritePreview is controlled by JS; keep only z-index here */
+#spritePreview { z-index: 6; }
+
 .video-hover-preview.active {
   opacity: 1;
 }
@@ -97,19 +106,38 @@ main { padding: 24px 64px; }
   color: white;
 }
 
+.thumb-wrap { position: relative; }
 .thumb { aspect-ratio: 16/9; width: 100%; display: block; background: #0e0f14; object-fit: cover; }
 .meta { padding: 8px 10px 10px; }
 .title { font-size: 13px; font-weight: 600; line-height: 1.35; margin: 0 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub { font-size: 12px; color: var(--muted); }
 .empty, .error { color: var(--muted); padding: 24px; text-align: center; }
 
-/* Loading spinner */
+.overlay-info {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 9;
+  display: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.35);
+  line-height: 1;
+}
+.overlay-info .overlay-resolution {
+  font-weight: 800;
+  color: #ffffff;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.45);
+  font-size: 11px;
+}
+
 .spinner { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000; }
 .spinner::after { content: ""; width: 40px; height: 40px; border: 3px solid var(--muted); border-top: 3px solid var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
-/* Job progress bar */
 .job-progress {
   position: relative;
   width: 100%;
@@ -141,7 +169,6 @@ main { padding: 24px 64px; }
   to   { background-position: 40px 0; }
 }
 
-/* Busy state for action buttons */
 .btn-busy, .btn.btn-busy, .btn-sm.btn-busy {
   position: relative;
   pointer-events: none;
@@ -160,13 +187,11 @@ main { padding: 24px 64px; }
   vertical-align: -2px;
 }
 
-/* Simple slide-in for toasts */
 @keyframes slideIn {
   from { opacity: 0; transform: translateY(-6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Modal */
 .modal[hidden] { display: none; }
 .modal { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,0.4); z-index: 50; }
 .modal .panel { width: min(800px, 92vw); background: var(--panel); border: 1px solid #2a3144; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.4); overflow: hidden; }
@@ -374,6 +399,26 @@ main { padding: 24px 64px; }
 .card-checkbox.checked { background: var(--accent); }
 .card-checkbox.checked::after { content: "✓"; color: white; font-size: 14px; font-weight: bold; position: absolute; top: 2px; left: 5px; }
 
+/* Quality badge (resolution) — Stash-like overlay styling */
+.quality-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 9;
+  display: none; /* shown when JS sets display inline */
+  padding: 2px 6px;
+  line-height: 1;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.45);
+}
+
 /* Previously inline widths */
 #searchInput { width: 280px; }
 #sortSelect { width: 120px; }
@@ -486,6 +531,15 @@ main { padding: 24px 64px; }
   padding-bottom: 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   flex-shrink: 0;
+}
+
+/* Ensure top-right queue monitor buttons are in one horizontal line */
+.section-header .section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-wrap: nowrap;
 }
 
 .section-header h2 {
@@ -610,12 +664,20 @@ main { padding: 24px 64px; }
   transition: all 0.3s ease;
   backdrop-filter: blur(10px);
   height: fit-content;
+  /* Establish baseline stacking; will be raised when menu opens */
+  z-index: 0;
 }
 
 .artifact-card:hover {
   border-color: var(--accent);
   box-shadow: 0 8px 24px rgba(79, 140, 255, 0.15);
   transform: translateY(-2px);
+}
+
+/* When an options menu is open, ensure the card sits above neighbors */
+.artifact-card.menu-open {
+  z-index: 2000;
+  overflow: visible; /* be explicit to avoid any accidental clipping */
 }
 
 .artifact-header {
@@ -794,7 +856,7 @@ main { padding: 24px 64px; }
 /* Job Monitor - Enhanced */
 .job-stats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   margin-bottom: 16px;
 }

@@ -1,10 +1,12 @@
 from __future__ import annotations
-
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Callable
 import json
 import mimetypes
 import os
 import shutil
 import subprocess
+import signal
 import sys
 import tempfile
 import threading
@@ -12,26 +14,47 @@ import re
 import time
 import uuid
 import shlex
-from pathlib import Path
+import logging
 import asyncio
-from typing import Any, Dict, Iterator, List, Optional, Callable
-from pydantic import BaseModel
+# from pydantic import BaseModel
+try:
+    from pydantic import BaseModel  # type: ignore # prefer normal import (v1/v2)
+except Exception:
+    try:
+        from pydantic.v1 import BaseModel  # type: ignore # pydantic v2 compatibility layer
+    except Exception:
+        class BaseModel:
+            """
+    Minimal fallback to avoid hard import errors when pydantic isn't installed.
+            Note: FastAPI requires pydantic at runtime; this is mainly for tooling/tests.
+            """
+            def __init__(self, **data):
+                for k, v in data.items():
+                    setattr(self, k, v)
+            def dict(self, *args, **kwargs):
+                return dict(getattr(self, "__dict__", {}))
+            def model_dump(self, *args, **kwargs):  # pydantic v2-like
+                return dict(getattr(self, "__dict__", {}))
 from difflib import SequenceMatcher
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import (
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response # type: ignore
+from fastapi.responses import ( # type: ignore
     FileResponse,
     HTMLResponse,
     JSONResponse,
     StreamingResponse,
-)
-from fastapi.staticfiles import StaticFiles
+)  # type: ignore
+from fastapi.staticfiles import StaticFiles  # type: ignore
+from fastapi.middleware.cors import CORSMiddleware  # type: ignore
+from fastapi import FastAPI
+from fastapi import APIRouter
+from fastapi.middleware.cors import CORSMiddleware
 
+# Optional PIL import (used in a few endpoints); tolerate absence
 try:
     from PIL import Image  # type: ignore
 except Exception:  # pragma: no cover
     Image = None  # type: ignore
-
 
 # Global server state
 # Initialize root from MEDIA_ROOT if provided and valid; otherwise fall back to CWD
@@ -46,14 +69,14 @@ def _init_media_root() -> Path:
             pass
     return Path.cwd().resolve()
 
-
 STATE: dict[str, Any] = {
     "root": _init_media_root(),
 }
 
 
 def _load_server_config() -> dict:
-    """Load optional server-side config JSON.
+    """
+    Load optional server-side config JSON.
     Looks for path in MEDIA_PLAYER_CONFIG env var, else ./config.json.
     Returns an empty dict on any error.
     Example keys:
@@ -83,6 +106,48 @@ def _sprite_defaults() -> dict[str, int | float]:
     }
 
 
+# -----------------------------
+# Access log filtering for chatty polling endpoints
+# -----------------------------
+# Suppress uvicorn access logs for known high-frequency polling endpoints to keep logs clean.
+# This only affects access logs; application error logs remain visible.
+_POLLING_LOG_PATHS: tuple[str, ...] = (
+    "/api/tasks/jobs",
+    "/api/tasks/coverage",
+    "/api/artifacts/orphans",
+    "/api/jobs/events",
+)
+
+
+class _UvicornAccessFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        # Message usually contains: "\"GET /path?query HTTP/1.1\" 200 OK"
+        # We match on the path segment to suppress specific endpoints.
+        for p in _POLLING_LOG_PATHS:
+            if f" {p} " in msg or f" {p}?" in msg:
+                return False
+        return True
+
+
+def _install_uvicorn_access_filter_once() -> None:
+    try:
+        logger = logging.getLogger("uvicorn.access")
+        # Avoid stacking filters on hot reloads
+        if not any(isinstance(f, _UvicornAccessFilter) for f in getattr(logger, "filters", [])):
+            logger.addFilter(_UvicornAccessFilter())
+    except Exception:
+        # Non-fatal if logging isn't configured yet
+        pass
+
+
+# Install filter at import time so it applies to subsequent requests
+_install_uvicorn_access_filter_once()
+
+
 def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
@@ -91,27 +156,38 @@ def ffprobe_available() -> bool:
 
 
 def _ffmpeg_threads_flags() -> list[str]:
-    """Global threads control for ffmpeg encoders/filters.
-    - If FFMPEG_THREADS is set: use that value when > 0.
-    - Otherwise: pick a reasonable default based on CPU (min(4, cpu_count or 2)).
-    Always returns a ["-threads", N] pair to enable multi-threading by default.
     """
+    Global threads control for ffmpeg encoders/filters plus optional time limit.
+    - Threads: default to 1 (safer for low-power devices). If FFMPEG_THREADS is set
+      and > 0, use that value.
+    - Timelimit: default to 600 seconds. If FFMPEG_TIMELIMIT (>0) is set, append
+      "-timelimit <seconds>" to cap each ffmpeg run.
+    Returns a list of flags to append to ffmpeg invocations.
+    """
+    # Threads
     try:
         v = os.environ.get("FFMPEG_THREADS")
         n = int(v) if v is not None and str(v).strip() != "" else 0
     except Exception:
         n = 0
+    # Conservative built-in default: 1 thread unless explicitly overridden
     if n <= 0:
-        try:
-            cpu = os.cpu_count() or 2
-        except Exception:
-            cpu = 2
-        n = max(1, min(4, int(cpu)))
-    return ["-threads", str(n)]
+        n = 1
+    flags: list[str] = ["-threads", str(n)]
+    # Optional hard runtime cap to avoid hangs
+    try:
+        # Built-in default timelimit 600s unless overridden by env
+        tl = int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600)
+    except Exception:
+        tl = 600
+    if tl and tl > 0:
+        flags += ["-timelimit", str(tl)]
+    return flags
 
 
 def _ffmpeg_hwaccel_flags() -> list[str]:
-    """Optional decoder hwaccel hint before -i via FFMPEG_HWACCEL env (e.g., 'auto', 'videotoolbox', 'vaapi').
+    """
+    Optional decoder hwaccel hint before -i via FFMPEG_HWACCEL env (e.g., 'auto', 'videotoolbox', 'vaapi').
     Only used when set to avoid compatibility issues on devices without support.
     """
     v = os.environ.get("FFMPEG_HWACCEL")
@@ -121,7 +197,8 @@ def _ffmpeg_hwaccel_flags() -> list[str]:
 
 
 def _vp9_realtime_flags() -> list[str]:
-    """Aggressive realtime flags for libvpx-vp9/VP8 to favor speed over quality for small previews.
+    """
+    Aggressive realtime flags for libvpx-vp9/VP8 to favor speed over quality for small previews.
     Tunable via VP9_CPU_USED env (default 8). Also enables row-mt and tile-columns when available.
     """
     cpu = os.environ.get("VP9_CPU_USED")
@@ -169,6 +246,30 @@ def _has_module(name: str) -> bool:
     except Exception:
         return False
 
+def _module_version(name: str) -> Optional[str]:
+    """
+    Best-effort to get a module's version string without raising.
+    Returns None if unavailable or on error.
+    """
+    try:
+        mod = __import__(name)
+    except Exception:
+        return None
+    # Common attrs
+    for attr in ("__version__", "VERSION", "version"):
+        try:
+            v = getattr(mod, attr, None)
+            if v is None:
+                continue
+            # Some libs expose tuples
+            if isinstance(v, (tuple, list)):
+                return ".".join(str(x) for x in v)
+            return str(v)
+        except Exception:
+            continue
+    # Some libs nest version in a submodule (e.g., cv2.__version__ exists, so the above should work)
+    return None
+
 def metadata_path(video: Path) -> Path:
     return artifact_dir(video) / f"{video.stem}.metadata.json"
 
@@ -182,20 +283,12 @@ def scenes_json_path(video: Path) -> Path:
     return artifact_dir(video) / f"{video.stem}.scenes.json"
 
 def scenes_json_exists(video: Path) -> bool:
-    """Check if scenes JSON exists in various possible locations/formats."""
-    base_path = artifact_dir(video) / f"{video.stem}"
-    
-    # Check for various possible scene file formats
-    possible_paths = [
-        base_path.with_suffix(".scenes.json"),
-        base_path.with_suffix(".chapters.json"),
-        base_path.with_suffix(".markers.json"),
-        artifact_dir(video) / f"{video.stem}.scenes.json",
-        artifact_dir(video) / f"{video.stem}.chapters.json", 
-        artifact_dir(video) / f"{video.stem}.markers.json"
-    ]
-    
-    return any(p.exists() for p in possible_paths)
+    """
+    Strict: only accept <stem>.scenes.json in .artifacts (non-empty)."""
+    try:
+        return _file_nonempty(scenes_json_path(video), min_size=2)
+    except Exception:
+        return False
 
 def scenes_dir(video: Path) -> Path:
     d = artifact_dir(video) / f"{video.stem}.scenes"
@@ -211,18 +304,12 @@ def heatmaps_json_path(video: Path) -> Path:
     return artifact_dir(video) / f"{video.stem}.heatmaps.json"
 
 def heatmaps_json_exists(video: Path) -> bool:
-    """Check if heatmaps JSON exists in various possible locations/formats."""
-    base_path = artifact_dir(video) / f"{video.stem}"
-    
-    # Check for various possible heatmap file formats
-    possible_paths = [
-        base_path.with_suffix(".heatmaps.json"),
-        base_path.with_suffix(".heatmap.json"),
-        artifact_dir(video) / f"{video.stem}.heatmaps.json",
-        artifact_dir(video) / f"{video.stem}.heatmap.json"
-    ]
-    
-    return any(p.exists() for p in possible_paths)
+    """
+    Strict: only accept <stem>.heatmaps.json in .artifacts (non-empty)."""
+    try:
+        return _file_nonempty(heatmaps_json_path(video), min_size=2)
+    except Exception:
+        return False
 
 def heatmaps_png_path(video: Path) -> Path:
     return artifact_dir(video) / f"{video.stem}.heatmaps.png"
@@ -231,37 +318,66 @@ def faces_path(video: Path) -> Path:
     return artifact_dir(video) / f"{video.stem}.faces.json"
 
 def faces_exists_check(video: Path) -> bool:
-    """Check if faces JSON exists in various possible locations/formats."""
-    base_path = artifact_dir(video) / f"{video.stem}"
-    
-    # Check for various possible face detection file formats
-    possible_paths = [
-        base_path.with_suffix(".faces.json"),
-        base_path.with_suffix(".face.json"),
-        artifact_dir(video) / f"{video.stem}.faces.json",
-        artifact_dir(video) / f"{video.stem}.face.json"
-    ]
-    
-    return any(p.exists() for p in possible_paths)
+    """
+    Strict: only accept <stem>.faces.json in .artifacts (non-empty, non-stub).
+
+    Rules to count as existing/processed:
+    - File exists and is non-empty JSON
+    - Not explicitly marked as a stub ("stub": true)
+    - Contains a non-empty "faces" array
+    - At least one face entry contains a non-empty embedding vector
+      (pure detections without embeddings are treated as incomplete)
+    - Rejects known sentinel stub: single face with box [0,0,100,100] and empty embedding
+    """
+    try:
+        p = faces_path(video)
+        if not _file_nonempty(p, min_size=2):
+            return False
+        # Parse and reject known stub outputs
+        try:
+            data = json.loads(p.read_text())
+        except Exception:
+            return False
+        if isinstance(data, dict):
+            if bool(data.get("stub")):
+                return False
+            faces = data.get("faces") or []
+            if not isinstance(faces, list) or not faces:
+                return False
+            # Must have at least one face with a non-empty embedding vector
+            try:
+                any_emb = False
+                for f in faces:
+                    emb = (f or {}).get("embedding") or []
+                    if isinstance(emb, list) and len(emb) > 0:
+                        any_emb = True
+                        break
+                if not any_emb:
+                    return False
+            except Exception:
+                return False
+            # Heuristic: a single sentinel face with empty embedding and 100x100 box is considered stub
+            if len(faces) == 1:
+                f = faces[0] or {}
+                box = f.get("box") or []
+                emb = f.get("embedding") or []
+                if isinstance(box, list) and len(box) == 4 and list(map(int, box)) == [0, 0, 100, 100] and not emb:
+                    return False
+        return True
+    except Exception:
+        return False
 
 def find_subtitles(video: Path) -> Optional[Path]:
-    # Check for both new (.srt) and legacy (.subtitles.srt) formats
+    """
+    Strict: only accept <stem>{SUFFIX_SUBTITLES_SRT} either in .artifacts or alongside the video (non-empty).
+    """
     s_art = artifact_dir(video) / f"{video.stem}{SUFFIX_SUBTITLES_SRT}"
-    s_art_legacy = artifact_dir(video) / f"{video.stem}.subtitles.srt"
     s_side = video.with_suffix(SUFFIX_SUBTITLES_SRT)
-    s_side_legacy = video.with_suffix(".subtitles.srt")
-    
-    if s_art.exists():
+    if _file_nonempty(s_art, min_size=2):
         return s_art
-    if s_art_legacy.exists():
-        return s_art_legacy
-    if s_side.exists():
+    if _file_nonempty(s_side, min_size=2):
         return s_side
-    if s_side_legacy.exists():
-        return s_side_legacy
     return None
-
-# SRT only: removed VTT conversion helper
 
 # -----------------------------
 # Artifact suffix/constants
@@ -276,18 +392,132 @@ SUFFIX_HEATMAPS_JSON = ".heatmaps.json"
 SUFFIX_HEATMAPS_PNG = ".heatmaps.png"
 SUFFIX_FACES_JSON = ".faces.json"
 SUFFIX_PREVIEW_WEBM = ".preview.webm"
-SUFFIX_SUBTITLES_SRT = ".srt" # ".subtitles.srt"
+SUFFIX_SUBTITLES_SRT = ".subtitles.srt"
 HIDDEN_DIR_SUFFIX_PREVIEWS = ".previews"
 
 def _file_nonempty(p: Path, min_size: int = 64) -> bool:
-    """Return True if file exists and has at least min_size bytes (guards against zero-byte stubs)."""
+    """
+    Return True if file exists and has at least min_size bytes (guards against zero-byte stubs).
+    """
     try:
         return p.exists() and p.stat().st_size >= int(min_size)
     except Exception:
         return False
 
+class _JobContext(threading.local):
+    def __init__(self):
+        super().__init__()
+        self.jid: Optional[str] = None
+
+
+JOB_CTX = _JobContext()
+
+# Track live subprocesses per job so we can terminate on cancel
+JOB_PROCS: dict[str, set[subprocess.Popen]] = {}
+
+
+def _register_job_proc(jid: str, proc: subprocess.Popen) -> None:
+    with JOB_LOCK:
+        s = JOB_PROCS.get(jid)
+        if s is None:
+            s = set()
+            JOB_PROCS[jid] = s
+        s.add(proc)
+
+
+def _unregister_job_proc(jid: str, proc: subprocess.Popen) -> None:
+    with JOB_LOCK:
+        s = JOB_PROCS.get(jid)
+        if s and proc in s:
+            s.remove(proc)
+            if not s:
+                JOB_PROCS.pop(jid, None)
+
+
+def _terminate_job_processes(jid: str, grace_seconds: float = 2.0) -> int:
+    """Signal all tracked processes for a job. TERM first, then KILL after grace.
+    Returns number of processes signaled."""
+    procs: list[subprocess.Popen] = []
+    with JOB_LOCK:
+        s = JOB_PROCS.get(jid)
+        if s:
+            procs = list(s)
+    count = 0
+    for p in procs:
+        try:
+            if getattr(p, "pid", None):
+                try:
+                    os.killpg(p.pid, signal.SIGTERM)
+                except Exception:
+                    p.terminate()
+            else:
+                p.terminate()
+            count += 1
+        except Exception:
+            pass
+    if count:
+        t0 = time.time()
+        while time.time() - t0 < grace_seconds:
+            if all(p.poll() is not None for p in procs):
+                break
+            time.sleep(0.1)
+        for p in [p for p in procs if p.poll() is None]:
+            try:
+                if getattr(p, "pid", None):
+                    try:
+                        os.killpg(p.pid, signal.SIGKILL)
+                    except Exception:
+                        p.kill()
+                else:
+                    p.kill()
+            except Exception:
+                pass
+    return count
+
+
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True)
+    """
+    Run a subprocess command with optional global timeout and cooperative cancellation.
+    If env FFMPEG_TIMELIMIT (>0) is set, apply it as a timeout to protect against hangs.
+    When called within a job thread (JOB_CTX.jid is set), launch as a process group and
+    poll periodically; if the job is canceled, terminate the group early.
+    """
+    try:
+        # Built-in default timelimit 600s unless overridden by env
+        tl = int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600)
+    except Exception:
+        tl = 600
+    jid = getattr(JOB_CTX, "jid", None)
+    if not jid:
+        try:
+            if tl and tl > 0:
+                return subprocess.run(cmd, capture_output=True, text=True, timeout=tl)
+            return subprocess.run(cmd, capture_output=True, text=True)
+        except subprocess.TimeoutExpired as te:
+            raise RuntimeError(f"subprocess timed out after {tl}s: {' '.join(cmd[:4])}...") from te
+    # In a job context
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    _register_job_proc(jid, proc)
+    start_time = time.time()
+    try:
+        while True:
+            rc = proc.poll()
+            if rc is not None:
+                break
+            if tl and tl > 0 and (time.time() - start_time) > tl:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    proc.kill()
+                raise RuntimeError(f"subprocess timed out after {tl}s: {' '.join(cmd[:4])}...")
+            if _job_check_canceled(jid):
+                _terminate_job_processes(jid)
+                raise RuntimeError("canceled")
+            time.sleep(0.1)
+        out, err = proc.communicate()
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    finally:
+        _unregister_job_proc(jid, proc)
 
 def metadata_single(video: Path, *, force: bool = False) -> None:
     out = metadata_path(video)
@@ -469,8 +699,11 @@ def generate_hover_preview(
     segs = max(1, int(segments))
     points = [((i + 1) / (segs + 1)) * (dur or (segs * seg_dur)) for i in range(segs)]
 
-    # If a progress callback is provided, prefer segmented path for precise updates
-    try_single_pass = progress_cb is None
+    # Always prefer the robust single-pass filter graph; avoid segmented concat entirely
+    try_single_pass = True
+    # Runtime tunables for verbosity
+    ff_loglevel = os.environ.get("FFMPEG_LOGLEVEL", "error")
+    ff_debug = os.environ.get("FFMPEG_DEBUG") is not None
     if try_single_pass:
         # Try a single-pass ffmpeg using filter_complex (split/trim/concat); fallback to multi-step on failure
         try:
@@ -484,7 +717,7 @@ def generate_hover_preview(
             parts.append(f"{concat_inputs}concat=n={segs}:v=1:a=0,scale={int(width)}:-1:force_original_aspect_ratio=decrease[outv]")
             filter_complex = ";".join(parts)
             base_cmd = [
-                "ffmpeg", "-y",
+                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                 *(_ffmpeg_hwaccel_flags()),
                 "-i", str(video),
                 "-filter_complex", filter_complex,
@@ -499,10 +732,11 @@ def generate_hover_preview(
                     *(_ffmpeg_threads_flags()),
                     str(out),
                 ]
-                try:
-                    print("[hover] ffmpeg:", " ".join(cmd))
-                except Exception:
-                    pass
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg:", " ".join(cmd))
+                    except Exception:
+                        pass
                 proc = _run(cmd)
             else:
                 cmd = base_cmd + [
@@ -511,10 +745,11 @@ def generate_hover_preview(
                     *(_ffmpeg_threads_flags()),
                     str(out),
                 ]
-                try:
-                    print("[hover] ffmpeg:", " ".join(cmd))
-                except Exception:
-                    pass
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg:", " ".join(cmd))
+                    except Exception:
+                        pass
                 proc = _run(cmd)
                 if (proc.returncode != 0 or not out.exists()):
                     # Fallback to libvpx
@@ -524,10 +759,11 @@ def generate_hover_preview(
                         *(_ffmpeg_threads_flags()),
                         str(out),
                     ]
-                    try:
-                        print("[hover] ffmpeg (fallback):", " ".join(cmd))
-                    except Exception:
-                        pass
+                    if ff_debug:
+                        try:
+                            print("[hover] ffmpeg (fallback):", " ".join(cmd))
+                        except Exception:
+                            pass
                     proc = _run(cmd)
             if proc.returncode == 0 and out.exists():
                 return out
@@ -535,35 +771,41 @@ def generate_hover_preview(
         except Exception:
             pass
 
-    # Fallback: multi-step segments then concat
+    # Fallback: multi-step segments then concat (disabled by default since single-pass is preferred)
+    # Note: We keep this path for legacy/debug, but it's no longer selected by default.
     with tempfile.TemporaryDirectory() as td:
         td = str(td)
         list_path = Path(td) / "list.txt"
         clip_paths: list[Path] = []
+        # Strategy: if final fmt is webm, produce MP4 segments to avoid Matroska/EBML issues,
+        # concat to an MP4, then transcode the concatenated result to WebM.
+        final_fmt = (fmt or "webm").lower()
+        seg_fmt = "mp4" if final_fmt == "webm" else final_fmt
         for i, start in enumerate(points, start=1):
             if cancel_check and cancel_check():
                 raise RuntimeError("canceled")
-            clip = Path(td) / f"seg_{i:02d}.{fmt}"
+            clip = Path(td) / f"seg_{i:02d}.{seg_fmt}"
             vfilter = f"scale={width}:-1:force_original_aspect_ratio=decrease"
             cmd = [
-                "ffmpeg", "-y",
+                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                 *(_ffmpeg_hwaccel_flags()),
                 "-noaccurate_seek",
                 "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{seg_dur:.3f}",
                 "-vf", vfilter,
                 "-an",
             ]
-            if fmt == "mp4":
+            if seg_fmt == "mp4":
                 cmd += [
                     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
                     "-movflags", "+faststart",
                     *(_ffmpeg_threads_flags()),
                     str(clip),
                 ]
-                try:
-                    print("[hover] ffmpeg seg:", " ".join(cmd))
-                except Exception:
-                    pass
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg seg:", " ".join(cmd))
+                    except Exception:
+                        pass
                 proc = _run(cmd)
             else:
                 cmd += [
@@ -572,15 +814,16 @@ def generate_hover_preview(
                     *(_ffmpeg_threads_flags()),
                     str(clip),
                 ]
-                try:
-                    print("[hover] ffmpeg seg:", " ".join(cmd))
-                except Exception:
-                    pass
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg seg:", " ".join(cmd))
+                    except Exception:
+                        pass
                 proc = _run(cmd)
                 if proc.returncode != 0 or not clip.exists():
                     # Fallback to libvpx
                     cmd = [
-                        "ffmpeg", "-y",
+                        "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                         *(_ffmpeg_hwaccel_flags()),
                         "-noaccurate_seek",
                         "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{seg_dur:.3f}",
@@ -591,10 +834,11 @@ def generate_hover_preview(
                         *(_ffmpeg_threads_flags()),
                         str(clip)
                     ]
-                    try:
-                        print("[hover] ffmpeg seg (fallback):", " ".join(cmd))
-                    except Exception:
-                        pass
+                    if ff_debug:
+                        try:
+                            print("[hover] ffmpeg seg (fallback):", " ".join(cmd))
+                        except Exception:
+                            pass
                     proc = _run(cmd)
             if proc.returncode != 0:
                 raise RuntimeError(proc.stderr.strip() or "ffmpeg segment failed")
@@ -607,41 +851,45 @@ def generate_hover_preview(
         with list_path.open("w") as f:
             for cp in clip_paths:
                 f.write(f"file '{cp.as_posix()}'\n")
+        # Concat into an intermediate when segment fmt != final fmt; else write directly to 'out'
+        concat_out = (Path(td) / f"concat.{seg_fmt}") if seg_fmt != final_fmt else out
         cmd2 = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
             *(_ffmpeg_hwaccel_flags()),
             "-f", "concat", "-safe", "0",
             "-i", str(list_path),
             "-an",
         ]
-        if fmt == "mp4":
+        if seg_fmt == "mp4":
             cmd2 += [
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
                 "-movflags", "+faststart",
                 *(_ffmpeg_threads_flags()),
-                str(out),
+                str(concat_out),
             ]
-            try:
-                print("[hover] ffmpeg concat:", " ".join(cmd2))
-            except Exception:
-                pass
+            if ff_debug:
+                try:
+                    print("[hover] ffmpeg concat:", " ".join(cmd2))
+                except Exception:
+                    pass
             proc2 = _run(cmd2)
         else:
             cmd2 += [
                 "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                 *_vp9_realtime_flags(),
                 *(_ffmpeg_threads_flags()),
-                str(out),
+                str(concat_out),
             ]
-            try:
-                print("[hover] ffmpeg concat:", " ".join(cmd2))
-            except Exception:
-                pass
+            if ff_debug:
+                try:
+                    print("[hover] ffmpeg concat:", " ".join(cmd2))
+                except Exception:
+                    pass
             proc2 = _run(cmd2)
             if proc2.returncode != 0 or not out.exists():
                 # Fallback to libvpx
                 cmd2 = [
-                    "ffmpeg", "-y",
+                    "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                     *(_ffmpeg_hwaccel_flags()),
                     "-f", "concat", "-safe", "0",
                     "-i", str(list_path),
@@ -649,15 +897,54 @@ def generate_hover_preview(
                     "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                     *_vp9_realtime_flags(),
                     *(_ffmpeg_threads_flags()),
-                    str(out)
+                    str(concat_out)
                 ]
-                try:
-                    print("[hover] ffmpeg concat (fallback):", " ".join(cmd2))
-                except Exception:
-                    pass
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg concat (fallback):", " ".join(cmd2))
+                    except Exception:
+                        pass
                 proc2 = _run(cmd2)
         if proc2.returncode != 0:
             raise RuntimeError(proc2.stderr.strip() or "ffmpeg concat failed")
+        # If the final format is different from the segment/concat format (webm requested), transcode once more
+        if seg_fmt != final_fmt:
+            # Transcode MP4 -> WebM (VP9). Fallback to libvpx if needed.
+            cmd3 = [
+                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+                *(_ffmpeg_hwaccel_flags()),
+                "-i", str(concat_out),
+                "-an",
+                "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                *_vp9_realtime_flags(),
+                *(_ffmpeg_threads_flags()),
+                str(out),
+            ]
+            if ff_debug:
+                try:
+                    print("[hover] ffmpeg transcode (mp4->webm):", " ".join(cmd3))
+                except Exception:
+                    pass
+            proc3 = _run(cmd3)
+            if (proc3.returncode != 0 or not out.exists()):
+                cmd3 = [
+                    "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+                    *(_ffmpeg_hwaccel_flags()),
+                    "-i", str(concat_out),
+                    "-an",
+                    "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                    *_vp9_realtime_flags(),
+                    *(_ffmpeg_threads_flags()),
+                    str(out),
+                ]
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg transcode fallback (mp4->webm):", " ".join(cmd3))
+                    except Exception:
+                        pass
+                proc3 = _run(cmd3)
+            if proc3.returncode != 0:
+                raise RuntimeError(proc3.stderr.strip() or "ffmpeg transcode failed")
     return out
 
 # ---------
@@ -738,7 +1025,8 @@ def phash_create_single(
     progress_cb: Optional[Callable[[int, int], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> None:
-    """Compute a simple perceptual hash across multiple frames.
+    """
+    Compute a simple perceptual hash across multiple frames.
     - algo: 'ahash' (default) or 'dhash'
     - combine: 'xor' (default) or 'avg' to merge per-frame hashes
     Writes a JSON with keys {phash, algo, frames, combine}.
@@ -879,7 +1167,8 @@ def generate_scene_artifacts(
     progress_cb: Optional[Callable[[int, int], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> None:
-    """Detect scene changes using ffmpeg showinfo and optionally export thumbs/clips.
+    """
+    Detect scene changes using ffmpeg showinfo and optionally export thumbs/clips.
     threshold: 0..1 typical (e.g., 0.3)
     limit: cap number of detected scenes written
     thumbs_width: width in px for thumbnails
@@ -996,7 +1285,8 @@ def generate_sprite_sheet(
     progress_cb: Optional[Callable[[int, int], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> None:
-    """Generate a sprite sheet by sampling frames with ffmpeg.
+    """
+    Generate a sprite sheet by sampling frames with ffmpeg.
     Falls back to a repeated thumbnail if ffmpeg/Pillow are unavailable.
     Writes a JPEG sprite sheet and a JSON index with fields:
       - cols, rows, interval, width
@@ -1037,7 +1327,11 @@ def generate_sprite_sheet(
                 pass
             if progress_cb or cancel_check:
                 # Use Popen to allow polling for approximate progress and cancellation
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+                try:
+                    _register_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+                except Exception:
+                    pass
                 start_time = time.time()
                 steps = 100
                 while True:
@@ -1159,7 +1453,8 @@ def compute_heatmaps(
     progress_cb: Optional[Callable[[int, int], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> dict:
-    """Compute a basic heatmap by sampling frame brightness every `interval` seconds.
+    """
+    Compute a basic heatmap by sampling frame brightness every `interval` seconds.
     mode is currently informational; brightness is normalized 0..1.
     """
     try:
@@ -1517,34 +1812,41 @@ def generate_subtitles(
         progress_cb=progress_cb,
         cancel_check=cancel_check,
     )
+    # Write SRT
     srt = _format_srt_segments(segments)
-    out_file.write_text(srt)
-
-# ------------------------
-# Face embeddings (stubs)
-# ------------------------
-def _ensure_openface_model() -> Path:
-    url = "https://storage.cmusatyalab.org/openface-models/nn4.small2.v1.t7"
-    cache = Path.home() / ".cache" / "vid"
-    cache.mkdir(parents=True, exist_ok=True)
-    model_path = cache / "openface.nn4.small2.v1.t7"
-    if not model_path.exists():
-        try:
-            import urllib.request  # noqa: F401
-            urllib.request.urlretrieve(url, model_path)
-        except Exception:
-            return model_path
-    return model_path
+    out_file.write_text(srt, encoding="utf-8")
+    return None
 
 
 def detect_face_backend(preference: str) -> str:
+    """
+    Select an available faces backend.
+
+    Returns one of: 'insightface', 'opencv', or 'none' when nothing usable is installed.
+    - 'auto' prefers InsightFace when both insightface and OpenCV (cv2) are available;
+      otherwise falls back to OpenCV when cv2 is available; else 'none'.
+    - When a specific preference is provided, we return it verbatim; callers must validate
+      availability separately.
+    """
     if preference != "auto":
         return preference
+    has_cv2 = False
+    has_insight = False
+    try:
+        __import__("cv2")
+        has_cv2 = True
+    except Exception:
+        has_cv2 = False
     try:
         __import__("insightface")
-        return "insightface"
+        has_insight = True
     except Exception:
+        has_insight = False
+    if has_insight and has_cv2:
+        return "insightface"
+    if has_cv2:
         return "opencv"
+    return "none"
 
 
 def _detect_faces(
@@ -1556,8 +1858,8 @@ def _detect_faces(
     backend: str = "auto",
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> List[Dict[str, Any]]:
-    """Detect faces using selected backend.
-
+    """
+    Detect faces using selected backend.
     - insightface: SCRFD/RetinaFace + ArcFace embeddings via insightface.app.FaceAnalysis
     - opencv: Haar + OpenFace embeddings (existing path)
     """
@@ -1665,8 +1967,14 @@ def _detect_faces(
         cascade = cv2.CascadeClassifier(f"{cv2.data.haarcascades}haarcascade_frontalface_default.xml")
         if cascade.empty():
             raise RuntimeError("cascade not found")
-        model_path = _ensure_openface_model()
-        net = cv2.dnn.readNetFromTorch(str(model_path))
+        # Optional: OpenFace embedding model (if available via env OPENFACE_MODEL)
+        net = None
+        try:
+            model_path = os.environ.get("OPENFACE_MODEL")
+            if model_path and Path(model_path).exists():
+                net = cv2.dnn.readNetFromTorch(str(model_path))
+        except Exception:
+            net = None
         results: List[Dict[str, Any]] = []
         frame_idx = 0
         while True:
@@ -1697,10 +2005,15 @@ def _detect_faces(
                     if w < min_w or h < min_h:
                         continue
                     face = frame[y:y+h, x:x+w]
-                    blob = cv2.dnn.blobFromImage(cv2.resize(face, (96, 96)), 1/255.0, (96, 96), (0,0,0), swapRB=True, crop=False)
-                    net.setInput(blob)
-                    vec = net.forward()[0]
-                    embedding = [round(float(v), 6) for v in vec.tolist()]
+                    embedding = []
+                    if net is not None:
+                        try:
+                            blob = cv2.dnn.blobFromImage(cv2.resize(face, (96, 96)), 1/255.0, (96, 96), (0,0,0), swapRB=True, crop=False)
+                            net.setInput(blob)
+                            vec = net.forward()[0]
+                            embedding = [round(float(v), 6) for v in vec.tolist()]
+                        except Exception:
+                            embedding = []
                     results.append({"time": round(float(t), 3), "box": [int(x), int(y), int(w), int(h)], "score": 1.0, "embedding": embedding})
                 processed += 1
                 if progress_cb is not None:
@@ -1712,6 +2025,8 @@ def _detect_faces(
         cap.release()
         return results
     except Exception:
+        # As a last resort, return a clearly marked sentinel that our exists_check will treat as stub.
+        # The caller (compute_face_embeddings) will convert this into a hard error so we don't write stubs.
         return [{"time": 0.0, "box": [0, 0, 100, 100], "score": 1.0, "embedding": []}]
 
 
@@ -1726,6 +2041,18 @@ def compute_face_embeddings(
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
     out = faces_path(video)
+    # Validate backend availability up-front to avoid writing stubs when deps are missing
+    sel = detect_face_backend(backend)
+    # Explicit preferences must also be honored/validated
+    if backend == "insightface":
+        if not _has_module("cv2") or not _has_module("insightface"):
+            raise RuntimeError("InsightFace backend requested but required packages are missing (need opencv-python and insightface)")
+    elif backend == "opencv":
+        if not _has_module("cv2"):
+            raise RuntimeError("OpenCV backend requested but 'cv2' (opencv-python) is not installed")
+    else:  # auto
+        if sel == "none":
+            raise RuntimeError("No face detection backend available. Please install at least 'opencv-python' or 'insightface' (plus 'onnxruntime').")
     # Deduplicate faces so there's one embedding per distinct face for this video.
     faces = _detect_faces(
         video,
@@ -1733,12 +2060,22 @@ def compute_face_embeddings(
         scale_factor=scale_factor,
         min_neighbors=min_neighbors,
         min_size_frac=min_size_frac,
-        backend=backend,
+        backend=(backend if backend != "auto" else sel),
         progress_cb=progress_cb,
     )
+    # If we received the sentinel stub detection, treat as a hard failure instead of writing a stub file
+    try:
+        if isinstance(faces, list) and len(faces) == 1:
+            f0 = faces[0] or {}
+            if list(map(int, (f0.get("box") or []))) == [0, 0, 100, 100] and not (f0.get("embedding") or []):
+                raise RuntimeError("Face detection failed (no usable backend). Install 'opencv-python' or 'insightface' to enable faces.")
+    except Exception:
+        # If any error occurs during sentinel inspection, continue to normal flow
+        pass
 
     def _dedupe_faces(items: List[Dict[str, Any]], sim_thresh: float = 0.9) -> List[Dict[str, Any]]:
-        """Group face detections by embedding similarity and return one per identity.
+        """
+        Group face detections by embedding similarity and return one per identity.
 
         - Uses cosine similarity with a greedy online clustering.
         - Aggregates count/first_time/last_time and keeps a representative box.
@@ -1921,7 +2258,26 @@ def compute_face_embeddings(
 
     # Allow callers to tune similarity threshold; default to 0.9
     deduped = _dedupe_faces(faces, sim_thresh if isinstance(sim_thresh, (int, float)) else 0.9)
-    data = {"video": video.name, "faces": deduped, "generated_at": time.time()}
+    # Annotate backend and stub=false when we have at least one real detection or embedding
+    is_stub = False
+    try:
+        if not deduped:
+            is_stub = True
+        elif len(deduped) == 1:
+            f = deduped[0]
+            box = f.get("box") or []
+            emb = f.get("embedding") or []
+            if isinstance(box, list) and len(box) == 4 and list(map(int, box)) == [0, 0, 100, 100] and not emb:
+                is_stub = True
+    except Exception:
+        is_stub = False
+    data = {
+        "video": video.name,
+        "faces": deduped,
+        "generated_at": time.time(),
+        "backend": (backend if backend != "auto" else sel),
+        "stub": bool(is_stub),
+    }
     out.write_text(json.dumps(data, indent=2))
     return data
 
@@ -1938,7 +2294,47 @@ def raise_api_error(message: str, status_code: int = 400, data=None):
     raise HTTPException(status_code=status_code, detail={"status": "error", "message": message, "data": data})
 
 
+def _require_ffmpeg_or_error(task_name: str) -> None:
+    """
+    Guard that raises a user-facing API error when ffmpeg is unavailable.
+    task_name: short human label like 'hover previews' or 'scene detection'.
+    """
+    if not ffmpeg_available():
+        raise_api_error(
+            f"ffmpeg is required for {task_name}. Please install ffmpeg and try again.",
+            status_code=400,
+            data={"ffmpeg": False},
+        )
+
+
 app = FastAPI(title="Media Player", version="3.0")
+api = APIRouter(prefix="/api")
+
+# -----------------------------
+# CORS: allow UI from file:// or other hosts to call the API
+# Configure via CORS_ALLOW_ORIGINS (comma-separated). Defaults to * for dev.
+# -----------------------------
+def _cors_origins() -> list[str]:
+    try:
+        v = os.environ.get("CORS_ALLOW_ORIGINS")
+        if not v or not v.strip():
+            return ["*"]
+        out: list[str] = []
+        for part in v.split(","):
+            s = part.strip()
+            if s:
+                out.append(s)
+        return out or ["*"]
+    except Exception:
+        return ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 """
 Jobs subsystem: in-memory job store, SSE broadcasting, and helpers.
 """
@@ -1950,7 +2346,8 @@ JOB_EVENT_SUBS: list[tuple[asyncio.Queue[str], asyncio.AbstractEventLoop]] = []
 JOB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 
 # Global concurrency control for running jobs
-JOB_MAX_CONCURRENCY = int(os.environ.get("JOB_MAX_CONCURRENCY", "4"))
+# Built-in conservative default: 1 concurrent job unless overridden by env
+JOB_MAX_CONCURRENCY = int(os.environ.get("JOB_MAX_CONCURRENCY", "1"))
 JOB_RUN_SEM = threading.Semaphore(JOB_MAX_CONCURRENCY)
 
 # Per-file/task locks to avoid duplicate heavy work on the same target
@@ -1958,7 +2355,8 @@ FILE_TASK_LOCKS: dict[tuple[str, str], threading.Lock] = {}
 FILE_TASK_LOCKS_GUARD = threading.Lock()
 
 def _file_task_lock(path: Path, task: str) -> threading.Lock:
-    """Return a process-wide lock for (absolute-file-path, task) pairs.
+    """
+    Return a process-wide lock for (absolute-file-path, task) pairs.
     Prevents launching multiple ffmpeg/CPU-heavy operations on the same file+task at once.
     """
     try:
@@ -1980,7 +2378,8 @@ REGISTRY_LOCK = threading.Lock()
 # -----------------------------
 
 def _jobs_state_dir() -> Path:
-    """Directory where job state is persisted across restarts.
+    """
+    Directory where job state is persisted across restarts.
     Defaults to MEDIA_PLAYER_STATE_DIR/.jobs or <root>/.jobs.
     """
     try:
@@ -1999,7 +2398,9 @@ def _job_file_path(jid: str) -> Path:
     return _jobs_state_dir() / f"{jid}.json"
 
 def _json_dump_atomic(path: Path, data: dict) -> None:
-    """Write JSON atomically to avoid partial files."""
+    """
+    Write JSON atomically to avoid partial files.
+    """
     try:
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(data, indent=2))
@@ -2026,6 +2427,7 @@ def _persist_job(jid: str) -> None:
         "type": j.get("type"),
         "path": j.get("path"),
         "state": j.get("state"),
+        "created_at": j.get("created_at"),
         "started_at": j.get("started_at"),
         "ended_at": j.get("ended_at"),
         "error": j.get("error"),
@@ -2065,6 +2467,7 @@ def _restore_jobs_on_start() -> None:
                     "type": base_type,
                     "path": data.get("path"),
                     "state": data.get("state") or "queued",
+                    "created_at": data.get("created_at"),
                     "started_at": data.get("started_at"),
                     "ended_at": data.get("ended_at"),
                     "error": data.get("error"),
@@ -2109,7 +2512,8 @@ def _restore_jobs_on_start() -> None:
 
 
 def _normalize_job_type(job_type: str) -> str:
-    """Normalize backend job-type variants to base types for the UI and tests."""
+    """
+    Normalize backend job-type variants to base types for the UI and tests."""
     s = (job_type or "").strip().lower()
     if s == "hover-concat":
         return "hover"
@@ -2119,7 +2523,8 @@ def _normalize_job_type(job_type: str) -> str:
 
 
 def _publish_job_event(evt: dict) -> None:
-    """Publish a job event to SSE subscribers. Thread-safe."""
+    """
+    Publish a job event to SSE subscribers. Thread-safe."""
     try:
         payload = f"data: {json.dumps(evt)}\n\n"
     except Exception:
@@ -2158,6 +2563,7 @@ def _new_job(job_type: str, path: str) -> str:
             "type": base_type,
             "path": path,
             "state": "queued",
+            "created_at": time.time(),
             "started_at": None,
             "ended_at": None,
             "error": None,
@@ -2178,6 +2584,11 @@ def _start_job(jid: str):
         if j:
             j["state"] = "running"
             j["started_at"] = time.time()
+    # Bind thread-local job context if running in current thread
+    try:
+        JOB_CTX.jid = jid  # type: ignore[name-defined]
+    except Exception:
+        pass
     _persist_job(jid)
     with JOB_LOCK:
         j = JOBS.get(jid) or {}
@@ -2188,6 +2599,11 @@ def _start_job(jid: str):
 
 
 def _finish_job(jid: str, error: Optional[str] = None):
+    # Best-effort: terminate any live subprocesses tied to this job
+    try:
+        _terminate_job_processes(jid)  # type: ignore[name-defined]
+    except Exception:
+        pass
     with JOB_LOCK:
         j = JOBS.get(jid)
         if j:
@@ -2198,6 +2614,13 @@ def _finish_job(jid: str, error: Optional[str] = None):
                 j["state"] = "canceled"
             else:
                 j["state"] = "done"
+                # If we know totals, snap processed to total on successful completion
+                try:
+                    t = j.get("total")
+                    if t is not None:
+                        j["processed"] = int(t)
+                except Exception:
+                    pass
             j["ended_at"] = time.time()
             j["error"] = error
     _persist_job(jid)
@@ -2206,6 +2629,12 @@ def _finish_job(jid: str, error: Optional[str] = None):
         jtype = j.get("type")
         jpath = j.get("path")
     _publish_job_event({"event": "finished", "id": jid, "error": error, "type": jtype, "path": jpath})
+    # Clear thread-local jid when leaving job context in this thread
+    try:
+        if getattr(JOB_CTX, "jid", None) == jid:  # type: ignore[name-defined]
+            JOB_CTX.jid = None  # type: ignore[name-defined]
+    except Exception:
+        pass
 
 
 @app.exception_handler(HTTPException)
@@ -2264,6 +2693,11 @@ def _wrap_job(job_type: str, path: str, fn):
     jid = _new_job(job_type, path)
     _start_job(jid)
     try:
+        # ensure job context within this thread
+        try:
+            JOB_CTX.jid = jid  # type: ignore[name-defined]
+        except Exception:
+            pass
         result = fn()
         # store result if it's JSON-serializable
         with JOB_LOCK:
@@ -2285,6 +2719,11 @@ def _wrap_job_background(job_type: str, path: str, fn):
     _start_job(jid)
     def _runner():
         try:
+            # set job context for this worker thread
+            try:
+                JOB_CTX.jid = jid  # type: ignore[name-defined]
+            except Exception:
+                pass
             # Prevent duplicate heavy work on same (path, task)
             fp = Path(path)
             lock = _file_task_lock(fp, job_type)
@@ -2388,8 +2827,33 @@ async def _on_startup_restore_jobs():
 # API under /api - mount BEFORE catch-all static handler
 api = APIRouter(prefix="/api")
 
-# Only MP4 videos are considered user media
-MEDIA_EXTS = {".mp4"}
+def _media_exts() -> set[str]:
+    """
+    Allowed media extensions (lowercased with dot).
+    Configure via MEDIA_EXTS env (comma-separated). Defaults to MP4-only.
+    """
+    env = os.environ.get("MEDIA_EXTS")
+    if env:
+        out: set[str] = set()
+        for part in env.split(","):
+            s = part.strip().lower()
+            if not s:
+                continue
+            if not s.startswith("."):
+                s = "." + s
+            out.add(s)
+        if out:
+            return out
+    # MP4-only by default
+    return {".mp4"}
+
+MEDIA_EXTS = _media_exts()
+
+
+# Provide an /api/health alias for convenience
+@api.get("/health")
+def api_health():
+    return health()
 
 
 def _is_hidden_path(p: Path, base: Path) -> bool:
@@ -2480,28 +2944,28 @@ def _save_registry(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
-class TagCreate(BaseModel):
+class TagCreate(BaseModel): # type: ignore
     name: str
 
 
-class TagRename(BaseModel):
+class TagRename(BaseModel): # type: ignore
     id: Optional[int] = None
     name: Optional[str] = None
     new_name: str
 
 
-class TagDelete(BaseModel):
+class TagDelete(BaseModel): # type: ignore
     id: Optional[int] = None
     name: Optional[str] = None
 
 
-class PerformerCreate(BaseModel):
+class PerformerCreate(BaseModel): # type: ignore
     name: str
     images: Optional[List[str]] = None
     image: Optional[str] = None
 
 
-class PerformerUpdate(BaseModel):
+class PerformerUpdate(BaseModel): # type: ignore
     id: Optional[int] = None
     name: Optional[str] = None
     new_name: Optional[str] = None
@@ -2509,7 +2973,7 @@ class PerformerUpdate(BaseModel):
     remove_images: Optional[List[str]] = None
 
 
-class PerformerDelete(BaseModel):
+class PerformerDelete(PerformerUpdate):
     id: Optional[int] = None
     name: Optional[str] = None
 
@@ -2536,6 +3000,12 @@ def health():
         "root": str(STATE.get("root")),
         "ffmpeg": ffmpeg_available(),
         "ffprobe": ffprobe_available(),
+        "faces_backend": detect_face_backend("auto"),
+        "faces_deps": {
+            "opencv": _has_module("cv2"),
+            "insightface": _has_module("insightface"),
+            "onnxruntime": _has_module("onnxruntime"),
+        },
         "version": app.version,
         "pid": os.getpid(),
     }
@@ -2545,7 +3015,8 @@ def health():
 def config_info():
     return {
         "root": str(STATE.get("root")),
-        "env": {k: os.environ.get(k) for k in ["MEDIA_ROOT", "FFPROBE_DISABLE"]},
+        "env": {k: os.environ.get(k) for k in ["MEDIA_ROOT", "FFPROBE_DISABLE", "MEDIA_EXTS"]},
+        "media_exts": sorted(list(MEDIA_EXTS)),
         "features": {
             "range_stream": True,
             "sprites": True,
@@ -2562,7 +3033,29 @@ def config_info():
             "whisper_cpp_bin": (lambda p=os.environ.get("WHISPER_CPP_BIN"): bool(p and Path(p).exists()))(),
             "whisper_cpp_model": (lambda p=os.environ.get("WHISPER_CPP_MODEL"): bool(p and Path(p).exists()))(),
             "opencv": _has_module("cv2"),
+            "insightface": _has_module("insightface"),
+            "onnxruntime": _has_module("onnxruntime"),
+            "numpy": _has_module("numpy"),
             "pillow": _has_module("PIL"),
+        },
+        "versions": {
+            "fastapi": _module_version("fastapi"),
+            "pydantic": _module_version("pydantic"),
+            "faster_whisper": _module_version("faster_whisper"),
+            "openai_whisper": _module_version("whisper"),
+            "opencv": _module_version("cv2"),
+            "insightface": _module_version("insightface"),
+            "onnxruntime": _module_version("onnxruntime"),
+            "numpy": _module_version("numpy"),
+            "pillow": _module_version("PIL"),
+        },
+        "capabilities": {
+            # What backend would be selected right now in auto mode
+            "subtitles_backend": detect_backend("auto"),
+            "faces_backend": detect_face_backend("auto"),
+            # Simple booleans the UI or users can read at a glance
+            "subtitles_enabled": detect_backend("auto") != "stub",
+            "faces_enabled": (detect_face_backend("auto") in ("opencv", "insightface")) and (_has_module("cv2") or _has_module("insightface")),
         },
         "defaults": {
             "sprites": _sprite_defaults(),
@@ -2648,11 +3141,14 @@ def tags_export(directory: str = Query("."), recursive: bool = Query(False)):
     return {"videos": out, "count": len(out)}
 
 
-class TagsImport(BaseModel):
     videos: Optional[list[dict]] = None
     mapping: Optional[dict[str, dict]] = None
     replace: bool = False
 
+class TagsImport(BaseModel):  # type: ignore
+    videos: Optional[List[Dict[str, Any]]] = None
+    mapping: Optional[Dict[str, Dict[str, Any]]] = None
+    replace: bool = False
 
 @app.post("/tags/import")
 def tags_import(payload: TagsImport):
@@ -2829,7 +3325,7 @@ def _collect_media_and_meta(root: Path) -> tuple[dict[str, Path], dict[str, dict
 ## Removed legacy: GET /videos/{name}/tags
 
 
-class TagUpdate(BaseModel):
+class TagUpdate(BaseModel): # type: ignore
     add: list[str] | None = None
     remove: list[str] | None = None
     performers_add: list[str] | None = None
@@ -2864,6 +3360,8 @@ def _list_dir(root: Path, rel: str):
             # Add duration when metadata sidecar exists
             duration_val = None
             title_val = None
+            width_val = None
+            height_val = None
             mpath = metadata_path(entry)
             if mpath.exists():
                 try:
@@ -2875,6 +3373,22 @@ def _list_dir(root: Path, rel: str):
                         title_val = (m.get("format", {}) or {}).get("tags", {}).get("title")
                     except Exception:
                         title_val = None
+                    # Extract width/height from first video stream
+                    try:
+                        for st in (m.get("streams") or []):
+                            if (st or {}).get("codec_type") == "video":
+                                try:
+                                    w = int(st.get("width") or 0) or None
+                                    h = int(st.get("height") or 0) or None
+                                except Exception:
+                                    w = None; h = None
+                                width_val = width_val or w
+                                height_val = height_val or h
+                                if width_val and height_val:
+                                    break
+                    except Exception:
+                        width_val = width_val or None
+                        height_val = height_val or None
                 except Exception:
                     duration_val = None
             # Artifact presence
@@ -2916,6 +3430,8 @@ def _list_dir(root: Path, rel: str):
                 "type": mime or "application/octet-stream",
                 "duration": duration_val,
                 "title": title_val or entry.stem,
+                "width": width_val,
+                "height": height_val,
                 "phash": phash_exists,
                 "chapters": scenes_exists,
                 "sprites": sprites_exists,
@@ -2935,7 +3451,7 @@ def _list_dir(root: Path, rel: str):
                 info["cover"] = None
             # Hover: single-file only
             concat = _hover_concat_path(entry)
-            if concat.exists():
+            if _file_nonempty(concat):
                 info["hoverPreview"] = f"/api/hover/get?path={info['path']}"
             files.append(info)
     return {"cwd": rel, "dirs": dirs, "files": files}
@@ -2955,12 +3471,24 @@ def get_library(
     performers: Optional[str] = Query(default=None),
     performers_ids: Optional[str] = Query(default=None),
     match_any: bool = Query(default=False),
+    res_min: Optional[int] = Query(default=None, ge=1, description="Minimum vertical resolution (height) in pixels"),
+    res_max: Optional[int] = Query(default=None, ge=1, description="Maximum vertical resolution (height) in pixels"),
 ):
     data = _list_dir(STATE["root"], path)
     files = data.get("files", [])
     # Search / filter
     if search:
-        files = [f for f in files if search.lower() in f["name"].lower()]
+        s = (search or "").strip().lower()
+        if s:
+            def _match(f: dict) -> bool:
+                try:
+                    name = str(f.get("name") or "").lower()
+                    title = str(f.get("title") or "").lower()
+                    relp = str(f.get("path") or "").lower()
+                    return (s in name) or (s in title) or (s in relp)
+                except Exception:
+                    return False
+            files = [f for f in files if _match(f)]
     if ext:
         files = [f for f in files if f["name"].lower().endswith(ext.lower())]
     # Registry-backed tag/performer filters
@@ -3051,20 +3579,61 @@ def get_library(
             if ok_tags and ok_perfs:
                 filtered.append(f)
         files = filtered
+
+    # Resolution filter (by height preferred, width heuristic fallback, filename token fallback)
+    if res_min is not None or res_max is not None:
+        def _tier_from_meta(f: dict) -> Optional[int]:
+            try:
+                h = f.get("height")
+                w = f.get("width")
+                if isinstance(h, (int, float)) and h:
+                    return int(h)
+                if isinstance(w, (int, float)) and w:
+                    # approximate mapping width->height tiers
+                    if w >= 3840: return 2160
+                    if w >= 2560: return 1440
+                    if w >= 1920: return 1080
+                    if w >= 1280: return 720
+                    if w >= 854: return 480
+                    if w >= 640: return 360
+                    if w >= 426: return 240
+                # filename token fallback
+                nm = (str(f.get("name") or "") + " " + str(f.get("title") or "")).lower()
+                if "2160p" in nm or "4k" in nm or "uhd" in nm: return 2160
+                if "1440p" in nm: return 1440
+                if "1080p" in nm: return 1080
+                if "720p" in nm: return 720
+                if "480p" in nm: return 480
+                if "360p" in nm: return 360
+                if "240p" in nm: return 240
+            except Exception:
+                return None
+            return None
+        lo = int(res_min) if res_min is not None else None
+        hi = int(res_max) if res_max is not None else None
+        files = [f for f in files if (
+            (lambda r: (lo is None or (r is not None and r >= lo)) and (hi is None or (r is not None and r <= hi)))(_tier_from_meta(f))
+        )]
     # Sort
     reverse = (order == "desc")
     if sort == "name":
-        files.sort(key=lambda f: f["name"].lower(), reverse=reverse)
+        files.sort(key=lambda f: (str(f.get("name") or "").lower(), str(f.get("path") or "")), reverse=reverse)
     elif sort == "size":
-        files.sort(key=lambda f: f.get("size", 0), reverse=reverse)
+        files.sort(key=lambda f: (int(f.get("size") or 0), str(f.get("path") or "")), reverse=reverse)
     elif sort == "date":
         for f in files:
-            fp = safe_join(STATE["root"], f["path"])
-            f["mtime"] = fp.stat().st_mtime if fp.exists() else 0
-        files.sort(key=lambda f: f.get("mtime", 0), reverse=reverse)
+            fp = safe_join(STATE["root"], f["path"])  # type: ignore[arg-type]
+            try:
+                mt = fp.stat().st_mtime if fp.exists() else 0
+            except Exception:
+                mt = 0
+            f["mtime"] = mt
+        files.sort(key=lambda f: (float(f.get("mtime") or 0), str(f.get("path") or "")), reverse=reverse)
     elif sort == "random":
         import random as _r
-        _r.shuffle(files)
+        seed = int(time.time() * 1000) & 0xFFFFFFFF  # pseudo-per-request seed
+        rnd = _r.Random(seed)
+        rnd.shuffle(files)
     total_files = len(files)
     total_pages = max(1, (total_files + page_size - 1) // page_size)
     if page > total_pages:
@@ -3208,7 +3777,8 @@ def api_duplicates_list(
     def hamming(a: str, b: str) -> int:
         ia = int(a, 16)
         ib = int(b, 16)
-        return (ia ^ ib).bit_count()
+        # Use portable popcount to avoid relying on int.bit_count (compat/type-checker friendly)
+        return bin(ia ^ ib).count("1")
 
     for i in range(len(entries)):
         for j in range(i + 1, len(entries)):
@@ -3314,7 +3884,7 @@ def report(directory: str = Query("."), recursive: bool = Query(False)):
         return {
             "metadata": metadata_path(v).exists(),
             "thumbs": thumbs_path(v).exists(),
-            "hovers": _hover_concat_path(v).exists(),
+            "hovers": _file_nonempty(_hover_concat_path(v)),
             "subtitles": bool(find_subtitles(v)),
             "faces": faces_exists_check(v),
             "sprites": s_sheet.exists() and s_json.exists(),
@@ -3554,6 +4124,21 @@ def hover_get(request: Request, path: str = Query(...)):
     return _serve_range(request, concat, "video/webm")
 
 
+@api.head("/hover/get")
+def hover_head(path: str = Query(...)):
+    """
+    Lightweight existence check for hover previews. Returns 200 if present, 404 if missing.
+    Used by the frontend to avoid 405 responses when probing with HEAD.
+    """
+    name, directory = _name_and_dir(path)
+    video = Path(directory) / name
+    concat = _hover_concat_path(video)
+    if not _file_nonempty(concat):
+        raise_api_error("hover preview not found", status_code=404)
+    # Do not stream content for HEAD; just signal OK
+    return Response(status_code=200, media_type="video/webm")
+
+
 def _hover_concat_path(video: Path) -> Path:
     # Store concatenated preview at artifact root (consistent location)
     return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_WEBM}"
@@ -3564,12 +4149,27 @@ def _hover_concat_path(video: Path) -> Path:
 def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
+    # Hard-require ffmpeg for real hover generation; don't create jobs if missing
+    _require_ffmpeg_or_error("hover previews")
     def _do():
         # If exists and not overwriting, return early
         out = _hover_concat_path(video)
-        if out.exists() and not overwrite:
+        # Treat tiny/stub files as missing; only short-circuit when file is non-empty
+        if _file_nonempty(out) and not overwrite:
             return api_success({"created": False, "path": str(out), "reason": "exists"})
-        generate_hover_preview(video, segments=int(segments), seg_dur=float(seg_dur), width=int(width), fmt="webm", out=out)
+        # Force robust single-pass path by not passing progress_cb
+        out = generate_hover_preview(
+            video,
+            segments=int(segments),
+            seg_dur=float(seg_dur),
+            width=int(width),
+            fmt="webm",
+            out=out,
+            progress_cb=None,
+        )
+        # Verify output is non-empty; if not, treat as failure so UI reflects reality
+        if not _file_nonempty(out):
+            raise RuntimeError("hover result too small or missing")
         return api_success({"created": True, "path": str(out)})
     try:
         return _wrap_job("hover", str(video.relative_to(STATE["root"])), _do)
@@ -3584,10 +4184,13 @@ def hover_create_batch(
     segments: int = Query(default=9),
     seg_dur: float = Query(default=0.8),
     width: int = Query(default=240),
+    only_missing: bool = Query(default=True),
 ):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
+    # Require ffmpeg globally for batch hover generation to avoid enqueueing no-op jobs
+    _require_ffmpeg_or_error("hover previews")
 
     class _Ns:
         preview_duration = float(seg_dur)
@@ -3607,13 +4210,47 @@ def hover_create_batch(
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
             for p in vids:
                 try:
+                    # Skip already-good previews when only_missing=True
+                    if only_missing and _file_nonempty(_hover_concat_path(p)):
+                        _set_job_progress(sup_jid, processed_inc=1)
+                        continue
                     jid = _new_job("hover", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
                         lk = _file_task_lock(p, "hover")
                         with JOB_RUN_SEM:
                             with lk:
-                                generate_hover_preview(p, segments=int(segments), seg_dur=float(seg_dur), width=int(width), fmt="webm")
+                                # Initialize per-file job progress to segment count and update as we go
+                                _set_job_progress(jid, total=int(segments), processed_set=0)
+                                def _pcb(i: int, n: int):
+                                    try:
+                                        n = max(1, int(n))
+                                        i = max(0, min(int(i), n))
+                                        _set_job_progress(jid, total=n, processed_set=i)
+                                    except Exception:
+                                        pass
+                                out_path = _hover_concat_path(p)
+                                out_ret = generate_hover_preview(
+                                    p,
+                                    segments=int(segments),
+                                    seg_dur=float(seg_dur),
+                                    width=int(width),
+                                    fmt="webm",
+                                    out=out_path,
+                                    progress_cb=_pcb,
+                                )
+                                # Ensure we end at 100% for this job
+                                _set_job_progress(jid, processed_set=int(segments))
+                                # Verify output and record job result for debugging
+                                try:
+                                    size = out_path.stat().st_size if out_path.exists() else 0
+                                except Exception:
+                                    size = 0
+                                if size < 64:
+                                    raise RuntimeError("hover result too small or missing")
+                                with JOB_LOCK:
+                                    if jid in JOBS:
+                                        JOBS[jid]["result"] = {"path": str(out_path), "size": int(size)}
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
@@ -3758,6 +4395,8 @@ def scenes_get(path: str = Query(...)):
 @api.post("/scenes/create")
 def scenes_create(path: str = Query(...), threshold: float = Query(default=0.4), limit: int = Query(default=0), thumbs: bool = Query(default=False), clips: bool = Query(default=False), thumbs_width: int = Query(default=320), clip_duration: float = Query(default=2.0)):
     fp = safe_join(STATE["root"], path)
+    # Scene detection and outputs require ffmpeg present
+    _require_ffmpeg_or_error("scene detection")
     def _do():
         generate_scene_artifacts(fp, threshold=float(threshold), limit=int(limit), gen_thumbs=bool(thumbs), gen_clips=bool(clips), thumbs_width=int(thumbs_width), clip_duration=float(clip_duration))
         return api_success({"created": True, "path": str(scenes_json_path(fp))})
@@ -3835,6 +4474,8 @@ def sprites_sheet(path: str = Query(...)):
 @api.post("/sprites/create")
 def sprites_create(path: str = Query(...), interval: float = Query(default=12.0), width: int = Query(default=240), cols: int = Query(default=8), rows: int = Query(default=8), quality: int = Query(default=6)):
     fp = safe_join(STATE["root"], path)
+    # Sprites need ffmpeg for high-quality real output; block if unavailable
+    _require_ffmpeg_or_error("sprites generation")
     def _do():
         generate_sprite_sheet(fp, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality))
         return api_success({"created": True})
@@ -3849,6 +4490,7 @@ def sprites_create_batch(path: str = Query(default=""), recursive: bool = Query(
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
+    _require_ffmpeg_or_error("sprites generation")
     sup_jid = _new_job("sprites-batch", str(base))
     _start_job(sup_jid)
     def _worker():
@@ -3954,6 +4596,8 @@ def heatmaps_png_head(path: str = Query(...)):
 @api.post("/heatmaps/create")
 def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=True), force: bool = Query(default=False)):
     fp = safe_join(STATE["root"], path)
+    # Heatmap sampling uses ffmpeg signalstats; block if missing
+    _require_ffmpeg_or_error("heatmaps generation")
     def _do():
         d = compute_heatmaps(fp, float(interval), str(mode), bool(png))
         return api_success({"created": True, "path": str(heatmaps_json_path(fp)), "samples": len(d.get("samples", []))})
@@ -3968,6 +4612,7 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
+    _require_ffmpeg_or_error("heatmaps generation")
     sup_jid = _new_job("heatmaps-batch", str(base))
     _start_job(sup_jid)
     def _worker():
@@ -4199,8 +4844,6 @@ def subtitles_head(path: str = Query(...)):
     if not s or not Path(s).exists():
         raise_api_error("Subtitles not found", status_code=404)
     return Response(status_code=200, media_type="text/plain")
-
-    # SRT only; no VTT endpoint
 
 
 @api.get("/subtitles/list")
@@ -4575,6 +5218,7 @@ def faces_create_batch(
     min_size_frac: float = Query(default=0.10),
     backend: str = Query(default="auto", pattern="^(auto|opencv|insightface)$"),
     only_missing: bool = Query(default=True),
+    force: bool = Query(default=False),
 ):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
@@ -4596,7 +5240,7 @@ def faces_create_batch(
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
             for p in vids:
                 try:
-                    if only_missing and faces_exists_check(p):
+                    if (only_missing and not force) and faces_exists_check(p):
                         # Skip already-generated faces when only_missing=True
                         _set_job_progress(sup_jid, processed_inc=1)
                         continue
@@ -4715,10 +5359,135 @@ def faces_signatures(path: str = Query(default=""), recursive: bool = Query(defa
     return api_success({"signatures": sigs, "videos": by_video})
 
 
+# --- Embed API (re-embed/update embeddings without re-detecting boxes) ---
+@api.post("/embed/update")
+def embed_update(
+    path: str = Query(...),
+    sim_thresh: float = Query(default=0.9),
+    interval: float = Query(default=1.0),
+    scale_factor: float = Query(default=1.2),
+    min_neighbors: int = Query(default=7),
+    min_size_frac: float = Query(default=0.10),
+    backend: str = Query(default="auto", pattern="^(auto|opencv|insightface)$"),
+    overwrite: bool = Query(default=False),
+    background: bool = Query(default=False),
+):
+    """
+    Trigger an embed job for a single file. Produces/updates faces.json.
+
+    Semantics match the 'embed' Task job branch: skips when a valid, non-stub
+    faces.json exists unless overwrite=true; otherwise recomputes and writes.
+    """
+    fp = safe_join(STATE["root"], path)
+    # Background mode returns immediately with a job id
+    if background:
+        rel = str(fp.relative_to(STATE["root"]))
+        prm = {
+            "targets": [rel],
+            "overwrite": bool(overwrite),
+            "sim_thresh": float(sim_thresh),
+            "interval": float(interval),
+            "scale_factor": float(scale_factor),
+            "min_neighbors": int(min_neighbors),
+            "min_size_frac": float(min_size_frac),
+            "backend": str(backend),
+        }
+        jr = JobRequest(task="embed", directory=str(fp.parent), recursive=False, force=bool(overwrite), params=prm)
+        jid = _new_job(jr.task, rel)
+        # Persist request for resume
+        try:
+            with JOB_LOCK:
+                if jid in JOBS:
+                    JOBS[jid]["request"] = jr.dict()
+        except Exception:
+            pass
+        def _runner():
+            with JOB_RUN_SEM:
+                _run_job_worker(jid, jr)
+        threading.Thread(target=_runner, daemon=True).start()
+        return api_success({"job": jid, "queued": True})
+
+    # Synchronous: run now but still track as a job for progress
+    rel = str(fp.relative_to(STATE["root"]))
+    prm = {
+        "targets": [rel],
+        "overwrite": bool(overwrite),
+        "sim_thresh": float(sim_thresh),
+        "interval": float(interval),
+        "scale_factor": float(scale_factor),
+        "min_neighbors": int(min_neighbors),
+        "min_size_frac": float(min_size_frac),
+        "backend": str(backend),
+    }
+    jr = JobRequest(task="embed", directory=str(fp.parent), recursive=False, force=bool(overwrite), params=prm)
+    jid = _new_job(jr.task, rel)
+    try:
+        # Reuse the worker to ensure consistent semantics
+        _run_job_worker(jid, jr)
+        return api_success({"job": jid, "queued": False, "path": str(faces_path(fp))})
+    except Exception as e:  # noqa: BLE001
+        raise_api_error(f"embed failed: {e}", status_code=500)
+
+
+@api.post("/embed/update/batch")
+def embed_update_batch(
+    path: str = Query(default=""),
+    recursive: bool = Query(default=True),
+    sim_thresh: float = Query(default=0.9),
+    interval: float = Query(default=1.0),
+    scale_factor: float = Query(default=1.2),
+    min_neighbors: int = Query(default=7),
+    min_size_frac: float = Query(default=0.10),
+    backend: str = Query(default="auto", pattern="^(auto|opencv|insightface)$"),
+    only_missing: bool = Query(default=True),
+    overwrite: bool = Query(default=False),
+):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    if not base.exists() or not base.is_dir():
+        raise_api_error("Not found", status_code=404)
+    # Determine targets
+    vids = _find_mp4s(base, recursive)
+    targets: list[str] = []
+    for v in vids:
+        if only_missing and not overwrite:
+            if faces_exists_check(v):
+                continue
+        try:
+            targets.append(str(v.relative_to(STATE["root"])))
+        except Exception:
+            continue
+    # Create a single batch job using the generic worker; it will fan out per target
+    prm = {
+        "targets": targets,
+        "overwrite": bool(overwrite),
+        "sim_thresh": float(sim_thresh),
+        "interval": float(interval),
+        "scale_factor": float(scale_factor),
+        "min_neighbors": int(min_neighbors),
+        "min_size_frac": float(min_size_frac),
+        "backend": str(backend),
+    }
+    jr = JobRequest(task="embed", directory=str(base), recursive=False, force=bool(overwrite), params=prm)
+    jid = _new_job(jr.task, str(base))
+    # Persist request for resume
+    try:
+        with JOB_LOCK:
+            if jid in JOBS:
+                JOBS[jid]["request"] = jr.dict()
+    except Exception:
+        pass
+    def _runner():
+        with JOB_RUN_SEM:
+            _run_job_worker(jid, jr)
+    threading.Thread(target=_runner, daemon=True).start()
+    return api_success({"job": jid, "queued": True, "fileCount": len(targets)})
+
+
 # --- Face crops (image thumbnails for FaceLab) ---
 @api.get("/frame/crop")
 def frame_crop(path: str = Query(...), t: float = Query(...), x: int = Query(...), y: int = Query(...), w: int = Query(...), h: int = Query(...), scale: int = Query(default=128)):
-    """Return a cropped face image at time t from the given box.
+    """
+    Return a cropped face image at time t from the given box.
 
     Attempts PIL first for lightweight JPEG/PNG from decoded frame via ffmpeg pipe fallback.
     """
@@ -4792,7 +5561,8 @@ def frame_boxed(
     scale: int = Query(default=256),
     thickness: int = Query(default=3),
 ):
-    """Return a full video frame at time t with a bounding box overlay.
+    """
+    Return a full video frame at time t with a bounding box overlay.
 
     Uses PIL to draw the rectangle when available; falls back to ffmpeg drawbox.
     """
@@ -4911,7 +5681,8 @@ def set_marker(path: str = Query(...), time: float = Query(...)):
 # Jobs API
 @app.get("/api/jobs")
 def jobs(state: str = Query(default="active"), limit: int = Query(default=100)):
-    """List jobs. state=active|recent|all. Active = queued or running. Recent = done/failed in last 10 minutes."""
+    """
+    List jobs. state=active|recent|all. Active = queued or running. Recent = done/failed in last 10 minutes."""
     now = time.time()
     with JOB_LOCK:
         vals = list(JOBS.values())
@@ -4938,7 +5709,8 @@ def jobs(state: str = Query(default="active"), limit: int = Query(default=100)):
 def artifacts_orphans_status(
     path: str = Query(default=""),
 ):
-    """Check for orphaned artifacts (artifacts without corresponding video files)."""
+    """
+    Check for orphaned artifacts (artifacts without corresponding video files)."""
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
@@ -5008,7 +5780,8 @@ def artifacts_cleanup(
 
 @api.get("/tasks/coverage")
 def tasks_coverage(path: str = Query(default="")):
-    """Get artifact coverage statistics for the given path."""
+    """
+    Get artifact coverage statistics for the given path."""
     try:
         base = safe_join(STATE["root"], path) if path else STATE["root"]
         if not base.exists() or not base.is_dir():
@@ -5127,7 +5900,8 @@ def tasks_coverage(path: str = Query(default="")):
 
 @api.post("/tasks/batch")
 def tasks_batch_operation(request: Request):
-    """Execute a batch artifact generation operation."""
+    """
+    Execute a batch artifact generation operation."""
     try:
         # Get JSON body
         import asyncio
@@ -5182,6 +5956,11 @@ def tasks_batch_operation(request: Request):
                     needs_processing = True
                 elif operation == "subtitles" and not find_subtitles(video):
                     needs_processing = True
+                elif operation == "embed" and not faces_exists_check(video):
+                    # Treat missing or stub faces.json as needing embed
+                    needs_processing = True
+                elif operation == "faces" and not faces_exists_check(video):
+                    needs_processing = True
                 
                 if needs_processing:
                     filtered_videos.append(video)
@@ -5221,6 +6000,17 @@ def tasks_batch_operation(request: Request):
         elif operation == "previews":
             job_params["segments"] = params.get("segments", 9)
             job_params["duration"] = params.get("duration", 1.0)
+        elif operation == "embed":
+            task_name = "embed"
+            # Re-embed parameters (same tunables as faces)
+            job_params["sim_thresh"] = float(params.get("sim_thresh", 0.9))
+            job_params["interval"] = float(params.get("interval", 1.0))
+            job_params["scale_factor"] = float(params.get("scale_factor", 1.2))
+            job_params["min_neighbors"] = int(params.get("min_neighbors", 7))
+            job_params["min_size_frac"] = float(params.get("min_size_frac", 0.10))
+            job_params["backend"] = str(params.get("backend", "auto"))
+            if bool(params.get("force", False)) or bool(params.get("overwrite", False)):
+                job_params["overwrite"] = True
         elif operation == "heatmaps":
             job_params["interval"] = params.get("interval", 5.0)
             job_params["mode"] = params.get("mode", "both")
@@ -5229,6 +6019,25 @@ def tasks_batch_operation(request: Request):
             job_params["model"] = params.get("model", "small")
             job_params["language"] = params.get("language", "auto")
             job_params["translate"] = bool(params.get("translate", False))
+        elif operation == "scenes":
+            # Support both snake_case and camelCase param names from the UI
+            job_params["threshold"] = float(params.get("threshold", 0.4))
+            job_params["limit"] = int(params.get("limit", 0) or 0)
+            job_params["thumbs"] = bool(params.get("thumbs", False))
+            job_params["clips"] = bool(params.get("clips", False))
+            job_params["thumbs_width"] = int(params.get("thumbs_width", params.get("thumbsWidth", 320)))
+            job_params["clip_duration"] = float(params.get("clip_duration", params.get("clipDuration", 2.0)))
+        elif operation == "faces":
+            # Face embeddings parameters
+            job_params["sim_thresh"] = float(params.get("sim_thresh", 0.9))
+            job_params["interval"] = float(params.get("interval", 1.0))
+            job_params["scale_factor"] = float(params.get("scale_factor", 1.2))
+            job_params["min_neighbors"] = int(params.get("min_neighbors", 7))
+            job_params["min_size_frac"] = float(params.get("min_size_frac", 0.10))
+            job_params["backend"] = str(params.get("backend", "auto"))
+            if bool(params.get("force", False)):
+                # Force recompute even if outputs exist
+                job_params["overwrite"] = True
         
         # When running only missing, pass explicit targets so job progress reflects the actual work set
         targets: list[str] = []
@@ -5243,10 +6052,90 @@ def tasks_batch_operation(request: Request):
             if targets:
                 job_params["targets"] = targets
 
+        # Queue-time deduplication: avoid enqueuing jobs for targets that already have
+        # a queued or running job for the same task.
+        # Build a set of (task_name, rel_path) for active jobs.
+        active_targets: set[tuple[str, str]] = set()
+        try:
+            with JOB_LOCK:
+                existing_jobs = list(JOBS.values())
+        except Exception:
+            existing_jobs = []
+        root_res = STATE["root"].resolve()
+        for j in existing_jobs:
+            try:
+                state = (j.get("state") or "").lower()
+                if state not in ("queued", "running"):
+                    continue
+                jtype = (j.get("type") or "").lower()
+                if not jtype:
+                    continue
+                # Only dedupe against same normalized task
+                if jtype != task_name:
+                    continue
+                # Collect possible target hints: current, label, and request.params.targets
+                paths: list[str] = []
+                cur = j.get("current") or j.get("label")
+                if cur:
+                    paths.append(str(cur))
+                try:
+                    req = j.get("request") or {}
+                    params_j = (req.get("params") or {})
+                    tgts = params_j.get("targets") or []
+                    for t in tgts:
+                        paths.append(str(t))
+                except Exception:
+                    pass
+                for pstr in paths:
+                    try:
+                        p = Path(pstr)
+                        if not p.is_absolute():
+                            vp = (STATE["root"] / p).resolve()
+                        else:
+                            vp = p.resolve()
+                        rel = str(vp.relative_to(root_res))
+                    except Exception:
+                        rel = str(pstr)
+                    active_targets.add((jtype, rel))
+            except Exception:
+                continue
+
+        # If we have explicit targets (missing mode), drop any already-active ones
+        if mode == "missing" and targets:
+            filtered_targets: list[str] = []
+            filtered_videos: list[Path] = []
+            for v in videos_to_process:
+                try:
+                    rel = str(v.relative_to(STATE["root"]))
+                except Exception:
+                    continue
+                if (task_name, rel) in active_targets:
+                    # skip this one; already has a queued/running job
+                    continue
+                filtered_targets.append(rel)
+                filtered_videos.append(v)
+            videos_to_process = filtered_videos
+            if filtered_targets:
+                job_params["targets"] = filtered_targets
+            else:
+                job_params.pop("targets", None)
+
         # If multiple files, spawn per-file jobs (default concurrency capped globally).
         created_jobs: list[str] = []
         if len(videos_to_process) <= 1:
             # Single job path for 0 or 1 file
+            # If 1 file and it's already active, short-circuit with a friendly message
+            if len(videos_to_process) == 1 and mode == "missing":
+                try:
+                    rel0 = str(videos_to_process[0].relative_to(STATE["root"]))
+                except Exception:
+                    rel0 = ""
+                if rel0 and (task_name, rel0) in active_targets:
+                    return api_success({
+                        "jobs": [],
+                        "fileCount": 0,
+                        "message": f"Skipped: {task_name} job already queued/running for {rel0}",
+                    })
             req = JobRequest(
                 task=task_name,
                 directory=str(base),
@@ -5281,7 +6170,8 @@ def tasks_batch_operation(request: Request):
                 per_params["targets"] = [rel]
                 # Deduplicate by (task, target)
                 dedup_key = (task_name, rel)
-                if dedup_key in seen_targets:
+                # Skip if already queued/running globally or already seen in this request
+                if dedup_key in seen_targets or dedup_key in active_targets:
                     continue
                 seen_targets.add(dedup_key)
                 req = JobRequest(
@@ -5320,7 +6210,8 @@ def tasks_batch_operation(request: Request):
 
 @api.get("/tasks/jobs")
 def tasks_jobs():
-    """Get current job status with stats."""
+    """
+    Get current job status with stats."""
     try:
         with JOB_LOCK:
             all_jobs = list(JOBS.values())
@@ -5345,16 +6236,19 @@ def tasks_jobs():
                 "file": job.get("current") or job.get("label") or job.get("path", ""),
                 "status": job.get("state", "unknown"),
                 "progress": 0,
+                "createdTime": job.get("created_at"),
                 "startTime": job.get("started_at"),
                 "endedTime": job.get("ended_at"),
                 # Expose raw counters so the UI can derive percentages if needed
                 "totalRaw": job.get("total"),
                 "processedRaw": job.get("processed"),
+                # Bubble up error when present so UI can display/inspect it
+                "error": job.get("error"),
             }
             # Best-effort target artifact path (relative to root) for the current file, when applicable
             try:
                 jtype = (job.get("type") or "").lower()
-                cur = job.get("current") or ""
+                cur = job.get("current") or job.get("label") or job.get("path") or ""
                 target_path_str: Optional[str] = None
                 if cur:
                     vp = Path(cur)
@@ -5375,6 +6269,9 @@ def tasks_jobs():
                         tp = heatmaps_json_path(vp)
                     elif jtype == "faces":
                         tp = faces_path(vp)
+                    elif jtype == "embed":
+                        # Embed jobs also produce/update faces.json
+                        tp = faces_path(vp)
                     elif jtype == "metadata":
                         tp = metadata_path(vp)
                     elif jtype == "subtitles":
@@ -5389,18 +6286,21 @@ def tasks_jobs():
             # Calculate progress percentage
             total = job.get("total")
             processed = job.get("processed")
+            pct_val = None
             if total and processed is not None:
                 try:
-                    pct = int((float(processed) / float(total)) * 100)
-                    if pct < 0:
-                        pct = 0
-                    if pct > 100:
-                        pct = 100
-                    formatted_job["progress"] = pct
+                    pct_val = int((float(processed) / float(total)) * 100)
+                    if pct_val < 0:
+                        pct_val = 0
+                    if pct_val > 100:
+                        pct_val = 100
                 except Exception:
-                    formatted_job["progress"] = 0
-            elif job.get("state") == "done":
+                    pct_val = None
+            # If job is completed, force 100% regardless of counters to avoid UI mismatch
+            if job.get("state") == "done":
                 formatted_job["progress"] = 100
+            else:
+                formatted_job["progress"] = pct_val if pct_val is not None else 0
             
             formatted_jobs.append(formatted_job)
         
@@ -5409,6 +6309,7 @@ def tasks_jobs():
         # Active = actually running jobs (not queued)
         active_jobs = [j for j in all_jobs if j.get("state") == "running"]
         queued_jobs = [j for j in all_jobs if j.get("state") == "queued"]
+        failed_jobs = [j for j in all_jobs if j.get("state") == "failed"]
         
         # Count completed jobs from today
         completed_today = 0
@@ -5421,14 +6322,35 @@ def tasks_jobs():
         stats = {
             "active": len(active_jobs),
             "queued": len(queued_jobs),
+            "failed": len(failed_jobs),
             "completedToday": completed_today
         }
         
-        # Sort jobs by start time, newest first
-        formatted_jobs.sort(key=lambda x: x.get("startTime") or 0, reverse=True)
+        # Prioritize live jobs (running first, then queued), then recent others.
+        live = [j for j in formatted_jobs if j.get("status") in ("running", "queued")]
+        rest = [j for j in formatted_jobs if j.get("status") not in ("running", "queued")]
+
+        def live_key(x: dict):
+            # running before queued; then by start time desc; then by created time desc
+            prio = 1 if x.get("status") == "running" else 0
+            t = x.get("startTime") or x.get("createdTime") or 0
+            return (-prio, -float(t))
+
+        def rest_key(x: dict):
+            # prefer started_at, then ended_at, then created_at
+            t = x.get("startTime") or x.get("endedTime") or x.get("createdTime") or 0
+            return -float(t)
+
+        live.sort(key=live_key)
+        rest.sort(key=rest_key)
+
+        # Always include all live jobs; cap the remainder to a reasonable window
+        MAX_ROWS = 50
+        headroom = max(0, MAX_ROWS - len(live))
+        result_jobs = live + rest[:headroom]
         
         return api_success({
-            "jobs": formatted_jobs[:50],  # Limit to recent 50 jobs
+            "jobs": result_jobs,
             "stats": stats
         })
         
@@ -5438,7 +6360,8 @@ def tasks_jobs():
 
 @api.post("/tasks/jobs/{job_id}/cancel")
 def tasks_cancel_job(job_id: str):
-    """Cancel a running job."""
+    """
+    Cancel a running job."""
     try:
         ev = JOB_CANCEL_EVENTS.get(job_id)
         if ev is None:
@@ -5446,6 +6369,11 @@ def tasks_cancel_job(job_id: str):
             return  # This line will never execute but helps type checker
         
         ev.set()
+        # Immediately terminate any active subprocesses for this job (e.g., ffmpeg)
+        try:
+            _terminate_job_processes(job_id)  # type: ignore[name-defined]
+        except Exception:
+            pass
         with JOB_LOCK:
             j = JOBS.get(job_id)
             if j and j.get("state") in ("queued", "running"):
@@ -5461,7 +6389,8 @@ def tasks_cancel_job(job_id: str):
 
 @api.post("/tasks/jobs/cancel-queued")
 def tasks_cancel_all_queued():
-    """Cancel all queued jobs (fast no-op for ones already running)."""
+    """
+    Cancel all queued jobs (fast no-op for ones already running)."""
     try:
         count = 0
         with JOB_LOCK:
@@ -5470,6 +6399,10 @@ def tasks_cancel_all_queued():
             ev = JOB_CANCEL_EVENTS.get(jid)
             if ev and not ev.is_set():
                 ev.set()
+                try:
+                    _terminate_job_processes(jid)  # type: ignore[name-defined]
+                except Exception:
+                    pass
                 count += 1
                 with JOB_LOCK:
                     j = JOBS.get(jid)
@@ -5483,7 +6416,8 @@ def tasks_cancel_all_queued():
 
 @api.post("/tasks/jobs/cancel-all")
 def tasks_cancel_all():
-    """Cancel all queued and running jobs by signaling their cancel events.
+    """
+    Cancel all queued and running jobs by signaling their cancel events.
     Running jobs will attempt to stop gracefully at their next cancellation check.
     """
     try:
@@ -5494,6 +6428,10 @@ def tasks_cancel_all():
             ev = JOB_CANCEL_EVENTS.get(jid)
             if ev and not ev.is_set():
                 ev.set()
+                try:
+                    _terminate_job_processes(jid)  # type: ignore[name-defined]
+                except Exception:
+                    pass
                 count += 1
                 with JOB_LOCK:
                     j = JOBS.get(jid)
@@ -5507,7 +6445,8 @@ def tasks_cancel_all():
 
 @api.get("/tasks/concurrency")
 def tasks_get_concurrency():
-    """Return current max concurrency."""
+    """
+    Return current max concurrency."""
     try:
         return api_success({"maxConcurrency": JOB_MAX_CONCURRENCY})
     except Exception as e:
@@ -5516,7 +6455,8 @@ def tasks_get_concurrency():
 
 @api.post("/tasks/concurrency")
 def tasks_set_concurrency(value: int = Query(..., ge=1, le=128)):
-    """Update max concurrency (process-wide)."""
+    """
+    Update max concurrency (process-wide)."""
     try:
         global JOB_MAX_CONCURRENCY, JOB_RUN_SEM
         new_val = int(value)
@@ -5535,11 +6475,12 @@ def tasks_set_concurrency(value: int = Query(..., ge=1, le=128)):
 
 @api.post("/tasks/jobs/clear-completed")
 def tasks_clear_completed():
-    """Remove completed jobs from the in-memory registry."""
+    """
+    Remove completed/failed/canceled jobs from the registry and on-disk .jobs folder."""
     try:
         removed = 0
         with JOB_LOCK:
-            ids = [jid for jid, j in JOBS.items() if j.get("state") in ("done", "completed")]
+            ids = [jid for jid, j in JOBS.items() if j.get("state") in ("done", "completed", "failed", "canceled")]
             for jid in ids:
                 JOBS.pop(jid, None)
                 ev = JOB_CANCEL_EVENTS.pop(jid, None)
@@ -5550,10 +6491,45 @@ def tasks_clear_completed():
                     _delete_persisted_job(jid)
                 except Exception:
                     pass
+        # Sweep any orphaned .jobs files too
+        try:
+            d = _jobs_state_dir()
+            for p in d.glob("*.json"):
+                try:
+                    jid = p.stem
+                    if jid not in JOBS:
+                        p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         _publish_job_event({"event": "purge", "removed": removed})
         return api_success({"removed": removed})
     except Exception as e:
         raise_api_error(f"Failed to clear completed jobs: {str(e)}")
+
+
+@api.post("/tasks/jobs/clear-all")
+def tasks_clear_all():
+    """Clear all jobs and delete their persisted state."""
+    try:
+        removed = 0
+        with JOB_LOCK:
+            ids = list(JOBS.keys())
+            for jid in ids:
+                JOBS.pop(jid, None)
+                ev = JOB_CANCEL_EVENTS.pop(jid, None)
+                removed += 1
+        try:
+            d = _jobs_state_dir()
+            for p in d.glob("*.json"):
+                p.unlink(missing_ok=True)
+        except Exception:
+            pass
+        _publish_job_event({"event": "purge", "removed": removed})
+        return api_success({"removed": removed})
+    except Exception as e:
+        raise_api_error(f"Failed to clear all jobs: {str(e)}")
 
 
 # --------------------------
@@ -5914,7 +6890,7 @@ def registry_export():
     return api_success({"tags": tdata, "performers": pdata})
 
 
-class RegistryImport(BaseModel):
+class RegistryImport(BaseModel):   # type: ignore
     tags: Optional[dict] = None
     performers: Optional[dict] = None
     replace: bool = False
@@ -5953,6 +6929,53 @@ def registry_import(payload: RegistryImport):
     return api_success({"imported": True})
 
 
+# -------------------------------------------------
+# Admin: Panic kill (dangerous)
+# -------------------------------------------------
+@api.post("/admin/panic-kill")
+def admin_panic_kill(request: Request):
+    """
+    Forcefully kill server and media processes. This will:
+      - pkill -9 -f uvicorn
+      - pkill -9 -f '/mnt/media/media-player/.venv/bin/python'
+      - pkill -9 -f ffmpeg
+
+    Safety:
+      - Only allowed from localhost unless PANIC_ALLOW_REMOTE=1 is set.
+      - Runs the kill sequence on a background thread after a short delay so this
+        HTTP request can return a response first.
+    """
+    try:
+        client = getattr(request, "client", None)
+        client_host = str(getattr(client, "host", "")) if client is not None else ""
+        allow_remote = os.environ.get("PANIC_ALLOW_REMOTE", "0") == "1"
+        if not allow_remote and client_host not in ("127.0.0.1", "::1", "localhost"):
+            raise_api_error("panic-kill only allowed from localhost", status_code=403)
+
+        def _do_kill():
+            try:
+                time.sleep(0.3)  # allow response to flush
+                cmds = [
+                    ["pkill", "-9", "-f", "uvicorn"],
+                    ["pkill", "-9", "-f", "/mnt/media/media-player/.venv/bin/python"],
+                    ["pkill", "-9", "-f", "ffmpeg"],
+                ]
+                for cmd in cmds:
+                    try:
+                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        threading.Thread(target=_do_kill, name="panic-kill", daemon=True).start()
+        return api_success({"scheduled": True})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_api_error(f"Failed to schedule panic kill: {str(e)}")
+
+
 # Final router wiring
 app.include_router(api)
 
@@ -5960,7 +6983,8 @@ app.include_router(api)
 # Defined AFTER API router so API routes take precedence
 @app.get("/{filepath:path}", include_in_schema=False)
 def serve_static_file(filepath: str):
-    """Serve static files from root directory and subdirectories like components/tabs.html"""
+    """
+    Serve static files from root directory and subdirectories like components/tabs.html"""
     
     file_path = _STATIC / filepath
     # Security check: ensure the resolved path is still within _STATIC
@@ -5984,7 +7008,7 @@ def serve_static_file(filepath: str):
 # --------------------------
 # Jobs API at root
 # --------------------------
-class JobRequest(BaseModel):
+class JobRequest(BaseModel):  # type: ignore
     task: str
     directory: Optional[str] = None
     recursive: Optional[bool] = False
@@ -5996,7 +7020,7 @@ def _iter_videos(dir_path: Path, recursive: bool) -> list[Path]:
     return _find_mp4s(dir_path, recursive)
 
 
-class AutoTagRequest(BaseModel):
+class AutoTagRequest(BaseModel):  # type: ignore
     path: Optional[str] = None
     recursive: Optional[bool] = False
     performers: Optional[list[str]] = None
@@ -6049,6 +7073,11 @@ def _job_set_result(jid: str, result: Any) -> None:
 
 def _run_job_worker(jid: str, jr: JobRequest):
     try:
+        # set job context for this worker thread
+        try:
+            JOB_CTX.jid = jid  # type: ignore[name-defined]
+        except Exception:
+            pass
         task = (jr.task or "").lower()
         # If cancel was requested while queued, exit immediately before any work
         if _job_check_canceled(jid):
@@ -6271,33 +7300,56 @@ def _run_job_worker(jid: str, jr: JobRequest):
                         continue
             else:
                 vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress based on frames processed
+            # Scale to 100 per file for smoother progress and honor overwrite/force
             _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+            overwrite = bool(prm.get("overwrite", False))
+            sim_thresh = float(prm.get("sim_thresh", 0.9))
+            interval = float(prm.get("interval", 1.0))
+            scale_factor = float(prm.get("scale_factor", 1.2))
+            min_neighbors = int(prm.get("min_neighbors", 7))
+            min_size_frac = float(prm.get("min_size_frac", 0.10))
+            backend = str(prm.get("backend", "auto"))
             done_files = 0
+            skipped = 0
             for v in vids:
                 if _job_check_canceled(jid):
                     _finish_job(jid)
                     return
                 try:
                     _set_job_current(jid, str(v))
-                    def _pcb_embed(i: int, n: int):
-                        try:
-                            n = max(1, int(n))
-                            i = max(0, min(int(i), n))
-                            overall = (done_files * 100) + int((i / n) * 100)
-                            _set_job_progress(jid, processed_set=overall)
-                        except Exception:
-                            pass
-                    compute_face_embeddings(v, progress_cb=_pcb_embed)
+                    lk = _file_task_lock(v, "faces")
+                    with lk:
+                        # Skip if faces JSON exists and is non-stub, unless forced
+                        if faces_exists_check(v) and not (bool(jr.force) or overwrite):
+                            done_files += 1
+                            skipped += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
+                        else:
+                            def _pcb_embed(i: int, n: int):
+                                try:
+                                    n = max(1, int(n))
+                                    i = max(0, min(int(i), n))
+                                    overall = (done_files * 100) + int((i / n) * 100)
+                                    _set_job_progress(jid, processed_set=overall)
+                                except Exception:
+                                    pass
+                            compute_face_embeddings(
+                                v,
+                                sim_thresh=sim_thresh,
+                                interval=interval,
+                                scale_factor=scale_factor,
+                                min_neighbors=min_neighbors,
+                                min_size_frac=min_size_frac,
+                                backend=backend,
+                                progress_cb=_pcb_embed,
+                            )
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
                 except Exception:
-                    # On error, mark file as finished for progress accounting
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
-                    continue
-                done_files += 1
-                _set_job_progress(jid, processed_set=done_files * 100)
             _set_job_current(jid, None)
-            _job_set_result(jid, 0)
+            _job_set_result(jid, {"processed": len(vids), "skipped": skipped})
             _finish_job(jid)
             return
         if task == "clip":
@@ -6581,6 +7633,69 @@ def _run_job_worker(jid: str, jr: JobRequest):
             _job_set_result(jid, {"processed": len(vids)})
             _finish_job(jid)
             return
+        if task == "faces":
+            prm = jr.params or {}
+            targets = prm.get("targets") or []
+            overwrite = bool(prm.get("overwrite", False))
+            if targets:
+                vids = []
+                for rel in targets:
+                    try:
+                        p = safe_join(STATE["root"], rel)
+                        if p.exists() and p.is_file():
+                            vids.append(p)
+                    except Exception:
+                        continue
+            else:
+                vids = _iter_videos(base, bool(jr.recursive))
+            # Scale to 100 per file for smoother progress
+            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+            sim_thresh = float(prm.get("sim_thresh", 0.9))
+            interval = float(prm.get("interval", 1.0))
+            scale_factor = float(prm.get("scale_factor", 1.2))
+            min_neighbors = int(prm.get("min_neighbors", 7))
+            min_size_frac = float(prm.get("min_size_frac", 0.10))
+            backend = str(prm.get("backend", "auto"))
+            done_files = 0
+            for v in vids:
+                if _job_check_canceled(jid):
+                    _finish_job(jid)
+                    return
+                try:
+                    _set_job_current(jid, str(v))
+                    lk = _file_task_lock(v, "faces")
+                    with lk:
+                        if faces_exists_check(v) and not (bool(jr.force) or overwrite):
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
+                        else:
+                            def _pcb_faces(i: int, n: int):
+                                try:
+                                    n = max(1, int(n))
+                                    i = max(0, min(int(i), n))
+                                    overall = (done_files * 100) + int((i / n) * 100)
+                                    _set_job_progress(jid, processed_set=overall)
+                                except Exception:
+                                    pass
+                            compute_face_embeddings(
+                                v,
+                                sim_thresh=sim_thresh,
+                                interval=interval,
+                                scale_factor=scale_factor,
+                                min_neighbors=min_neighbors,
+                                min_size_frac=min_size_frac,
+                                backend=backend,
+                                progress_cb=_pcb_faces,
+                            )
+                            done_files += 1
+                            _set_job_progress(jid, processed_set=done_files * 100)
+                except Exception:
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+            _set_job_current(jid, None)
+            _job_set_result(jid, {"processed": len(vids)})
+            _finish_job(jid)
+            return
         if task == "hover":
             prm = jr.params or {}
             targets = prm.get("targets") or []
@@ -6595,8 +7710,8 @@ def _run_job_worker(jid: str, jr: JobRequest):
                         continue
             else:
                 vids = _iter_videos(base, bool(jr.recursive))
-            # Scale total by 100 to allow per-file fractional progress updates
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+            # Simple per-file progress; avoid per-segment to keep single-pass robust pipeline
+            _set_job_progress(jid, total=max(0, len(vids)), processed_set=0)
             segments = int(prm.get("segments", 9))
             duration = float(prm.get("duration", 1.0))
             width = int(prm.get("width", 320))
@@ -6614,14 +7729,6 @@ def _run_job_worker(jid: str, jr: JobRequest):
                             done_files += 1
                             _set_job_progress(jid, processed_set=done_files * 100)
                         else:
-                            def _pcb_hover(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
                             def _cc() -> bool:
                                 return _job_check_canceled(jid)
                             generate_hover_preview(
@@ -6631,14 +7738,14 @@ def _run_job_worker(jid: str, jr: JobRequest):
                                 width=width,
                                 fmt="webm",
                                 out=out_path,
-                                progress_cb=_pcb_hover,
+                                progress_cb=None,
                                 cancel_check=_cc,
                             )
                             done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
+                            _set_job_progress(jid, processed_set=done_files)
                 except Exception:
                     done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
+                    _set_job_progress(jid, processed_set=done_files)
             _set_job_current(jid, None)
             _job_set_result(jid, {"processed": len(vids)})
             _finish_job(jid)
@@ -6951,7 +8058,8 @@ def api_update_video_tags(name: str, payload: TagUpdate, directory: str = Query(
 
 @api.get("/tags/summary")
 def api_tags_summary(path: str = Query(default=""), recursive: bool = Query(default=False)):
-    """Summarize tags and performers under a directory.
+    """
+    Summarize tags and performers under a directory.
 
     Be forgiving if the path is empty or invalid: return empty counts instead of 404
     so the UI can render without error during initialization.

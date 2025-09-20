@@ -9,6 +9,7 @@ Icon\r
 .fseventsd
 .idea/
 .vscode/
+.github/
 *.code-workspace
 
 # --- Python ---

@@ -50,44 +50,15 @@
             </div>
             <div style="height:1px; background: rgba(255,255,255,0.06);"></div>
             <div style="display:flex; flex-direction:column; gap:10px;">
-              <div style="display:flex; align-items:center; justify-content:space-between;">
-                <div style="font-weight:600;">Artifacts</div>
-                <button id="sbReloadBtn" class="btn-sm" title="Reload artifact info">Reload</button>
-              </div>
-              <!-- Heatmap -->
-              <div style="display:flex; flex-direction:column; gap:6px;">
-                <div style="display:flex; align-items:center; justify-content:space-between;">
-                  <div>Heatmap</div>
-                  <span id="sbHeatmapStatus" class="muted" style="font-size:12px; color: var(--muted, #7a859f);">Missing</span>
-                </div>
-                <div id="sbHeatmapPreview" style="display:none; cursor:pointer; border-radius:6px; overflow:hidden; border:1px solid rgba(255,255,255,0.08);">
-                  <img id="sbHeatmapImg" alt="Heatmap" style="display:block; width:100%; height:auto;" />
-                </div>
-                <button id="sbHeatmapOpen" class="btn-sm" style="display:none;">Open Preview</button>
-              </div>
-              <!-- Scenes -->
-              <div style="display:flex; flex-direction:column; gap:6px;">
-                <div style="display:flex; align-items:center; justify-content:space-between;">
-                  <div>Scenes</div>
-                  <span id="sbScenesStatus" class="muted" style="font-size:12px; color: var(--muted, #7a859f);">0</span>
-                </div>
-                <div id="sbScenesList" style="max-height: 200px; overflow:auto; border:1px solid rgba(255,255,255,0.06); border-radius:6px; padding:6px; display:flex; flex-direction:column; gap:4px;"></div>
-              </div>
-              <!-- Subtitles -->
-              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-                <div>Subtitles</div>
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <span id="sbSubStatus" class="muted" style="font-size:12px; color: var(--muted, #7a859f);">Missing</span>
-                  <label style="display:flex; align-items:center; gap:6px;">
-                    <input id="sbSubToggle" type="checkbox" />
-                    <span style="font-size:12px;">Show</span>
-                  </label>
-                </div>
-              </div>
-              <!-- Sprites -->
-              <div style="display:flex; align-items:center; justify-content:space-between;">
-                <div>Sprites</div>
-                <span id="sbSpritesStatus" class="muted" style="font-size:12px; color: var(--muted, #7a859f);">Missing</span>
+              <div style="font-weight:600;">Artifacts</div>
+              <div id="artifactBadges" style="display:flex; flex-direction:column; gap:8px;">
+                <button id="badgeHeatmap" class="btn-sm" title="Heatmap status or generate" data-present="0">Heatmap <span id="badgeHeatmapStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
+                <button id="badgeScenes" class="btn-sm" title="Scenes status or generate" data-present="0">Scenes <span id="badgeScenesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
+                <button id="badgeSubtitles" class="btn-sm" title="Subtitles status or generate" data-present="0">Subtitles <span id="badgeSubtitlesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
+                <button id="badgeSprites" class="btn-sm" title="Sprites status or generate" data-present="0">Sprites <span id="badgeSpritesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
+                <button id="badgeFaces" class="btn-sm" title="Faces status or generate" data-present="0">Faces <span id="badgeFacesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
+                <button id="badgeHover" class="btn-sm" title="Hover preview status or generate" data-present="0">Hover Preview <span id="badgeHoverStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
+                <button id="badgePhash" class="btn-sm" title="pHash status or generate" data-present="0">pHash <span id="badgePhashStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
               </div>
             </div>
           </aside>
@@ -105,33 +76,47 @@
               </div>
             </div>
             <div class="player-video" style="position:relative; background:#000;">
-              <video id="playerVideo" playsinline controls style="display:block; width:100%; max-height:72vh; background:#000;"></video>
-              <!-- Sprite preview tooltip -->
-              <div id="spritePreview" style="position:absolute; top:8px; left:8px; width:240px; height:135px; background:#111 center/cover no-repeat; border:1px solid rgba(255,255,255,0.15); border-radius:6px; display:none; pointer-events:none; box-shadow:0 4px 16px rgba(0,0,0,0.4);"></div>
+              <video id="playerVideo" playsinline style="display:block; width:100%; max-height:72vh; background:#000;"></video>
             </div>
-            <div class="player-timeline" style="display:flex; flex-direction:column; gap:8px;">
-              <div id="timeline" style="position:relative; height:24px; border-radius:6px; background: #121624; overflow:hidden; cursor:pointer;">
-                <!-- Heatmap background image will be applied here -->
+            <!-- Controls and timeline below video -->
+            <div id="playerControlsContainer" style="position:relative; display:flex; flex-direction:column; gap:8px;">
+              <div id="timeline" style="position:relative; height:28px; border-radius:6px; background: #121624; overflow:hidden; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,0.35);">
                 <div id="timelineHeatmap" style="position:absolute; inset:0; background-position: left center; background-size: 100% 100%; opacity:0.85;"></div>
-                <!-- Progress fill -->
+                <canvas id="timelineHeatmapCanvas" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; opacity:0.95;"></canvas>
                 <div id="timelineProgress" style="position:absolute; inset:0; width:0%; background: linear-gradient(90deg, rgba(79,140,255,0.6), rgba(79,140,255,0.25)); mix-blend-mode: screen;"></div>
-                <!-- Scene markers container -->
                 <div id="timelineMarkers" style="position:absolute; inset:0;"></div>
               </div>
-              <div style="display:flex; align-items:center; justify-content:space-between; font-size:12px; color: var(--muted, #7a859f);">
-                <div>
+              <!-- Sprite preview tooltip (bottom-aligned above controls) -->
+              <div id="spritePreview" style="position:absolute; left:8px; width:240px; height:135px; background:#111 center/cover no-repeat; border:1px solid rgba(255,255,255,0.15); border-radius:6px; display:none; pointer-events:none; box-shadow:0 4px 16px rgba(0,0,0,0.4); z-index:6; opacity:0.8;"></div>
+              <div id="controlsRow" style="display:flex; align-items:center; justify-content:space-between; gap:8px; background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 6px 10px;">
+                <div style="font-size:12px; color: var(--muted, #7a859f); display:flex; align-items:center; gap:4px;">
                   <span id="curTime">00:00</span>
-                  <span style="opacity:0.5;"> / </span>
+                  <span style="opacity:0.5;">/</span>
                   <span id="totalTime">00:00</span>
                 </div>
-                <div id="playerBadges" style="display:flex; gap:8px;">
-                  <span id="badgeSubtitles" style="display:none; padding:2px 6px; border-radius:4px; background:#1b2235; color:#9fb7ff;">CC</span>
-                  <span id="badgeSprites" style="display:none; padding:2px 6px; border-radius:4px; background:#1b2235; color:#9fb7ff;">Sprites</span>
-                  <span id="badgeHeatmap" style="display:none; padding:2px 6px; border-radius:4px; background:#1b2235; color:#9fb7ff;">Heatmap</span>
-                  <span id="badgeScenes" style="display:none; padding:2px 6px; border-radius:4px; background:#1b2235; color:#9fb7ff;">Scenes</span>
+                <div id="playerControls" class="player-controls" style="display:flex; align-items:center; gap:8px;">
+                  <button id="btnPlayPause" class="btn-sm" title="Play/Pause" aria-label="Play/Pause">▶︎</button>
+                  <button id="btnMute" class="btn-sm" title="Mute/Unmute" aria-label="Mute">🔊</button>
+                  <input id="volSlider" type="range" min="0" max="1" step="0.01" value="1" title="Volume" style="width:120px;">
+                  <button id="btnCC" class="btn-sm" title="Toggle captions" aria-label="Captions">CC</button>
+                  <div class="select">
+                    <select id="rateSelect" class="control-select" title="Playback speed" aria-label="Playback speed">
+                      <option value="0.5">0.5×</option>
+                      <option value="0.75">0.75×</option>
+                      <option value="1" selected>1×</option>
+                      <option value="1.25">1.25×</option>
+                      <option value="1.5">1.5×</option>
+                      <option value="1.75">1.75×</option>
+                      <option value="2">2×</option>
+                    </select>
+                    <span class="chevron">▾</span>
+                  </div>
+                  <button id="btnPip" class="btn-sm" title="Picture in Picture" aria-label="Picture in Picture">⧉</button>
+                  <button id="btnFullscreen" class="btn-sm" title="Fullscreen" aria-label="Fullscreen">⛶</button>
                 </div>
               </div>
             </div>
+            <div class="player-timeline" style="display:none;"></div>
           </div>
         </div>
       </div>
@@ -143,6 +128,19 @@
             <div class="control-group">
               <!-- <span class="control-label">Search</span> -->
               <input id="searchInput" type="text" class="control-input" placeholder="Search files..." />
+            </div>
+            <div class="control-group">
+              <div class="select">
+                <select id="resSelect" class="control-select" title="Filter by resolution">
+                  <option value="" selected>All resolutions</option>
+                  <option value="2160">2160p+</option>
+                  <option value="1440">1440p+</option>
+                  <option value="1080">1080p+</option>
+                  <option value="720">720p+</option>
+                  <option value="480">480p+</option>
+                </select>
+                <span class="chevron">▾</span>
+              </div>
             </div>
             <div class="control-group">
               <!-- <span class="control-label">Sort</span> -->
@@ -183,7 +181,14 @@
         <template id="cardTemplate">
           <div class="card">
             <div class="card-checkbox"></div>
-            <img class="thumb" loading="lazy" />
+            <div class="thumb-wrap">
+              <div class="quality-badge" aria-hidden="true"></div>
+              <img class="thumb" loading="lazy" />
+              <!-- Overlay info (resolution only) -->
+              <div class="overlay-info" aria-hidden="true">
+                <span class="overlay-resolution"></span>
+              </div>
+            </div>
             <div class="meta">
               <p class="title"></p>
               <div class="row sub">
@@ -240,6 +245,10 @@
               <div class="stat-card" id="filterCompleted" data-filter="completed" title="Show completed jobs">
                 <span class="stat-label">Completed</span>
                 <span class="stat-value" id="completedJobsCount">0</span>
+              </div>
+              <div class="stat-card" id="filterErrored" data-filter="failed" title="Show failed jobs">
+                <span class="stat-label">Errored</span>
+                <span class="stat-value" id="failedJobsCount">0</span>
               </div>
             </div>
             
@@ -560,6 +569,59 @@
                 <div class="options-tooltip" id="facesOptions" style="display:none;">
                   <label>Interval (sec): <input type="number" id="faceInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
                   <label>Min Size: <input type="number" id="faceMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
+                  <label>Backend:
+                    <div class="select">
+                      <select id="faceBackend" class="control-select">
+                        <option value="auto" selected>Auto</option>
+                        <option value="opencv">OpenCV</option>
+                        <option value="insightface">InsightFace</option>
+                      </select>
+                      <span class="chevron">▾</span>
+                    </div>
+                  </label>
+                  <label>Scale Factor: <input type="number" id="faceScale" value="1.1" min="1.01" max="2.0" step="0.01"></label>
+                  <label>Min Neighbors: <input type="number" id="faceMinNeighbors" value="5" min="0" max="20" step="1"></label>
+                  <label>Similarity Thresh: <input type="number" id="faceSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
+                </div>
+              </div>
+
+              <!-- Embeddings (recompute embeddings without re-detecting boxes) -->
+              <div class="artifact-card" data-artifact="embed">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Embeddings</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="embedCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="embedFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate" data-operation="embed-missing">Generate Missing</button>
+                    <button class="btn-recompute" data-operation="embed-all" style="display:none;">Recompute All</button>
+                    <button class="btn-options" data-artifact="embed" title="Options">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip" id="embedOptions" style="display:none;">
+                  <label>Interval (sec): <input type="number" id="embedInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
+                  <label>Min Size: <input type="number" id="embedMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
+                  <label>Backend:
+                    <div class="select">
+                      <select id="embedBackend" class="control-select">
+                        <option value="auto" selected>Auto</option>
+                        <option value="opencv">OpenCV</option>
+                        <option value="insightface">InsightFace</option>
+                      </select>
+                      <span class="chevron">▾</span>
+                    </div>
+                  </label>
+                  <label>Similarity Thresh: <input type="number" id="embedSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
                 </div>
               </div>
 
@@ -600,6 +662,49 @@
       <div class="tab-panel" role="tabpanel" aria-labelledby="settings-tab" id="settings-panel" hidden>
         <div class="tab-content">
           <h2>Settings</h2>
+          <div class="task-section" style="margin-top: 12px;">
+            <div class="section-header">
+              <h2>Player Preferences</h2>
+            </div>
+            <div class="file-selection" style="padding: 12px 0;">
+              <label class="selection-option" style="gap: 10px; align-items: flex-start;">
+                <input type="checkbox" id="settingAutoplayResume" />
+                <div>
+                  <div style="font-weight:600; display:flex; align-items:center; gap:8px;">
+                    Autoplay on load when previously playing
+                    <!-- reference subtitle icon placeholder (from user image) -->
+                    <span aria-hidden="true" title="Subtitle icon reference" style="display:inline-block; width:16px; height:12px; border-radius:3px; background:#2c323d; position:relative; overflow:hidden;">
+                      <span style="position:absolute; left:2px; right:2px; top:3px; height:3px; background:#12161f; border-radius:2px;"></span>
+                      <span style="position:absolute; left:6px; right:2px; bottom:3px; height:3px; background:#12161f; border-radius:2px;"></span>
+                    </span>
+                  </div>
+                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                    If enabled, the player resumes playback automatically when a video was playing before closing. Default is off.
+                  </div>
+                </div>
+              </label>
+
+              <label class="selection-option" style="gap: 10px; align-items: flex-start; margin-top: 12px;">
+                <input type="checkbox" id="settingShowHeatmap" />
+                <div>
+                  <div style="font-weight:600;">Show timeline heatmap</div>
+                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                    Toggle the heatmap overlay on the player timeline. This only affects display; artifacts and badges still load as usual.
+                  </div>
+                </div>
+              </label>
+
+              <label class="selection-option" style="gap: 10px; align-items: flex-start; margin-top: 12px;">
+                <input type="checkbox" id="settingShowScenes" />
+                <div>
+                  <div style="font-weight:600;">Show scene boundary markers</div>
+                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                    Toggle the scene boundary ticks on the player timeline. This only affects display; scenes data still loads as usual.
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
           <div class="task-section" style="margin-top: 12px;">
             <div class="section-header">
               <h2>Library Preferences</h2>
