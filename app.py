@@ -5785,25 +5785,9 @@ def embed_update(
     }
     jr = JobRequest(task="embed", directory=str(fp.parent), recursive=False, force=bool(overwrite), params=prm)
     jid = _new_job(jr.task, rel)
-    # Ensure synchronous execution still respects global job ordering and concurrency limits
     try:
-        _wait_for_turn(jid)
-        # Acquire per-file task lock when we know the singular target to avoid duplicate work
-        lock_ctx = None
-        targets = (jr.params or {}).get("targets") or []
-        if isinstance(targets, list) and len(targets) == 1:
-            try:
-                target_path = safe_join(STATE["root"], targets[0])
-                lock_ctx = _file_task_lock(target_path, jr.task)
-            except Exception:
-                lock_ctx = None
-        if lock_ctx is not None:
-            with JOB_RUN_SEM:
-                with lock_ctx:
-                    _run_job_worker(jid, jr)
-        else:
-            with JOB_RUN_SEM:
-                _run_job_worker(jid, jr)
+        # Reuse the worker to ensure consistent semantics
+        _run_job_worker(jid, jr)
         return api_success({"job": jid, "queued": False, "path": str(faces_path(fp))})
     except Exception as e:  # noqa: BLE001
         raise_api_error(f"embed failed: {e}", status_code=500)
