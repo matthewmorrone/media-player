@@ -1,114 +1,81 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Top-level setup script: create/activate a stable Python venv, install deps, then run serve.sh
-# Avoid creating venv on /Volumes; use ~/.venvs/media-player by default.
-#
-# Flags:
-#   --required       Install only required dependencies (requirements.txt). [default]
-#   --no-required    Skip installing required dependencies.
-#   --optional       Install optional extras from optional.txt (best effort).
-#   --no-optional    Skip installing optional extras. [default]
-#   --use-apt       Use apt-get for system packages when available (Debian/Ubuntu)
-#   --no-apt        Do not use apt-get even if available (default)
-#   -h | --help      Show this help.
+# Minimal setup script: create/activate a project-local venv and install deps.
+# Usage:
+#   ./install.sh [--required|--no-required] [--optional|--no-optional]
+# Then start the server with:
+#   ./serve.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Config
-PY_BIN="${PY_BIN:-python3}"
-# Default to project-local .venv; can override with VENV_PATH
-VENV_PATH_DEFAULT="$SCRIPT_DIR/.venv"
-VENV_FALLBACK="$HOME/.venvs/media-player"
-VENV_PATH="${VENV_PATH:-$VENV_PATH_DEFAULT}"
-
-# Defaults: install required, skip optional unless asked or INSTALL_EXTRAS=1
+# Flags
 DO_REQUIRED=1
-DO_OPTIONAL=${INSTALL_EXTRAS:-0}
-USE_APT=0
+DO_OPTIONAL=0
+DO_APT_OPENCV=0
+
+# Baked-in dependency sets (no external files needed)
+# Adjust these arrays if you need to tweak dependencies.
+REQUIRED_PKGS=(
+  fastapi
+  uvicorn
+  pydantic
+  httpx
+  Pillow
+  watchgod
+)
+
+# Optional extras for extended features (install with: ./install.sh --optional)
+# Raspberry Pi friendly, headless set:
+# - opencv-python-headless: Face detection without GUI deps
+# - numpy: required by face pipelines
+# Subtitles on Pi default to whisper.cpp (built automatically on Linux when --optional is used).
+# If you explicitly want faster-whisper, install it manually: `pip install faster-whisper`
+# (requires FFmpeg dev libs for PyAV on ARM).
+OPTIONAL_PKGS=(
+  opencv-python-headless
+  numpy
+)
 
 usage() {
-	cat <<'EOF'
-Usage: ./install.sh [--required|--no-required] [--optional|--no-optional]
+  cat <<'EOF'
+Usage: ./install.sh [--required|--no-required] [--optional|--no-optional] [--apt-opencv]
 
 Options:
-	--required       Install required dependencies from requirements.txt (default)
-	--no-required    Do not install required dependencies
-	--optional       Install optional extras from optional.txt (best effort)
-	--no-optional    Do not install optional extras (default)
-	--use-apt        Use apt-get to install system packages when available (Debian/Ubuntu)
-	--no-apt         Do not use apt-get (default)
-	-h, --help       Show this help and exit
+  --required       Install required dependencies from requirements.txt (default)
+  --no-required    Do not install required dependencies
+  --optional       Install optional extras from optional.txt (best effort)
+  --no-optional    Do not install optional extras (default)
+  --apt-opencv     If OpenCV pip wheel fails and system OpenCV isn't found, attempt apt-get install python3-opencv (Linux/Debian)
+  -h, --help       Show this help and exit
 EOF
 }
 
 for arg in "$@"; do
-	case "$arg" in
-		--required) DO_REQUIRED=1 ;;
-		--no-required) DO_REQUIRED=0 ;;
-		--optional) DO_OPTIONAL=1 ;;
-		--no-optional) DO_OPTIONAL=0 ;;
-		--use-apt) USE_APT=1 ;;
-		--no-apt) USE_APT=0 ;;
-		-h|--help) usage; exit 0 ;;
-		*) echo "[install] Unknown argument: $arg" >&2; usage; exit 2 ;;
-	esac
+  case "$arg" in
+    --required) DO_REQUIRED=1 ;;
+    --no-required) DO_REQUIRED=0 ;;
+    --optional) DO_OPTIONAL=1 ;;
+    --no-optional) DO_OPTIONAL=0 ;;
+    --apt-opencv) DO_APT_OPENCV=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "[install] Unknown argument: $arg" >&2; usage; exit 2 ;;
+  esac
 done
+
+PY_BIN="${PY_BIN:-python3}"
+VENV_PATH="${VENV_PATH:-$SCRIPT_DIR/.venv}"
 
 echo "[install] Repo: $SCRIPT_DIR"
 echo "[install] Python: $(command -v "$PY_BIN" || echo not-found)"
 echo "[install] Venv: $VENV_PATH"
-echo "[install] Will install required: $DO_REQUIRED, optional: $DO_OPTIONAL, use-apt: $USE_APT"
+echo "[install] Required: $DO_REQUIRED, Optional: $DO_OPTIONAL, Apt-OpenCV: $DO_APT_OPENCV"
 
-# Helper: apt-get wrapper with sudo detection
-APT_BIN="$(command -v apt-get || true)"
-SUDO_BIN="$(command -v sudo || true)"
-SUDO_CMD=""
-if [ "$(id -u)" != "0" ] && [ -n "$SUDO_BIN" ]; then
-	SUDO_CMD="sudo"
-fi
-apt_update_once() {
-	if [ -z "$APT_BIN" ]; then return 0; fi
-	if [ -n "${APT_UPDATED:-}" ]; then return 0; fi
-	echo "[install] Running apt-get update (once) ..."
-	if ! ${SUDO_CMD:+$SUDO_CMD }apt-get update; then
-		echo "[install] WARNING: apt-get update failed; continuing"
-	else
-		APT_UPDATED=1
-	fi
-}
-apt_install() {
-	if [ -z "$APT_BIN" ]; then return 1; fi
-	if [ -z "$1" ]; then return 1; fi
-	local pkg="$1"
-	echo "[install] Installing via apt-get: $pkg"
-	if ! ${SUDO_CMD:+$SUDO_CMD }apt-get install -y "$pkg"; then
-		echo "[install] WARNING: apt-get install failed for $pkg"
-		return 1
-	fi
-	return 0
-}
-
-# Warn about macOS /Volumes quirk (venv symlinks sometimes problematic)
-OS_NAME="$(uname -s || true)"
-if [ "$OS_NAME" = "Darwin" ] && [[ "$VENV_PATH" == /Volumes/* ]]; then
-	cat <<'EOF'
-[install] NOTE: Your venv is under /Volumes on macOS. Some Python venvs created on external volumes can misbehave due to symlink quirks.
-[install]       If you encounter issues, re-run with e.g. VENV_PATH="$HOME/.venvs/media-player" ./install.sh
-EOF
-fi
-
-# Try to create venv at requested location; fallback if creation fails
 mkdir -p "$(dirname "$VENV_PATH")" || true
-if [ ! -d "$VENV_PATH" ] || [ ! -x "$VENV_PATH/bin/python" ]; then
-	echo "[install] Creating venv at $VENV_PATH ..."
-	if ! "$PY_BIN" -m venv "$VENV_PATH" 2>/dev/null; then
-		echo "[install] WARN: Failed to create venv at $VENV_PATH; trying fallback $VENV_FALLBACK"
-		VENV_PATH="$VENV_FALLBACK"
-		mkdir -p "$(dirname "$VENV_PATH")" || true
-		"$PY_BIN" -m venv "$VENV_PATH"
-	fi
+if [ ! -x "$VENV_PATH/bin/python" ]; then
+  echo "[install] Creating venv at $VENV_PATH ..."
+  "$PY_BIN" -m venv "$VENV_PATH"
 fi
 
 # shellcheck source=/dev/null
@@ -118,90 +85,254 @@ echo "[install] Using interpreter: $(command -v python)"
 python -m pip install --upgrade pip wheel setuptools
 
 if [ "$DO_REQUIRED" = "1" ]; then
-	if [ -f requirements.txt ]; then
-		echo "[install] Installing core dependencies from requirements.txt..."
-		pip install -r requirements.txt
-	else
-		echo "[install] requirements.txt not found; installing minimal runtime packages..."
-		pip install fastapi uvicorn pydantic httpx pillow
-	fi
+  echo "[install] Installing required packages: ${REQUIRED_PKGS[*]}"
+  pip install "${REQUIRED_PKGS[@]}"
 else
-	echo "[install] Skipping required dependency installation (per flag)."
+  echo "[install] Skipping required dependency installation (per flag)."
 fi
 
-# Optionally install extras
 if [ "$DO_OPTIONAL" = "1" ]; then
-	echo "[install] Installing optional extras from optional.txt (best effort)"
-	if [ -f optional.txt ]; then
-		# Detect platform once
-		OPT_UNAME="$(uname -s || true)"
-		OPT_ARCH="$(uname -m || true)"
-		# Read optional.txt line by line, skipping comments and blank lines
-		while IFS= read -r pkg; do
-			pkg_trimmed="$(echo "$pkg" | sed 's/[[:space:]]*$//')"
-			# Skip comments and empty
-			if [ -z "$pkg_trimmed" ] || [[ "$pkg_trimmed" =~ ^# ]]; then
-				continue
-			fi
-			pkg_name_only="$(echo "$pkg_trimmed" | sed 's/[<>=!].*$//')"
-			# On many Raspberry Pi/ARM setups, onnxruntime wheels are unavailable; skip insightface too (depends on onnxruntime)
-			if [ "$OPT_UNAME" = "Linux" ] && [[ "$OPT_ARCH" == arm* || "$OPT_ARCH" == aarch64 ]]; then
-				if [ "$pkg_name_only" = "onnxruntime" ] || [ "$pkg_name_only" = "insightface" ]; then
-					echo "[install] Skipping $pkg_name_only on $OPT_UNAME/$OPT_ARCH (no wheels typically available). Faces will fall back to OpenCV backend."
-					continue
-				fi
-			fi
-			# Prefer apt for OpenCV when requested and available
-			if [ "$pkg_name_only" = "opencv-python" ] && [ "$USE_APT" = "1" ] && [ -n "$APT_BIN" ]; then
-				apt_update_once
-				if apt_install python3-opencv; then
-					echo "[install] Installed system OpenCV (python3-opencv); skipping pip opencv-python"
-					continue
-				else
-					echo "[install] Falling back to pip for opencv-python"
-				fi
-			fi
-			echo "[install] Optional: $pkg_trimmed"
-			if ! pip install "$pkg_trimmed"; then
-				echo "[install] WARNING: Failed to install optional package '$pkg_trimmed' — continuing"
-			fi
-		done < optional.txt
-	else
-		echo "[install] No optional.txt found; skipping extras"
-	fi
+  # Helper to link system OpenCV into venv using a .pth file
+  link_system_opencv() {
+    echo "[install] Attempting to use system OpenCV (python3-opencv) in this venv"
+    # Prefer system Python explicitly (outside the venv) for detection
+    if [ -x "/usr/bin/python3" ]; then
+      SYS_PY="/usr/bin/python3"
+    else
+      SYS_PY="$(command -v python3 || true)"
+    fi
+
+    # First try a direct import to get the module file's directory (works for .so layout)
+    SYS_CV2_DIR="$($SYS_PY -c 'import os, sys;\ntry:\n    import cv2\n    print(os.path.dirname(cv2.__file__))\nexcept Exception:\n    print("")' 2>/dev/null || true)"
+
+    # If that failed, scan sys.path for cv2 in multiple layouts: directory, .so, or .py
+    if [ -z "$SYS_CV2_DIR" ] || [ ! -d "$SYS_CV2_DIR" ]; then
+      SYS_CV2_DIR="$($SYS_PY -c 'import os, sys, glob\nfor p in sys.path:\n    try:\n        if os.path.isdir(os.path.join(p, "cv2")):\n            print(p); break\n        so = glob.glob(os.path.join(p, "cv2.*.so")) or glob.glob(os.path.join(p, "cv2.so"))\n        if so:\n            print(p); break\n        py = os.path.join(p, "cv2.py")\n        if os.path.isfile(py):\n            print(p); break\n    except Exception:\n        pass' 2>/dev/null || true)"
+    fi
+
+    # If still not found, try common distro paths directly
+    if [ -z "$SYS_CV2_DIR" ] || [ ! -d "$SYS_CV2_DIR" ]; then
+      for base in /usr/lib/python3/dist-packages /usr/local/lib/python3/dist-packages; do
+        if [ -d "$base/cv2" ] || ls "$base"/cv2*.so >/dev/null 2>&1; then
+          SYS_CV2_DIR="$base"
+          break
+        fi
+      done
+      if [ -z "$SYS_CV2_DIR" ] || [ ! -d "$SYS_CV2_DIR" ]; then
+        for base in /usr/lib/python3.*/*-packages /usr/local/lib/python3.*/*-packages; do
+          for d in $base; do
+            if [ -d "$d/cv2" ] || ls "$d"/cv2*.so >/dev/null 2>&1; then
+              SYS_CV2_DIR="$d"
+              break 2
+            fi
+          done
+        done
+      fi
+    fi
+
+    # If still not found, optionally try apt-get (Debian/Raspbian/Ubuntu)
+    if [ -z "$SYS_CV2_DIR" ] || [ ! -d "$SYS_CV2_DIR" ]; then
+      echo "[install] System OpenCV not found in common Python paths."
+      if [ "$DO_APT_OPENCV" = "1" ] && command -v apt-get >/dev/null 2>&1; then
+        echo "[install] Installing python3-opencv via apt (requires sudo)..."
+        if sudo apt-get update && sudo apt-get install -y python3-opencv libopencv-dev; then
+          # Retry detection once after install
+          SYS_CV2_DIR="$($SYS_PY -c 'import os, sys, glob\ntry:\n    import cv2\n    print(os.path.dirname(cv2.__file__))\nexcept Exception:\n    pass\nfor p in sys.path:\n    try:\n        if os.path.isdir(os.path.join(p, "cv2")):\n            print(p); break\n        so = glob.glob(os.path.join(p, "cv2.*.so")) or glob.glob(os.path.join(p, "cv2.so"))\n        if so:\n            print(p); break\n        py = os.path.join(p, "cv2.py")\n        if os.path.isfile(py):\n            print(p); break\n    except Exception:\n        pass' 2>/dev/null || true)"
+          if [ -z "$SYS_CV2_DIR" ] || [ ! -d "$SYS_CV2_DIR" ]; then
+            for base in /usr/lib/python3/dist-packages /usr/local/lib/python3/dist-packages; do
+              if [ -d "$base/cv2" ] || ls "$base"/cv2*.so >/dev/null 2>&1; then
+                SYS_CV2_DIR="$base"; break
+              fi
+            done
+            if [ -z "$SYS_CV2_DIR" ] || [ ! -d "$SYS_CV2_DIR" ]; then
+              for base in /usr/lib/python3.*/*-packages /usr/local/lib/python3.*/*-packages; do
+                for d in $base; do
+                  if [ -d "$d/cv2" ] || ls "$d"/cv2*.so >/dev/null 2>&1; then
+                    SYS_CV2_DIR="$d"; break 2
+                  fi
+                done
+              done
+            fi
+          fi
+        else
+          echo "[install] apt-get install python3-opencv failed."
+        fi
+      fi
+    fi
+
+    if [ -z "$SYS_CV2_DIR" ] || [ ! -d "$SYS_CV2_DIR" ]; then
+      echo "[install] System OpenCV still not found. You can install it manually with:"
+      echo "           sudo apt-get update && sudo apt-get install -y python3-opencv libopencv-dev"
+      return 1
+    fi
+
+    # Determine the site-packages directory to add to .pth
+    SYS_SITE_DIR="$SYS_CV2_DIR"
+    # If SYS_CV2_DIR ends with '/cv2', use its parent directory
+    case "$SYS_CV2_DIR" in
+      */cv2) SYS_SITE_DIR="$(dirname "$SYS_CV2_DIR")" ;;
+    esac
+
+    # Determine venv site-packages path (robust)
+    VENV_SITE=""
+    # Try sysconfig (preferred)
+    VENV_SITE="$(python -c 'import sysconfig; p=sysconfig.get_paths(); print(p.get("purelib") or p.get("platlib") or "")' 2>/dev/null || true)"
+    # If empty or not a directory, try deriving from VENV_PATH
+    if [ -z "$VENV_SITE" ] || [ ! -d "$VENV_SITE" ]; then
+      if [ -n "${VENV_PATH:-}" ] && [ -d "$VENV_PATH" ]; then
+        CAND="$(ls -d "$VENV_PATH"/lib/python*/site-packages 2>/dev/null | head -n1 || true)"
+        if [ -n "$CAND" ] && [ -d "$CAND" ]; then
+          VENV_SITE="$CAND"
+        fi
+      fi
+    fi
+    # Last resort: site.getsitepackages()
+    if [ -z "$VENV_SITE" ] || [ ! -d "$VENV_SITE" ]; then
+      VENV_SITE="$(python -c 'import site; import sys; print(next((p for p in site.getsitepackages() if p.endswith("site-packages")), ""))' 2>/dev/null || true)"
+    fi
+    [ -n "$VENV_SITE" ] && echo "[install] venv site-packages: $VENV_SITE"
+
+    if [ -n "$VENV_SITE" ] && [ -d "$VENV_SITE" ]; then
+      echo "$SYS_SITE_DIR" > "$VENV_SITE/opencv-system.pth"
+      echo "[install] Linked system OpenCV via $VENV_SITE/opencv-system.pth -> $SYS_SITE_DIR"
+      echo "[install] Verifying OpenCV import in venv ..."
+      if python - <<'PY'
+import cv2, numpy as np
+print('[install] OpenCV import check: OK', cv2.__version__, 'NumPy', np.__version__)
+PY
+      then
+        return 0
+      else
+        NV="$(python -c 'import numpy as np; import sys; v=str(getattr(np, "__version__", "")); print(v.split(".")[0] if v else "")' 2>/dev/null || true)"
+        if [ "$NV" = "2" ]; then
+          echo "[install] Detected NumPy 2.x with system OpenCV built for NumPy 1.x; pinning NumPy to <2 (1.26.x) for compatibility ..."
+          python -m pip install 'numpy<2,>=1.25' || python -m pip install 'numpy<2'
+          if python - <<'PY'
+import cv2, numpy as np
+print('[install] OpenCV import check (after numpy pin): OK', cv2.__version__, 'NumPy', np.__version__)
+PY
+          then
+            return 0
+          fi
+        fi
+        echo "[install] OpenCV import check still failing; see error above."
+        return 1
+      fi
+    else
+      echo "[install] Could not locate venv site-packages to link system OpenCV"
+      return 1
+    fi
+  }
+
+  # Prefer piwheels on ARM to avoid building heavy packages from source
+  UNAME_S="$(uname -s)" || UNAME_S=""
+  UNAME_M="$(uname -m)" || UNAME_M=""
+  if [ "$UNAME_S" = "Linux" ] && echo "$UNAME_M" | grep -qiE 'arm|aarch64'; then
+    if [ -z "${PIP_INDEX_URL:-}" ]; then
+      export PIP_INDEX_URL="https://www.piwheels.org/simple"
+      echo "[install] Using piwheels.org for ARM wheels (PIP_INDEX_URL)"
+    fi
+  fi
+  if [ ${#OPTIONAL_PKGS[@]} -eq 0 ]; then
+    echo "[install] Optional package set is empty (none to install)"
+  else
+    echo "[install] Installing optional packages: ${OPTIONAL_PKGS[*]}"
+    # Install numpy first for better wheel resolution on ARM
+    if printf '%s\n' "${OPTIONAL_PKGS[@]}" | grep -q '^numpy$'; then
+      pip install numpy || echo "[install] WARNING: numpy failed to install — continuing"
+    fi
+    # Install remaining optional packages one by one to allow partial success
+    for pkg in "${OPTIONAL_PKGS[@]}"; do
+      if [ "$pkg" = "numpy" ]; then continue; fi
+      echo "[install] pip install $pkg"
+      if ! pip install "$pkg"; then
+        echo "[install] WARNING: failed to install $pkg — continuing"
+        # Fallback for OpenCV on Debian/Raspberry Pi: use system python3-opencv inside venv
+        if [ "$pkg" = "opencv-python-headless" ] && [ "$UNAME_S" = "Linux" ]; then
+          link_system_opencv || true
+        fi
+      fi
+    done
+  fi
+else
+  echo "[install] Skipping optional extras (per flag)."
 fi
 
-if ! command -v ffmpeg >/dev/null 2>&1; then
-	if [ "$USE_APT" = "1" ] && [ -n "$APT_BIN" ]; then
-		echo "[install] ffmpeg not found; attempting apt installation"
-		apt_update_once
-		if apt_install ffmpeg; then
-			echo "[install] Installed ffmpeg via apt."
-		else
-			echo "[install] WARNING: ffmpeg not found and apt install failed. Some features will degrade or stub."
-		fi
-	else
-		echo "[install] WARNING: ffmpeg not found. Some features will degrade or stub."
-	fi
-fi
-if ! command -v ffprobe >/dev/null 2>&1; then
-	echo "[install] WARNING: ffprobe not found. Metadata probing will stub."
+echo "[install] Done. Start the server with: ./serve.sh"
+
+# Post-step: ensure problematic reloader is not installed
+if pip show watchfiles >/dev/null 2>&1; then
+  echo "[install] Removing watchfiles to avoid memory issues/spurious reloads"
+  pip uninstall -y watchfiles || true
 fi
 
-# Platform notes for optional ML packages
+# If optional extras are requested, also set up whisper.cpp automatically on Linux
 if [ "$DO_OPTIONAL" = "1" ]; then
-	UNAME_STR="$(uname -s || true)"
-	ARCH_STR="$(uname -m || true)"
-	if [ "$UNAME_STR" = "Darwin" ] && [ "$ARCH_STR" = "arm64" ]; then
-		cat <<'EOF'
-[install] NOTE: On macOS arm64, some optional packages (onnxruntime, insightface, faster-whisper) may not have wheels for your Python version.
-[install]       If installation failed, consider:
-[install]         - Using Python 3.10 or 3.11 via pyenv
-[install]         - Installing platform-specific extras manually (e.g., onnxruntime-silicon if available)
-[install]         - Skipping those features; the app will still run without them
-EOF
-	fi
+  if [ "$(uname -s)" = "Linux" ]; then
+    echo "[install] Optional: setting up whisper.cpp (native, no PyTorch)"
+    if ! command -v git >/dev/null 2>&1 || ! command -v make >/dev/null 2>&1 || ! command -v cmake >/dev/null 2>&1; then
+      echo "[install] Missing prerequisites for whisper.cpp: git, make, cmake. Install via apt:"
+      echo "           sudo apt-get update && sudo apt-get install -y git build-essential cmake"
+    else
+      WC_DIR="$HOME/whisper.cpp"
+      # Skip reinstall if binary and at least one model are already present
+      EXIST_BIN=""
+      if [ -x "$WC_DIR/main" ]; then
+        EXIST_BIN="$WC_DIR/main"
+      elif [ -x "$WC_DIR/build/bin/main" ]; then
+        EXIST_BIN="$WC_DIR/build/bin/main"
+      fi
+      HAVE_MODEL=0
+      if [ -d "$WC_DIR/models" ] && ls "$WC_DIR/models"/*.bin >/dev/null 2>&1; then
+        HAVE_MODEL=1
+      fi
+      if [ -n "$EXIST_BIN" ] && [ "$HAVE_MODEL" = "1" ]; then
+        echo "[install] whisper.cpp already present: BIN=$EXIST_BIN, MODEL=$(basename "$(ls \"$WC_DIR/models\"/*.bin 2>/dev/null | head -n1)") — skipping reinstall"
+      else
+      if [ ! -d "$WC_DIR/.git" ]; then
+        echo "[install] Cloning whisper.cpp into $WC_DIR ..."
+        git clone https://github.com/ggerganov/whisper.cpp.git "$WC_DIR"
+      else
+        echo "[install] Updating whisper.cpp in $WC_DIR ..."
+        git -C "$WC_DIR" pull --ff-only || true
+      fi
+        echo "[install] Building whisper.cpp (main target only) ..."
+        NPROC="$(getconf _NPROCESSORS_ONLN || echo 2)"
+        ARCH="$(uname -m)" || ARCH=""
+        CMAKE_FLAGS=""
+        if echo "$ARCH" | grep -qiE 'arm|aarch64'; then
+          # Link libatomic to satisfy __atomic_* on some ARM toolchains
+          CMAKE_FLAGS="-DCMAKE_EXE_LINKER_FLAGS=-latomic"
+        fi
+        (
+          cd "$WC_DIR" && \
+          cmake -B build $CMAKE_FLAGS && \
+          cmake --build build --config Release --target main -j"$NPROC"
+        ) || (
+          echo "[install] Initial build failed; retrying with -j1 and forcing -latomic" && \
+          cd "$WC_DIR" && \
+          cmake -B build -DCMAKE_EXE_LINKER_FLAGS=-latomic && \
+          cmake --build build --config Release --target main -j1 || true
+        )
+      # Fetch a small model if none exists
+      if [ ! -f "$WC_DIR/models/ggml-tiny.bin" ] && [ ! -f "$WC_DIR/models/ggml-base.bin" ]; then
+        echo "[install] Downloading tiny model ..."
+        (cd "$WC_DIR" && bash ./models/download-ggml-model.sh tiny)
+      fi
+        # Verify binary exists
+        WC_BIN=""
+        if [ -x "$WC_DIR/main" ]; then WC_BIN="$WC_DIR/main"; fi
+        if [ -z "$WC_BIN" ] && [ -x "$WC_DIR/build/bin/main" ]; then WC_BIN="$WC_DIR/build/bin/main"; fi
+        if [ -n "$WC_BIN" ]; then
+          echo "[install] whisper.cpp ready: $WC_BIN. The server will auto-detect it on ./serve.sh"
+        else
+          echo "[install] ERROR: whisper.cpp main binary not found after build."
+          echo "           Try: enabling swap, installing build tools (git build-essential cmake), and rebuilding manually:"
+          echo "             cd $WC_DIR && rm -rf build && cmake -B build -DCMAKE_EXE_LINKER_FLAGS=-latomic && cmake --build build --target main -j1"
+        fi
+      fi
+    fi
+  else
+    echo "[install] Optional: skipping whisper.cpp build on $(uname -s). Build manually if desired."
+  fi
 fi
-
-echo "[install] Launching dev server via ./serve.sh"
-exec ./serve.sh

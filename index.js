@@ -1700,6 +1700,128 @@ const Player = (() => {
     wireBadgeActions();
   }
 
+  // Run browser-side face detection using the FaceDetector API and upload results to server
+  async function detectAndUploadFacesBrowser(opts) {
+    try {
+      initDom();
+      if (!currentPath || !videoEl) {
+        notify('Open a video in the Player first, then try again.', 'error');
+        if (window.tabSystem) window.tabSystem.switchToTab('player');
+        return;
+      }
+      // Feature check
+      const Supported = ('FaceDetector' in window) && typeof window.FaceDetector === 'function';
+      if (!Supported) {
+        notify('FaceDetector API not available in this browser. Try Chrome/Edge desktop.', 'error');
+        return;
+      }
+      // Options from UI
+      const intervalSec = Math.max(0.2, parseFloat(document.getElementById('faceInterval')?.value || '1.0'));
+      const minSizeFrac = Math.max(0.01, Math.min(0.9, parseFloat(document.getElementById('faceMinSize')?.value || '0.10')));
+      const maxSamples = 300; // safety cap
+      // Ensure metadata is ready
+      if (!Number.isFinite(duration) || duration <= 0) {
+        await new Promise((res) => {
+          const onMeta = () => { videoEl.removeEventListener('loadedmetadata', onMeta); res(); };
+          videoEl.addEventListener('loadedmetadata', onMeta);
+        });
+      }
+      const W = Math.max(1, videoEl.videoWidth || 0);
+      const H = Math.max(1, videoEl.videoHeight || 0);
+      // Prepare canvas
+      const canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext('2d', { willReadFrequently: false });
+      if (!ctx) { notify('Canvas not available for capture.', 'error'); return; }
+      const detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 10 });
+      // Build sampling timeline
+      const total = Math.max(0, Number(duration) || 0);
+      let step = intervalSec;
+      let samples = [];
+      if (total <= 0) samples = [0];
+      else {
+        for (let t = 0; t <= total; t += step) samples.push(t);
+        if (samples.length > maxSamples) {
+          const ratio = samples.length / maxSamples;
+          const out = [];
+          for (let i = 0; i < samples.length; i += Math.ceil(ratio)) out.push(samples[i]);
+          samples = out;
+        }
+      }
+      if (samples.length === 0) samples = [0];
+      // Pause and remember state
+      const wasPaused = videoEl.paused;
+      const prevT = videoEl.currentTime || 0;
+      try { videoEl.pause(); } catch (_) {}
+      notify(`Browser face detection: sampling ${samples.length} frame(s)...`, 'info');
+      const faces = [];
+      // Helper: precise seek
+      const seekTo = (t) => new Promise((res) => {
+        const onSeek = () => { videoEl.removeEventListener('seeked', onSeek); res(); };
+        videoEl.addEventListener('seeked', onSeek);
+        try { videoEl.currentTime = Math.max(0, Math.min(total, t)); } catch (_) { res(); }
+      });
+      for (let i = 0; i < samples.length; i++) {
+        const t = samples[i];
+        await seekTo(t);
+        try {
+          ctx.drawImage(videoEl, 0, 0, W, H);
+          // FaceDetector accepts Canvas as source
+          const dets = await detector.detect(canvas);
+          for (const d of dets || []) {
+            const bb = d && d.boundingBox ? d.boundingBox : null;
+            if (!bb) continue;
+            let x = Math.max(0, Math.floor(bb.x || 0));
+            let y = Math.max(0, Math.floor(bb.y || 0));
+            let w = Math.max(0, Math.floor(bb.width || 0));
+            let h = Math.max(0, Math.floor(bb.height || 0));
+            if (w <= 1 || h <= 1) continue;
+            const minFrac = Math.min(w / W, h / H);
+            if (minFrac < minSizeFrac) continue;
+            faces.push({ time: Number(t.toFixed(3)), box: [x, y, w, h], score: 1.0 });
+          }
+        } catch (err) {
+          // continue on errors
+        }
+      }
+      // Restore playback position/state
+      try { videoEl.currentTime = prevT; } catch(_) {}
+      try { if (!wasPaused) await videoEl.play(); } catch(_) {}
+      if (faces.length === 0) {
+        notify('No faces detected in sampled frames.', 'error');
+        return;
+      }
+      // If an existing faces.json is present, confirm overwrite
+      let overwrite = true;
+      try {
+        const head = await fetch('/api/faces/get?path=' + encodeURIComponent(currentPath), { method: 'HEAD' });
+        if (head.ok) {
+          overwrite = confirm('faces.json already exists for this video. Replace it with browser-detected faces?');
+          if (!overwrite) return;
+        }
+      } catch (_) {}
+      // Upload
+      const payload = { faces, backend: 'browser-facedetector', stub: false };
+      const url = new URL('/api/faces/upload', window.location.origin);
+      url.searchParams.set('path', currentPath);
+      url.searchParams.set('compute_embeddings', 'true');
+      url.searchParams.set('overwrite', overwrite ? 'true' : 'false');
+      const r = await fetch(url.toString(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      if (j?.status === 'success') {
+        notify(`Uploaded ${faces.length} face(s) from browser detection.`, 'success');
+        // Refresh indicators
+        try { if (window.tasksManager) window.tasksManager.loadCoverage(); } catch(_) {}
+        try { await loadFacesStatus(); } catch(_) {}
+      } else {
+        throw new Error(j?.message || 'Upload failed');
+      }
+    } catch (e) {
+      notify('Browser detection failed: ' + (e && e.message ? e.message : 'error'), 'error');
+    }
+  }
+
   async function loadHeatmap() {
     if (!currentPath) return;
     try {
@@ -1971,6 +2093,23 @@ const Player = (() => {
   function wireBadgeActions() {
     const gen = async (kind) => {
       if (!currentPath) return;
+      // Capability gating: map kind -> operation type
+      try {
+        const caps = (window.tasksManager && window.tasksManager.capabilities) || window.__capabilities || {};
+        const needsFfmpeg = new Set(['heatmap','scenes','sprites','hover','phash']);
+        if (needsFfmpeg.has(kind) && caps.ffmpeg === false) {
+          notify('Cannot start: FFmpeg not detected', 'error');
+          return;
+        }
+        if (kind === 'subtitles' && caps.subtitles_enabled === false) {
+          notify('Cannot start subtitles: no backend available', 'error');
+          return;
+        }
+        if (kind === 'faces' && caps.faces_enabled === false) {
+          notify('Cannot start faces: face backends unavailable', 'error');
+          return;
+        }
+      } catch(_) {}
       try {
         let url;
         if (kind === 'heatmap') url = new URL('/api/heatmaps/create', window.location.origin);
@@ -2115,7 +2254,7 @@ const Player = (() => {
   }
 
   // Public API
-  return { open };
+  return { open, detectAndUploadFacesBrowser };
 })();
 
 window.Player = Player;
@@ -2126,6 +2265,13 @@ class TasksManager {
     this.jobs = new Map();
     this.coverage = {};
     this.orphanFiles = [];
+    // Capabilities loaded from /config
+    this.capabilities = {
+      ffmpeg: true,
+      ffprobe: true,
+      subtitles_enabled: true,
+      faces_enabled: true,
+    };
     // Multi-select filters: default show queued and running, hide completed/failed
     this.activeFilters = new Set(['running', 'queued']);
     this._jobRows = new Map(); // id -> tr element for stable rendering
@@ -2136,10 +2282,125 @@ class TasksManager {
     this.initEventListeners();
     this.initJobEvents();
     this.startJobPolling();
+    // Load backend capabilities and apply UI gating
+    this.loadConfigAndApplyGates();
     this.loadCoverage();
     this.wireGenerateAll();
     // Initialize resizer for job queue container
     setTimeout(() => this.initJobQueueResizer(), 0);
+    // Wire browser faces button (idempotent)
+    setTimeout(() => this.wireBrowserFacesButton(), 0);
+  }
+
+  async loadConfigAndApplyGates() {
+    try {
+      const r = await fetch('/config', { headers: { 'Accept': 'application/json' } });
+      if (r.ok) {
+        const j = await r.json();
+        const data = j?.data || j || {};
+        const deps = data.deps || {};
+        const caps = data.capabilities || {};
+        // Normalize booleans, fallback to /health-style top-level if present
+        this.capabilities.ffmpeg = Boolean(deps.ffmpeg ?? data.ffmpeg ?? true);
+        this.capabilities.ffprobe = Boolean(deps.ffprobe ?? data.ffprobe ?? true);
+        this.capabilities.subtitles_enabled = Boolean(caps.subtitles_enabled ?? true);
+        this.capabilities.faces_enabled = Boolean(caps.faces_enabled ?? true);
+        // Expose for other modules (Player badge actions)
+        try { window.__capabilities = { ...this.capabilities }; } catch(_) {}
+      }
+    } catch (_) {
+      // Keep defaults if /config fails
+    }
+    this.applyCapabilityGates();
+    // Re-evaluate and wire browser faces button when caps are known
+    this.wireBrowserFacesButton();
+    this.updateCapabilityBanner();
+  }
+
+  canRunOperation(op) {
+    // Accept full op (e.g., "thumbnails-missing") or base (e.g., "thumbnails")
+    const base = String(op || '').replace(/-(all|missing)$/,'');
+    const caps = this.capabilities || {};
+    const needsFfmpeg = new Set(['thumbnails','previews','sprites','scenes','heatmaps','phash']);
+    if (needsFfmpeg.has(base)) return !!caps.ffmpeg;
+    if (base === 'subtitles') return !!caps.subtitles_enabled;
+    if (base === 'faces' || base === 'embed') return !!caps.faces_enabled;
+    // metadata and others default to allowed
+    return true;
+  }
+
+  applyCapabilityGates() {
+    const caps = this.capabilities || {};
+    const disableIf = (selector, disable, title) => {
+      document.querySelectorAll(selector).forEach(btn => {
+        if (!(btn instanceof HTMLElement)) return;
+        btn.disabled = !!disable;
+        if (title) btn.title = title;
+      });
+    };
+    // FFmpeg-dependent
+    const ffmpegMissing = !caps.ffmpeg;
+    if (ffmpegMissing) {
+      disableIf('[data-operation="thumbnails-missing"], [data-operation="thumbnails-all"]', true, 'Disabled: FFmpeg not detected');
+      disableIf('[data-operation="previews-missing"], [data-operation="previews-all"]', true, 'Disabled: FFmpeg not detected');
+      disableIf('[data-operation="sprites-missing"], [data-operation="sprites-all"]', true, 'Disabled: FFmpeg not detected');
+      disableIf('[data-operation="scenes-missing"], [data-operation="scenes-all"]', true, 'Disabled: FFmpeg not detected');
+      disableIf('[data-operation="heatmaps-missing"], [data-operation="heatmaps-all"]', true, 'Disabled: FFmpeg not detected');
+      disableIf('[data-operation="phash-missing"], [data-operation="phash-all"]', true, 'Disabled: FFmpeg not detected');
+      const prev = document.getElementById('previewHeatmapsBtn');
+      if (prev) { prev.disabled = true; prev.title = 'Disabled: FFmpeg not detected'; }
+      // Player badges
+      ['badgeHeatmap','badgeScenes','badgeSprites','badgeHover','badgePhash'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) { el.disabled = true; el.title = 'Disabled: FFmpeg not detected'; }
+      });
+    }
+    // Subtitles
+    if (!caps.subtitles_enabled) {
+      disableIf('[data-operation="subtitles-missing"], [data-operation="subtitles-all"]', true, 'Disabled: no subtitles backend available');
+      const el = document.getElementById('badgeSubtitles');
+      if (el) { el.disabled = true; el.title = 'Disabled: no subtitles backend available'; }
+    }
+    // Faces/Embeddings
+    if (!caps.faces_enabled) {
+      disableIf('[data-operation="faces-missing"], [data-operation="faces-all"]', true, 'Disabled: face backends not available');
+      disableIf('[data-operation="embed-missing"], [data-operation="embed-all"]', true, 'Disabled: face backends not available');
+      const bf = document.getElementById('badgeFaces');
+      if (bf) { bf.disabled = true; bf.title = 'Disabled: face backends not available'; }
+    }
+    // Browser-side faces button gating: requires FaceDetector OR a server path to compute embeddings may still work
+    const fb = document.getElementById('facesBrowserBtn');
+    if (fb) {
+      const hasFD = ('FaceDetector' in window) && typeof window.FaceDetector === 'function';
+      // We require either FaceDetector availability (client) AND at least one embedding path on server (ffmpeg or faces backend)
+      const serverOk = !!caps.ffmpeg || !!caps.faces_enabled;
+      fb.disabled = !(hasFD && serverOk);
+      fb.title = fb.disabled ? (!hasFD ? 'Disabled: FaceDetector API not available in this browser' : 'Disabled: no server embedding path available') : 'Detect faces in your browser and upload';
+    }
+  }
+
+  updateCapabilityBanner() {
+    const caps = this.capabilities || {};
+    const issues = [];
+    if (!caps.ffmpeg) issues.push('FFmpeg not detected — thumbnails, previews, sprites, scenes, heatmaps, and pHash are disabled.');
+    if (!caps.subtitles_enabled) issues.push('Subtitles backend unavailable — subtitles generation is disabled.');
+    if (!caps.faces_enabled) issues.push('Face backends unavailable — face detection and embeddings are disabled.');
+    let banner = document.getElementById('capabilityBanner');
+    // Where to insert: top of the tasks panel container
+    const tasksPanel = document.getElementById('tasks-panel');
+    const container = tasksPanel ? tasksPanel.querySelector('.tasks-container') : null;
+    if (!container) return;
+    if (issues.length === 0) {
+      if (banner) banner.remove();
+      return;
+    }
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'capabilityBanner';
+      banner.style.cssText = 'margin: 8px 0 12px; padding: 10px 12px; border:1px solid rgba(255,255,255,0.15); border-radius:8px; background:#221b12; color:#f7d382;';
+      container.insertBefore(banner, container.firstChild);
+    }
+    banner.innerHTML = '<strong>Tools notice:</strong> ' + issues.join(' ');
   }
 
   initJobEvents() {
@@ -2301,6 +2562,27 @@ class TasksManager {
     }
   }
 
+  // Wire facesBrowserBtn to run browser detection on the currently open video
+  wireBrowserFacesButton() {
+    const btn = document.getElementById('facesBrowserBtn');
+    if (!btn || btn._wired) return;
+    btn._wired = true;
+    btn.addEventListener('click', async () => {
+      try {
+        // Switch to player tab if needed so the user can see progress and allow playback controls
+        if (window.tabSystem && window.tabSystem.getActiveTab() !== 'player') window.tabSystem.switchToTab('player');
+        // Delegate to Player module
+        if (window.Player && typeof window.Player.detectAndUploadFacesBrowser === 'function') {
+          await window.Player.detectAndUploadFacesBrowser();
+        } else {
+          this.showNotification('Player not ready for browser detection.', 'error');
+        }
+      } catch (e) {
+        this.showNotification('Browser faces failed: ' + (e && e.message ? e.message : 'error'), 'error');
+      }
+    });
+  }
+
   async previewHeatmapSample() {
     try {
       // Find first video in current folder
@@ -2364,6 +2646,15 @@ class TasksManager {
       } else if (base.endsWith('-all')) {
         base = base.replace(/-all$/, '');
         mode = 'all';
+      }
+
+      // Capability gate
+      if (!this.canRunOperation(base)) {
+        const why = (base === 'subtitles') ? 'No subtitles backend available.'
+                  : (base === 'faces' || base === 'embed') ? 'Face backends unavailable.'
+                  : 'FFmpeg not detected.';
+        this.showNotification(`Cannot start ${base} (${mode}). ${why}`, 'error');
+        return;
       }
 
       // Scope: all vs selected files
@@ -2432,7 +2723,11 @@ class TasksManager {
         'faces-missing',
         'embed-missing',
         'subtitles-missing',
-      ];
+      ].filter(op => this.canRunOperation(op));
+      if (ops.length === 0) {
+        this.showNotification('No compatible operations available. Check the Tools notice above.', 'error');
+        return;
+      }
       btn.disabled = true;
       btn.classList.add('btn-busy');
       try {
@@ -2687,12 +2982,12 @@ class TasksManager {
       if (!tr) {
         tr = this.createJobRow(job);
         this._jobRows.set(job.id, tr);
-        tbody.appendChild(tr);
       } else {
         // Update existing row fields
         this.updateJobRow(tr, job);
-        if (tr.parentElement !== tbody) tbody.appendChild(tr);
       }
+      // Always append in the current sorted order; this moves existing rows
+      tbody.appendChild(tr);
     }
     // Hide rows that don't match filter
     for (const [id, tr] of this._jobRows.entries()) {
@@ -2762,6 +3057,7 @@ class TasksManager {
       queued: 'Queued',
       completed: 'Completed',
       failed: 'Errored',
+      canceled: 'Canceled',
     };
     if (status in map) return map[status];
     // Fallback: capitalize unknown status keys
@@ -2798,12 +3094,12 @@ class TasksManager {
     row.querySelector('.cell-task').textContent = job.task;
     const fileCell = row.querySelector('.cell-file');
     fileCell.textContent = fileName;
-  fileCell.title = job.target || job.file || '';
+    fileCell.title = job.target || job.file || '';
     // Status
-  let status = this.normalizeStatus(job);
+    let status = this.normalizeStatus(job);
     const statusEl = row.querySelector('.job-status');
     statusEl.className = 'job-status ' + status;
-  statusEl.textContent = this.displayStatusLabel(status);
+    statusEl.textContent = this.displayStatusLabel(status);
     // Progress: prefer server-provided value; only fall back to raw counters when missing
     let pct = 0;
     const totalRaw = job.totalRaw;
@@ -2812,7 +3108,7 @@ class TasksManager {
       pct = job.progress;
     }
     // If not completed and server didn't provide a value, derive from raw counters
-    if (status !== 'completed' && (pct == null || pct <= 0)) {
+    if (status !== 'completed' && status !== 'canceled' && (pct == null || pct <= 0)) {
       if (typeof totalRaw === 'number' && totalRaw > 0 && typeof processedRaw === 'number') {
         const calc = Math.max(0, Math.min(100, Math.floor((processedRaw / totalRaw) * 100)));
         if (calc > 0) pct = calc;
@@ -2822,12 +3118,17 @@ class TasksManager {
     if (status === 'queued') pct = 0;
     if (status === 'completed') pct = 100;
     const bar = row.querySelector('.job-progress-fill');
-    bar.style.width = (status !== 'queued' ? pct : 0) + '%';
-    row.querySelector('.pct').textContent = (status === 'queued') ? 'Queued' : (status === 'completed' ? '100%' : `${pct}%`);
-  const fname = row.querySelector('.fname');
-  // Show the target path when available for non-queued states
-  const targetPath = (job && typeof job.target === 'string' && job.target) ? job.target : '';
-  fname.textContent = (status === 'queued') ? '' : (targetPath || '');
+    // Canceled explicitly shows 0% and "Canceled"
+    if (status === 'canceled') {
+      bar.style.width = '0%';
+    } else {
+      bar.style.width = (status !== 'queued' ? pct : 0) + '%';
+    }
+    row.querySelector('.pct').textContent = (status === 'queued') ? 'Queued' : (status === 'completed' ? '100%' : (status === 'canceled' ? 'Canceled' : `${pct}%`));
+    const fname = row.querySelector('.fname');
+    // Show the target path when available for non-queued states
+    const targetPath = (job && typeof job.target === 'string' && job.target) ? job.target : '';
+    fname.textContent = (status === 'queued') ? '' : (targetPath || '');
     // Action
     const action = row.querySelector('.cell-action');
     action.innerHTML = '';
@@ -2843,6 +3144,8 @@ class TasksManager {
       btn.textContent = 'Cancel';
       btn.addEventListener('click', () => this.cancelJob(job.id));
       action.appendChild(btn);
+    } else if (status === 'canceled') {
+      // No actions for canceled
     } else if (status === 'failed') {
       // Click row to view error details
       const errText = (job && job.error) ? String(job.error) : '';
@@ -2884,10 +3187,14 @@ class TasksManager {
 
   // Normalize backend status to UI status names
   normalizeStatus(job) {
-    let s = job.status || '';
-    if (s === 'done') s = 'completed';
-    if (s === 'queued' && (job.progress || 0) > 0) s = 'running';
-    return s;
+    // Map server states directly; do not infer running from progress for queued
+    let s = (job.status || '').toLowerCase();
+    if (s === 'done' || s === 'completed') return 'completed';
+    if (s === 'running') return 'running';
+    if (s === 'queued') return 'queued';
+    if (s === 'failed' || s === 'error' || s === 'errored') return 'failed';
+    if (s === 'canceled' || s === 'cancelled' || s === 'cancel_requested') return 'canceled';
+    return s || 'unknown';
   }
 
   showErrorModal(message, job) {

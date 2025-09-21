@@ -582,6 +582,14 @@
                   <label>Scale Factor: <input type="number" id="faceScale" value="1.1" min="1.01" max="2.0" step="0.01"></label>
                   <label>Min Neighbors: <input type="number" id="faceMinNeighbors" value="5" min="0" max="20" step="1"></label>
                   <label>Similarity Thresh: <input type="number" id="faceSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
+                  <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08);">
+                    <button class="btn-sm" id="facesBrowserBtn" title="Detect faces in your browser and upload the result">
+                      Generate Faces (Browser)
+                    </button>
+                    <div style="color: var(--muted); font-size: 12px; line-height:1.4; margin-top:6px;">
+                      Uses your browser's built-in FaceDetector to find faces and uploads boxes. The server will compute lightweight embeddings for clustering.
+                    </div>
+                  </div>
                 </div>
               </div>
 

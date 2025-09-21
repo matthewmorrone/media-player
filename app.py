@@ -38,6 +38,7 @@ except Exception:
 from difflib import SequenceMatcher
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response # type: ignore
+from fastapi import Body  # type: ignore
 from fastapi.responses import ( # type: ignore
     FileResponse,
     HTMLResponse,
@@ -72,6 +73,10 @@ def _init_media_root() -> Path:
 STATE: dict[str, Any] = {
     "root": _init_media_root(),
 }
+
+# Lightweight in-memory cache for parsed metadata sidecars to reduce disk I/O.
+# Keyed by absolute video path; stores sidecar mtime and a small summary dict.
+STATE["_meta_cache"] = {}
 
 
 def _load_server_config() -> dict:
@@ -475,7 +480,19 @@ def _terminate_job_processes(jid: str, grace_seconds: float = 2.0) -> int:
     return count
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess:
+# -----------------------------
+# Global ffmpeg concurrency gate
+# -----------------------------
+try:
+    _FFMPEG_CONCURRENCY = max(1, min(8, int(os.environ.get("FFMPEG_CONCURRENCY", "2"))))
+except Exception:
+    _FFMPEG_CONCURRENCY = 2
+_FFMPEG_SEM = threading.BoundedSemaphore(_FFMPEG_CONCURRENCY)
+
+# (removed: legacy global job concurrency gate; see Jobs subsystem for active JOB_RUN_SEM)
+
+
+def _run_inner(cmd: list[str]) -> subprocess.CompletedProcess:
     """
     Run a subprocess command with optional global timeout and cooperative cancellation.
     If env FFMPEG_TIMELIMIT (>0) is set, apply it as a timeout to protect against hangs.
@@ -518,6 +535,30 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
     finally:
         _unregister_job_proc(jid, proc)
+
+
+def _run(cmd: list[str]) -> subprocess.CompletedProcess:
+    """
+    Wrapper around _run_inner that enforces a GLOBAL concurrency cap for ffmpeg.
+    Any command whose executable basename is 'ffmpeg' must acquire a slot in
+    _FFMPEG_SEM before running. Non-ffmpeg commands bypass the gate.
+    Concurrency can be adjusted via env FFMPEG_CONCURRENCY (default 2, min 1, max 8).
+    """
+    is_ffmpeg = False
+    try:
+        if cmd and os.path.basename(cmd[0]) == "ffmpeg":
+            is_ffmpeg = True
+    except Exception:
+        is_ffmpeg = False
+
+    if not is_ffmpeg:
+        return _run_inner(cmd)
+
+    _FFMPEG_SEM.acquire()
+    try:
+        return _run_inner(cmd)
+    finally:
+        _FFMPEG_SEM.release()
 
 def metadata_single(video: Path, *, force: bool = False) -> None:
     out = metadata_path(video)
@@ -577,6 +618,60 @@ def extract_duration(ffprobe_json: Optional[dict]) -> Optional[float]:
         return float(d)
     except Exception:
         return None
+
+def _meta_summary_cached(video: Path) -> tuple[Optional[float], Optional[str], Optional[int], Optional[int]]:
+    """
+    Return (duration, title, width, height) using a small cache by sidecar mtime.
+    Avoids re-reading/parsing the JSON on every /api/library call across many files.
+    """
+    try:
+        mpath = metadata_path(video)
+        if not mpath.exists():
+            return None, None, None, None
+        st = mpath.stat()
+        mt = float(getattr(st, "st_mtime", 0.0) or 0.0)
+        key = str(video.resolve())
+        cache = STATE.get("_meta_cache")  # type: ignore[assignment]
+        if isinstance(cache, dict):
+            ent = cache.get(key)
+            if ent and isinstance(ent, dict) and ent.get("mt") == mt:
+                s = ent.get("s") or {}
+                return (
+                    s.get("duration"),
+                    s.get("title"),
+                    s.get("width"),
+                    s.get("height"),
+                )
+        # Not cached or stale: parse afresh
+        try:
+            raw = json.loads(mpath.read_text())
+        except Exception:
+            raw = None
+        dur = extract_duration(raw) if isinstance(raw, dict) else None
+        title = None
+        width = None
+        height = None
+        try:
+            if isinstance(raw, dict):
+                fmt = raw.get("format", {}) or {}
+                title = (fmt.get("tags", {}) or {}).get("title")
+                for st in (raw.get("streams") or []):
+                    if (st or {}).get("codec_type") == "video":
+                        try:
+                            width = int(st.get("width") or 0) or None
+                            height = int(st.get("height") or 0) or None
+                        except Exception:
+                            width = width or None
+                            height = height or None
+                        break
+        except Exception:
+            pass
+        # Store back to cache
+        if isinstance(cache, dict):
+            cache[key] = {"mt": mt, "s": {"duration": dur, "title": title, "width": width, "height": height}}
+        return dur, title, width, height
+    except Exception:
+        return None, None, None, None
 
 def parse_time_spec(spec: str | float | int | None, duration: Optional[float]) -> float:
     if spec is None:
@@ -1327,7 +1422,20 @@ def generate_sprite_sheet(
                 pass
             if progress_cb or cancel_check:
                 # Use Popen to allow polling for approximate progress and cancellation
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+                # Enforce global ffmpeg concurrency even in this Popen path
+                _FFMPEG_SEM.acquire()
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        start_new_session=True,
+                    )
+                except Exception:
+                    # If spawn fails, release the slot and re-raise
+                    _FFMPEG_SEM.release()
+                    raise
                 try:
                     _register_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
                 except Exception:
@@ -1359,6 +1467,11 @@ def generate_sprite_sheet(
                                 proc.kill()
                         except Exception:
                             pass
+                        # Release ffmpeg slot on cancel
+                        try:
+                            _FFMPEG_SEM.release()
+                        except Exception:
+                            pass
                         raise RuntimeError("canceled")
                     if rc is not None:
                         # ensure 100% on success
@@ -1367,6 +1480,11 @@ def generate_sprite_sheet(
                                 progress_cb(steps, steps)
                             except Exception:
                                 pass
+                        # Release ffmpeg slot when the process ends
+                        try:
+                            _FFMPEG_SEM.release()
+                        except Exception:
+                            pass
                         break
                     time.sleep(0.2)
             else:
@@ -1946,6 +2064,7 @@ def _detect_faces(
     # OpenCV legacy path
     try:
         import cv2  # type: ignore
+        import numpy as _np  # type: ignore
         cap = cv2.VideoCapture(str(video))
         if not cap.isOpened():
             raise RuntimeError("cannot open video")
@@ -1976,6 +2095,33 @@ def _detect_faces(
         except Exception:
             net = None
         results: List[Dict[str, Any]] = []
+
+        def _fallback_embed(face_img) -> list[float]:
+            """
+            Lightweight embedding when no DNN model is available.
+            - Convert to grayscale, resize to 32x32
+            - 2D DCT and take top-left 8x8 coefficients (low-frequency)
+            - L2-normalize the vector
+            Returns a small non-empty vector stable enough for cosine dedupe.
+            """
+            try:
+                if face_img is None:
+                    return []
+                if len(getattr(face_img, 'shape', []) or []) == 3:
+                    g = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+                else:
+                    g = face_img
+                g = cv2.resize(g, (32, 32), interpolation=cv2.INTER_AREA)
+                m = _np.asarray(g, dtype=_np.float32) / 255.0
+                dct = cv2.dct(m)
+                blk = dct[:8, :8].astype(_np.float32)
+                vec = blk.reshape(-1)
+                n = float(_np.linalg.norm(vec))
+                if n > 0:
+                    vec = vec / n
+                return [round(float(x), 6) for x in vec.tolist()]
+            except Exception:
+                return []
         frame_idx = 0
         while True:
             ret, frame = cap.read()
@@ -2012,6 +2158,12 @@ def _detect_faces(
                             net.setInput(blob)
                             vec = net.forward()[0]
                             embedding = [round(float(v), 6) for v in vec.tolist()]
+                        except Exception:
+                            embedding = []
+                    # If DNN embedding unavailable, compute a lightweight descriptor so output isn't a stub
+                    if not embedding:
+                        try:
+                            embedding = _fallback_embed(face)
                         except Exception:
                             embedding = []
                     results.append({"time": round(float(t), 3), "box": [int(x), int(y), int(w), int(h)], "score": 1.0, "embedding": embedding})
@@ -2691,14 +2843,21 @@ def _set_job_progress(jid: str, *, total: Optional[int] = None, processed_inc: i
 
 def _wrap_job(job_type: str, path: str, fn):
     jid = _new_job(job_type, path)
-    _start_job(jid)
     try:
-        # ensure job context within this thread
-        try:
-            JOB_CTX.jid = jid  # type: ignore[name-defined]
-        except Exception:
-            pass
-        result = fn()
+        # FIFO gate: wait until this job is the earliest queued before starting
+        _wait_for_turn(jid)
+        # Enforce global job concurrency even for synchronous (request-thread) jobs
+        fp = Path(path)
+        lock = _file_task_lock(fp, job_type)
+        with JOB_RUN_SEM:
+            with lock:
+                # Now officially mark as running and bind job context
+                _start_job(jid)
+                try:
+                    JOB_CTX.jid = jid  # type: ignore[name-defined]
+                except Exception:
+                    pass
+                result = fn()
         # store result if it's JSON-serializable
         with JOB_LOCK:
             if jid in JOBS:
@@ -2706,7 +2865,11 @@ def _wrap_job(job_type: str, path: str, fn):
         _finish_job(jid, None)
         return result
     except Exception as e:  # noqa: BLE001
-        _finish_job(jid, str(e))
+        # On cancellation or failure, mark finished accordingly
+        _finish_job(jid, str(e) if str(e) and str(e).lower() != "canceled" else None)
+        if str(e).lower() == "canceled":
+            # Propagate a clean API error for canceled operations
+            raise_api_error("canceled", status_code=499)
         raise
 
 
@@ -2716,29 +2879,66 @@ def _wrap_job_background(job_type: str, path: str, fn):
     This avoids coupling long-running work to the HTTP request lifecycle.
     """
     jid = _new_job(job_type, path)
-    _start_job(jid)
     def _runner():
         try:
-            # set job context for this worker thread
-            try:
-                JOB_CTX.jid = jid  # type: ignore[name-defined]
-            except Exception:
-                pass
+            # FIFO gate: wait until this job is the earliest queued before starting
+            _wait_for_turn(jid)
             # Prevent duplicate heavy work on same (path, task)
             fp = Path(path)
             lock = _file_task_lock(fp, job_type)
             with JOB_RUN_SEM:
                 with lock:
+                    # Now officially mark as running and bind job context
+                    _start_job(jid)
+                    try:
+                        JOB_CTX.jid = jid  # type: ignore[name-defined]
+                    except Exception:
+                        pass
                     result = fn()
             with JOB_LOCK:
                 if jid in JOBS:
                     JOBS[jid]["result"] = result if not isinstance(result, JSONResponse) else None
             _finish_job(jid, None)
         except Exception as e:  # noqa: BLE001
-            _finish_job(jid, str(e))
+            _finish_job(jid, str(e) if str(e) and str(e).lower() != "canceled" else None)
     t = threading.Thread(target=_runner, name=f"job-{job_type}-{jid}", daemon=True)
     t.start()
     return api_success({"job": jid, "queued": True})
+
+def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[float] = None) -> None:
+    """
+    Block until this job is the earliest queued job by created_at.
+    Respects cancellation: if the job's cancel event is set while waiting, raise RuntimeError('canceled').
+    The intent is to ensure FIFO start order while still allowing concurrency via JOB_RUN_SEM.
+    """
+    start_ts = time.time()
+    while True:
+        # Timeout (best-effort safety)
+        if timeout is not None and (time.time() - start_ts) > timeout:
+            break
+        ev = JOB_CANCEL_EVENTS.get(jid)
+        if ev is not None and ev.is_set():
+            raise RuntimeError("canceled")
+        with JOB_LOCK:
+            j = JOBS.get(jid)
+            if not j:
+                # Job vanished; nothing to wait for
+                break
+            # If job already started (running) or finished, no need to wait
+            st = str(j.get("state") or "")
+            if st in ("running", "done", "completed", "failed", "canceled"):
+                break
+            # Build ordered list of queued jobs
+            queued = [
+                (float(qq.get("created_at") or 0), str(qq.get("id") or ""))
+                for qq in JOBS.values()
+                if str(qq.get("state") or "") == "queued"
+            ]
+            queued.sort(key=lambda x: (x[0], x[1]))
+            if queued and queued[0][1] == jid:
+                # It's our turn
+                break
+        time.sleep(poll_interval)
 
 
 def _safe_int(x):
@@ -2814,14 +3014,30 @@ def old_index_html():
 if (_BASE / "static").exists():
     app.mount("/static", StaticFiles(directory=str(_BASE / "static")), name="static")
 
-# Restore persisted jobs on startup (best-effort, controlled by env flags)
-@app.on_event("startup")
-async def _on_startup_restore_jobs():
+# Lifespan: replaces deprecated on_event startup handler
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app_obj: FastAPI):  # type: ignore[override]
+    # Startup
     try:
+        try:
+            root_str = str(STATE.get("root"))
+            print(f"[startup] MEDIA_ROOT={root_str}")
+        except Exception:
+            pass
         _restore_jobs_on_start()
     except Exception:
         # Non-fatal: continue without restore on any error
         pass
+    try:
+        yield
+    finally:
+        # Shutdown (currently no-op; placeholder for future cleanup)
+        pass
+
+# Attach lifespan to app
+app.router.lifespan_context = lifespan  # type: ignore[attr-defined]
 
 
 # API under /api - mount BEFORE catch-all static handler
@@ -3355,42 +3571,17 @@ def _list_dir(root: Path, rel: str):
         if entry.is_dir():
             dirs.append({"name": entry.name, "path": str(entry.relative_to(root))})
         elif entry.is_file() and _is_original_media_file(entry, root):
-            # Try to enrich with MIME and known metadata if available
+            # Try to enrich with MIME and known metadata if available (cached)
             mime, _ = __import__("mimetypes").guess_type(str(entry))
             # Add duration when metadata sidecar exists
             duration_val = None
             title_val = None
             width_val = None
             height_val = None
-            mpath = metadata_path(entry)
-            if mpath.exists():
-                try:
-                    m = json.loads(mpath.read_text())
-                    # Use v2 extractor to obtain duration (seconds)
-                    duration_val = extract_duration(m)
-                    # Try to extract human title from ffprobe tags
-                    try:
-                        title_val = (m.get("format", {}) or {}).get("tags", {}).get("title")
-                    except Exception:
-                        title_val = None
-                    # Extract width/height from first video stream
-                    try:
-                        for st in (m.get("streams") or []):
-                            if (st or {}).get("codec_type") == "video":
-                                try:
-                                    w = int(st.get("width") or 0) or None
-                                    h = int(st.get("height") or 0) or None
-                                except Exception:
-                                    w = None; h = None
-                                width_val = width_val or w
-                                height_val = height_val or h
-                                if width_val and height_val:
-                                    break
-                    except Exception:
-                        width_val = width_val or None
-                        height_val = height_val or None
-                except Exception:
-                    duration_val = None
+            try:
+                duration_val, title_val, width_val, height_val = _meta_summary_cached(entry)
+            except Exception:
+                duration_val = None
             # Artifact presence
             phash_exists = False
             scenes_exists = False
@@ -5145,6 +5336,179 @@ def faces_json(path: str = Query(...)):
     return faces_get(path)  # type: ignore
 
 
+class _FacesUpload(BaseModel):  # type: ignore
+    """
+    Payload schema for uploading faces detected in the browser.
+    - faces: list of { time: float, box: [x,y,w,h], score?: float, embedding?: number[] }
+    - backend: optional string describing the client detector (e.g., 'browser-facedetector' or 'browser-mediapipe')
+    - stub: optional flag; ignored on write (server ensures non-stub if embeddings are computed)
+    """
+    faces: Optional[List[Dict[str, Any]]] = None
+    backend: Optional[str] = None
+    stub: Optional[bool] = None
+
+
+def _compute_fallback_embedding_for_box(video: Path, t: float, box: List[int]) -> List[float]:
+    """
+    Compute a lightweight embedding for a given (time, box) from a video frame.
+    Prefers OpenCV DCT when available; otherwise falls back to a coarse 8x8 pooled grayscale vector.
+    """
+    try:
+        import cv2  # type: ignore
+        import numpy as _np  # type: ignore
+    except Exception:
+        cv2 = None  # type: ignore
+        _np = None  # type: ignore
+    x, y, w, h = [int(max(0, v)) for v in (box or [0, 0, 0, 0])]
+    frame = None
+    # Try OpenCV seek + read for speed
+    try:
+        if cv2 is not None:
+            cap = cv2.VideoCapture(str(video))
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, float(t)) * 1000.0)
+                ok, frm = cap.read()
+                cap.release()
+                if ok and frm is not None:
+                    frame = frm
+    except Exception:
+        frame = None
+    # If CV path failed, try ffmpeg pipe -> PIL
+    if frame is None:
+        try:
+            from PIL import Image  # type: ignore
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+                *(_ffmpeg_hwaccel_flags()),
+                "-noaccurate_seek", "-ss", f"{max(0.0, float(t)):.3f}", "-i", str(video),
+                "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-",
+            ]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if proc.returncode == 0 and proc.stdout:
+                from io import BytesIO
+                im = Image.open(BytesIO(proc.stdout))
+                # Crop safely within bounds
+                W, H = im.size
+                x2 = min(W, x + w)
+                y2 = min(H, y + h)
+                x1 = min(max(0, x), max(0, W - 1))
+                y1 = min(max(0, y), max(0, H - 1))
+                if x2 > x1 and y2 > y1:
+                    im = im.crop((x1, y1, x2, y2)).convert("L").resize((32, 32))
+                    px = list(im.getdata())
+                    # Average-pool to 8x8 grid
+                    vec: List[float] = []
+                    for ry in range(8):
+                        for rx in range(8):
+                            acc = 0.0
+                            cnt = 0
+                            for yy in range(ry * 4, ry * 4 + 4):
+                                for xx in range(rx * 4, rx * 4 + 4):
+                                    acc += float(px[yy * 32 + xx])
+                                    cnt += 1
+                            vec.append(acc / max(1, cnt) / 255.0)
+                    # L2 normalize
+                    n = sum(v * v for v in vec) ** 0.5
+                    if n > 0:
+                        vec = [round(v / n, 6) for v in vec]
+                    return vec
+        except Exception:
+            pass
+    # If we have a CV frame, compute DCT-based embedding
+    if frame is not None and cv2 is not None and _np is not None:
+        try:
+            H, W = frame.shape[:2]
+            x2 = min(W, x + w)
+            y2 = min(H, y + h)
+            x1 = min(max(0, x), max(0, W - 1))
+            y1 = min(max(0, y), max(0, H - 1))
+            if x2 > x1 and y2 > y1:
+                face = frame[y1:y2, x1:x2]
+                g = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
+                g = cv2.resize(g, (32, 32), interpolation=cv2.INTER_AREA)
+                m = _np.asarray(g, dtype=_np.float32) / 255.0  # type: ignore[attr-defined]
+                dct = cv2.dct(m)
+                blk = dct[:8, :8].astype(_np.float32)
+                vec_np = blk.reshape(-1)
+                n = float(_np.linalg.norm(vec_np))
+                if n > 0:
+                    vec_np = vec_np / n
+                return [round(float(x), 6) for x in vec_np.tolist()]
+        except Exception:
+            pass
+    return []
+
+
+@api.post("/faces/upload")
+def faces_upload(
+    path: str = Query(...),
+    compute_embeddings: bool = Query(default=True),
+    overwrite: bool = Query(default=True),
+    payload: _FacesUpload = Body(...),
+):
+    """
+    Accept faces detected client-side and write a faces.json artifact.
+    Optionally compute lightweight embeddings for detections missing an embedding.
+    """
+    if STATE.get("root") is None:
+        raise_api_error("Root not set", status_code=400)
+    fp = safe_join(STATE["root"], path)
+    if not fp.exists() or not fp.is_file():
+        raise_api_error("Not found", status_code=404)
+    faces_in = list(payload.faces or [])
+    if not faces_in:
+        raise_api_error("No faces provided", status_code=400)
+    # Ensure each has required keys and compute missing embeddings if requested
+    out_faces: List[Dict[str, Any]] = []
+    for f in faces_in:
+        try:
+            t = float(f.get("time", 0.0))
+            box = f.get("box") or []
+            if not (isinstance(box, list) and len(box) == 4):
+                continue
+            emb = f.get("embedding") or []
+            if (not emb) and compute_embeddings:
+                try:
+                    emb = _compute_fallback_embedding_for_box(fp, t, [int(x) for x in box])
+                except Exception:
+                    emb = []
+            out_faces.append({
+                "time": round(t, 3),
+                "box": [int(x) for x in box],
+                "score": float(f.get("score", 1.0) or 1.0),
+                "embedding": list(emb) if isinstance(emb, list) else [],
+            })
+        except Exception:
+            continue
+    # If still no usable embeddings, reject to avoid writing stubs
+    any_emb = False
+    for fc in out_faces:
+        emb = fc.get("embedding")
+        if isinstance(emb, list) and emb:
+            any_emb = True
+            break
+    if not any_emb:
+        raise_api_error("No embeddings present; enable compute_embeddings or include embeddings in payload", status_code=400)
+    # Write artifact
+    out = faces_path(fp)
+    if out.exists() and not overwrite:
+        raise_api_error("faces.json already exists (set overwrite=true to replace)", status_code=409)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "faces": out_faces,
+        "backend": payload.backend or "browser",
+        "source": "upload",
+        "stub": False,
+        "uploaded": True,
+        "uploaded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        out.write_text(json.dumps(doc, indent=2))
+    except Exception as e:  # noqa: BLE001
+        raise_api_error(f"Failed to write faces: {e}", status_code=500)
+    return api_success({"created": True, "path": str(out), "count": len(out_faces)})
+
+
 @api.post("/faces/create")
 def faces_create(
     path: str = Query(...),
@@ -6344,16 +6708,13 @@ def tasks_jobs():
         live.sort(key=live_key)
         rest.sort(key=rest_key)
 
-        # Always include all live jobs; cap the remainder to a reasonable window
-        MAX_ROWS = 50
-        headroom = max(0, MAX_ROWS - len(live))
-        result_jobs = live + rest[:headroom]
-        
+        # Always include all jobs (live first), so UI filters can show full history
+        result_jobs = live + rest
+
         return api_success({
             "jobs": result_jobs,
             "stats": stats
         })
-        
     except Exception as e:
         raise_api_error(f"Failed to get job status: {str(e)}")
 
