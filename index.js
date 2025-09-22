@@ -1,453 +1,341 @@
+// ----- Top-level DOM refs & state -----
 const grid = document.getElementById('grid');
 const statusEl = document.getElementById('status');
 const spinner = document.getElementById('spinner');
 const refreshBtn = document.getElementById('refresh');
 const folderInput = document.getElementById('folderInput');
-
-// Grid controls
 const searchInput = document.getElementById('searchInput');
 const sortSelect = document.getElementById('sortSelect');
 const orderToggle = document.getElementById('orderToggle');
-const densitySlider = document.getElementById('densitySlider');
+const pageInfo = document.getElementById('pageInfo');
 const prevBtn = document.getElementById('prevBtn');
 const nextBtn = document.getElementById('nextBtn');
-const pageInfo = document.getElementById('pageInfo');
-
-// Hover controls (Settings)
-let hoverPreviewsEnabled = false; // playback on hover
-let hoverOnDemandEnabled = false; // generation on hover
-// Player timeline display toggles (Settings)
-let showHeatmap = true;   // default ON
-let showScenes = true;    // default ON
-
-// Selection
+const densitySlider = document.getElementById('densitySlider');
 const selectionBar = document.getElementById('selectionBar');
 const selectionCount = document.getElementById('selectionCount');
 const selectAllBtn = document.getElementById('selectAllBtn');
 const selectNoneBtn = document.getElementById('selectNoneBtn');
+// Optional/legacy folder picker elements (guarded)
+const modal = document.getElementById('folderModal');
+const crumbsEl = document.getElementById('crumbs');
+const dirlistEl = document.getElementById('dirlist');
+const chooseBtn = document.getElementById('chooseBtn');
+const cancelBtn = document.getElementById('cancelBtn');
+// Optional sidebar heatmap image placeholder (may not exist)
+let sbHeatmapImg = document.getElementById('sbHeatmapImg');
+// Folder picker current path state
+let pickerPath = '';
 
-// State
+// Global state
 let currentPage = 1;
 let totalPages = 1;
 let totalFiles = 0;
-let selectedItems = new Set();
-let currentDensity = 12; // Default to 12 (maps to 4 columns)
+let currentDensity = parseInt((densitySlider && densitySlider.value) || '12', 10);
+const selectedItems = new Set();
 
-// Simple density configurations: [pageSize, columns, label]
-// Just controls how many columns are visible
-const densityConfigs = [
-  [200, 20, 'Tiny'],      // 1 - 20 columns (very small tiles)
-  [180, 18, 'Tiny+'],     // 2
-  [160, 16, 'Small--'],   // 3
-  [140, 14, 'Small-'],    // 4
-  [120, 12, 'Small'],     // 5
-  [100, 10, 'Small+'],    // 6
-  [90, 9, 'Medium--'],    // 7
-  [80, 8, 'Medium-'],     // 8
-  [70, 7, 'Medium'],      // 9
-  [60, 6, 'Medium+'],     // 10
-  [50, 5, 'Large--'],     // 11
-  [45, 4, 'Large-'],      // 12 - Default: 4 columns
-  [40, 3, 'Large'],       // 13
-  [35, 2, 'Large+'],      // 14
-  [30, 1, 'Largest']      // 15 - 1 column (largest tiles)
-];
-
-// Compute columns/page-size from currentDensity and set CSS var
-function applyColumnsAndComputePageSize() {
-  const [, columns] = densityConfigs[currentDensity - 1] || [60, 6];
-  document.documentElement.style.setProperty('--columns', String(columns));
-
-  // Estimate rows that fit: tile aspect 16/9 + meta (~54px)
-  const gridWidth = grid.clientWidth || (window.innerWidth - 128); // margins 64px each side
-  const colWidth = Math.max(120, Math.floor(gridWidth / Math.max(1, columns))); // min width safeguard
-  const tileHeight = Math.round(colWidth * 9/16) + 54; // image + meta
-  const usableHeight = Math.max(200, window.innerHeight - 220); // header + controls padding
-  const rows = Math.max(2, Math.floor(usableHeight / tileHeight) + 1); // +1 buffer row
-  return columns * rows;
+// Density config: [pageSize (unused), columns, label]
+// Density configuration helpers
+// Direct mapping: slider value (1..8) equals columns (1..8)
+function sliderToColumns(val) { return Math.max(1, Math.min(8, Number(val) || 4)); }
+function columnsToSlider(cols) { return String(Math.max(1, Math.min(8, Number(cols) || 4))); }
+function getColumns() {
+  try {
+    const saved = Number(localStorage.getItem('grid.columns'));
+    if (Number.isFinite(saved) && saved >= 1 && saved <= 8) return saved;
+  } catch(_) {}
+  // Default to 4 columns if no saved value
+  return 4;
 }
 
-const PLACEHOLDER_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent(`
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
-    <defs>
-      <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#0e1016"/>
-        <stop offset="100%" stop-color="#1a2030"/>
-      </linearGradient>
-    </defs>
-    <rect width="320" height="180" fill="url(#g)"/>
-    <g fill="#3b4663">
-      <rect x="30" y="40" width="260" height="100" rx="8"/>
-      <polygon points="140,90 140,70 200,90 140,110" fill="#6b7aa6"/>
-    </g>
-  </svg>`);
-
-// Modal elements
-const modal = document.createElement('div');
-modal.className = 'modal';
-modal.hidden = true;
-modal.innerHTML = `
-  <div class="panel">
-    <header>
-      <div class="crumbs" id="crumbs"></div>
-    </header>
-    <div class="body">
-      <div class="dirlist" id="dirlist"></div>
-    </div>
-    <div class="actions">
-      <button class="btn" id="chooseBtn">Choose this folder</button>
-      <button class="btn" id="cancelBtn">Cancel</button>
-    </div>
-  </div>`;
-document.body.appendChild(modal);
-const crumbsEl = modal.querySelector('#crumbs');
-const dirlistEl = modal.querySelector('#dirlist');
-const chooseBtn = modal.querySelector('#chooseBtn');
-const cancelBtn = modal.querySelector('#cancelBtn');
-let pickerPath = '';
-
-// Lightweight image modal for previews
-const imgModal = document.createElement('div');
-imgModal.className = 'modal';
-imgModal.hidden = true;
-imgModal.innerHTML = `
-  <div class="panel" style="max-width: min(920px, 96vw);">
-    <header><div style="display:flex;align-items:center;justify-content:space-between;">
-      <strong>Heatmap Preview</strong>
-      <button class="btn" id="imgModalClose">Close</button>
-    </div></header>
-    <div class="body" style="padding: 0; background: #0e1016;">
-      <img id="imgModalImage" alt="Heatmap" style="display:block; max-width:100%; height:auto;" />
-    </div>
-  </div>`;
-document.body.appendChild(imgModal);
-const imgModalClose = imgModal.querySelector('#imgModalClose');
-const imgModalImage = imgModal.querySelector('#imgModalImage');
-imgModal.addEventListener('click', (e) => { 
-  if (e.target === imgModal) {
-    imgModal.hidden = true;
+// Apply columns to the grid via CSS var and persist user preference
+function setColumns(cols) {
+  const c = Math.max(1, Math.min(8, Number(cols) || 4));
+  try { localStorage.setItem('grid.columns', String(c)); } catch(_) {}
+  // Apply on grid container and root to ensure CSS picks it up consistently
+  if (grid && grid.style) grid.style.setProperty('--columns', String(c));
+  if (document && document.documentElement && document.documentElement.style) {
+    document.documentElement.style.setProperty('--columns', String(c));
   }
-});
-imgModalClose.addEventListener('click', ()=> imgModal.hidden = true);
-
-function fmtSize(bytes) {
-  if (!Number.isFinite(bytes)) return '';
-  const units = ['B','KB','MB','GB','TB'];
-  let i = 0; let v = bytes;
-  while (v >= 1024 && i < units.length-1) { v /= 1024; i++; }
-  return v.toFixed(v < 10 ? 1 : 0) + ' ' + units[i];
-}
-
-function fmtDuration(sec) {
-  if (!Number.isFinite(sec) || sec <= 0) return '';
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  return (h ? h+':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-}
-
-// Hover preview utility functions
-async function ensureHover(file) {
-  // If a preview already exists, use it immediately
-  const ts = `&t=${Date.now()}`;
-  if (file.hoverPreview) return file.hoverPreview + ts;
-  // If UI knows there's no preview and on-demand is disabled, do nothing
-  if (!hoverOnDemandEnabled) return null;
-  const base = `/api/hover/get?path=${encodeURIComponent(file.path)}`;
-  try {
-    const head = await fetch(base + ts, { method: 'HEAD', cache: 'no-store' });
-    if (head.ok) return base + ts;
-  } catch (_) {}
-  // At this point, on-demand generation is enabled; proceed to request creation
-  // Otherwise, request creation and briefly poll for readiness
-  try {
-    await fetch(`/api/hover/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
-  } catch (_) {}
-  const maxTries = 12; // ~1.8s @ 150ms
-  for (let i = 0; i < maxTries; i++) {
-    try {
-      const h2 = await fetch(base + `&t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' });
-      if (h2.ok) return base + `&t=${Date.now()}`;
-    } catch (_) {}
-    await new Promise((r) => setTimeout(r, 150));
+  // Fallback: set explicit columns inline in case CSS var path isn't applied
+  if (grid && grid.style) {
+    try { grid.style.gridTemplateColumns = `repeat(${c}, 1fr)`; } catch(_) {}
   }
-  return null;
 }
 
-// Ensure no tiles are currently showing a hover video
-function stopAllTileHovers(exceptTile = null) {
-  try { 
-    const tiles = document.querySelectorAll(".card");
-    tiles.forEach((t) => {
-      if (exceptTile && t === exceptTile) return;
-      
-      // Trigger manual cleanup
-      const video = t.querySelector("video.hover-video");
-      if (video) {
-        try { 
-          video.pause();
-          video.src = "";
-          video.load();
-          video.remove();
-        }
-        catch (_) { }
-      }
-      
-      // Reset hover state
-      t._hovering = false;
-      t._hoverToken = (t._hoverToken || 0) + 1;
-      
-      // Clear any timers
-      if (t._hoverTimer) {
-        clearTimeout(t._hoverTimer);
-        t._hoverTimer = null;
-      }
-    });
-  }
-  catch (_) { }
-}
-
-function videoCard(v) {
-  const template = document.getElementById('cardTemplate');
-  const el = template.content.cloneNode(true).querySelector('.card');
-  
-  const imgSrc = v.cover || PLACEHOLDER_IMG;
-  const dur = fmtDuration(Number(v.duration));
-  const size = fmtSize(Number(v.size));
-  const isSelected = selectedItems.has(v.path);
-  
-  el.dataset.path = v.path;
-  
-  const checkbox = el.querySelector('.card-checkbox');
-  if (isSelected) checkbox.classList.add('checked');
-  // Make the overlay checkbox interactive and accessible
-  try {
-    checkbox.setAttribute('role', 'checkbox');
-    checkbox.setAttribute('tabindex', '0');
-    checkbox.setAttribute('aria-checked', isSelected ? 'true' : 'false');
-  } catch (_) {}
-  // Clicking the checkbox should always toggle selection (no modifiers required)
-  checkbox.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    toggleSelection(ev, v.path);
-  });
-  // Keyboard support for accessibility
-  checkbox.addEventListener('keydown', (ev) => {
-    if (ev.key === ' ' || ev.key === 'Enter') {
-      ev.preventDefault();
-      ev.stopPropagation();
-      toggleSelection(ev, v.path);
-    }
-  });
-  
-  const img = el.querySelector('.thumb');
-  img.src = imgSrc;
-  img.alt = v.title || v.name;
-  img.dataset.fallback = PLACEHOLDER_IMG;
-  img.onerror = function() { this.onerror = null; this.src = this.dataset.fallback; };
-
-  // Resolution / quality badge: prefer height (common convention)
-  try {
-    const q = el.querySelector('.quality-badge');
-    const overlay = el.querySelector('.overlay-info');
-    const overlayRes = el.querySelector('.overlay-resolution');
-  // duration overlay is removed per request
-    const w = Number(v.width);
-    const h = Number(v.height);
-    let label = '';
-    // Map common tiers by height first, then by width if height missing
-    const pickByHeight = (hh) => {
-      if (!Number.isFinite(hh) || hh <= 0) return '';
-      if (hh >= 2160) return '2160p';
-      if (hh >= 1440) return '1440p';
-      if (hh >= 1080) return '1080p';
-      if (hh >= 720) return '720p';
-      if (hh >= 480) return '480p';
-      if (hh >= 360) return '360p';
-      if (hh >= 240) return '240p';
-      return '';
-    };
-    const pickByWidth = (ww) => {
-      if (!Number.isFinite(ww) || ww <= 0) return '';
-      if (ww >= 3840) return '2160p';
-      if (ww >= 2560) return '1440p';
-      if (ww >= 1920) return '1080p';
-      if (ww >= 1280) return '720p';
-      if (ww >= 854) return '480p';
-      if (ww >= 640) return '360p';
-      if (ww >= 426) return '240p';
-      return '';
-    };
-    label = pickByHeight(h) || pickByWidth(w);
-    // Fallback: guess from filename tokens (e.g., 2160p, 4k, 1080p)
-    if (!label) {
-      const name = String(v.name || v.title || '');
-      const lower = name.toLowerCase();
-      if (/\b(2160p|4k|uhd)\b/.test(lower)) label = '2160p';
-      else if (/\b1440p\b/.test(lower)) label = '1440p';
-      else if (/\b1080p\b/.test(lower)) label = '1080p';
-      else if (/\b720p\b/.test(lower)) label = '720p';
-      else if (/\b480p\b/.test(lower)) label = '480p';
-      else if (/\b360p\b/.test(lower)) label = '360p';
-      else if (/\b240p\b/.test(lower)) label = '240p';
-    }
-    if (q) {
-      // We now prefer the bottom-left overlay; hide the top-right badge to avoid duplication
-      q.textContent = label || '';
-      q.style.display = 'none';
-      try { q.setAttribute('aria-hidden', label ? 'false' : 'true'); } catch (_) {}
-    }
-
-    // Populate Stash-like bottom-left overlay info (resolution + duration)
-    if (overlay) {
-      const hasRes = !!label;
-      if (overlayRes) {
-        overlayRes.textContent = hasRes ? String(label).toUpperCase() : '';
-        overlayRes.style.display = hasRes ? 'inline' : 'none';
-      }
-      if (hasRes) {
-        overlay.style.display = 'inline-flex';
-        try { overlay.setAttribute('aria-hidden', 'false'); } catch (_) {}
-      } else {
-        overlay.style.display = 'none';
-        try { overlay.setAttribute('aria-hidden', 'true'); } catch (_) {}
-      }
-    }
-  } catch (_) {}
-  
-  // Add video hover preview functionality
-  el.addEventListener('mouseenter', async () => {
-    if (!hoverPreviewsEnabled) return;
-    // Stop any other tile's hover video before starting this one
-    stopAllTileHovers(el);
-    // Track hover tokens to avoid late insert after mouse leaves
-    const token = (el._hoverToken || 0) + 1;
-    el._hoverToken = token;
-    el._hovering = true;
-    
-    const url = await ensureHover(v);
-    // If no preview exists, don't swap out the thumbnail
-    if (!url) {
-      return;
-    }
-    if (!el._hovering || el._hoverToken !== token) return;
-    // Double-check no other tiles are showing hover previews
-    stopAllTileHovers(el);
-    
-    const video = document.createElement("video");
-    video.className = "thumb hover-video";
-    video.src = url;
-    video.muted = true;
-    video.autoplay = true;
-    video.loop = true;
-    video.playsInline = true;
-    video.style.pointerEvents = "none";
-    
-    // Replace the thumbnail with the video
-    if (img) img.replaceWith(video);
-    try { 
-      await video.play();
-    }
-    catch (_) { }
-  });
-  
-  el.addEventListener('mouseleave', () => {
-    el._hovering = false;
-    el._hoverToken = (el._hoverToken || 0) + 1;
-    if (el._hoverTimer) {
-      clearTimeout(el._hoverTimer);
-      el._hoverTimer = null;
-    }
-    const video = el.querySelector("video.hover-video");
-    if (video) {
-      video.pause();
-      video.src = "";
-      video.load();
-      
-      // Restore original thumbnail
-      const newImg = document.createElement("img");
-      newImg.className = "thumb";
-      newImg.src = imgSrc;
-      newImg.alt = v.title || v.name;
-      newImg.dataset.fallback = PLACEHOLDER_IMG;
-      newImg.onerror = function() { 
-        this.onerror = null; 
-        this.src = this.dataset.fallback; 
-      };
-      video.replaceWith(newImg);
-    }
-  });
-  
-  const title = el.querySelector('.title');
-  title.textContent = v.title || v.name;
-  title.title = v.title || v.name;
-  
-  el.querySelector('.duration').textContent = dur;
-  el.querySelector('.size').textContent = size;
-  el.addEventListener('click', (event) => {
-    handleCardClick(event, v.path);
-  });
-  return el;
-}
-
-function dirCard(d) {
-  const template = document.getElementById('dirTemplate');
-  const el = template.content.cloneNode(true).querySelector('.card');
-  
-  const name = d.name || String(d);
-  const dpath = d.path || name;
-  
-  el.querySelector('.dir-name').textContent = name;
-  el.querySelector('.title').textContent = name;
-  el.querySelector('.title').title = name;
-  
-  el.addEventListener('click', () => {
-    folderInput.value = dpath;
-    currentPage = 1; // Reset to first page when navigating to a folder
-    loadLibrary();
-  });
-  el.addEventListener('dblclick', () => {
-    folderInput.value = dpath;
-    currentPage = 1; // Reset to first page when navigating to a folder
-    loadLibrary();
-  });
-  
-  return el;
+// Handle slider -> columns mapping and refresh
+function updateDensity() {
+  if (!densitySlider) return;
+  const cols = sliderToColumns(densitySlider.value);
+  setColumns(cols);
 }
 
 function currentPath() {
-  const v = (folderInput.value || '').trim();
-  // When the input contains an absolute path (root), do not treat it as a relative folder
-  if (isAbsolutePath(v)) return '';
-  return v.replace(/^\/+|\/+$/g, '');
+  const val = (folderInput && folderInput.value || '').trim();
+  if (!val) return '';
+  return isAbsolutePath(val) ? '' : val;
 }
 
-async function loadLibrary() {
+// ----- Card helpers -----
+function fmtDuration(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+  return `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+}
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  const units = ['B','KB','MB','GB','TB'];
+  let i = 0, x = v;
+  while (x >= 1024 && i < units.length-1) { x /= 1024; i++; }
+  return (x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x.toFixed(2)) + ' ' + units[i];
+}
+function inferResLabel(file) {
+  const h = Number(file?.height);
+  const w = Number(file?.width);
+  let tier = 0;
+  if (Number.isFinite(h) && h > 0) tier = h;
+  else if (Number.isFinite(w) && w > 0) {
+    if (w >= 3840) tier = 2160; else if (w >= 2560) tier = 1440; else if (w >= 1920) tier = 1080; else if (w >= 1280) tier = 720; else if (w >= 854) tier = 480;
+  } else {
+    const nm = (String(file?.name||'') + ' ' + String(file?.title||'')).toLowerCase();
+    if (/(2160p|\b4k\b|uhd)/.test(nm)) tier = 2160;
+    else if (/1440p/.test(nm)) tier = 1440;
+    else if (/1080p/.test(nm)) tier = 1080;
+    else if (/720p/.test(nm)) tier = 720;
+    else if (/480p/.test(nm)) tier = 480;
+  }
+  if (!tier) return '';
+  return `${tier}p`;
+}
+
+// Template-backed card renderers (align with index.html and CSS)
+function videoCard(file) {
+  const tpl = document.getElementById('cardTemplate');
+  const frag = tpl && tpl.content ? tpl.content.cloneNode(true) : null;
+  if (!frag) {
+    // Fallback to minimal card if template not found
+    const div = document.createElement('div');
+    div.className = 'card';
+    const p = file.path || '';
+    div.dataset.path = p;
+    const cb = document.createElement('div');
+    cb.className = 'card-checkbox';
+    cb.setAttribute('role', 'checkbox');
+    cb.setAttribute('aria-checked', 'false');
+    div.appendChild(cb);
+    const name = document.createElement('div');
+    name.className = 'title';
+    name.textContent = (file.title || file.name || p.split('/').pop() || p);
+    div.appendChild(name);
+    div.title = p;
+    div.addEventListener('click', (e) => handleCardClick(e, p));
+    return div;
+  }
+  const root = frag.querySelector('.card');
+  const p = file.path || '';
+  if (root) root.dataset.path = p;
+  // Checkbox
+  const cb = frag.querySelector('.card-checkbox');
+  if (cb) {
+    cb.setAttribute('role', 'checkbox');
+    cb.setAttribute('aria-checked', 'false');
+    cb.addEventListener('click', (e) => {
+      // Toggle selection without opening the player
+      toggleSelection(e, p);
+    });
+  }
+  // Image
+  const img = frag.querySelector('img.thumb');
+  if (img) {
+    const src = file.cover || '';
+    if (src) img.src = src;
+    img.alt = file.title || file.name || p.split('/').pop() || 'thumbnail';
+    img.addEventListener('error', () => { img.style.visibility = 'hidden'; });
+  }
+  // Quality badge (top-right)
+  const badge = frag.querySelector('.quality-badge');
+  const resLabel = inferResLabel(file);
+  if (badge && resLabel) {
+    badge.textContent = resLabel;
+    badge.style.display = 'inline-block';
+  }
+  // Remove duplicate overlay resolution (we use only the top-right quality badge)
+  const overlay = frag.querySelector('.overlay-info');
+  if (overlay) overlay.style.display = 'none';
+  // Meta: title, duration, size
+  const titleEl = frag.querySelector('.title');
+  if (titleEl) {
+    titleEl.textContent = file.title || file.name || p.split('/').pop() || p;
+    // Rename is now in Player title, not on tiles; no dblclick wiring here.
+  }
+  const durEl = frag.querySelector('.duration');
+  if (durEl) durEl.textContent = Number.isFinite(Number(file.duration)) ? fmtDuration(file.duration) : '';
+  const sizeEl = frag.querySelector('.size');
+  if (sizeEl) sizeEl.textContent = file.size ? fmtBytes(file.size) : '';
+  // Title attribute for full path
+  if (root) root.title = p;
+  // Open behavior
+  if (root) root.addEventListener('click', (e) => handleCardClick(e, p));
+  return root || frag;
+}
+
+function dirCard(dir) {
+  const tpl = document.getElementById('dirTemplate');
+  const frag = tpl && tpl.content ? tpl.content.cloneNode(true) : null;
+  const name = dir.name || dir.path || String(dir) || '';
+  const dpath = dir.path || name;
+  if (!frag) {
+    // Minimal fallback
+    const div = document.createElement('div');
+    div.className = 'card dir-card';
+    const label = document.createElement('div');
+    label.className = 'title';
+    label.textContent = name;
+    div.appendChild(label);
+    div.title = dpath;
+    div.addEventListener('click', async () => {
+      if (folderInput) folderInput.value = dpath;
+      currentPage = 1;
+      await loadLibrary();
+    });
+    return div;
+  }
+  const root = frag.querySelector('.card');
+  const titleEl = frag.querySelector('.title');
+  const nameEl = frag.querySelector('.dir-name');
+  if (titleEl) titleEl.textContent = name;
+  if (nameEl) nameEl.textContent = name;
+  if (root) root.title = dpath;
+  if (root) root.addEventListener('click', async () => {
+    if (folderInput) folderInput.value = dpath;
+    currentPage = 1;
+    await loadLibrary();
+  });
+  return root || frag;
+}
+
+// Inline rename helpers
+function beginInlineRename(titleEl, relPath) {
   try {
-    statusEl.style.display = 'none';
+    // Avoid duplicate editors
+    if (titleEl.querySelector('input')) return;
+    const basename = relPath.split('/').pop() || relPath;
+    const dot = basename.lastIndexOf('.');
+    const stem = dot > 0 ? basename.slice(0, dot) : basename;
+    const ext = dot > 0 ? basename.slice(dot) : '';
+    // Create input
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'inline-rename-input';
+    input.value = stem;
+    input.style.width = '100%';
+    input.style.boxSizing = 'border-box';
+    input.style.background = 'transparent';
+    input.style.color = 'inherit';
+    input.style.border = '1px solid rgba(255,255,255,0.2)';
+    input.style.borderRadius = '4px';
+    input.style.padding = '2px 4px';
+    input.style.outline = 'none';
+    const oldText = titleEl.textContent;
+    titleEl.textContent = '';
+    titleEl.appendChild(input);
+    input.focus();
+    input.select();
+
+    const cancel = () => {
+      titleEl.textContent = oldText;
+    };
+    const commit = async () => {
+      const newStem = (input.value || '').trim();
+      if (!newStem || newStem === stem) { cancel(); return; }
+      // Build destination name, keep extension
+      const newName = newStem + ext;
+      try {
+        const u = new URL('/api/media/rename', window.location.origin);
+        u.searchParams.set('path', relPath);
+        u.searchParams.set('new_name', newName);
+        const r = await fetch(u.toString(), { method: 'POST' });
+        if (!r.ok) {
+          // Try to extract message
+          let msg = 'Rename failed';
+          try { const j = await r.json(); msg = j?.message || msg; } catch(_) {}
+          notify(msg, 'error');
+          cancel();
+          return;
+        }
+        const j = await r.json();
+        if (j?.status !== 'success') {
+          notify(j?.message || 'Rename failed', 'error');
+          cancel();
+          return;
+        }
+        // Success: refresh appropriate UI
+        notify('Renamed to ' + newName, 'success');
+        // If we're renaming inside the Player, reopen the new path
+        try {
+          const parts = relPath.split('/');
+          parts[parts.length - 1] = newName;
+          const newRel = parts.join('/');
+          if (typeof Player?.open === 'function' && titleEl.closest('#player-panel')) {
+            Player.open(newRel);
+          } else {
+            // Tile context: reload library
+            currentPage = 1;
+            await loadLibrary();
+          }
+        } catch(_) {
+          // Fallback to library reload
+          currentPage = 1;
+          await loadLibrary();
+        }
+      } catch (e) {
+        notify('Rename error', 'error');
+        cancel();
+      }
+    };
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+      e.stopPropagation();
+    });
+    input.addEventListener('blur', () => { commit(); });
+  } catch (_) {}
+}
+
+// Some modules call this; safe no-op when hover previews disabled
+function stopAllTileHovers() {}
+
+// Library loader (wrapped around previously orphaned block)
+async function loadLibrary() {
+  if (!grid || !statusEl || !spinner) return;
+  try {
+    // Pre-state UI
     spinner.style.display = 'block';
-    grid.hidden = true;
-    
+    statusEl.style.display = 'none';
+
+    // Build request
     const url = new URL('/api/library', window.location.origin);
     url.searchParams.set('page', String(currentPage));
-    url.searchParams.set('page_size', String(applyColumnsAndComputePageSize()));
-  url.searchParams.set('sort', sortSelect.value || 'date');
-    url.searchParams.set('order', orderToggle.dataset.order || 'desc');
-  // Resolution filter
-  const resSel = document.getElementById('resSelect');
-  const resVal = resSel ? String(resSel.value || '') : '';
-  if (resVal) url.searchParams.set('res_min', resVal);
-    
-    // Add search and filter parameters
-    const searchVal = searchInput.value.trim();
+  // page size derived from columns: 3 rows of tiles by default
+  const cols = getColumns();
+  const rows = 3;
+  const pageSize = Math.max(12, cols * rows);
+  url.searchParams.set('page_size', String(pageSize));
+    const sort = (sortSelect && sortSelect.value) || 'date';
+    const order = (orderToggle && orderToggle.dataset.order) || 'desc';
+    url.searchParams.set('sort', sort);
+    url.searchParams.set('order', order);
+    const searchVal = (searchInput && searchInput.value || '').trim();
     if (searchVal) url.searchParams.set('search', searchVal);
-    
-    const val = (folderInput.value || '').trim();
+    const resSel = document.getElementById('resSelect');
+    const resVal = resSel ? String(resSel.value || '') : '';
+    if (resVal) url.searchParams.set('res_min', resVal);
     const p = currentPath();
-    // Only set a relative path; ignore absolute values (those represent the root itself)
-    if (val && !isAbsolutePath(val) && p) url.searchParams.set('path', p);
-    
+    if (p) url.searchParams.set('path', p);
+
     const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const payload = await res.json();
@@ -463,9 +351,9 @@ async function loadLibrary() {
     currentPage = data.page || 1;
     
     // Update pagination UI
-    pageInfo.textContent = `Page ${currentPage} of ${totalPages} (${totalFiles} files)`;
-    prevBtn.disabled = currentPage <= 1;
-    nextBtn.disabled = currentPage >= totalPages;
+    if (pageInfo) pageInfo.textContent = `Page ${currentPage} of ${totalPages} (${totalFiles} files)`;
+    if (prevBtn) prevBtn.disabled = currentPage <= 1;
+    if (nextBtn) nextBtn.disabled = currentPage >= totalPages;
     
     grid.innerHTML = '';
     if (files.length === 0) {
@@ -479,8 +367,8 @@ async function loadLibrary() {
         const MAX_TILES = 60;
         const subdirs = dirs.slice(0, MAX_DIRS);
         const combined = [];
-        const curSort = (sortSelect.value || 'date');
-        const curOrder = (orderToggle.dataset.order || 'desc');
+        const curSort = ((sortSelect && sortSelect.value) || 'date');
+        const curOrder = ((orderToggle && orderToggle.dataset.order) || 'desc');
         // Kick off fetches in parallel
         await Promise.all(subdirs.map(async (d) => {
           const dpath = d.path || d.name || '';
@@ -489,13 +377,15 @@ async function loadLibrary() {
             const u = new URL('/api/library', window.location.origin);
             u.searchParams.set('path', dpath);
             u.searchParams.set('page', '1');
-            u.searchParams.set('page_size', String(Math.min(48, MAX_TILES)));
+            const subCols = cols; // use same density-derived columns
+            const subPageSize = Math.min(MAX_TILES, Math.max(12, subCols * rows));
+            u.searchParams.set('page_size', String(subPageSize));
             u.searchParams.set('sort', curSort);
             u.searchParams.set('order', curOrder);
             // Include resolution filter in fallback fetches
-            const resSel = document.getElementById('resSelect');
-            const resVal = resSel ? String(resSel.value || '') : '';
-            if (resVal) u.searchParams.set('res_min', resVal);
+            const resSel2 = document.getElementById('resSelect');
+            const resVal2 = resSel2 ? String(resSel2.value || '') : '';
+            if (resVal2) u.searchParams.set('res_min', resVal2);
             const r = await fetch(u, { headers: { 'Accept': 'application/json' }});
             if (!r.ok) return;
             const pl = await r.json();
@@ -532,7 +422,7 @@ async function loadLibrary() {
         return;
       } else {
         spinner.style.display = 'none';
-        statusEl.className = files.length === 0 && searchVal ? 'empty' : 'empty';
+        statusEl.className = 'empty';
         statusEl.textContent = searchVal ? 'No results match your search.' : 'No videos found.';
         statusEl.style.display = 'block';
         grid.hidden = true;
@@ -545,7 +435,6 @@ async function loadLibrary() {
     
     // Always hide status and show grid if we got here without errors
     statusEl.style.display = 'none';
-    statusEl.style.display = 'none';
     spinner.style.display = 'none';
     grid.hidden = false;
   } catch (e) {
@@ -554,7 +443,7 @@ async function loadLibrary() {
     statusEl.className = 'error';
     statusEl.textContent = 'Failed to load library.';
     statusEl.style.display = 'block';
-    grid.hidden = true;
+    if (grid) grid.hidden = true;
   }
 }
 
@@ -562,7 +451,22 @@ refreshBtn.addEventListener('click', loadLibrary);
 
 // Grid control event listeners
 searchInput.addEventListener('input', () => { currentPage = 1; loadLibrary(); });
-sortSelect.addEventListener('change', () => { currentPage = 1; loadLibrary(); });
+sortSelect.addEventListener('change', () => {
+  currentPage = 1;
+  const v = (sortSelect && sortSelect.value) || 'date';
+  if (orderToggle) {
+    if (v === 'name') {
+      // Default Name sort to ascending (A→Z)
+      orderToggle.dataset.order = 'asc';
+      orderToggle.textContent = '▲';
+    } else if (v === 'date' || v === 'size') {
+      // Default Date/Size to descending (newest/largest first)
+      orderToggle.dataset.order = 'desc';
+      orderToggle.textContent = '▼';
+    }
+  }
+  loadLibrary();
+});
 orderToggle.addEventListener('click', () => { 
   const isDesc = orderToggle.dataset.order === 'desc';
   orderToggle.dataset.order = isDesc ? 'asc' : 'desc';
@@ -589,9 +493,34 @@ nextBtn.addEventListener('click', () => { if (currentPage < totalPages) { curren
 // Density slider
 densitySlider.addEventListener('input', () => {
   currentDensity = parseInt(densitySlider.value);
+  // updateDensity reads slider -> columns mapping and persists columns
   updateDensity();
-  currentPage = 1; 
+  currentPage = 1;
   loadLibrary();
+});
+
+// Some browsers fire change more predictably than input; wire both
+densitySlider.addEventListener('change', () => {
+  currentDensity = parseInt(densitySlider.value);
+  updateDensity();
+  currentPage = 1;
+  loadLibrary();
+});
+
+// Initialize density from saved columns on load
+(function initDensity() {
+  const cols = getColumns();
+  if (densitySlider) densitySlider.value = columnsToSlider(cols);
+  setColumns(cols);
+})();
+
+// Re-apply columns when returning to Library tab (in case styles/layout reset)
+window.addEventListener('tabchange', (e) => {
+  try {
+    if (e && e.detail && e.detail.activeTab === 'library') {
+      setColumns(getColumns());
+    }
+  } catch(_) {}
 });
 
 // Settings wiring for hover previews
@@ -744,13 +673,15 @@ function wireSettings() {
 }
 
 // (Removed: simple Enter handler; replaced below with unified behavior)
-folderInput.addEventListener('dblclick', () => openFolderPicker());
+if (folderInput) {
+  folderInput.addEventListener('dblclick', () => openFolderPicker());
+}
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') loadLibrary();
 });
 window.addEventListener('load', () => {
-  // Initialize density
-  updateDensity();
+  // Initialize density from saved/default (4); slider already set in initDensity
+  // No need to force default again here
   
   // Initialize resolution filter from storage (persisted across sessions)
   try {
@@ -767,6 +698,7 @@ window.addEventListener('load', () => {
   fetch('/api/root').then(r => r.json()).then((p) => {
     if (p?.status === 'success' && p?.data?.root) {
       folderInput.placeholder = `Root: ${String(p.data.root)} — type a relative path to browse, or an absolute path to change root`;
+      try { window.apiRootAbs = String(p.data.root); } catch(_) {}
       folderInput.value = '';
     } else {
       folderInput.value = '';
@@ -818,13 +750,10 @@ function initArtifactOptionsMenus() {
   });
 }
 
-// Density function
+// Density function (unified): map slider -> columns and apply
 function updateDensity() {
-  const config = densityConfigs[currentDensity - 1];
-  const [pageSize, columns, label] = config;
-  
-  const root = document.documentElement;
-  root.style.setProperty('--columns', String(columns));
+  const cols = densitySlider ? sliderToColumns(densitySlider.value) : getColumns();
+  setColumns(cols);
 }
 
 // Enhanced selection functions
@@ -1007,6 +936,7 @@ async function renderDir(path) {
 }
 
 function openFolderPicker() {
+  if (!modal) return; // no folder picker UI in this build
   modal.hidden = false;
   const val = (folderInput.value || '').trim();
   const start = isAbsolutePath(val) ? '' : currentPath();
@@ -1021,9 +951,9 @@ function choose(path) {
   closeFolderPicker();
   loadLibrary();
 }
-chooseBtn.addEventListener('click', () => choose(pickerPath));
-cancelBtn.addEventListener('click', () => closeFolderPicker());
-modal.addEventListener('click', (e) => { if (e.target === modal) closeFolderPicker(); });
+if (chooseBtn) chooseBtn.addEventListener('click', () => choose(pickerPath));
+if (cancelBtn) cancelBtn.addEventListener('click', () => closeFolderPicker());
+if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) closeFolderPicker(); });
 
 // Root setter merged into the single input
 function isAbsolutePath(p) {
@@ -1444,39 +1374,39 @@ const Player = (() => {
     curEl = qs('curTime');
     totalEl = qs('totalTime');
     timelineEl = qs('timeline');
-  heatmapEl = qs('timelineHeatmap');
-  heatmapCanvasEl = qs('timelineHeatmapCanvas');
+    heatmapEl = qs('timelineHeatmap');
+    heatmapCanvasEl = qs('timelineHeatmapCanvas');
     progressEl = qs('timelineProgress');
     markersEl = qs('timelineMarkers');
-  spriteTooltipEl = qs('spritePreview');
-  badgeHeatmap = qs('badgeHeatmap');
-  badgeScenes = qs('badgeScenes');
-  badgeSubtitles = qs('badgeSubtitles');
-  badgeSprites = qs('badgeSprites');
-  badgeFaces = qs('badgeFaces');
-  badgeHover = qs('badgeHover');
-  badgePhash = qs('badgePhash');
-  badgeHeatmapStatus = qs('badgeHeatmapStatus');
-  badgeScenesStatus = qs('badgeScenesStatus');
-  badgeSubtitlesStatus = qs('badgeSubtitlesStatus');
-  badgeSpritesStatus = qs('badgeSpritesStatus');
-  badgeFacesStatus = qs('badgeFacesStatus');
-  badgeHoverStatus = qs('badgeHoverStatus');
-  badgePhashStatus = qs('badgePhashStatus');
+    spriteTooltipEl = qs('spritePreview');
+    badgeHeatmap = qs('badgeHeatmap');
+    badgeScenes = qs('badgeScenes');
+    badgeSubtitles = qs('badgeSubtitles');
+    badgeSprites = qs('badgeSprites');
+    badgeFaces = qs('badgeFaces');
+    badgeHover = qs('badgeHover');
+    badgePhash = qs('badgePhash');
+    badgeHeatmapStatus = qs('badgeHeatmapStatus');
+    badgeScenesStatus = qs('badgeScenesStatus');
+    badgeSubtitlesStatus = qs('badgeSubtitlesStatus');
+    badgeSpritesStatus = qs('badgeSpritesStatus');
+    badgeFacesStatus = qs('badgeFacesStatus');
+    badgeHoverStatus = qs('badgeHoverStatus');
+    badgePhashStatus = qs('badgePhashStatus');
     btnSetThumb = qs('btnSetThumb');
     btnAddMarker = qs('btnAddMarker');
-  // Controls
-  btnPlayPause = qs('btnPlayPause');
-  btnMute = qs('btnMute');
-  volSlider = qs('volSlider');
-  rateSelect = qs('rateSelect');
-  btnCC = qs('btnCC');
-  btnPip = qs('btnPip');
-  btnFullscreen = qs('btnFullscreen');
+    // Controls
+    btnPlayPause = qs('btnPlayPause');
+    btnMute = qs('btnMute');
+    volSlider = qs('volSlider');
+    rateSelect = qs('rateSelect');
+    btnCC = qs('btnCC');
+    btnPip = qs('btnPip');
+    btnFullscreen = qs('btnFullscreen');
 
-  // Sidebar
-  sbFileNameEl = qs('sbFileName');
-  sbMetaEl = qs('sbMeta');
+    // Sidebar
+    sbFileNameEl = qs('sbFileName');
+    sbMetaEl = qs('sbMeta');
 
     // Wire basic events
     if (videoEl) {
@@ -1675,6 +1605,17 @@ const Player = (() => {
         const j = await r.json();
         const d = j?.data || {};
         titleEl.textContent = path.split('/').pop() || path;
+        // Wire inline rename on player title
+        if (titleEl && !titleEl._renameWired) {
+          titleEl._renameWired = true;
+          titleEl.style.cursor = 'text';
+          titleEl.title = 'Double-click to rename';
+          titleEl.addEventListener('dblclick', (ev) => {
+            ev.stopPropagation(); ev.preventDefault();
+            // Use currentPath for accurate relative path
+            if (currentPath) beginInlineRename(titleEl, currentPath);
+          });
+        }
         const wh = (d.width && d.height) ? `${d.width}x${d.height}` : '';
         const vc = d.vcodec || '';
         const ac = d.acodec || '';
@@ -1698,6 +1639,8 @@ const Player = (() => {
     loadHoverStatus();
     loadPhashStatus();
     wireBadgeActions();
+    // Initialize filter controls
+    initFilterControls();
   }
 
   // Run browser-side face detection using the FaceDetector API and upload results to server
@@ -1843,28 +1786,28 @@ const Player = (() => {
             renderedViaJson = true;
           }
         }
-  } catch (_) { /* ignore and fallback to PNG probe */ }
+      } catch (_) { /* ignore and fallback to PNG probe */ }
 
       if (!renderedViaJson) {
-        const url = '/api/heatmaps/png?path=' + encodeURIComponent(currentPath) + `&t=${Date.now()}`;
-        // Try to load an image to detect availability
-        await new Promise((resolve) => {
-          const probe = new Image();
-          probe.onload = () => { resolve(true); };
-          probe.onerror = () => { resolve(false); };
-          probe.src = url;
-        }).then((ok) => {
-          if (ok) {
-            heatmapEl.style.backgroundImage = `url('${url}')`;
-            if (heatmapCanvasEl) { clearHeatmapCanvas(); }
-            hasHeatmap = true;
-            if (sbHeatmapImg) sbHeatmapImg.src = url;
-          } else {
-            heatmapEl.style.backgroundImage = '';
-            if (heatmapCanvasEl) { clearHeatmapCanvas(); }
-            hasHeatmap = false;
-          }
-        });
+        // Silent probe using HEAD to avoid console errors from failed image loads
+        const base = new URL('/api/heatmaps/png', window.location.origin);
+        base.searchParams.set('path', currentPath);
+        let ok = false;
+        try {
+          const h = await fetch(base.toString(), { method: 'HEAD', cache: 'no-store' });
+          ok = h.ok;
+        } catch (_) { ok = false; }
+        if (ok) {
+          const url = base.toString() + `&t=${Date.now()}`;
+          heatmapEl.style.backgroundImage = `url('${url}')`;
+          if (heatmapCanvasEl) { clearHeatmapCanvas(); }
+          hasHeatmap = true;
+          if (sbHeatmapImg) sbHeatmapImg.src = url;
+        } else {
+          heatmapEl.style.backgroundImage = '';
+          if (heatmapCanvasEl) { clearHeatmapCanvas(); }
+          hasHeatmap = false;
+        }
       }
 
       // Badge update
@@ -2008,7 +1951,8 @@ const Player = (() => {
     // Remove existing tracks
     Array.from(videoEl.querySelectorAll('track')).forEach(t => t.remove());
     try {
-      const test = await fetch('/api/subtitles/get?path=' + encodeURIComponent(currentPath));
+      // Silent probe via HEAD to avoid attaching a failing track that logs
+      const test = await fetch('/api/subtitles/get?path=' + encodeURIComponent(currentPath), { method: 'HEAD', cache: 'no-store' });
       if (test.ok) {
         const src = '/api/subtitles/get?path=' + encodeURIComponent(currentPath) + `&t=${Date.now()}`;
         subtitlesUrl = src;
@@ -2059,7 +2003,7 @@ const Player = (() => {
       if (!currentPath) return;
       const u = new URL('/api/faces/get', window.location.origin);
       u.searchParams.set('path', currentPath);
-      const r = await fetch(u.toString());
+      const r = await fetch(u.toString(), { method: 'HEAD', cache: 'no-store' });
       const ok = r.ok;
       if (badgeFacesStatus) badgeFacesStatus.textContent = ok ? '✓' : '✗';
       if (badgeFaces) badgeFaces.dataset.present = ok ? '1' : '0';
@@ -2071,7 +2015,7 @@ const Player = (() => {
       if (!currentPath) return;
       const u = new URL('/api/hover/get', window.location.origin);
       u.searchParams.set('path', currentPath);
-      const r = await fetch(u.toString());
+      const r = await fetch(u.toString(), { method: 'HEAD', cache: 'no-store' });
       const ok = r.ok;
       if (badgeHoverStatus) badgeHoverStatus.textContent = ok ? '✓' : '✗';
       if (badgeHover) badgeHover.dataset.present = ok ? '1' : '0';
@@ -2083,7 +2027,7 @@ const Player = (() => {
       if (!currentPath) return;
       const u = new URL('/api/phash/get', window.location.origin);
       u.searchParams.set('path', currentPath);
-      const r = await fetch(u.toString());
+      const r = await fetch(u.toString(), { method: 'HEAD', cache: 'no-store' });
       const ok = r.ok;
       if (badgePhashStatus) badgePhashStatus.textContent = ok ? '✓' : '✗';
       if (badgePhash) badgePhash.dataset.present = ok ? '1' : '0';
@@ -2096,7 +2040,7 @@ const Player = (() => {
       // Capability gating: map kind -> operation type
       try {
         const caps = (window.tasksManager && window.tasksManager.capabilities) || window.__capabilities || {};
-        const needsFfmpeg = new Set(['heatmap','scenes','sprites','hover','phash']);
+        const needsFfmpeg = new Set(['heatmap', 'scenes', 'sprites', 'hover', 'phash']);
         if (needsFfmpeg.has(kind) && caps.ffmpeg === false) {
           notify('Cannot start: FFmpeg not detected', 'error');
           return;
@@ -2111,8 +2055,9 @@ const Player = (() => {
         }
       } catch(_) {}
       try {
+        // TODO: @copilot DRY
         let url;
-        if (kind === 'heatmap') url = new URL('/api/heatmaps/create', window.location.origin);
+             if (kind === 'heatmap') url = new URL('/api/heatmaps/create', window.location.origin);
         else if (kind === 'scenes') url = new URL('/api/scenes/create', window.location.origin);
         else if (kind === 'subtitles') url = new URL('/api/subtitles/create', window.location.origin);
         else if (kind === 'sprites') url = new URL('/api/sprites/create', window.location.origin);
@@ -2145,6 +2090,7 @@ const Player = (() => {
         if (!present) gen(kind);
       });
     };
+    // TODO: @copilot DRY
     attach(badgeHeatmap, 'heatmap');
     attach(badgeScenes, 'scenes');
     attach(badgeSubtitles, 'subtitles');
@@ -2194,7 +2140,7 @@ const Player = (() => {
     // Compute background position based on sprite metadata
     try {
       const idx = sprites.index;
-  const cols = Number(idx.cols || (idx.grid && idx.grid[0]) || 0);
+      const cols = Number(idx.cols || (idx.grid && idx.grid[0]) || 0);
       const rows = Number(idx.rows || (idx.grid && idx.grid[1]) || 0);
       const interval = Number(idx.interval || 10);
       // tw/th already computed above for placement
@@ -2202,14 +2148,14 @@ const Player = (() => {
       const frame = Math.min(totalFrames - 1, Math.floor((t / Math.max(0.1, interval))));
       const col = frame % cols;
       const row = Math.floor(frame / cols);
-  const xOff = -(col * tw) * scale;
-  const yOff = -(row * th) * scale;
-  spriteTooltipEl.style.width = twS + 'px';
-  spriteTooltipEl.style.height = thS + 'px';
+      const xOff = -(col * tw) * scale;
+      const yOff = -(row * th) * scale;
+      spriteTooltipEl.style.width = twS + 'px';
+      spriteTooltipEl.style.height = thS + 'px';
       spriteTooltipEl.style.backgroundImage = `url('${sprites.sheet}')`;
-  spriteTooltipEl.style.backgroundPosition = `${xOff}px ${yOff}px`;
-  spriteTooltipEl.style.backgroundSize = `${tw * cols * scale}px ${th * rows * scale}px`;
-  spriteTooltipEl.style.opacity = '0.8';
+      spriteTooltipEl.style.backgroundPosition = `${xOff}px ${yOff}px`;
+      spriteTooltipEl.style.backgroundSize = `${tw * cols * scale}px ${th * rows * scale}px`;
+      spriteTooltipEl.style.opacity = '0.8';
     } catch (_) {
       // If anything goes wrong, hide the preview gracefully
       hideSprite();
@@ -2253,8 +2199,277 @@ const Player = (() => {
     } catch(_) {}
   }
 
+  // Video Filter Controls
+  let filterState = {
+    brightness: 100,
+    contrast: 100,
+    gamma: 100,
+    saturation: 100,
+    hue: 0,
+    warmth: 0,
+    red: 100,
+    green: 100,
+    blue: 100,
+    blur: 0,
+    rotate: 0,
+    scale: 100,
+    aspect: 100
+  };
+
+  function initFilterControls() {
+    // Get all filter control elements
+    // TODO: @copilot DRY
+    const filterControls = {
+      brightness: { slider: qs('filterBrightness'), value: qs('filterBrightnessValue') },
+      contrast: { slider: qs('filterContrast'), value: qs('filterContrastValue') },
+      gamma: { slider: qs('filterGamma'), value: qs('filterGammaValue') },
+      saturation: { slider: qs('filterSaturation'), value: qs('filterSaturationValue') },
+      hue: { slider: qs('filterHue'), value: qs('filterHueValue') },
+      warmth: { slider: qs('filterWarmth'), value: qs('filterWarmthValue') },
+      red: { slider: qs('filterRed'), value: qs('filterRedValue') },
+      green: { slider: qs('filterGreen'), value: qs('filterGreenValue') },
+      blue: { slider: qs('filterBlue'), value: qs('filterBlueValue') },
+      blur: { slider: qs('filterBlur'), value: qs('filterBlurValue') },
+      rotate: { slider: qs('transformRotate'), value: qs('transformRotateValue') },
+      scale: { slider: qs('transformScale'), value: qs('transformScaleValue') },
+      aspect: { slider: qs('transformAspect'), value: qs('transformAspectValue') }
+    };
+
+    // Action buttons
+    const btnRotateLeft = qs('btnRotateLeft');
+    const btnRotateRight = qs('btnRotateRight');
+    const btnResetFilters = qs('btnResetFilters');
+    const btnResetTransforms = qs('btnResetTransforms');
+
+    // Initialize sidebar tab switching
+    initSidebarTabs();
+
+    // Load saved filter state
+    loadFilterState();
+
+    // Wire up filter sliders
+    Object.keys(filterControls).forEach(key => {
+      const control = filterControls[key];
+      if (!control.slider || !control.value) return;
+
+      // Set initial values
+      control.slider.value = filterState[key];
+      updateValueDisplay(key, filterState[key]);
+
+      // Wire slider events
+      control.slider.addEventListener('input', (e) => {
+        const value = parseFloat(e.target.value);
+        filterState[key] = value;
+        updateValueDisplay(key, value);
+        applyFilters();
+        saveFilterState();
+      });
+    });
+
+    // Wire action buttons
+    if (btnRotateLeft) {
+      btnRotateLeft.addEventListener('click', () => {
+        filterState.rotate = (filterState.rotate - 90) % 360;
+        if (filterState.rotate < 0) filterState.rotate += 360;
+        filterControls.rotate.slider.value = filterState.rotate;
+        updateValueDisplay('rotate', filterState.rotate);
+        applyFilters();
+        saveFilterState();
+      });
+    }
+
+    if (btnRotateRight) {
+      btnRotateRight.addEventListener('click', () => {
+        filterState.rotate = (filterState.rotate + 90) % 360;
+        filterControls.rotate.slider.value = filterState.rotate;
+        updateValueDisplay('rotate', filterState.rotate);
+        applyFilters();
+        saveFilterState();
+      });
+    }
+
+    if (btnResetFilters) {
+      btnResetFilters.addEventListener('click', () => {
+        // Reset only filter values, not transforms
+        const filterKeys = ['brightness', 'contrast', 'gamma', 'saturation', 'hue', 'warmth', 'red', 'green', 'blue', 'blur'];
+        filterKeys.forEach(key => {
+          const defaultValue = (key === 'hue' || key === 'warmth' || key === 'blur') ? 0 : 100;
+          filterState[key] = defaultValue;
+          if (filterControls[key].slider) {
+            filterControls[key].slider.value = defaultValue;
+            updateValueDisplay(key, defaultValue);
+          }
+        });
+        applyFilters();
+        saveFilterState();
+      });
+    }
+
+    if (btnResetTransforms) {
+      btnResetTransforms.addEventListener('click', () => {
+        // Reset only transform values
+        filterState.rotate = 0;
+        filterState.scale = 100;
+        filterState.aspect = 100;
+        if (filterControls.rotate.slider) {
+          filterControls.rotate.slider.value = 0;
+          updateValueDisplay('rotate', 0);
+        }
+        if (filterControls.scale.slider) {
+          filterControls.scale.slider.value = 100;
+          updateValueDisplay('scale', 100);
+        }
+        if (filterControls.aspect.slider) {
+          filterControls.aspect.slider.value = 100;
+          updateValueDisplay('aspect', 100);
+        }
+        applyFilters();
+        saveFilterState();
+      });
+    }
+
+    // Apply current filter state
+    applyFilters();
+  }
+
+  function initSidebarTabs() {
+    // Wire sidebar tab switching
+    const sidebarTabs = document.querySelectorAll('.sidebar-tab');
+    const sidebarTabContents = document.querySelectorAll('.sidebar-tab-content');
+
+    sidebarTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const targetTab = tab.getAttribute('data-tab');
+        
+        // Remove active class from all tabs and contents
+        sidebarTabs.forEach(t => t.classList.remove('active'));
+        sidebarTabContents.forEach(content => {
+          content.classList.remove('active');
+          content.style.display = 'none';
+        });
+
+        // Add active class to clicked tab
+        tab.classList.add('active');
+
+        // Show corresponding content
+        const targetContent = document.getElementById(targetTab + 'Tab');
+        if (targetContent) {
+          targetContent.classList.add('active');
+          targetContent.style.display = 'flex';
+        }
+      });
+    });
+  }
+
+  function updateValueDisplay(key, value) {
+    const valueEl = qs(`${key.startsWith('transform') ? key : 'filter' + key.charAt(0).toUpperCase() + key.slice(1)}Value`);
+    if (!valueEl) return;
+
+    // Format value display based on type
+    if (key === 'hue' || key === 'rotate') {
+      valueEl.textContent = Math.round(value) + '°';
+    } else if (key === 'blur') {
+      valueEl.textContent = value.toFixed(1) + 'px';
+    } else if (key === 'warmth') {
+      valueEl.textContent = (value > 0 ? '+' : '') + Math.round(value);
+    } else {
+      valueEl.textContent = Math.round(value) + '%';
+    }
+  }
+
+  function applyFilters() {
+    if (!videoEl) return;
+
+    // Build CSS filter string
+    const filters = [];
+    
+    // Basic filters
+    // TODO: @copilot DRY
+    if (filterState.brightness !== 100) filters.push(`brightness(${filterState.brightness}%)`);
+    if (filterState.contrast !== 100) filters.push(`contrast(${filterState.contrast}%)`);
+    if (filterState.saturation !== 100) filters.push(`saturate(${filterState.saturation}%)`);
+    if (filterState.hue !== 0) filters.push(`hue-rotate(${filterState.hue}deg)`);
+    if (filterState.blur !== 0) filters.push(`blur(${filterState.blur}px)`);
+
+    // Color channel adjustments (simulated with sepia and hue)
+    if (filterState.warmth !== 0) {
+      const warmthAmount = Math.abs(filterState.warmth) / 100;
+      if (filterState.warmth > 0) {
+        filters.push(`sepia(${warmthAmount * 0.3})`, `hue-rotate(${filterState.warmth * 0.5}deg)`);
+      } else {
+        filters.push(`hue-rotate(${filterState.warmth * 2}deg)`);
+      }
+    }
+
+    // Gamma simulation using contrast and brightness combination
+    if (filterState.gamma !== 100) {
+      const gamma = filterState.gamma / 100;
+      // Approximate gamma correction with CSS filters
+      if (gamma < 1) {
+        filters.push(`contrast(${100 + (100 - filterState.gamma) * 0.3}%)`);
+      } else {
+        filters.push(`contrast(${100 - (filterState.gamma - 100) * 0.2}%)`);
+      }
+    }
+
+    // Apply filter string
+    videoEl.style.filter = filters.join(' ');
+
+    // Build CSS transform string
+    const transforms = [];
+    
+    if (filterState.rotate !== 0) transforms.push(`rotate(${filterState.rotate}deg)`);
+    if (filterState.scale !== 100) transforms.push(`scale(${filterState.scale / 100})`);
+    if (filterState.aspect !== 100) {
+      const aspectRatio = filterState.aspect / 100;
+      transforms.push(`scaleX(${aspectRatio})`);
+    }
+
+    // Apply transform string
+    videoEl.style.transform = transforms.join(' ');
+  }
+
+  function saveFilterState() {
+    try {
+      localStorage.setItem('playerFilters', JSON.stringify(filterState));
+    } catch(_) {}
+  }
+
+  function loadFilterState() {
+    try {
+      const saved = localStorage.getItem('playerFilters');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        filterState = { ...filterState, ...parsed };
+      }
+    } catch(_) {}
+  }
+
+  // TODO: @copilot DRY
+  function resetAllFilters() {
+    filterState = {
+      brightness: 100,
+      contrast: 100,
+      gamma: 100,
+      saturation: 100,
+      hue: 0,
+      warmth: 0,
+      red: 100,
+      green: 100,
+      blue: 100,
+      blur: 0,
+      rotate: 0,
+      scale: 100,
+      aspect: 100
+    };
+    applyFilters();
+    saveFilterState();
+    // Update UI if controls are available
+    initFilterControls();
+  }
+
   // Public API
-  return { open, detectAndUploadFacesBrowser };
+  return { open, detectAndUploadFacesBrowser, initFilterControls, resetAllFilters };
 })();
 
 window.Player = Player;
@@ -2292,9 +2507,36 @@ class TasksManager {
     setTimeout(() => this.wireBrowserFacesButton(), 0);
   }
 
+  startJobPolling() {
+    // Avoid duplicate timers
+    if (this._pollTimer) return;
+    const interval = 2000; // 2s cadence keeps UI responsive without spamming
+    const tick = async () => {
+      try {
+        await this.refreshJobs();
+        await this.loadCoverage();
+      } catch(_) { /* quiet */ }
+    };
+    // Kick once immediately, then set interval
+    tick();
+    this._pollTimer = setInterval(tick, interval);
+    // Clear timer when page becomes hidden for a while to save resources
+    const visHandler = () => {
+      if (document.visibilityState === 'hidden') {
+        if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
+      } else if (!this._pollTimer) {
+        this._pollTimer = setInterval(tick, interval);
+        tick();
+      }
+    };
+    document.addEventListener('visibilitychange', visHandler);
+    this._visHandler = visHandler;
+  }
+
   async loadConfigAndApplyGates() {
     try {
-      const r = await fetch('/config', { headers: { 'Accept': 'application/json' } });
+      const r = await fetch('/config', { 
+        headers: { 'Accept': 'application/json' } });
       if (r.ok) {
         const j = await r.json();
         const data = j?.data || j || {};
@@ -2321,7 +2563,7 @@ class TasksManager {
     // Accept full op (e.g., "thumbnails-missing") or base (e.g., "thumbnails")
     const base = String(op || '').replace(/-(all|missing)$/,'');
     const caps = this.capabilities || {};
-    const needsFfmpeg = new Set(['thumbnails','previews','sprites','scenes','heatmaps','phash']);
+    const needsFfmpeg = new Set(['thumbnails', 'previews', 'sprites', 'scenes', 'heatmaps', 'phash']);
     if (needsFfmpeg.has(base)) return !!caps.ffmpeg;
     if (base === 'subtitles') return !!caps.subtitles_enabled;
     if (base === 'faces' || base === 'embed') return !!caps.faces_enabled;
@@ -2350,7 +2592,7 @@ class TasksManager {
       const prev = document.getElementById('previewHeatmapsBtn');
       if (prev) { prev.disabled = true; prev.title = 'Disabled: FFmpeg not detected'; }
       // Player badges
-      ['badgeHeatmap','badgeScenes','badgeSprites','badgeHover','badgePhash'].forEach(id => {
+      ['badgeHeatmap', 'badgeScenes', 'badgeSprites', 'badgeHover', 'badgePhash'].forEach(id => {
         const el = document.getElementById(id);
         if (el) { el.disabled = true; el.title = 'Disabled: FFmpeg not detected'; }
       });
@@ -2424,13 +2666,13 @@ class TasksManager {
           // Update only for job lifecycle/progress events
           const evt = payload.event;
           if (!evt) return;
-          if (["created","queued","started","progress","current","finished","result"].includes(evt)) {
+          if (["created", "queued", "started", "progress", "current", "finished", "result"].includes(evt)) {
             doRefresh();
           }
         } catch {}
       };
       // Some servers send named events; attach explicit listeners as well
-      ["created","queued","started","progress","current","finished","result","cancel"].forEach(type => {
+      ["created", "queued", "started", "progress", "current", "finished", "result", "cancel"].forEach(type => {
         es.addEventListener(type, () => doRefresh());
       });
       es.onerror = () => {
@@ -2492,6 +2734,7 @@ class TasksManager {
       refreshCardStates();
       this.renderJobsTable();
     };
+  // TODO @copilot: standardize names
   if (filterActive) filterActive.addEventListener('click', () => toggle('running'));
   if (filterQueued) filterQueued.addEventListener('click', () => toggle('queued'));
   if (filterCompleted) filterCompleted.addEventListener('click', () => toggle('completed'));
@@ -2532,7 +2775,7 @@ class TasksManager {
           const res = await fetch('/api/tasks/jobs/cancel-queued', { method: 'POST' });
           if (!res.ok) throw new Error('HTTP ' + res.status);
           this.showNotification('Queued jobs cancelled', 'success');
-          await this.refreshJobs();
+          this.refreshJobs();
         } catch (e) {
           this.showNotification('Failed to cancel queued jobs', 'error');
         } finally {
@@ -2551,7 +2794,7 @@ class TasksManager {
           const res = await fetch('/api/tasks/jobs/cancel-all', { method: 'POST' });
           if (!res.ok) throw new Error('HTTP ' + res.status);
           this.showNotification('All pending and running jobs asked to cancel', 'success');
-          await this.refreshJobs();
+          this.refreshJobs();
         } catch (e) {
           this.showNotification('Failed to cancel all jobs', 'error');
         } finally {
@@ -2560,6 +2803,688 @@ class TasksManager {
         }
       });
     }
+  }
+
+  // Wire facesBrowserBtn to run browser detection on the currently open video
+  wireBrowserFacesButton() {
+    const btn = document.getElementById('facesBrowserBtn');
+    if (!btn || btn._wired) return;
+    btn._wired = true;
+    btn.addEventListener('click', async () => {
+      try {
+        // Switch to player tab if needed so the user can see progress and allow playback controls
+        if (window.tabSystem && window.tabSystem.getActiveTab() !== 'player') window.tabSystem.switchToTab('player');
+        // Delegate to Player module
+        if (window.Player && typeof window.Player.detectAndUploadFacesBrowser === 'function') {
+          await window.Player.detectAndUploadFacesBrowser();
+        } else {
+          this.showNotification('Player not ready for browser detection.', 'error');
+        }
+      } catch (e) {
+        this.showNotification('Browser faces failed: ' + (e && e.message ? e.message : 'error'), 'error');
+      }
+    });
+  }
+
+  async previewHeatmapSample() {
+    try {
+      // Find first video in current folder
+      const val = (folderInput.value || '').trim();
+      const rel = isAbsolutePath(val) ? '' : currentPath();
+      const url = new URL('/api/library', window.location.origin);
+      if (rel) url.searchParams.set('path', rel);
+      url.searchParams.set('page', '1');
+      url.searchParams.set('page_size', '1');
+      url.searchParams.set('sort', 'date');
+      url.searchParams.set('order', 'desc');
+      const r = await fetch(url, { headers: { 'Accept': 'application/json' }});
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const pl = await r.json();
+      const file = (pl?.data?.files || [])[0];
+      if (!file || !file.path) {
+        this.showNotification('No videos found in this folder to preview.', 'error');
+        return;
+      }
+      const path = file.path;
+      // Ensure heatmap exists; try a GET probe; if missing, trigger create and poll briefly
+      const headUrl = new URL('/api/heatmaps/png', window.location.origin);
+      headUrl.searchParams.set('path', path);
+      let ok = false;
+      for (let i=0; i<10; i++) { // ~10 quick tries
+        const h = await fetch(headUrl.toString());
+        if (h.ok) { ok = true; break; }
+        // Trigger creation once at the beginning
+        if (i === 0) {
+          const createUrl = new URL('/api/heatmaps/create', window.location.origin);
+          createUrl.searchParams.set('path', path);
+          createUrl.searchParams.set('interval', String(parseFloat(document.getElementById('heatmapInterval')?.value || '5.0')));
+          createUrl.searchParams.set('mode', document.getElementById('heatmapMode')?.value || 'both');
+          createUrl.searchParams.set('png', 'true');
+          try { await fetch(createUrl, { method: 'POST' }); } catch(_){ }
+        }
+        await new Promise(res => setTimeout(res, 300));
+      }
+      if (!ok) {
+        this.showNotification('Heatmap PNG not ready yet.', 'error');
+        return;
+      }
+      // Show modal
+      const imgUrl = new URL('/api/heatmaps/png', window.location.origin);
+      imgUrl.searchParams.set('path', path);
+      imgModalImage.src = imgUrl.toString() + `&t=${Date.now()}`;
+      imgModal.hidden = false;
+    } catch (e) {
+      this.showNotification('Failed to preview heatmap.', 'error');
+    }
+  }
+
+  async handleBatchOperation(operation) {
+    try {
+      // Derive base operation and mode from the button's data-operation value
+      let base = String(operation || '').trim();
+      let mode = 'missing';
+      if (base.endsWith('-missing')) {
+        base = base.replace(/-missing$/, '');
+        mode = 'missing';
+      } else if (base.endsWith('-all')) {
+        base = base.replace(/-all$/, '');
+        mode = 'all';
+      }
+
+      // Capability gate
+      if (!this.canRunOperation(base)) {
+        const why = (base === 'subtitles') ? 'No subtitles backend available.'
+                  : (base === 'faces' || base === 'embed') ? 'Face backends unavailable.'
+                  : 'FFmpeg not detected.';
+        this.showNotification(`Cannot start ${base} (${mode}). ${why}`, 'error');
+        return;
+      }
+
+      // Scope: all vs selected files
+      const selectedRadio = document.querySelector('input[name="fileSelection"]:checked');
+      const fileSelection = selectedRadio ? selectedRadio.value : 'all';
+
+      // Folder path (relative to root unless absolute provided)
+      const val = (folderInput.value || '').trim();
+      const rel = isAbsolutePath(val) ? '' : currentPath();
+
+      // Collect params for this operation
+      const params = this.getOperationParams(base) || {};
+      // When recomputing all, explicitly request overwrite/force when applicable
+      if (mode === 'all') {
+        params.force = true;
+        params.overwrite = true;
+      }
+
+      const payload = {
+        operation: base,
+        mode,
+        fileSelection,
+        params,
+        path: rel
+      };
+
+      const response = await fetch('/api/tasks/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      if (result.status === 'success') {
+        this.showNotification(`Started ${base} (${mode}) for ${result.data.fileCount} files`, 'success');
+        // Immediately refresh jobs and coverage
+        this.refreshJobs();
+        this.loadCoverage();
+      } else {
+        throw new Error(result.message || 'Operation failed');
+      }
+    } catch (error) {
+      console.error('Batch operation failed:', error);
+      this.showNotification(`Failed to start ${operation}: ${error.message}`, 'error');
+    }
+  }
+
+  // Wire Generate All button: queue all missing artifacts in fast-first order
+  wireGenerateAll() {
+    const btn = document.getElementById('generateAllBtn');
+    if (!btn) return;
+    if (btn._wired) return; btn._wired = true;
+    btn.addEventListener('click', async () => {
+      const ops = [
+        'metadata-missing',
+        'phash-missing',
+        'thumbnails-missing',
+        'previews-missing',
+        'sprites-missing',
+        'heatmaps-missing',
+        'scenes-missing',
+        'faces-missing',
+        'embed-missing',
+        'subtitles-missing',
+      ].filter(op => this.canRunOperation(op));
+      if (ops.length === 0) {
+        this.showNotification('No compatible operations available. Check the Tools notice above.', 'error');
+        return;
+      }
+      btn.disabled = true;
+      btn.classList.add('btn-busy');
+      try {
+        for (const op of ops) {
+          await this.handleBatchOperation(op);
+          await new Promise(r => setTimeout(r, 80));
+        }
+        this.showNotification('Queued all missing artifacts (fast-first).', 'success');
+      } catch (e) {
+        this.showNotification('Failed to queue one or more operations.', 'error');
+      } finally {
+        btn.classList.remove('btn-busy');
+        btn.disabled = false;
+      }
+    });
+  }
+
+  resetCoverageDisplay(artifactType) {
+    // Reset the display for a specific artifact type to show 0%
+    const percentageEl = document.getElementById(`${artifactType}Coverage`);
+    const fillEl = document.getElementById(`${artifactType}Fill`);
+    
+    if (percentageEl) {
+      percentageEl.textContent = '0%';
+    }
+    
+    if (fillEl) {
+      fillEl.style.width = '0%';
+    }
+    
+    // Update button visibility for 0% coverage
+    const generateBtn = document.querySelector(`[data-operation="${artifactType}-missing"]`);
+    const recomputeBtn = document.querySelector(`[data-operation="${artifactType}-all"]`);
+    
+    if (generateBtn) generateBtn.style.display = 'block';
+    if (recomputeBtn) recomputeBtn.style.display = 'none';
+  }
+
+  getOperationParams(type) {
+    const params = {};
+    
+    switch (type) {
+      case 'thumbnails':
+        params.offset = document.getElementById('thumbnailOffset')?.value || 10;
+        break;
+      case 'phash':
+        params.frames = document.getElementById('phashFrames')?.value || 5;
+        params.algorithm = document.getElementById('phashAlgo')?.value || 'ahash';
+        break;
+      case 'sprites':
+        params.interval = document.getElementById('spriteInterval')?.value || 10;
+        params.width = document.getElementById('spriteWidth')?.value || 320;
+        params.cols = document.getElementById('spriteCols')?.value || 10;
+        break;
+      case 'previews':
+        params.segments = document.getElementById('previewSegments')?.value || 9;
+        params.duration = document.getElementById('previewDuration')?.value || 1.0;
+        break;
+      case 'heatmaps':
+        params.interval = parseFloat(document.getElementById('heatmapInterval')?.value || '5.0');
+        params.mode = document.getElementById('heatmapMode')?.value || 'both';
+        // default to true PNG generation for better visual feedback
+        params.png = true;
+        break;
+      case 'subtitles':
+        params.model = document.getElementById('subtitleModel')?.value || 'small';
+        {
+          const langVal = (document.getElementById('subtitleLang')?.value || '').trim();
+          params.language = langVal || 'auto';
+        }
+        // translate option not exposed in UI; default false
+        params.translate = false;
+        break;
+      case 'scenes':
+        params.threshold = parseFloat(document.getElementById('sceneThreshold')?.value || '0.4');
+        params.limit = parseInt(document.getElementById('sceneLimit')?.value || '0', 10);
+        break;
+      case 'faces':
+        params.interval = parseFloat(document.getElementById('faceInterval')?.value || '1.0');
+        params.min_size_frac = parseFloat(document.getElementById('faceMinSize')?.value || '0.10');
+        // Advanced tunables (parity with legacy FaceLab)
+        params.backend = document.getElementById('faceBackend')?.value || 'auto';
+        // Only some backends use these; harmless to pass through
+        params.scale_factor = parseFloat(document.getElementById('faceScale')?.value || '1.1');
+        params.min_neighbors = parseInt(document.getElementById('faceMinNeighbors')?.value || '5', 10);
+        params.sim_thresh = parseFloat(document.getElementById('faceSimThresh')?.value || '0.9');
+        break;
+      case 'embed':
+        params.interval = parseFloat(document.getElementById('embedInterval')?.value || '1.0');
+        params.min_size_frac = parseFloat(document.getElementById('embedMinSize')?.value || '0.10');
+        params.backend = document.getElementById('embedBackend')?.value || 'auto';
+        params.sim_thresh = parseFloat(document.getElementById('embedSimThresh')?.value || '0.9');
+        break;
+    }
+    
+    return params;
+  }
+
+  async loadCoverage() {
+    try {
+      // Request coverage for the current folder (relative to root)
+      const val = (folderInput.value || '').trim();
+      const rel = isAbsolutePath(val) ? '' : currentPath();
+      const url = new URL('/api/tasks/coverage', window.location.origin);
+      if (rel) url.searchParams.set('path', rel);
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        this.coverage = data.data.coverage;
+        this.updateCoverageDisplay();
+      }
+    } catch (error) {
+      // Quiet failure during polling
+    }
+
+  // Orphan data disabled (endpoint not available)
+  // await this.loadOrphanData();
+  }
+
+  // --- Orphan files UI helpers (stubbed to avoid runtime errors) ---
+  async loadOrphanData() { /* no-op: backend not available */ }
+
+  async previewOrphans() {
+    try {
+      if (!Array.isArray(this.orphanFiles) || this.orphanFiles.length === 0) {
+        this.showNotification('No orphan artifacts to preview.', 'error');
+        return;
+      }
+      // Just show a summary count; detailed preview UI is out of scope here
+      this.showNotification(`Found ${this.orphanFiles.length} orphan artifact(s).`, 'success');
+    } catch(_) {}
+  }
+
+  async cleanupOrphans() {
+    try {
+      const r = await fetch('/api/tasks/orphans/cleanup', { method: 'POST' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const removed = j?.data?.removed ?? 0;
+      this.showNotification(`Removed ${removed} orphan artifact(s).`, 'success');
+  await this.loadOrphanData();
+    } catch(_) {
+      this.showNotification('Failed to clean up orphan artifacts.', 'error');
+    }
+  }
+
+  updateCoverageDisplay() {
+    const artifacts = ['metadata', 'thumbnails', 'sprites', 'previews', 'phash', 'scenes', 'heatmaps', 'subtitles', 'faces'];
+    
+    artifacts.forEach(artifact => {
+      const data = this.coverage[artifact] || { processed: 0, missing: 0, total: 0 };
+      const percentage = data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0;
+      
+      // Update percentage
+      const percentageEl = document.getElementById(`${artifact}Coverage`);
+      if (percentageEl) {
+        percentageEl.textContent = `${percentage}%`;
+      }
+      
+      // Update progress bar
+      const fillEl = document.getElementById(`${artifact}Fill`);
+      if (fillEl) {
+        fillEl.style.width = `${percentage}%`;
+      }
+      
+      // Show only one button: Generate Missing OR Recompute All (when 100%)
+      const generateBtn = document.querySelector(`[data-operation="${artifact}-missing"]`);
+      const recomputeBtn = document.querySelector(`[data-operation="${artifact}-all"]`);
+      
+      if (percentage === 100) {
+        // Show only recompute button at 100%
+        if (generateBtn) generateBtn.style.display = 'none';
+        if (recomputeBtn) recomputeBtn.style.display = 'block';
+      } else {
+        // Show only generate missing button when < 100%
+        if (generateBtn) generateBtn.style.display = 'block';
+        if (recomputeBtn) recomputeBtn.style.display = 'none';
+      }
+    });
+
+    // Mirror faces coverage to embeddings UI (embeddings share faces.json presence)
+    const facesData = this.coverage['faces'] || { processed: 0, total: 0 };
+    const embedPct = facesData.total > 0 ? Math.round((facesData.processed / facesData.total) * 100) : 0;
+    const embedPctEl = document.getElementById('embedCoverage');
+    const embedFillEl = document.getElementById('embedFill');
+    if (embedPctEl) embedPctEl.textContent = `${embedPct}%`;
+    if (embedFillEl) embedFillEl.style.width = `${embedPct}%`;
+    const embedGen = document.querySelector('[data-operation="embed-missing"]');
+    const embedRe = document.querySelector('[data-operation="embed-all"]');
+    if (embedPct === 100) {
+      if (embedGen) embedGen.style.display = 'none';
+      if (embedRe) embedRe.style.display = 'block';
+    } else {
+      if (embedGen) embedGen.style.display = 'block';
+      if (embedRe) embedRe.style.display = 'none';
+    }
+  }
+
+  async refreshJobs() {
+    try {
+      const response = await fetch('/api/tasks/jobs');
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        this.updateJobsDisplay(data.data.jobs);
+        this.updateJobStats(data.data.stats);
+      }
+    } catch (error) {
+      // Quiet failure during polling
+    }
+  }
+
+  updateJobsDisplay(jobs) {
+    const tbody = document.getElementById('jobTableBody');
+    if (!tbody) return;
+    // Update internal job cache and keep existing rows when possible (reduce thrash)
+    const now = Date.now();
+    const ids = new Set();
+    for (const job of jobs) {
+      ids.add(job.id);
+      this.jobs.set(job.id, job);
+    }
+    // Remove rows for jobs not present anymore
+    for (const [id, tr] of Array.from(this._jobRows.entries())) {
+      if (!ids.has(id)) {
+        if (tr && tr.parentElement) tr.parentElement.removeChild(tr);
+        this._jobRows.delete(id);
+        this.jobs.delete(id);
+      }
+    }
+    // Render/update visible rows
+    this.renderJobsTable();
+
+    // Enable/disable Clear Completed based on whether any completed jobs exist
+    const hasCompleted = jobs.some(j => this.normalizeStatus(j) === 'completed');
+    const clearBtn = document.getElementById('clearCompletedBtn');
+    if (clearBtn) clearBtn.style.display = hasCompleted ? '' : 'none';
+    const failedEl = document.getElementById('failedJobsCount');
+    if (failedEl) failedEl.textContent = jobs.filter(j => (j.status === 'failed')).length;
+  }
+
+  renderJobsTable() {
+    const tbody = document.getElementById('jobTableBody');
+    if (!tbody) return;
+    const all = Array.from(this.jobs.values());
+    // Filtering
+    let visible = all;
+    if (this.activeFilters && this.activeFilters.size > 0) {
+      visible = all.filter(j => this.activeFilters.has(this.normalizeStatus(j)));
+    }
+    // Sort with explicit priority: running > queued > others, then by time desc
+    const prio = (j) => {
+      const s = this.normalizeStatus(j);
+      if (s === 'running') return 2;
+      if (s === 'queued') return 1;
+      return 0;
+    };
+    visible.sort((a, b) => {
+      const pb = prio(b);
+      const pa = prio(a);
+      if (pb !== pa) return pb - pa;
+      // When equal priority, use the freshest meaningful timestamp
+      const tb = (b.startTime || b.endedTime || b.createdTime || 0);
+      const ta = (a.startTime || a.endedTime || a.createdTime || 0);
+      return tb - ta;
+    });
+    // Build/update rows
+    const seen = new Set();
+    for (const job of visible) {
+      seen.add(job.id);
+      let tr = this._jobRows.get(job.id);
+      if (!tr) {
+        tr = this.createJobRow(job);
+        this._jobRows.set(job.id, tr);
+      } else {
+        // Update existing row fields
+        this.updateJobRow(tr, job);
+      }
+      // Always append in the current sorted order; this moves existing rows
+      tbody.appendChild(tr);
+    }
+    // Hide rows that don't match filter
+    for (const [id, tr] of this._jobRows.entries()) {
+      if (!seen.has(id)) {
+        tr.style.display = 'none';
+      } else {
+        tr.style.display = '';
+      }
+    }
+    this.updateRunningVisuals();
+    // Toggle action buttons based on current state
+    const clearBtn = document.getElementById('clearCompletedBtn');
+    const cancelQueuedBtn = document.getElementById('cancelQueuedBtn');
+    const cancelAllBtn = document.getElementById('cancelAllBtn');
+    if (clearBtn) {
+      const hasCompleted = Array.from(this.jobs.values()).some(j => this.normalizeStatus(j) === 'completed');
+      clearBtn.style.display = hasCompleted ? 'inline-block' : 'none';
+    }
+    if (cancelQueuedBtn) {
+      const hasQueued = Array.from(this.jobs.values()).some(j => (j.status || '') === 'queued');
+      cancelQueuedBtn.style.display = hasQueued ? 'inline-block' : 'none';
+      cancelQueuedBtn.onclick = async () => {
+        try {
+          const res = await fetch('/api/tasks/jobs/cancel-queued', { method: 'POST' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          this.showNotification('Queued jobs cancelled', 'success');
+          this.refreshJobs();
+        } catch (e) {
+          this.showNotification('Failed to cancel queued jobs', 'error');
+        }
+      };
+    }
+    if (cancelAllBtn) {
+      const hasAny = Array.from(this.jobs.values()).some(j => (j.status || '') === 'queued' || (j.status || '') === 'running');
+      cancelAllBtn.style.display = hasAny ? 'inline-block' : 'none';
+      cancelAllBtn.onclick = async () => {
+        try {
+          const res = await fetch('/api/tasks/jobs/cancel-all', { method: 'POST' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          this.showNotification('All pending and running jobs asked to cancel', 'success');
+          this.refreshJobs();
+        } catch (e) {
+          this.showNotification('Failed to cancel all jobs', 'error');
+        }
+      };
+    }
+  }
+
+  updateRunningVisuals(jobs) {
+    // Add animated stripes to each running job's progress bar
+    const rows = document.querySelectorAll('#jobTableBody tr');
+    rows.forEach((tr, idx) => {
+      const id = tr?.dataset?.jobId;
+      const job = id ? this.jobs.get(id) : null;
+      const status = job ? this.normalizeStatus(job) : '';
+      const bar = tr.querySelector('.job-progress');
+      if (bar) {
+        bar.classList.toggle('running', status === 'running');
+      }
+    });
+  }
+
+  // Map server states directly; do not infer running from progress for queued
+  normalizeStatus(job) {
+    let s = (job.status || '').toLowerCase();
+    if (s === 'done' || s === 'completed') return 'completed';
+    if (s === 'running') return 'running';
+    if (s === 'queued') return 'queued';
+    if (s === 'failed' || s === 'error' || s === 'errored') return 'failed';
+    if (s === 'canceled' || s === 'cancelled' || s === 'cancel_requested') return 'canceled';
+    return s || 'unknown';
+  }
+
+  displayStatusLabel(status) {
+    const map = {
+      running: 'Active',
+      queued: 'Queued',
+      completed: 'Completed',
+      failed: 'Errored',
+      canceled: 'Canceled',
+    };
+    if (status in map) return map[status];
+    // Fallback: capitalize unknown status keys
+    if (typeof status === 'string' && status.length) {
+      return status.charAt(0).toUpperCase() + status.slice(1);
+    }
+    return '';
+  }
+
+  initJobStats(stats) {
+    const activeEl = document.getElementById('activeJobsCount');
+    const queuedEl = document.getElementById('queuedJobsCount');
+    const completedEl = document.getElementById('completedJobsCount');
+    const failedEl = document.getElementById('failedJobsCount');
+    
+    if (activeEl) activeEl.textContent = stats.active || 0;
+    if (queuedEl) queuedEl.textContent = stats.queued || 0;
+    if (completedEl) completedEl.textContent = stats.completedToday || 0;
+    if (failedEl) failedEl.textContent = stats.failed || 0;
+  }
+
+  // Back-compat shim: refreshJobs() calls updateJobStats; route to initJobStats
+  updateJobStats(stats) {
+    this.initJobStats(stats || {});
+  }
+
+  // Back-compat shim: refreshJobs() calls updateJobStats; route to initJobStats
+  updateJobStats(stats) {
+    this.initJobStats(stats || {});
+  }
+
+  createJobRow(job) {
+    const row = document.createElement('tr');
+    row.dataset.jobId = job.id;
+    row.innerHTML = `
+      <td class="cell-time"></td>
+      <td class="cell-task"></td>
+      <td class="cell-file" title=""></td>
+      <td class="cell-status"><span class="job-status"></span></td>
+      <td class="cell-progress">
+        <div class="job-progress"><div class="job-progress-fill"></div></div>
+        <div class="cell-sub"><span class="pct"></span><span class="fname"></span></div>
+      </td>
+      <td class="cell-action"></td>
+    `;
+    this.updateJobRow(row, job);
+    return row;
+  }
+
+  updateJobRow(row, job) {
+  const tstamp = job.startTime || job.createdTime || 0;
+  const startTime = tstamp ? new Date(tstamp * 1000).toLocaleTimeString() : 'N/A';
+    const baseName = (p) => (p || '').split('/').filter(Boolean).pop() || '';
+    const fileName = baseName(job.target) || baseName(job.file);
+    row.querySelector('.cell-time').textContent = startTime;
+    row.querySelector('.cell-task').textContent = job.task;
+    const fileCell = row.querySelector('.cell-file');
+    fileCell.textContent = fileName;
+    fileCell.title = job.target || job.file || '';
+    // Status
+    let status = this.normalizeStatus(job);
+    const statusEl = row.querySelector('.job-status');
+    statusEl.className = 'job-status ' + status;
+    statusEl.textContent = this.displayStatusLabel(status);
+    // Progress: prefer server-provided value; only fall back to raw counters when missing
+    let pct = 0;
+    const totalRaw = job.totalRaw;
+    const processedRaw = job.processedRaw;
+    if (typeof job.progress === 'number' && Number.isFinite(job.progress)) {
+      pct = job.progress;
+    }
+    // If not completed and server didn't provide a value, derive from raw counters
+    if (status !== 'completed' && status !== 'canceled' && (pct == null || pct <= 0)) {
+      if (typeof totalRaw === 'number' && totalRaw > 0 && typeof processedRaw === 'number') {
+        const calc = Math.max(0, Math.min(100, Math.floor((processedRaw / totalRaw) * 100)));
+        if (calc > 0) pct = calc;
+      }
+    }
+    // Queued shows 0%; completed always shows 100%
+    if (status === 'queued') pct = 0;
+    if (status === 'completed') pct = 100;
+    const bar = row.querySelector('.job-progress-fill');
+    // Canceled explicitly shows 0% and "Canceled"
+    if (status === 'canceled') {
+      bar.style.width = '0%';
+    } else {
+      bar.style.width = (status !== 'queued' ? pct : 0) + '%';
+    }
+    row.querySelector('.pct').textContent = (status === 'queued') ? 'Queued' : (status === 'completed' ? '100%' : (status === 'canceled' ? 'Canceled' : `${pct}%`));
+    const fname = row.querySelector('.fname');
+    // Show the target path when available for non-queued states
+    const targetPath = (job && typeof job.target === 'string' && job.target) ? job.target : '';
+    fname.textContent = (status === 'queued') ? '' : (targetPath || '');
+    // Action
+    const action = row.querySelector('.cell-action');
+    action.innerHTML = '';
+    if (status === 'running') {
+      const btn = document.createElement('button');
+      btn.className = 'btn-secondary';
+      btn.textContent = 'Cancel';
+      btn.addEventListener('click', () => this.cancelJob(job.id));
+      action.appendChild(btn);
+    } else if (status === 'queued') {
+      const btn = document.createElement('button');
+      btn.className = 'btn-secondary';
+      btn.textContent = 'Cancel';
+      btn.addEventListener('click', () => this.cancelJob(job.id));
+      action.appendChild(btn);
+    } else if (status === 'canceled') {
+      // No actions for canceled
+    } else if (status === 'failed') {
+      // Click row to view error details
+      const errText = (job && job.error) ? String(job.error) : '';
+      if (errText) {
+        row.style.cursor = 'pointer';
+        row.title = 'Click to view error details';
+        row.addEventListener('click', () => this.showErrorModal(errText, job), { once: true });
+      }
+    }
+  }
+
+  initJobQueueResizer() {
+    const container = document.getElementById('jobTableContainer');
+    const handle = document.getElementById('jobResizeHandle');
+    if (!container || !handle) return;
+    // Restore prior height
+    const saved = localStorage.getItem('jobQueueHeight');
+    if (saved) container.style.maxHeight = saved;
+    let down = false, startY = 0, startH = 0;
+    const onDown = (e) => {
+      down = true; startY = e.clientY; startH = container.getBoundingClientRect().height;
+      document.body.style.userSelect = 'none';
+    };
+    const onMove = (e) => {
+      if (!down) return;
+      const h = Math.max(140, Math.min(720, startH + (e.clientY - startY)));
+      container.style.maxHeight = h + 'px';
+    };
+    const onUp = () => {
+      if (!down) return;
+      down = false;
+      localStorage.setItem('jobQueueHeight', container.style.maxHeight || '240px');
+      document.body.style.userSelect = '';
+    };
+    handle.addEventListener('mousedown', onDown);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
   }
 
   // Wire facesBrowserBtn to run browser detection on the currently open video
@@ -3050,7 +3975,17 @@ class TasksManager {
     });
   }
 
-  // Map internal status keys to user-facing labels that match the filter toggle cards
+  // Map server states directly; do not infer running from progress for queued
+  normalizeStatus(job) {
+    let s = (job.status || '').toLowerCase();
+    if (s === 'done' || s === 'completed') return 'completed';
+    if (s === 'running') return 'running';
+    if (s === 'queued') return 'queued';
+    if (s === 'failed' || s === 'error' || s === 'errored') return 'failed';
+    if (s === 'canceled' || s === 'cancelled' || s === 'cancel_requested') return 'canceled';
+    return s || 'unknown';
+  }
+
   displayStatusLabel(status) {
     const map = {
       running: 'Active',
@@ -3065,6 +4000,18 @@ class TasksManager {
       return status.charAt(0).toUpperCase() + status.slice(1);
     }
     return '';
+  }
+
+  initJobStats(stats) {
+    const activeEl = document.getElementById('activeJobsCount');
+    const queuedEl = document.getElementById('queuedJobsCount');
+    const completedEl = document.getElementById('completedJobsCount');
+    const failedEl = document.getElementById('failedJobsCount');
+    
+    if (activeEl) activeEl.textContent = stats.active || 0;
+    if (queuedEl) queuedEl.textContent = stats.queued || 0;
+    if (completedEl) completedEl.textContent = stats.completedToday || 0;
+    if (failedEl) failedEl.textContent = stats.failed || 0;
   }
 
   createJobRow(job) {
@@ -3185,209 +4132,127 @@ class TasksManager {
     window.addEventListener('mouseup', onUp);
   }
 
-  // Normalize backend status to UI status names
-  normalizeStatus(job) {
-    // Map server states directly; do not infer running from progress for queued
-    let s = (job.status || '').toLowerCase();
-    if (s === 'done' || s === 'completed') return 'completed';
-    if (s === 'running') return 'running';
-    if (s === 'queued') return 'queued';
-    if (s === 'failed' || s === 'error' || s === 'errored') return 'failed';
-    if (s === 'canceled' || s === 'cancelled' || s === 'cancel_requested') return 'canceled';
-    return s || 'unknown';
-  }
-
-  showErrorModal(message, job) {
-    let modal = document.getElementById('errorModal');
-    if (!modal) {
-      modal = document.createElement('div');
-      modal.id = 'errorModal';
-      modal.className = 'modal';
-      modal.innerHTML = `
-        <div class="modal-content" style="max-width:720px;">
-          <div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-            <h3 style="margin:0;">Job Error</h3>
-            <button class="btn" id="errorModalClose">Close</button>
-          </div>
-          <pre id="errorModalText" style="white-space:pre-wrap; background:#111; color:#f88; padding:12px; border-radius:6px; max-height:50vh; overflow:auto;"></pre>
-        </div>`;
-      document.body.appendChild(modal);
-      const close = () => { modal.hidden = true; };
-      modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
-      modal.querySelector('#errorModalClose').addEventListener('click', close);
-    }
-    const pre = modal.querySelector('#errorModalText');
-    pre.textContent = message || 'Unknown error';
-    modal.hidden = false;
-  }
-
-  updateJobStats(stats) {
-    const activeEl = document.getElementById('activeJobsCount');
-    const queuedEl = document.getElementById('queuedJobsCount');
-    const completedEl = document.getElementById('completedJobsCount');
-    const failedEl = document.getElementById('failedJobsCount');
-    
-    if (activeEl) activeEl.textContent = stats.active || 0;
-    if (queuedEl) queuedEl.textContent = stats.queued || 0;
-    if (completedEl) completedEl.textContent = stats.completedToday || 0;
-    if (failedEl) failedEl.textContent = stats.failed || 0;
-  }
-
-  async cancelJob(jobId) {
+  // ----- Compare Modal -----
+  async showCompareModal(absA, absB) {
     try {
-      const response = await fetch(`/api/tasks/jobs/${jobId}/cancel`, {
-        method: 'POST'
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.status === 'success') {
-          this.showNotification('Job cancelled', 'success');
-          this.refreshJobs();
-        }
-      } else {
-        throw new Error('Failed to cancel job');
+      const modal = document.getElementById('dupCompareModal');
+      const closeBtn = document.getElementById('dupCompareClose');
+      const aPathEl = document.getElementById('dupAPath');
+      const bPathEl = document.getElementById('dupBPath');
+      const aStatsEl = document.getElementById('dupAStats');
+      const bStatsEl = document.getElementById('dupBStats');
+      if (!modal || !aPathEl || !bPathEl || !aStatsEl || !bStatsEl) return;
+      aPathEl.textContent = absA;
+      bPathEl.textContent = absB;
+      aStatsEl.textContent = 'Loading…';
+      bStatsEl.textContent = 'Loading…';
+      modal.hidden = false;
+      const relA = this.toRel(absA);
+      const relB = this.toRel(absB);
+      const [ma, mb] = await Promise.all([
+        this.fetchMetadata(relA),
+        this.fetchMetadata(relB)
+      ]);
+      aStatsEl.textContent = this.formatMetadata(ma);
+      bStatsEl.textContent = this.formatMetadata(mb);
+      // Close wiring
+      if (closeBtn && !closeBtn._wired) {
+        closeBtn._wired = true;
+        closeBtn.addEventListener('click', () => { modal.hidden = true; });
       }
-    } catch (error) {
-      console.error('Failed to cancel job:', error);
-      this.showNotification('Failed to cancel job', 'error');
+      if (!modal._bgWired) {
+        modal._bgWired = true;
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.hidden = true; });
+        window.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && !modal.hidden) modal.hidden = true;
+        });
+      }
+    } catch (e) {
+      notify('Failed to load metadata for comparison.', 'error');
     }
   }
 
-  updateSelectedFileCount() {
-    const selectedRadio = document.querySelector('input[name="fileSelection"]:checked');
-    const countEl = document.getElementById('selectedFileCount');
-    
-    if (selectedRadio && countEl) {
-      if (selectedRadio.value === 'selected') {
-        // Get count from library selection
-        countEl.textContent = selectedItems.size;
-      } else {
-        countEl.textContent = '0';
-      }
-    }
-  }
-
-  startJobPolling() {
-    // Poll for job and coverage updates every 1 second when on tasks tab for more responsive updates
-    setInterval(() => {
-      if (tabSystem && tabSystem.getActiveTab() === 'tasks') {
-        this.refreshJobs();
-        this.loadCoverage();
-      }
-    }, 1000);
-  }
-
-  showNotification(message, type = 'info') {
-    // Create a simple notification system
-    const notification = document.createElement('div');
-    notification.className = `notification notification-${type}`;
-    notification.textContent = message;
-    
-    notification.style.cssText = `
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      background: ${type === 'success' ? '#22c55e' : type === 'error' ? '#ef4444' : '#4f8cff'};
-      color: white;
-      padding: 12px 16px;
-      border-radius: 8px;
-      z-index: 1000;
-      animation: slideIn 0.3s ease;
-    `;
-    
-    document.body.appendChild(notification);
-    
-    setTimeout(() => {
-      notification.remove();
-    }, 5000);
-  }
-
-  async loadOrphanData() {
+  async fetchMetadata(relPath) {
     try {
-      // Use empty path to scan the current root directory
-      const response = await fetch('/api/artifacts/orphans');
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
-      if (data.status === 'success') {
-        this.updateOrphanDisplay(data.data);
-      }
-    } catch (error) {
-      // Quiet failure during polling
-      // Reset display on error
-      this.updateOrphanDisplay({ orphaned: 0, orphaned_files: [] });
-    }
+      const url = new URL('/api/metadata/get', window.location.origin);
+      url.searchParams.set('path', relPath);
+      url.searchParams.set('view', 'true');
+      const r = await fetch(url.toString());
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const data = j?.data || {};
+      return data.raw || {};
+    } catch(_) { return {}; }
   }
 
-  updateOrphanDisplay(orphanData) {
-    const orphanCount = orphanData.orphaned || 0;
-    const orphanCountEl = document.getElementById('orphanCount');
-    const cleanupBtn = document.getElementById('cleanupOrphansBtn');
-    const previewBtn = document.getElementById('previewOrphansBtn');
-
-    if (orphanCountEl) {
-      orphanCountEl.textContent = orphanCount;
-    }
-
-    // Enable/disable buttons based on orphan count
-    if (cleanupBtn) {
-      cleanupBtn.disabled = orphanCount === 0;
-    }
-    if (previewBtn) {
-      previewBtn.disabled = orphanCount === 0;
-    }
-
-    // Store orphan data for preview
-    this.orphanFiles = orphanData.orphaned_files || [];
-  }
-
-  async previewOrphans() {
-    const orphanDetails = document.getElementById('orphanDetails');
-    const orphanList = document.getElementById('orphanList');
-
-    if (orphanDetails.style.display === 'none') {
-      // Show preview
-      orphanList.innerHTML = this.orphanFiles.map(file => 
-        `<div class="orphan-file">${file}</div>`
-      ).join('');
-      orphanDetails.style.display = 'block';
-      document.getElementById('previewOrphansBtn').textContent = 'Hide';
-    } else {
-      // Hide preview
-      orphanDetails.style.display = 'none';
-      document.getElementById('previewOrphansBtn').textContent = 'Preview';
-    }
-  }
-
-  async cleanupOrphans() {
-    if (!confirm(`Are you sure you want to delete ${this.orphanFiles.length} orphaned artifact files? This action cannot be undone.`)) {
-      return;
-    }
-
+  formatMetadata(meta) {
     try {
-      // Use empty path to cleanup the current root directory
-      const response = await fetch('/api/artifacts/cleanup?dry_run=false&keep_orphans=false', {
-        method: 'POST'
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      const lines = [];
+      const safe = (v) => (v == null ? '' : String(v));
+      const fmtSize = (n) => {
+        const bytes = Number(n || 0);
+        if (!Number.isFinite(bytes) || bytes <= 0) return '';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0; let v = bytes;
+        while (v >= 1024 && i < units.length-1) { v /= 1024; i++; }
+        return v.toFixed(v < 10 ? 1 : 0) + ' ' + units[i];
+      };
+      const fmtTimeLocal = (sec) => {
+        const s = Number(sec || 0);
+        if (!Number.isFinite(s) || s < 0) return '00:00';
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const ss = Math.floor(s % 60);
+        return (h ? h + ':' : '') + String(m).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+      };
+      // Format-level info (expects ffprobe raw JSON)
+      const fmt = meta.format || {};
+      const duration = Number(fmt.duration || 0);
+      const size = fmtSize(fmt.size);
+      const container = safe(fmt.format_name || fmt.format_long_name);
+      const overall_br = fmt.bit_rate ? `${Math.round(Number(fmt.bit_rate)/1000)} kb/s` : '';
+      lines.push(`Container: ${container}`);
+      lines.push(`Duration: ${fmtTimeLocal(duration)}`);
+      if (size) lines.push(`File size: ${size}`);
+      if (overall_br) lines.push(`Overall bitrate: ${overall_br}`);
+      // Streams
+      const video = (meta.streams || []).find(s => s.codec_type === 'video') || {};
+      const audio = (meta.streams || []).find(s => s.codec_type === 'audio') || {};
+      if (video && Object.keys(video).length) {
+        const vcodec = [video.codec_name, video.profile].filter(Boolean).join(' ');
+        const vres = (video.width && video.height) ? `${video.width}x${video.height}` : '';
+        const vfps = (() => { try { const r = (video.r_frame_rate || video.avg_frame_rate || '').split('/'); return r.length===2 && Number(r[1]) ? (Number(r[0])/Number(r[1])).toFixed(3) + ' fps' : ''; } catch(_) { return ''; } })();
+        const vbr = video.bit_rate ? `${Math.round(Number(video.bit_rate)/1000)} kb/s` : '';
+        const pixfmt = safe(video.pix_fmt);
+        const color = [video.color_range, video.color_space, video.color_transfer, video.color_primaries].filter(Boolean).join(', ');
+        lines.push('');
+        lines.push('Video:');
+        lines.push(`  Codec: ${vcodec}`);
+        if (vres) lines.push(`  Resolution: ${vres}`);
+        if (vfps) lines.push(`  Framerate: ${vfps}`);
+        if (vbr) lines.push(`  Bitrate: ${vbr}`);
+        if (pixfmt) lines.push(`  Pixel format: ${pixfmt}`);
+        if (color) lines.push(`  Color: ${color}`);
       }
-
-      const data = await response.json();
-      if (data.status === 'success') {
-        this.showNotification('Cleanup started successfully', 'success');
-        // Refresh orphan data after cleanup starts
-        setTimeout(() => this.loadOrphanData(), 2000);
-      } else {
-        throw new Error(data.message || 'Cleanup failed');
+      if (audio && Object.keys(audio).length) {
+        const acodec = [audio.codec_name, audio.profile].filter(Boolean).join(' ');
+        const ach = audio.channels ? `${audio.channels} ch` : '';
+        const asr = audio.sample_rate ? `${Math.round(Number(audio.sample_rate)/1000)} kHz` : '';
+        const abr = audio.bit_rate ? `${Math.round(Number(audio.bit_rate)/1000)} kb/s` : '';
+        lines.push('');
+        lines.push('Audio:');
+        lines.push(`  Codec: ${acodec}`);
+        const extra = [ach, asr, abr].filter(Boolean).join(', ');
+        if (extra) lines.push(`  ${extra}`);
       }
-    } catch (error) {
-      console.error('Failed to start cleanup:', error);
-      this.showNotification('Failed to start cleanup: ' + error.message, 'error');
+      // Tags (title)
+      try {
+        const title = (fmt.tags || {}).title;
+        if (title) { lines.push(''); lines.push(`Title tag: ${title}`); }
+      } catch(_){}
+      return lines.join('\n');
+    } catch(_) {
+      return 'No metadata available.';
     }
   }
 }
@@ -3427,4 +4292,427 @@ if (document.readyState === 'loading') {
       if (tasksManager) tasksManager.previewHeatmapSample();
     });
   }
+}
+
+// -----------------------------
+// Duplicates Manager
+// -----------------------------
+class DuplicatesManager {
+  constructor() {
+    this.page = 1;
+    this.totalPages = 1;
+    this.totalPairs = 0;
+    this.pageSize = 50;
+    this.lastQuery = null; // persist last params for pagination
+    this.init();
+  }
+
+  init() {
+    // Wire controls
+    const dir = document.getElementById('dupDirInput');
+    const rec = document.getElementById('dupRecursive');
+    const thr = document.getElementById('dupThreshold');
+    const thrVal = document.getElementById('dupThresholdVal');
+    const ms = document.getElementById('dupMinSim');
+    const msVal = document.getElementById('dupMinSimVal');
+    const ps = document.getElementById('dupPageSize');
+    const scan = document.getElementById('dupScanBtn');
+    const prev = document.getElementById('dupPrevBtn');
+    const next = document.getElementById('dupNextBtn');
+    const gen = document.getElementById('dupGenPhashBtn');
+
+    if (thr) thr.addEventListener('input', () => { if (thrVal) thrVal.textContent = Number(thr.value).toFixed(2); });
+    if (ms) ms.addEventListener('input', () => { if (msVal) msVal.textContent = Number(ms.value).toFixed(2); });
+    if (ps) ps.addEventListener('change', () => {
+      this.pageSize = Math.max(1, parseInt(ps.value || '50', 10));
+      this.page = 1;
+      this.runScan();
+    });
+    if (scan) scan.addEventListener('click', () => { this.page = 1; this.runScan(); });
+    if (prev) prev.addEventListener('click', () => { if (this.page > 1) { this.page--; this.runScan(true); } });
+    if (next) next.addEventListener('click', () => { if (this.page < this.totalPages) { this.page++; this.runScan(true); } });
+    if (gen) gen.addEventListener('click', () => this.generateMissingPhash());
+
+    // Default directory to current folder input (relative) if any
+    try {
+      const rel = isAbsolutePath(folderInput.value || '') ? '' : currentPath();
+      if (dir && rel) dir.value = rel;
+    } catch(_) {}
+
+    // Auto-run a scan when opening the tab
+    window.addEventListener('tabchange', (e) => {
+      if (e.detail.activeTab === 'duplicates') {
+        if (!this.lastQuery) this.runScan();
+      }
+    });
+  }
+
+  buildQuery() {
+    const dir = document.getElementById('dupDirInput');
+    const rec = document.getElementById('dupRecursive');
+    const thr = document.getElementById('dupThreshold');
+    const ms = document.getElementById('dupMinSim');
+    const ps = document.getElementById('dupPageSize');
+    const directory = (dir && dir.value || '').trim() || '.';
+    const recursive = !!(rec && rec.checked);
+    const phash_threshold = Number(thr && thr.value ? thr.value : 0.9);
+    const min_similarity = Number(ms && ms.value ? ms.value : 0.0);
+    const page_size = Math.max(1, parseInt(ps && ps.value ? ps.value : '50', 10));
+    this.pageSize = page_size;
+    return { directory, recursive, phash_threshold, min_similarity, page: this.page, page_size };
+  }
+
+  async runScan(keepParams = false) {
+    try {
+      const status = document.getElementById('dupStatus');
+      const body = document.getElementById('dupTableBody');
+      const info = document.getElementById('dupPageInfo');
+      const countEl = document.getElementById('dupPairsCount');
+      if (body) body.innerHTML = '';
+      if (status) status.textContent = 'Scanning...';
+      const q = this.buildQuery();
+      if (!keepParams) this.lastQuery = { ...q };
+      const url = new URL('/api/duplicates/list', window.location.origin);
+      Object.entries(q).forEach(([k,v]) => url.searchParams.set(k, String(v)));
+      const r = await fetch(url.toString(), { headers: { 'Accept': 'application/json' }});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const data = j?.data || j || {};
+      this.totalPairs = Number(data.total_pairs || 0);
+      this.totalPages = Number(data.total_pages || 1);
+      this.page = Number(data.page || 1);
+      if (countEl) countEl.textContent = String(this.totalPairs);
+      if (info) info.textContent = `${this.page} / ${this.totalPages}`;
+      const list = Array.isArray(data.pairs) ? data.pairs : [];
+      for (const p of list) this.appendRow(p);
+      if (status) status.textContent = list.length ? '' : 'No pairs on this page.';
+    } catch (e) {
+      const status = document.getElementById('dupStatus');
+      if (status) status.textContent = 'Failed to scan.';
+    }
+  }
+
+  appendRow(pair) {
+    const body = document.getElementById('dupTableBody');
+    if (!body) return;
+    const tr = document.createElement('tr');
+    const sim = Number(pair.similarity || 0);
+    const fmtSim = (sim * 100).toFixed(1) + '%';
+    const a = String(pair.a || '');
+    const b = String(pair.b || '');
+    tr.innerHTML = `
+      <td>${fmtSim}</td>
+      <td title="${a}">${this.baseName(a)}</td>
+      <td title="${b}">${this.baseName(b)}</td>
+      <td class="cell-action"></td>
+    `;
+    // Click row to open compare modal
+    tr.style.cursor = 'pointer';
+    tr.addEventListener('click', (e) => {
+      // Ignore clicks on buttons inside the row
+      if (e.target && (e.target.closest('.cell-action') || e.target.tagName === 'BUTTON')) return;
+      this.showCompareModal(a, b, sim);
+    });
+    const actions = tr.querySelector('.cell-action');
+    if (actions) {
+      const openA = this.makeBtn('Open A', () => Player.open(this.toRel(a)));
+      const openB = this.makeBtn('Open B', () => Player.open(this.toRel(b)));
+      const revealA = this.makeBtn('Reveal A', () => this.revealInFinder(a));
+      const revealB = this.makeBtn('Reveal B', () => this.revealInFinder(b));
+      actions.append(openA, openB, revealA, revealB);
+    }
+    body.appendChild(tr);
+  }
+
+  baseName(p) {
+    const parts = String(p).split('/').filter(Boolean);
+    return parts[parts.length - 1] || p;
+  }
+
+  toRel(abs) {
+    // Convert absolute path to relative path under current root for Player.open
+    try {
+      const rootText = document.getElementById('folderInput')?.placeholder || '';
+      const m = /Root: (.*) \u2014/.exec(rootText) || /Root: (.*) —/.exec(rootText);
+      const root = m ? m[1] : '';
+      if (root && abs.startsWith(root)) return abs.slice(root.length + (abs[root.length] === '/' ? 1 : 0));
+    } catch(_) {}
+    // Fallback: return filename, which Player.open can’t resolve cross-folder; still useful in UI
+    return this.baseName(abs);
+  }
+
+  makeBtn(label, handler) {
+    const btn = document.createElement('button');
+    btn.className = 'btn-secondary';
+    btn.textContent = label;
+    btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); handler(); });
+    return btn;
+  }
+
+  async generateMissingPhash() {
+    try {
+      const dir = document.getElementById('dupDirInput');
+      const rec = document.getElementById('dupRecursive');
+      const directory = (dir && dir.value || '').trim();
+      const recursive = !!(rec && rec.checked);
+      // We’ll walk the list endpoint and trigger pHash where missing
+      const url = new URL('/api/phash/list', window.location.origin);
+      if (directory) url.searchParams.set('path', directory);
+      url.searchParams.set('recursive', String(recursive));
+      const r = await fetch(url.toString());
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      // j.data only has totals; fetch library to iterate files
+      const lib = new URL('/api/library', window.location.origin);
+      if (directory) lib.searchParams.set('path', directory);
+      lib.searchParams.set('page', '1');
+      lib.searchParams.set('page_size', '1000');
+      lib.searchParams.set('sort', 'name');
+      lib.searchParams.set('order', 'asc');
+      const lr = await fetch(lib.toString(), { headers: { 'Accept': 'application/json' }});
+      const lj = await lr.json();
+      const files = Array.isArray(lj?.data?.files) ? lj.data.files : [];
+      let started = 0;
+      for (const f of files) {
+        try {
+          const head = await fetch('/api/phash/get?path=' + encodeURIComponent(f.path));
+          if (head.ok) continue; // already have
+        } catch(_) {}
+        try {
+          const create = new URL('/api/phash/create', window.location.origin);
+          create.searchParams.set('path', f.path);
+          // use fast defaults
+          create.searchParams.set('frames', '5');
+          create.searchParams.set('algo', 'ahash');
+          create.searchParams.set('combine', 'xor');
+          await fetch(create.toString(), { method: 'POST' });
+          started++;
+          await new Promise(r => setTimeout(r, 50));
+        } catch(_) {}
+      }
+      notify(`Started pHash for ${started} file(s).`, 'success');
+    } catch (e) {
+      notify('Failed to start pHash generation.', 'error');
+    }
+  }
+
+  async revealInFinder(absPath) {
+    try {
+      // Add a simple handler server-side would be ideal; for now, provide path copy
+      await navigator.clipboard.writeText(absPath);
+      notify('Path copied to clipboard. Reveal in Finder manually.', 'info');
+    } catch(_) {
+      notify('Copied path to clipboard.', 'info');
+    }
+  }
+
+  // ----- Compare Modal -----
+  async showCompareModal(absA, absB, similarity = null) {
+    try {
+      const modal = document.getElementById('dupCompareModal');
+      const closeBtn = document.getElementById('dupCompareClose');
+      const aPathEl = document.getElementById('dupAPath');
+      const bPathEl = document.getElementById('dupBPath');
+      const simEl = document.getElementById('dupSimVal');
+      const tableBody = document.getElementById('dupCompareTable');
+      const btnOpenA = document.getElementById('dupOpenA');
+      const btnOpenB = document.getElementById('dupOpenB');
+      const btnRevealA = document.getElementById('dupRevealA');
+      const btnRevealB = document.getElementById('dupRevealB');
+      const btnDeleteA = document.getElementById('dupDeleteA');
+      const btnDeleteB = document.getElementById('dupDeleteB');
+      if (!modal || !aPathEl || !bPathEl || !tableBody) return;
+      aPathEl.textContent = absA;
+      bPathEl.textContent = absB;
+      if (simEl) simEl.textContent = (similarity != null) ? `Similarity: ${(similarity*100).toFixed(1)}%` : '';
+      tableBody.innerHTML = `<tr><td colspan="3" class="muted">Loading…</td></tr>`;
+      modal.hidden = false;
+      const relA = this.toRel(absA);
+      const relB = this.toRel(absB);
+      const [ma, mb] = await Promise.all([
+        this.fetchMetadata(relA),
+        this.fetchMetadata(relB)
+      ]);
+      // Build compare rows
+      const rows = this.buildCompareRows(ma, mb);
+      tableBody.innerHTML = '';
+      for (const [label, valA, valB] of rows) {
+        const tr = document.createElement('tr');
+        const td0 = document.createElement('td'); td0.textContent = label; tr.appendChild(td0);
+        const td1 = document.createElement('td'); td1.textContent = valA; tr.appendChild(td1);
+        const td2 = document.createElement('td'); td2.textContent = valB; tr.appendChild(td2);
+        tableBody.appendChild(tr);
+      }
+      // Wire actions
+      const relPathA = this.toRel(absA);
+      const relPathB = this.toRel(absB);
+      if (btnOpenA && !btnOpenA._wired) { btnOpenA._wired = true; btnOpenA.addEventListener('click', (e)=>{ e.stopPropagation(); Player.open(relPathA); }); }
+      if (btnOpenB && !btnOpenB._wired) { btnOpenB._wired = true; btnOpenB.addEventListener('click', (e)=>{ e.stopPropagation(); Player.open(relPathB); }); }
+      if (btnRevealA && !btnRevealA._wired) { btnRevealA._wired = true; btnRevealA.addEventListener('click', (e)=>{ e.stopPropagation(); this.revealInFinder(absA); }); }
+      if (btnRevealB && !btnRevealB._wired) { btnRevealB._wired = true; btnRevealB.addEventListener('click', (e)=>{ e.stopPropagation(); this.revealInFinder(absB); }); }
+      if (btnDeleteA && !btnDeleteA._wired) { btnDeleteA._wired = true; btnDeleteA.addEventListener('click', async (e)=>{ e.stopPropagation(); await this.deleteMedia(relPathA, 'A'); }); }
+      if (btnDeleteB && !btnDeleteB._wired) { btnDeleteB._wired = true; btnDeleteB.addEventListener('click', async (e)=>{ e.stopPropagation(); await this.deleteMedia(relPathB, 'B'); }); }
+      // Close wiring
+      if (closeBtn && !closeBtn._wired) {
+        closeBtn._wired = true;
+        closeBtn.addEventListener('click', () => { modal.hidden = true; });
+      }
+      if (!modal._bgWired) {
+        modal._bgWired = true;
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.hidden = true; });
+        window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modal.hidden) modal.hidden = true; });
+      }
+    } catch (e) {
+      notify('Failed to load metadata for comparison.', 'error');
+    }
+  }
+
+  async fetchMetadata(relPath) {
+    try {
+      const url = new URL('/api/metadata/get', window.location.origin);
+      url.searchParams.set('path', relPath);
+      url.searchParams.set('view', 'true');
+      const r = await fetch(url.toString());
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const data = j?.data || {};
+      return data.raw || {};
+    } catch(_) { return {}; }
+  }
+
+  formatMetadata(meta) {
+    try {
+      const lines = [];
+      const safe = (v) => (v == null ? '' : String(v));
+      const fmtSize = (n) => {
+        const bytes = Number(n || 0);
+        if (!Number.isFinite(bytes) || bytes <= 0) return '';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0; let v = bytes;
+        while (v >= 1024 && i < units.length-1) { v /= 1024; i++; }
+        return v.toFixed(v < 10 ? 1 : 0) + ' ' + units[i];
+      };
+      const fmtTimeLocal = (sec) => {
+        const s = Number(sec || 0);
+        if (!Number.isFinite(s) || s < 0) return '00:00';
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const ss = Math.floor(s % 60);
+        return (h ? h + ':' : '') + String(m).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+      };
+      // Format-level info (expects ffprobe raw JSON)
+      const fmt = meta.format || {};
+      const duration = Number(fmt.duration || 0);
+      const size = fmtSize(fmt.size);
+      const container = safe(fmt.format_name || fmt.format_long_name);
+      const overall_br = fmt.bit_rate ? `${Math.round(Number(fmt.bit_rate)/1000)} kb/s` : '';
+      lines.push(`Container: ${container}`);
+      lines.push(`Duration: ${fmtTimeLocal(duration)}`);
+      if (size) lines.push(`File size: ${size}`);
+      if (overall_br) lines.push(`Overall bitrate: ${overall_br}`);
+      // Streams
+      const video = (meta.streams || []).find(s => s.codec_type === 'video') || {};
+      const audio = (meta.streams || []).find(s => s.codec_type === 'audio') || {};
+      if (video && Object.keys(video).length) {
+        const vcodec = [video.codec_name, video.profile].filter(Boolean).join(' ');
+        const vres = (video.width && video.height) ? `${video.width}x${video.height}` : '';
+        const vfps = (() => { try { const r = (video.r_frame_rate || video.avg_frame_rate || '').split('/'); return r.length===2 && Number(r[1]) ? (Number(r[0])/Number(r[1])).toFixed(3) + ' fps' : ''; } catch(_) { return ''; } })();
+        const vbr = video.bit_rate ? `${Math.round(Number(video.bit_rate)/1000)} kb/s` : '';
+        const pixfmt = safe(video.pix_fmt);
+        const color = [video.color_range, video.color_space, video.color_transfer, video.color_primaries].filter(Boolean).join(', ');
+        lines.push('');
+        lines.push('Video:');
+        lines.push(`  Codec: ${vcodec}`);
+        if (vres) lines.push(`  Resolution: ${vres}`);
+        if (vfps) lines.push(`  Framerate: ${vfps}`);
+        if (vbr) lines.push(`  Bitrate: ${vbr}`);
+        if (pixfmt) lines.push(`  Pixel format: ${pixfmt}`);
+        if (color) lines.push(`  Color: ${color}`);
+      }
+      if (audio && Object.keys(audio).length) {
+        const acodec = [audio.codec_name, audio.profile].filter(Boolean).join(' ');
+        const ach = audio.channels ? `${audio.channels} ch` : '';
+        const asr = audio.sample_rate ? `${Math.round(Number(audio.sample_rate)/1000)} kHz` : '';
+        const abr = audio.bit_rate ? `${Math.round(Number(audio.bit_rate)/1000)} kb/s` : '';
+        lines.push('');
+        lines.push('Audio:');
+        lines.push(`  Codec: ${acodec}`);
+        const extra = [ach, asr, abr].filter(Boolean).join(', ');
+        if (extra) lines.push(`  ${extra}`);
+      }
+      // Tags (title)
+      try {
+        const title = (fmt.tags || {}).title;
+        if (title) { lines.push(''); lines.push(`Title tag: ${title}`); }
+      } catch(_){}
+      return lines.join('\n');
+    } catch(_) {
+      return 'No metadata available.';
+    }
+  }
+
+  buildCompareRows(ma, mb) {
+    const pick = (m) => {
+      const fmt = m?.format || {};
+      const v = (m?.streams || []).find(s => s.codec_type === 'video') || {};
+      const a = (m?.streams || []).find(s => s.codec_type === 'audio') || {};
+      const dur = Number(fmt.duration || 0);
+      const size = Number(fmt.size || 0);
+      const vres = (v.width && v.height) ? `${v.width}x${v.height}` : '';
+      const vf = (()=>{ try { const r=(v.r_frame_rate||v.avg_frame_rate||'').split('/'); return r.length===2 && Number(r[1]) ? (Number(r[0])/Number(r[1])).toFixed(3)+' fps' : ''; } catch(_) { return ''; } })();
+      const vbr = v.bit_rate ? `${Math.round(Number(v.bit_rate)/1000)} kb/s` : '';
+      const abr = a.bit_rate ? `${Math.round(Number(a.bit_rate)/1000)} kb/s` : '';
+      const ac = [a.codec_name, a.profile].filter(Boolean).join(' ');
+      const vc = [v.codec_name, v.profile].filter(Boolean).join(' ');
+      return { dur, size, vres, vf, vbr, abr, ac, vc };
+    };
+    const A = pick(ma), B = pick(mb);
+    const fmtBytes = (n)=>{
+      const units=['B','KB','MB','GB','TB']; let i=0, x=Number(n)||0; while(x>=1024&&i<units.length-1){x/=1024;i++;}
+      return (x>=100?x.toFixed(0):x>=10?x.toFixed(1):x.toFixed(2))+' '+units[i];
+    };
+    const fmtTime = (s)=>{ s=Number(s)||0; const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), ss=Math.floor(s%60); return (h? h+':' : '')+String(m).padStart(2,'0')+':'+String(ss).padStart(2,'0'); };
+    const rows = [];
+    rows.push(['Filename', (ma?.format?.filename||'').split('/').pop()||'', (mb?.format?.filename||'').split('/').pop()||'']);
+    rows.push(['File size', A.size? fmtBytes(A.size):'', B.size? fmtBytes(B.size):'']);
+    rows.push(['Duration', A.dur? fmtTime(A.dur):'', B.dur? fmtTime(B.dur):'']);
+    rows.push(['Video codec', A.vc||'', B.vc||'']);
+    rows.push(['Resolution', A.vres||'', B.vres||'']);
+    rows.push(['Framerate', A.vf||'', B.vf||'']);
+    rows.push(['Video bitrate', A.vbr||'', B.vbr||'']);
+    rows.push(['Audio codec', A.ac||'', B.ac||'']);
+    rows.push(['Audio bitrate', A.abr||'', B.abr||'']);
+    return rows;
+  }
+
+  async deleteMedia(relPath, which) {
+    try {
+      if (!relPath) return;
+      if (!confirm(`Permanently delete file ${which}? This will also remove its artifacts.`)) return;
+      const url = new URL('/api/media/delete', window.location.origin);
+      url.searchParams.set('path', relPath);
+      const r = await fetch(url.toString(), { method: 'DELETE' });
+      if (!r.ok) {
+        try { const j = await r.json(); notify(j?.message || 'Delete failed', 'error'); }
+        catch(_) { notify('Delete failed', 'error'); }
+        return;
+      }
+      notify(`Deleted ${which}.`, 'success');
+      // Refresh list on current page
+      await this.runScan(true);
+      // Hide modal after delete to avoid stale view
+      const modal = document.getElementById('dupCompareModal');
+      if (modal) modal.hidden = true;
+    } catch (e) {
+      notify('Delete error', 'error');
+    }
+  }
+}
+
+// Initialize duplicates manager when DOM is ready
+let duplicatesManager;
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => { duplicatesManager = new DuplicatesManager(); });
+} else {
+  duplicatesManager = new DuplicatesManager();
 }

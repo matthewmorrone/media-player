@@ -23,7 +23,7 @@ REQUIRED_PKGS=(
   pydantic
   httpx
   Pillow
-  watchgod
+  watchfiles
 )
 
 # Optional extras for extended features (install with: ./install.sh --optional)
@@ -75,7 +75,35 @@ echo "[install] Required: $DO_REQUIRED, Optional: $DO_OPTIONAL, Apt-OpenCV: $DO_
 mkdir -p "$(dirname "$VENV_PATH")" || true
 if [ ! -x "$VENV_PATH/bin/python" ]; then
   echo "[install] Creating venv at $VENV_PATH ..."
-  "$PY_BIN" -m venv "$VENV_PATH"
+  # Detect if filesystem supports symlinks (exFAT on /Volumes typically does not)
+  SYMLINK_OK=1
+  if ln -s "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/.tmp_link" 2>/dev/null; then
+    rm -f "$SCRIPT_DIR/.tmp_link" || true
+  else
+    SYMLINK_OK=0
+  fi
+  VENV_FAIL=0
+  if [ "$SYMLINK_OK" = "1" ]; then
+    if ! "$PY_BIN" -m venv "$VENV_PATH"; then
+      echo "[install] venv creation failed, retrying with --copies"
+      if ! "$PY_BIN" -m venv --copies "$VENV_PATH"; then VENV_FAIL=1; fi
+    fi
+  else
+    echo "[install] Filesystem lacks symlink support; using --copies"
+    if ! "$PY_BIN" -m venv --copies "$VENV_PATH"; then VENV_FAIL=1; fi
+  fi
+  if [ "$VENV_FAIL" = "1" ]; then
+    ALT_VENV="$HOME/.venvs/media-player"
+    echo "[install] Falling back to venv at $ALT_VENV"
+    mkdir -p "$ALT_VENV" || true
+    if ! "$PY_BIN" -m venv "$ALT_VENV" 2>/dev/null; then
+      if ! "$PY_BIN" -m venv --copies "$ALT_VENV"; then
+        echo "[install] ERROR: Failed to create a virtual environment even in HOME."
+        exit 1
+      fi
+    fi
+    VENV_PATH="$ALT_VENV"
+  fi
 fi
 
 # shellcheck source=/dev/null
@@ -87,6 +115,19 @@ python -m pip install --upgrade pip wheel setuptools
 if [ "$DO_REQUIRED" = "1" ]; then
   echo "[install] Installing required packages: ${REQUIRED_PKGS[*]}"
   pip install "${REQUIRED_PKGS[@]}"
+  # Sanity check: ensure watchfiles is importable; if not, provide a helpful hint.
+  if ! python - <<'PY'
+try:
+    import watchfiles  # noqa: F401
+    print('[install] watchfiles OK')
+except Exception as e:
+    import sys
+    print('[install] WARNING: watchfiles is not importable. Uvicorn will fall back to statreload.', file=sys.stderr)
+    print('[install] If you want fast reloads, ensure a wheel is available for your platform or install a Rust toolchain (for source builds).', file=sys.stderr)
+PY
+  then
+    :
+  fi
 else
   echo "[install] Skipping required dependency installation (per flag)."
 fi
@@ -259,12 +300,6 @@ else
 fi
 
 echo "[install] Done. Start the server with: ./serve.sh"
-
-# Post-step: ensure problematic reloader is not installed
-if pip show watchfiles >/dev/null 2>&1; then
-  echo "[install] Removing watchfiles to avoid memory issues/spurious reloads"
-  pip uninstall -y watchfiles || true
-fi
 
 # If optional extras are requested, also set up whisper.cpp automatically on Linux
 if [ "$DO_OPTIONAL" = "1" ]; then

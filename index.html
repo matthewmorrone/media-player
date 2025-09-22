@@ -30,6 +30,9 @@
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="tasks-panel" id="tasks-tab" data-tab="tasks">
         Tasks
       </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="duplicates-panel" id="duplicates-tab" data-tab="duplicates">
+        Duplicates
+      </button>
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="settings-panel" id="settings-tab" data-tab="settings">
         Settings
       </button>
@@ -49,8 +52,15 @@
               <div id="sbMeta" style="color: var(--muted, #7a859f); font-size:12px;">—</div>
             </div>
             <div style="height:1px; background: rgba(255,255,255,0.06);"></div>
-            <div style="display:flex; flex-direction:column; gap:10px;">
-              <div style="font-weight:600;">Artifacts</div>
+            
+            <!-- Sidebar Tabs -->
+            <div class="sidebar-tabs">
+              <button class="sidebar-tab active" data-tab="artifacts">Artifacts</button>
+              <button class="sidebar-tab" data-tab="filters">Filters</button>
+            </div>
+            
+            <!-- Artifacts Tab -->
+            <div id="artifactsTab" class="sidebar-tab-content active" style="display:flex; flex-direction:column; gap:10px;">
               <div id="artifactBadges" style="display:flex; flex-direction:column; gap:8px;">
                 <button id="badgeHeatmap" class="btn-sm" title="Heatmap status or generate" data-present="0">Heatmap <span id="badgeHeatmapStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
                 <button id="badgeScenes" class="btn-sm" title="Scenes status or generate" data-present="0">Scenes <span id="badgeScenesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
@@ -59,6 +69,132 @@
                 <button id="badgeFaces" class="btn-sm" title="Faces status or generate" data-present="0">Faces <span id="badgeFacesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
                 <button id="badgeHover" class="btn-sm" title="Hover preview status or generate" data-present="0">Hover Preview <span id="badgeHoverStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
                 <button id="badgePhash" class="btn-sm" title="pHash status or generate" data-present="0">pHash <span id="badgePhashStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
+              </div>
+            </div>
+            
+            <!-- Filters Tab -->
+            <div id="filtersTab" class="sidebar-tab-content" style="display:none; flex-direction:column; gap:12px;">
+              <div class="filter-section">
+                <h4 style="margin:0 0 8px 0; font-size:14px; color:#e2e8f0;">Filters</h4>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Brightness</span>
+                  </label>
+                  <span id="brightnessValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <input type="range" id="brightnessSlider" min="0" max="200" value="100" step="5" class="filter-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Contrast</span>
+                  </label>
+                  <span id="contrastValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <input type="range" id="contrastSlider" min="0" max="200" value="100" step="5" class="filter-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Gamma</span>
+                  </label>
+                  <span id="gammaValue" style="font-size:12px; color:#64748b;">0</span>
+                  <input type="range" id="gammaSlider" min="-50" max="50" value="0" step="1" class="filter-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Saturation</span>
+                  </label>
+                  <span id="saturationValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <input type="range" id="saturationSlider" min="0" max="200" value="100" step="5" class="filter-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Hue</span>
+                  </label>
+                  <span id="hueValue" style="font-size:12px; color:#64748b;">0°</span>
+                  <input type="range" id="hueSlider" min="-180" max="180" value="0" step="5" class="filter-slider hue-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Warmth</span>
+                  </label>
+                  <span id="warmthValue" style="font-size:12px; color:#64748b;">0</span>
+                  <input type="range" id="warmthSlider" min="-50" max="50" value="0" step="1" class="filter-slider warmth-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Red</span>
+                  </label>
+                  <span id="redValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <input type="range" id="redSlider" min="0" max="200" value="100" step="5" class="filter-slider red-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Green</span>
+                  </label>
+                  <span id="greenValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <input type="range" id="greenSlider" min="0" max="200" value="100" step="5" class="filter-slider green-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Blue</span>
+                  </label>
+                  <span id="blueValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <input type="range" id="blueSlider" min="0" max="200" value="100" step="5" class="filter-slider blue-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Blur</span>
+                  </label>
+                  <span id="blurValue" style="font-size:12px; color:#64748b;">0px</span>
+                  <input type="range" id="blurSlider" min="0" max="10" value="0" step="0.5" class="filter-slider">
+                </div>
+              </div>
+              
+              <div class="filter-section">
+                <h4 style="margin:0 0 8px 0; font-size:14px; color:#e2e8f0;">Transforms</h4>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Rotate</span>
+                    <span id="rotateValue" style="font-size:12px; color:#64748b;">0°</span>
+                  </label>
+                  <input type="range" id="rotateSlider" min="-180" max="180" value="0" step="1" class="filter-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Scale</span>
+                    <span id="scaleValue" style="font-size:12px; color:#64748b;">100%</span>
+                  </label>
+                  <input type="range" id="scaleSlider" min="25" max="200" value="100" step="5" class="filter-slider">
+                </div>
+                
+                <div class="filter-control">
+                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-size:12px;">Aspect</span>
+                    <span id="aspectValue" style="font-size:12px; color:#64748b;">0</span>
+                  </label>
+                  <input type="range" id="aspectSlider" min="-50" max="50" value="0" step="1" class="filter-slider">
+                </div>
+              </div>
+              
+              <div class="filter-actions" style="display:flex; flex-direction:column; gap:6px;">
+                <div style="display:flex; gap:6px;">
+                  <button id="rotateLeftBtn" class="btn-sm" style="flex:1;">Rotate Left & Scale</button>
+                  <button id="rotateRightBtn" class="btn-sm" style="flex:1;">Rotate Right & Scale</button>
+                </div>
+                <div style="display:flex; gap:6px;">
+                  <button id="resetFiltersBtn" class="btn-sm" style="flex:1;">Reset Filters</button>
+                  <button id="resetTransformsBtn" class="btn-sm" style="flex:1;">Reset Transforms</button>
+                </div>
               </div>
             </div>
           </aside>
@@ -158,7 +294,7 @@
             <div class="pagination-group">
               <div class="control-group">
                 <!-- <span class="control-label">Density</span> -->
-                <input id="densitySlider" type="range" min="1" max="15" value="12" step="1" class="control-slider" title="Adjust grid density (columns)" />
+                <input id="densitySlider" type="range" min="1" max="8" value="4" step="1" class="control-slider" title="Adjust grid density (columns)" />
               </div>
               <div class="pagination">
                 <button id="prevBtn" class="btn-sm" title="Previous page">‹</button>
@@ -661,6 +797,136 @@
                   <!-- Orphan files will be listed here -->
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Duplicates Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="duplicates-tab" id="duplicates-panel" hidden>
+        <div class="tasks-container">
+          <div class="task-section">
+            <div class="section-header">
+              <h2>Find Duplicate Videos</h2>
+              <div class="section-actions">
+                <button id="dupGenPhashBtn" class="btn-sm" title="Generate pHash for missing files in this folder">Generate pHash (Missing)</button>
+              </div>
+            </div>
+            <div class="controls-panel">
+              <div class="controls-row" style="flex-wrap:wrap; gap:10px;">
+                <div class="control-group" style="min-width:280px; flex:1;">
+                  <input id="dupDirInput" type="text" class="control-input" placeholder="Folder (relative to root). Empty = root" />
+                </div>
+                <label class="control-group" style="display:flex; align-items:center; gap:6px;">
+                  <input id="dupRecursive" type="checkbox" />
+                  <span>Recursive</span>
+                </label>
+                <div class="control-group">
+                  <label class="control-label" for="dupThreshold">pHash threshold</label>
+                  <input id="dupThreshold" type="range" min="0.70" max="1.00" step="0.01" value="0.90" class="control-slider" />
+                  <span id="dupThresholdVal" class="muted">0.90</span>
+                </div>
+                <div class="control-group">
+                  <label class="control-label" for="dupMinSim">Min similarity</label>
+                  <input id="dupMinSim" type="range" min="0.00" max="1.00" step="0.01" value="0.00" class="control-slider" />
+                  <span id="dupMinSimVal" class="muted">0.00</span>
+                </div>
+                <div class="control-group">
+                  <label class="control-label" for="dupPageSize">Page size</label>
+                  <div class="select">
+                    <select id="dupPageSize" class="control-select" title="Page size" aria-label="Page size">
+                      <option value="25">25</option>
+                      <option value="50" selected>50</option>
+                      <option value="100">100</option>
+                    </select>
+                    <span class="chevron">▾</span>
+                  </div>
+                </div>
+                <div class="control-group">
+                  <button id="dupScanBtn" class="btn" title="Scan for duplicates">Scan</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="job-stats" style="margin-top:6px;">
+              <div class="stat-card">
+                <span class="stat-label">Pairs</span>
+                <span class="stat-value" id="dupPairsCount">0</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Page</span>
+                <span class="stat-value" id="dupPageInfo">1 / 1</span>
+              </div>
+            </div>
+
+            <div class="job-table-container" id="dupTableContainer">
+              <table class="job-table">
+                <thead>
+                  <tr>
+                    <th>Similarity</th>
+                    <th>File A</th>
+                    <th>File B</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="dupTableBody">
+                  <!-- Results here -->
+                </tbody>
+              </table>
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px;">
+                <button id="dupPrevBtn" class="btn-sm" title="Previous page">‹</button>
+                <div id="dupStatus" class="muted" style="flex:1; text-align:center;"></div>
+                <button id="dupNextBtn" class="btn-sm" title="Next page">›</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Duplicate Compare Modal -->
+      <div id="dupCompareModal" class="modal" hidden>
+        <div class="panel" style="max-width: 1100px;">
+          <header>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <strong>Compare Files</strong>
+                <span class="muted" id="dupSimVal" title="pHash similarity"></span>
+              </div>
+              <button class="btn" id="dupCompareClose">Close</button>
+            </div>
+          </header>
+          <div class="body" style="display:flex; flex-direction:column; gap:12px;">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; align-items:center;">
+              <div>
+                <div id="dupAPath" class="muted" style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
+                <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
+                  <button id="dupOpenA" class="btn-sm">Open A</button>
+                  <button id="dupRevealA" class="btn-sm">Reveal A</button>
+                  <button id="dupDeleteA" class="btn-sm" style="background:#7a1f2b; border-color:#913544;">Delete A</button>
+                </div>
+              </div>
+              <div>
+                <div id="dupBPath" class="muted" style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
+                <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; justify-content:flex-start;">
+                  <button id="dupOpenB" class="btn-sm">Open B</button>
+                  <button id="dupRevealB" class="btn-sm">Reveal B</button>
+                  <button id="dupDeleteB" class="btn-sm" style="background:#7a1f2b; border-color:#913544;">Delete B</button>
+                </div>
+              </div>
+            </div>
+            <div class="job-table-container" style="max-height: unset;">
+              <table class="job-table">
+                <thead>
+                  <tr>
+                    <th>Field</th>
+                    <th>A</th>
+                    <th>B</th>
+                  </tr>
+                </thead>
+                <tbody id="dupCompareTable">
+                  <!-- Filled by JS -->
+                </tbody>
+              </table>
             </div>
           </div>
         </div>

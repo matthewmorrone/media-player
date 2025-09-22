@@ -12,7 +12,7 @@ Artifacts covered:
 - metadata JSON
 
 Usage:
-    python scripts/generate_artifacts.py \
+    python artifacts.py \
         --root /path/to/videos \
     [--recursive] \
     [--what all|thumb|hover|sprites|scenes|heatmaps|phash|metadata] \
@@ -35,20 +35,80 @@ import threading
 from pathlib import Path
 from typing import Optional, Callable, Any
 
+# --- Auto-venv bootstrap (mirror serve.sh logic) ---
+def _ensure_venv_if_needed():
+    """
+    If not running inside the usual virtualenv (or FastAPI is missing),
+        re-exec this script with the repo venv's Python:
+            - prefer ./.venv/bin/python
+      - else $HOME/.venvs/media-player/bin/python
+
+    This avoids ModuleNotFoundError: fastapi when invoked as `python artifacts.py`.
+    """
+    try:
+        # Avoid infinite recursion
+        if os.environ.get("MP_VENV_BOOTSTRAPPED") == "1":
+            return
+
+        # If we're already in a venv and fastapi can import, do nothing
+        in_venv = (hasattr(sys, 'base_prefix') and sys.prefix != getattr(sys, 'base_prefix', sys.prefix)) or bool(os.environ.get('VIRTUAL_ENV'))
+        fastapi_ok = False
+        try:
+            import importlib  # noqa: F401
+            import fastapi  # type: ignore  # noqa: F401
+            fastapi_ok = True
+        except Exception:
+            fastapi_ok = False
+        if in_venv and fastapi_ok:
+            return
+
+        # Locate candidate venv interpreters
+        script_dir = Path(__file__).resolve().parent
+        candidates = []
+        # Local .venv
+        candidates.append(script_dir / '.venv' / 'bin' / 'python')
+        # Home venv fallback
+        home = Path(os.path.expanduser('~'))
+        candidates.append(home / '.venvs' / 'media-player' / 'bin' / 'python')
+
+        for py in candidates:
+            try:
+                if py.is_file() and os.access(str(py), os.X_OK):
+                    # Re-exec with env marker
+                    new_env = dict(os.environ)
+                    new_env['MP_VENV_BOOTSTRAPPED'] = '1'
+                    # Helpful message for CLI users
+                    try:
+                        sys.stderr.write(f"[cli] Switching to venv interpreter: {py}\n")
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+                    os.execve(str(py), [str(py), str(Path(__file__).resolve())] + sys.argv[1:], new_env)
+                    return  # not reached
+            except Exception:
+                continue
+        # If we get here, no suitable venv Python was found; continue anyway
+    except Exception:
+        # Best-effort only; if anything goes wrong, fall through and let imports fail normally
+        pass
+
+# Perform venv bootstrap as early as possible
+_ensure_venv_if_needed()
+
 # Import internal helpers from app.py without triggering server run
 import importlib
-import sys
-from pathlib import Path
 
 
 def import_app_module():
-    """Import the top-level app.py regardless of current working directory.
+    """
+    Import the top-level app.py regardless of current working directory.
 
-    When running this script as `python scripts/generate_artifacts.py`,
+    When running this script as `python artifacts.py`,
     Python sets sys.path[0] to the scripts directory, so we need to add
     the project root to sys.path to import `app`.
     """
     try:
+        # Ensure project root (parent of this file's directory) is on sys.path
         root = Path(__file__).resolve().parents[1]
         sroot = str(root)
         if sroot not in sys.path:
@@ -60,7 +120,8 @@ def import_app_module():
 
 
 def find_videos(m, base: Path, recursive: bool) -> list[Path]:
-    """Use server's media filter to find eligible videos.
+    """
+    Use server's media filter to find eligible videos.
     This respects hidden/.previews rules and app.MEDIA_EXTS.
     """
     it = base.rglob("*") if recursive else base.iterdir()
@@ -80,7 +141,8 @@ def task_thumb(m, v: Path, force: bool):
 
 
 def task_hover(m, v: Path, progress=None, cancel=None, fmt: str = "webm"):
-    """Generate hover preview with optional progress and cancel callbacks.
+    """
+    Generate hover preview with optional progress and cancel callbacks.
     When a progress callback is provided, the backend uses a segmented path and
     reports per-segment progress via progress_cb(i, total).
     """
@@ -136,11 +198,20 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--ffmpeg-verbose", action="store_true", help="Print ffmpeg commands (sets FFMPEG_DEBUG=1)")
     ap.add_argument("--ffmpeg-loglevel", default=os.environ.get("FFMPEG_LOGLEVEL", "error"), choices=["quiet", "panic", "fatal", "error", "warning", "info"], help="ffmpeg -loglevel (default: error)")
     ap.add_argument("--hover-single-pass", action="store_true", help="Use single-pass filter graph for hover (no per-segment progress; avoids concat demuxer)")
+    ap.add_argument("--venv-status", action="store_true", help="Print the Python interpreter path in use and exit")
     # Default behavior: only-missing. Users can override with --recompute-all.
     ap.add_argument("--only-missing", action="store_true", default=None, help="Skip steps whose artifact already exists (default). Use --recompute-all to force regeneration.")
     ap.add_argument("--recompute-all", action="store_true", help="Force regenerate even if artifacts exist (overrides --only-missing)")
 
     args = ap.parse_args(argv)
+    if args.venv_status:
+        try:
+            interp = sys.executable
+            print(f"[cli] Interpreter: {interp}")
+            print(f"[cli] In venv: {'yes' if os.environ.get('VIRTUAL_ENV') or (sys.prefix != getattr(sys, 'base_prefix', sys.prefix)) else 'no'}")
+        except Exception:
+            pass
+        return 0
     root = Path(args.root).expanduser().resolve()
     if not root.exists() or not root.is_dir():
         print(f"[cli] Root not found or not a dir: {root}", file=sys.stderr)
@@ -191,7 +262,13 @@ def main(argv: list[str]) -> int:
     def steps_for_job() -> list[str]:
         if args.what == "all":
             return [
-                "metadata", "thumb", "hover", "sprites", "scenes", "heatmaps", "phash"
+                "metadata", 
+                "thumb", 
+                "hover", 
+                "sprites", 
+                "scenes", 
+                "heatmaps", 
+                "phash"
             ]
         return [args.what]
 

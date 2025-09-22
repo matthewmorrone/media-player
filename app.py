@@ -560,6 +560,68 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     finally:
         _FFMPEG_SEM.release()
 
+# -----------------------------
+# Per-file locks (in-proc + cross-proc)
+# -----------------------------
+try:
+    import fcntl as _fcntl  # type: ignore
+except Exception:
+    _fcntl = None  # type: ignore
+
+_FILE_LOCKS: dict[str, threading.Lock] = {}
+_FILE_LOCKS_MTX = threading.Lock()
+
+class _PerFileLock:
+    def __init__(self, video: Path, key: str):
+        self.video = video
+        self.key = key
+        self._lock: Optional[threading.Lock] = None
+        self._fd: Optional[int] = None
+
+    def __enter__(self):
+        k = f"{self.key}::{str(self.video.resolve())}"
+        with _FILE_LOCKS_MTX:
+            lock = _FILE_LOCKS.get(k)
+            if lock is None:
+                lock = threading.Lock()
+                _FILE_LOCKS[k] = lock
+        lock.acquire()
+        self._lock = lock
+        # Cross-process lock: place under artifact_dir/.locks/<key>.lock
+        try:
+            d = artifact_dir(self.video) / ".locks"
+            d.mkdir(parents=True, exist_ok=True)
+            lp = d / f"{self.key}.lock"
+            fd = os.open(lp, os.O_CREAT | os.O_RDWR, 0o644)
+            self._fd = fd
+            if _fcntl is not None:
+                try:
+                    _fcntl.flock(fd, _fcntl.LOCK_EX)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._fd is not None and _fcntl is not None:
+                try:
+                    _fcntl.flock(self._fd, _fcntl.LOCK_UN)
+                except Exception:
+                    pass
+        finally:
+            try:
+                if self._fd is not None:
+                    os.close(self._fd)
+            except Exception:
+                pass
+            try:
+                if self._lock is not None:
+                    self._lock.release()
+            except Exception:
+                pass
+
 def metadata_single(video: Path, *, force: bool = False) -> None:
     out = metadata_path(video)
     if out.exists() and not force:
@@ -718,7 +780,7 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
             except Exception:
                 pass
             return
-    
+
     duration = None
     try:
         if metadata_path(video).exists():
@@ -741,6 +803,8 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
         "-ss", f"{t:.3f}",
         "-i", str(video),
         "-frames:v", "1",
+        # Ensure even dimensions for broad encoder/player compatibility
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-q:v", str(max(2, min(31, int(quality)))),
         *(_ffmpeg_threads_flags()),
         str(out),
@@ -794,83 +858,99 @@ def generate_hover_preview(
     segs = max(1, int(segments))
     points = [((i + 1) / (segs + 1)) * (dur or (segs * seg_dur)) for i in range(segs)]
 
-    # Always prefer the robust single-pass filter graph; avoid segmented concat entirely
-    try_single_pass = True
+    # Prefer the robust single-pass filter graph; allow forcing fallback via env PREVIEW_SINGLE_PASS=0.
+    # IMPORTANT: When a progress callback is provided, prefer the multi-step path so we can
+    # emit per-segment progress updates. Single-pass ffmpeg cannot easily surface granular progress.
+    try:
+        _psp = os.environ.get("PREVIEW_SINGLE_PASS", "1")
+        try_single_pass = str(_psp).strip().lower() not in ("0", "false", "no")
+    except Exception:
+        try_single_pass = True
+    # If caller wants progress, force multi-step so we can report it
+    if progress_cb is not None:
+        try_single_pass = False
     # Runtime tunables for verbosity
     ff_loglevel = os.environ.get("FFMPEG_LOGLEVEL", "error")
     ff_debug = os.environ.get("FFMPEG_DEBUG") is not None
-    if try_single_pass:
-        # Try a single-pass ffmpeg using filter_complex (split/trim/concat); fallback to multi-step on failure
-        try:
-            trim_chains = []
-            split_labels = "".join([f"[v{i}]" for i in range(segs)])
-            parts = [f"[0:v]split={segs}{split_labels}"]
-            for i, start in enumerate(points):
-                parts.append(f"[v{i}]trim=start={start:.3f}:end={(start + seg_dur):.3f},setpts=PTS-STARTPTS[s{i}]")
-                trim_chains.append(f"[s{i}]")
-            concat_inputs = "".join(trim_chains)
-            parts.append(f"{concat_inputs}concat=n={segs}:v=1:a=0,scale={int(width)}:-1:force_original_aspect_ratio=decrease[outv]")
-            filter_complex = ";".join(parts)
-            base_cmd = [
-                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                *(_ffmpeg_hwaccel_flags()),
-                "-i", str(video),
-                "-filter_complex", filter_complex,
-                "-map", "[outv]",
-                "-an",
-            ]
-            # Try vp9 first, then fall back to libvpx if not available
-            if fmt == "mp4":
-                cmd = base_cmd + [
-                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
-                    "-movflags", "+faststart",
-                    *(_ffmpeg_threads_flags()),
-                    str(out),
+    # Per-file lock to avoid concurrent hover generation on the same file
+    with _PerFileLock(video, key="hover"):
+        if try_single_pass:
+            # Try a single-pass ffmpeg using filter_complex (split/trim/concat); fallback to multi-step on failure
+            try:
+                trim_chains = []
+                split_labels = "".join([f"[v{i}]" for i in range(segs)])
+                parts = [f"[0:v]split={segs}{split_labels}"]
+                for i, start in enumerate(points):
+                    parts.append(f"[v{i}]trim=start={start:.3f}:end={(start + seg_dur):.3f},setpts=PTS-STARTPTS[s{i}]")
+                    trim_chains.append(f"[s{i}]")
+                concat_inputs = "".join(trim_chains)
+                # Use -2 so ffmpeg chooses an even height (required by many encoders)
+                parts.append(f"{concat_inputs}concat=n={segs}:v=1:a=0,scale={int(width)}:-2:force_original_aspect_ratio=decrease[outv]")
+                filter_complex = ";".join(parts)
+                base_cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+                    *(_ffmpeg_hwaccel_flags()),
+                    "-i", str(video),
+                    "-filter_complex", filter_complex,
+                    "-map", "[outv]",
+                    "-an",
                 ]
-                if ff_debug:
-                    try:
-                        print("[hover] ffmpeg:", " ".join(cmd))
-                    except Exception:
-                        pass
-                proc = _run(cmd)
-            else:
-                cmd = base_cmd + [
-                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                    *_vp9_realtime_flags(),
-                    *(_ffmpeg_threads_flags()),
-                    str(out),
-                ]
-                if ff_debug:
-                    try:
-                        print("[hover] ffmpeg:", " ".join(cmd))
-                    except Exception:
-                        pass
-                proc = _run(cmd)
-                if (proc.returncode != 0 or not out.exists()):
-                    # Fallback to libvpx
+                # Try vp9 first, then fall back to libvpx if not available
+                if fmt == "mp4":
                     cmd = base_cmd + [
-                        "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                        *_vp9_realtime_flags(),
+                        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                        "-pix_fmt", "yuv420p",
+                        "-movflags", "+faststart",
                         *(_ffmpeg_threads_flags()),
                         str(out),
                     ]
                     if ff_debug:
                         try:
-                            print("[hover] ffmpeg (fallback):", " ".join(cmd))
+                            print("[hover] ffmpeg:", " ".join(cmd))
                         except Exception:
                             pass
                     proc = _run(cmd)
-            if proc.returncode == 0 and out.exists():
-                return out
-            # else fall through to legacy path
+                else:
+                    cmd = base_cmd + [
+                        "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                        *_vp9_realtime_flags(),
+                        "-pix_fmt", "yuv420p",
+                        *(_ffmpeg_threads_flags()),
+                        str(out),
+                    ]
+                    if ff_debug:
+                        try:
+                            print("[hover] ffmpeg:", " ".join(cmd))
+                        except Exception:
+                            pass
+                    proc = _run(cmd)
+                    if (proc.returncode != 0 or not out.exists()):
+                        # Fallback to libvpx
+                        cmd = base_cmd + [
+                            "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                            *_vp9_realtime_flags(),
+                            *(_ffmpeg_threads_flags()),
+                            str(out),
+                        ]
+                        if ff_debug:
+                            try:
+                                print("[hover] ffmpeg (fallback):", " ".join(cmd))
+                            except Exception:
+                                pass
+                        proc = _run(cmd)
+                    if proc.returncode == 0 and out.exists():
+                        return out
+                    # else fall through to legacy path
+            except Exception:
+                pass
         except Exception:
             pass
 
-    # Fallback: multi-step segments then concat (disabled by default since single-pass is preferred)
-    # Note: We keep this path for legacy/debug, but it's no longer selected by default.
-    with tempfile.TemporaryDirectory() as td:
-        td = str(td)
-        list_path = Path(td) / "list.txt"
+        # Fallback: multi-step segments then concat (disabled by default since single-pass is preferred)
+        # Note: We keep this path for legacy/debug, but it's no longer selected by default.
+        with tempfile.TemporaryDirectory() as td:
+            td = str(td)
+            list_path = Path(td) / "list.txt"
         clip_paths: list[Path] = []
         # Strategy: if final fmt is webm, produce MP4 segments to avoid Matroska/EBML issues,
         # concat to an MP4, then transcode the concatenated result to WebM.
@@ -880,7 +960,8 @@ def generate_hover_preview(
             if cancel_check and cancel_check():
                 raise RuntimeError("canceled")
             clip = Path(td) / f"seg_{i:02d}.{seg_fmt}"
-            vfilter = f"scale={width}:-1:force_original_aspect_ratio=decrease"
+            # Use -2 so computed height is even and encoder-friendly
+            vfilter = f"scale={width}:-2:force_original_aspect_ratio=decrease"
             cmd = [
                 "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                 *(_ffmpeg_hwaccel_flags()),
@@ -892,6 +973,7 @@ def generate_hover_preview(
             if seg_fmt == "mp4":
                 cmd += [
                     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                    "-pix_fmt", "yuv420p",
                     "-movflags", "+faststart",
                     *(_ffmpeg_threads_flags()),
                     str(clip),
@@ -906,6 +988,7 @@ def generate_hover_preview(
                 cmd += [
                     "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                     *_vp9_realtime_flags(),
+                    "-pix_fmt", "yuv420p",
                     *(_ffmpeg_threads_flags()),
                     str(clip),
                 ]
@@ -926,6 +1009,7 @@ def generate_hover_preview(
                         "-an",
                         "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                         *_vp9_realtime_flags(),
+                        "-pix_fmt", "yuv420p",
                         *(_ffmpeg_threads_flags()),
                         str(clip)
                     ]
@@ -953,11 +1037,14 @@ def generate_hover_preview(
             *(_ffmpeg_hwaccel_flags()),
             "-f", "concat", "-safe", "0",
             "-i", str(list_path),
+            # Map only the first video stream to avoid empty/mismatched outputs
+            "-map", "0:v:0",
             "-an",
         ]
         if seg_fmt == "mp4":
             cmd2 += [
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
                 *(_ffmpeg_threads_flags()),
                 str(concat_out),
@@ -972,6 +1059,7 @@ def generate_hover_preview(
             cmd2 += [
                 "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                 *_vp9_realtime_flags(),
+                "-pix_fmt", "yuv420p",
                 *(_ffmpeg_threads_flags()),
                 str(concat_out),
             ]
@@ -991,6 +1079,7 @@ def generate_hover_preview(
                     "-an",
                     "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                     *_vp9_realtime_flags(),
+                    "-pix_fmt", "yuv420p",
                     *(_ffmpeg_threads_flags()),
                     str(concat_out)
                 ]
@@ -1009,9 +1098,11 @@ def generate_hover_preview(
                 "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                 *(_ffmpeg_hwaccel_flags()),
                 "-i", str(concat_out),
+                "-map", "0:v:0",
                 "-an",
                 "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                 *_vp9_realtime_flags(),
+                "-pix_fmt", "yuv420p",
                 *(_ffmpeg_threads_flags()),
                 str(out),
             ]
@@ -1026,9 +1117,11 @@ def generate_hover_preview(
                     "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                     *(_ffmpeg_hwaccel_flags()),
                     "-i", str(concat_out),
+                    "-map", "0:v:0",
                     "-an",
                     "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                     *_vp9_realtime_flags(),
+                    "-pix_fmt", "yuv420p",
                     *(_ffmpeg_threads_flags()),
                     str(out),
                 ]
@@ -1279,16 +1372,18 @@ def generate_scene_artifacts(
         j.write_text(json.dumps({"scenes": scenes}, indent=2))
         return
 
-    # Use ffmpeg showinfo to find pts_time for frames exceeding scene threshold
-    thr = max(0.0, min(1.0, float(threshold)))
-    cmd = [
-        "ffmpeg", "-hide_banner",
-        *(_ffmpeg_hwaccel_flags()),
-        "-i", str(video),
-        "-filter_complex", f"select='gt(scene,{thr})',showinfo",
-        "-f", "null", "-",
-    ]
-    proc = _run(cmd)
+    # Per-file lock to prevent concurrent analyzers for the same video (server+CLI safe)
+    with _PerFileLock(video, key="scenes"):
+        # Use ffmpeg showinfo to find pts_time for frames exceeding scene threshold
+        thr = max(0.0, min(1.0, float(threshold)))
+        cmd = [
+            "ffmpeg", "-hide_banner",
+            *(_ffmpeg_hwaccel_flags()),
+            "-i", str(video),
+            "-filter_complex", f"select='gt(scene,{thr})',showinfo",
+            "-f", "null", "-",
+        ]
+        proc = _run(cmd)
     times: list[float] = []
     if proc.returncode == 0:
         for line in (proc.stderr or "").splitlines():
@@ -1398,10 +1493,12 @@ def generate_sprite_sheet(
         pass
     # Preferred path: use ffmpeg tile filter to build mosaic in one pass
     if ffmpeg_available():
+        # Lock per file to prevent concurrent sprite jobs for same video
+        with _PerFileLock(video, key="sprites"):
         # Build filter: fps (one frame per interval), scale to desired width, tile to mosaic
-        vf = f"fps=1/{max(0.001, float(interval))},scale={int(width)}:-1:flags=lanczos,tile={int(cols)}x{int(rows)}"
+            vf = f"fps=1/{max(0.001, float(interval))},scale={int(width)}:-2:flags=lanczos,tile={int(cols)}x{int(rows)}"
         # Cap input read duration to roughly the amount needed to fill the grid
-        cap_secs = max(0.5, float(interval) * float(cols) * float(rows) + min(float(interval), 2.0))
+            cap_secs = max(0.5, float(interval) * float(cols) * float(rows) + min(float(interval), 2.0))
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
             *(_ffmpeg_hwaccel_flags()),
@@ -1420,10 +1517,10 @@ def generate_sprite_sheet(
                 print("[sprites] ffmpeg:", " ".join(shlex.quote(x) for x in cmd))  # type: ignore[name-defined]
             except Exception:
                 pass
-            if progress_cb or cancel_check:
+                if progress_cb or cancel_check:
                 # Use Popen to allow polling for approximate progress and cancellation
                 # Enforce global ffmpeg concurrency even in this Popen path
-                _FFMPEG_SEM.acquire()
+                    _FFMPEG_SEM.acquire()
                 try:
                     proc = subprocess.Popen(
                         cmd,
@@ -1487,13 +1584,14 @@ def generate_sprite_sheet(
                             pass
                         break
                     time.sleep(0.2)
-            else:
-                proc = _run(cmd)
-            if proc.returncode != 0:
-                raise RuntimeError(proc.stderr or "ffmpeg sprite generation failed")
-        except Exception:
-            # Fall back to replicated thumbnail flow below
-            pass
+                else:
+                    proc = _run(cmd)
+                if proc.returncode != 0:
+                    raise RuntimeError(proc.stderr or "ffmpeg sprite generation failed")
+            except Exception:
+                # Fall back to replicated thumbnail flow below
+                pass
+            
         else:
             # Compute tile dimensions from output image
             try:
@@ -2612,13 +2710,22 @@ def _restore_jobs_on_start() -> None:
             data = json.loads(fp.read_text())
             jid = str(data.get("id") or fp.stem)
             base_type = _normalize_job_type(str(data.get("type") or ""))
-            # Restore job state
+            # Decide target state based on previous state and auto-restore setting
+            prev = str(data.get("state") or "").lower()
+            auto_restore = not bool(os.environ.get("JOB_AUTORESTORE_DISABLE"))
+            if prev in ("done", "failed", "canceled"):
+                target_state = prev
+            elif prev in ("queued", "running"):
+                target_state = "queued" if auto_restore else "restored"
+            else:
+                # Unknown or missing state: treat as restored (paused) unless auto-resume is enabled
+                target_state = "queued" if auto_restore else "restored"
             with JOB_LOCK:
                 JOBS[jid] = {
                     "id": jid,
                     "type": base_type,
                     "path": data.get("path"),
-                    "state": data.get("state") or "queued",
+                    "state": target_state,
                     "created_at": data.get("created_at"),
                     "started_at": data.get("started_at"),
                     "ended_at": data.get("ended_at"),
@@ -2630,11 +2737,8 @@ def _restore_jobs_on_start() -> None:
                     "request": data.get("request"),
                 }
                 JOB_CANCEL_EVENTS[jid] = threading.Event()
-            # If the previous state was running, treat it as queued for resume
-            prev = str(data.get("state") or "").lower()
-            if prev == "running":
-                with JOB_LOCK:
-                    JOBS[jid]["state"] = "queued"
+            # Persist any state normalization (e.g., running->queued, or queued->restored)
+            if prev != target_state:
                 _persist_job(jid)
         except Exception:
             continue
@@ -2844,7 +2948,9 @@ def _set_job_progress(jid: str, *, total: Optional[int] = None, processed_inc: i
 def _wrap_job(job_type: str, path: str, fn):
     jid = _new_job(job_type, path)
     try:
-        # FIFO gate: wait until this job is the earliest queued before starting
+        # FIFO gate: wait until this job is the earliest queued before starting.
+        # Jobs marked 'restored' (from persisted state with auto-restore disabled)
+        # are ignored by the turn calculation and won't block new work.
         _wait_for_turn(jid)
         # Enforce global job concurrency even for synchronous (request-thread) jobs
         fp = Path(path)
@@ -2934,6 +3040,7 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
                 for qq in JOBS.values()
                 if str(qq.get("state") or "") == "queued"
             ]
+            # Note: jobs in state 'restored' are paused and intentionally ignored here
             queued.sort(key=lambda x: (x[0], x[1]))
             if queued and queued[0][1] == jid:
                 # It's our turn
@@ -2970,8 +3077,8 @@ async def no_cache_middleware(request, call_next):
     resp = await call_next(request)
     path = request.url.path
     # Apply no-cache headers to all static files served from root directory and /static
-    if (path in {"/", "/index.css", "/index.js", "/old-index.html"} or 
-        path.startswith("/static") or 
+    if (path in {"/", "/index.css", "/index.js", "/old-index.html"} or
+        path.startswith("/static") or
         (not path.startswith("/api") and "." in path.split("/")[-1])):
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         resp.headers["Pragma"] = "no-cache"
@@ -3332,11 +3439,11 @@ def tags_export(directory: str = Query("."), recursive: bool = Query(False)):
     for v in vids:
         tf = _tags_file(v)
         data = {
-            "path": str(v), 
-            "name": v.name, 
-            "tags": [], 
+            "path": str(v),
+            "name": v.name,
+            "tags": [],
             "performers": [],
-            "description": "", 
+            "description": "",
             "rating": 0
         }
         if tf.exists():
@@ -4334,7 +4441,7 @@ def _hover_concat_path(video: Path) -> Path:
     # Store concatenated preview at artifact root (consistent location)
     return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_WEBM}"
 
-    
+
 
 @api.post("/hover/create")
 def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False)):
@@ -4348,7 +4455,24 @@ def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_d
         # Treat tiny/stub files as missing; only short-circuit when file is non-empty
         if _file_nonempty(out) and not overwrite:
             return api_success({"created": False, "path": str(out), "reason": "exists"})
-        # Force robust single-pass path by not passing progress_cb
+        # Initialize job progress so UI doesn't sit at 0% without totals
+        try:
+            jid = getattr(JOB_CTX, "jid", None)
+            if jid:
+                _set_job_progress(jid, total=int(segments), processed_set=0)
+        except Exception:
+            pass
+        # Provide a progress callback; it's used by the multi-step fallback path
+        def _pcb(i: int, n: int):
+            try:
+                jx = getattr(JOB_CTX, "jid", None)
+                if not jx:
+                    return
+                n = max(1, int(n))
+                i = max(0, min(int(i), n))
+                _set_job_progress(jx, total=n, processed_set=i)
+            except Exception:
+                pass
         out = generate_hover_preview(
             video,
             segments=int(segments),
@@ -4356,11 +4480,25 @@ def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_d
             width=int(width),
             fmt="webm",
             out=out,
-            progress_cb=None,
+            progress_cb=_pcb,
         )
         # Verify output is non-empty; if not, treat as failure so UI reflects reality
         if not _file_nonempty(out):
             raise RuntimeError("hover result too small or missing")
+        # Snap progress to completion and record result metadata for debugging
+        try:
+            jid2 = getattr(JOB_CTX, "jid", None)
+            if jid2:
+                _set_job_progress(jid2, processed_set=int(segments))
+                try:
+                    size = out.stat().st_size if out.exists() else 0
+                except Exception:
+                    size = 0
+                with JOB_LOCK:
+                    if jid2 in JOBS:
+                        JOBS[jid2]["result"] = {"path": str(out), "size": int(size)}
+        except Exception:
+            pass
         return api_success({"created": True, "path": str(out)})
     try:
         return _wrap_job("hover", str(video.relative_to(STATE["root"])), _do)
@@ -5167,6 +5305,223 @@ def subtitles_delete_batch(path: str = Query(default=""), recursive: bool = Quer
 @api.get("/root")
 def get_root():
     return api_success({"root": str(STATE["root"])})
+
+
+# --- Media management ---
+@api.post("/media/rename")
+def media_rename(
+    path: str = Query(..., description="Relative path of the existing media file under root"),
+    new_name: Optional[str] = Query(None, description="New filename (basename with extension). If not provided, 'to' must be given."),
+    to: Optional[str] = Query(None, description="Optional new relative path under root (directory and filename). Overrides new_name when provided."),
+    overwrite: bool = Query(default=False, description="Allow overwriting an existing destination file (rarely recommended)"),
+):
+    """
+    Rename a media file and move associated artifact files to match the new stem.
+
+    Accepts either:
+    - path + new_name (rename within same directory), or
+    - path + to (full destination relative path under root, may include subdirs)
+
+    Moves/renames known artifact sidecars in the source .artifacts directory to the
+    destination .artifacts directory, updating stems accordingly. Fails if destination
+    already exists unless overwrite=true.
+    """
+    if STATE.get("root") is None:
+        raise_api_error("Root not set", status_code=400)
+    # Resolve source
+    src = safe_join(STATE["root"], path)
+    if (not src.exists()) or (not src.is_file()):
+        raise_api_error("Source not found", status_code=404)
+    # Only allow renaming original media files (not artifacts)
+    try:
+        if src.name.startswith('.') or src.parent.name == '.artifacts':
+            raise_api_error("Cannot rename artifacts directly", status_code=400)
+    except Exception:
+        pass
+    # Determine destination path (relative under root)
+    if to is not None and str(to).strip() != "":
+        dst_rel = str(to).strip()
+    else:
+        if not new_name or str(new_name).strip() == "":
+            raise_api_error("Provide new_name or to", status_code=400)
+        dst_rel = str(src.parent.relative_to(STATE["root"])) + "/" + str(new_name).strip()
+    # Normalize and guard
+    dst = safe_join(STATE["root"], dst_rel)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if dst.exists():
+        if not overwrite:
+            raise_api_error("Destination already exists", status_code=409, data={"dest": str(dst.relative_to(STATE["root"]))})
+        if dst.is_dir():
+            raise_api_error("Destination is a directory", status_code=400)
+    # Validate filename safety
+    bn = dst.name
+    if bn in ("", ".", ".."):
+        raise_api_error("Invalid destination name", status_code=400)
+    # Require same extension type (prevent accidental extension change)
+    try:
+        if src.suffix.lower() != dst.suffix.lower():
+            raise_api_error("Changing file extension is not allowed", status_code=400)
+    except Exception:
+        pass
+
+    # Compute artifact moves
+    src_stem = src.stem
+    dst_stem = dst.stem
+    src_art = artifact_dir(src)
+    dst_art = artifact_dir(dst)
+    # Map of suffix constants to include in rename
+    suffixes = [
+        SUFFIX_METADATA_JSON,
+        SUFFIX_THUMBNAIL_JPG,
+        SUFFIX_PHASH_JSON,
+        SUFFIX_SCENES_JSON,
+        SUFFIX_SPRITES_JPG,
+        SUFFIX_SPRITES_JSON,
+        SUFFIX_HEATMAPS_JSON,
+        SUFFIX_HEATMAPS_PNG,
+        SUFFIX_FACES_JSON,
+        SUFFIX_PREVIEW_WEBM,
+        SUFFIX_SUBTITLES_SRT,
+    ]
+    # Also include scenes directory if present
+    scenes_dirname_old = f"{src_stem}.scenes"
+    scenes_dirname_new = f"{dst_stem}.scenes"
+
+    # Perform rename/moves atomically best-effort
+    try:
+        # Move main media first
+        os.rename(src, dst)
+    except Exception as e:
+        raise_api_error(f"Failed to move source: {e}", status_code=500)
+
+    moved: list[dict] = []
+    failed: list[str] = []
+    # Ensure artifact directory exists at destination
+    try:
+        dst_art.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    # Move sidecar files
+    for suf in suffixes:
+        try:
+            s = src_art / f"{src_stem}{suf}"
+            if s.exists():
+                d = dst_art / f"{dst_stem}{suf}"
+                # If destination exists and not overwriting, skip
+                if d.exists() and not overwrite:
+                    failed.append(str(s))
+                    continue
+                # Ensure parent
+                try: d.parent.mkdir(parents=True, exist_ok=True)
+                except Exception: pass
+                os.rename(s, d)
+                moved.append({"from": str(s.relative_to(STATE["root"])), "to": str(d.relative_to(STATE["root"]))})
+        except Exception:
+            try:
+                failed.append(str((src_art / f"{src_stem}{suf}").relative_to(STATE["root"])) )
+            except Exception:
+                failed.append(str(src_art / f"{src_stem}{suf}"))
+            continue
+    # Move scenes directory if present
+    try:
+        sdir = src_art / scenes_dirname_old
+        if sdir.exists() and sdir.is_dir():
+            ddir = dst_art / scenes_dirname_new
+            if ddir.exists() and (not overwrite):
+                # leave as-is to avoid clobbering
+                failed.append(str(sdir.relative_to(STATE["root"])) )
+            else:
+                try:
+                    # os.rename works across same volume; falls back to copy on other FS would fail
+                    os.rename(sdir, ddir)
+                    moved.append({"from": str(sdir.relative_to(STATE["root"])), "to": str(ddir.relative_to(STATE["root"]))})
+                except Exception:
+                    failed.append(str(sdir.relative_to(STATE["root"])) )
+    except Exception:
+        pass
+
+    return api_success({
+        "from": str(src.relative_to(STATE["root"])) if src.exists() else str(path),
+        "to": str(dst.relative_to(STATE["root"])) if dst.exists() else str(dst_rel),
+        "moved": moved,
+        "failed": failed,
+    })
+
+@api.delete("/media/delete")
+def media_delete(path: str = Query(..., description="Relative path of the media file under root")):
+    """
+    Delete a media file and its associated artifacts (sidecars and scenes directory).
+    This only affects files within the configured root and refuses to touch artifacts directly.
+    """
+    if STATE.get("root") is None:
+        raise_api_error("Root not set", status_code=400)
+    fp = safe_join(STATE["root"], path)
+    if (not fp.exists()) or (not fp.is_file()):
+        raise_api_error("Not found", status_code=404)
+    # Disallow deleting artifacts directly
+    try:
+        if fp.name.startswith('.') or fp.parent.name == '.artifacts':
+            raise_api_error("Not a media file", status_code=400)
+    except Exception:
+        pass
+    base = fp.parent
+    # Collect artifacts
+    src_stem = fp.stem
+    art = artifact_dir(fp)
+    suffixes = [
+        SUFFIX_METADATA_JSON,
+        SUFFIX_THUMBNAIL_JPG,
+        SUFFIX_PHASH_JSON,
+        SUFFIX_SCENES_JSON,
+        SUFFIX_SPRITES_JPG,
+        SUFFIX_SPRITES_JSON,
+        SUFFIX_HEATMAPS_JSON,
+        SUFFIX_HEATMAPS_PNG,
+        SUFFIX_FACES_JSON,
+        SUFFIX_PREVIEW_WEBM,
+        SUFFIX_SUBTITLES_SRT,
+    ]
+    scenes_dirname = f"{src_stem}.scenes"
+    deleted: list[str] = []
+    failed: list[str] = []
+    # Delete main file
+    try:
+        fp.unlink()
+        deleted.append(str(fp.relative_to(STATE["root"])) )
+    except Exception:
+        raise_api_error("Failed to delete file", status_code=500)
+    # Delete artifacts best-effort
+    for suf in suffixes:
+        try:
+            p = art / f"{src_stem}{suf}"
+            if p.exists():
+                p.unlink()
+                try:
+                    deleted.append(str(p.relative_to(STATE["root"])) )
+                except Exception:
+                    deleted.append(str(p))
+        except Exception:
+            try:
+                failed.append(str((art / f"{src_stem}{suf}").relative_to(STATE["root"])) )
+            except Exception:
+                failed.append(str(art / f"{src_stem}{suf}"))
+    try:
+        sdir = art / scenes_dirname
+        if sdir.exists() and sdir.is_dir():
+            shutil.rmtree(sdir, ignore_errors=False)
+            try:
+                deleted.append(str(sdir.relative_to(STATE["root"])) )
+            except Exception:
+                deleted.append(str(sdir))
+    except Exception:
+        try:
+            failed.append(str((art / scenes_dirname).relative_to(STATE["root"])) )
+        except Exception:
+            failed.append(str(art / scenes_dirname))
+    return api_success({"deleted": deleted, "failed": failed})
 
 @api.post("/setroot")
 def set_root(root: str = Query(...)):
@@ -6052,7 +6407,7 @@ def set_marker(path: str = Query(...), time: float = Query(...)):
         pass
     return api_success({"saved": True, "count": len(data.get("scenes", []))})
 
- 
+
 
 
 # Wire router (moved to end after all routes are defined)
@@ -6094,7 +6449,7 @@ def artifacts_orphans_status(
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
-    
+
     # Gather all artifacts under .artifacts directories
     artifacts: list[Path] = []
     for p in base.rglob(".artifacts"):
@@ -6103,19 +6458,19 @@ def artifacts_orphans_status(
         for f in p.iterdir():
             if f.is_file() and _parse_artifact_name(f.name):
                 artifacts.append(f)
-    
+
     media_by_stem, _ = _collect_media_and_meta(base)
-    
+
     orphaned: list[str] = []
     matched: list[str] = []
-    
+
     for art in artifacts:
         try:
             parsed = _parse_artifact_name(art.name)
             if not parsed:
                 continue
             a_stem, kind = parsed
-            
+
             # Check if corresponding media exists
             cand_media = media_by_stem.get(a_stem)
             if cand_media and cand_media.exists():
@@ -6124,7 +6479,7 @@ def artifacts_orphans_status(
                 orphaned.append(str(art.relative_to(base)))
         except Exception:
             continue
-    
+
     return api_success({
         "total_artifacts": len(artifacts),
         "matched": len(matched),
@@ -6166,14 +6521,14 @@ def tasks_coverage(path: str = Query(default="")):
         base = safe_join(STATE["root"], path) if path else STATE["root"]
         if not base.exists() or not base.is_dir():
             raise_api_error("Path not found", status_code=404)
-        
+
         # Find all video files
         videos = _find_mp4s(base, recursive=True)
         total_count = len(videos)
-        
+
         # Count artifacts for each type
         coverage = {}
-        
+
         # Metadata artifacts
         metadata_count = sum(1 for v in videos if metadata_path(v).exists())
         coverage["metadata"] = {
@@ -6181,7 +6536,7 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - metadata_count,
             "total": total_count
         }
-        
+
         # Thumbnail artifacts
         thumbs_count = sum(1 for v in videos if thumbs_path(v).exists())
         coverage["thumbnails"] = {
@@ -6189,7 +6544,7 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - thumbs_count,
             "total": total_count
         }
-        
+
         # Sprite artifacts (require both sheet and index json)
         def _sprites_ok(v: Path) -> bool:
             s, jj = sprite_sheet_paths(v)
@@ -6200,7 +6555,7 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - sprite_count,
             "total": total_count
         }
-        
+
         # Preview artifacts (concatenated hover preview files)
         preview_count = 0
         for v in videos:
@@ -6213,7 +6568,7 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - preview_count,
             "total": total_count
         }
-        
+
         # Phash artifacts
         phash_count = sum(1 for v in videos if phash_path(v).exists())
         coverage["phash"] = {
@@ -6221,7 +6576,7 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - phash_count,
             "total": total_count
         }
-        
+
         # Scene artifacts
         scenes_count = sum(1 for v in videos if scenes_json_exists(v))
         coverage["scenes"] = {
@@ -6271,9 +6626,9 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - faces_count,
             "total": total_count,
         }
-        
+
         return api_success({"coverage": coverage})
-        
+
     except Exception as e:
         raise_api_error(f"Failed to get coverage: {str(e)}")
 
@@ -6288,20 +6643,20 @@ def tasks_batch_operation(request: Request):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         body = loop.run_until_complete(request.json())
-        
+
         operation = body.get("operation")
         mode = body.get("mode")  # 'missing' or 'all'
         fileSelection = body.get("fileSelection")  # 'all' or 'selected'
         params = body.get("params", {})
         path = body.get("path", "")
-        
+
         base = safe_join(STATE["root"], path) if path else STATE["root"]
         if not base.exists() or not base.is_dir():
             raise_api_error("Path not found", status_code=404)
-        
+
         # Get list of videos to process
         all_videos = _find_mp4s(base, recursive=True)
-        
+
         # Filter based on file selection
         if fileSelection == "selected":
             # For now, process all files since we don't have selection context
@@ -6309,13 +6664,13 @@ def tasks_batch_operation(request: Request):
             videos_to_process = all_videos
         else:
             videos_to_process = all_videos
-        
+
         # Filter based on mode (missing vs all)
         if mode == "missing":
             filtered_videos = []
             for video in videos_to_process:
                 needs_processing = False
-                
+
                 if operation == "metadata" and not metadata_path(video).exists():
                     needs_processing = True
                 elif operation == "thumbnails" and not thumbs_path(video).exists():
@@ -6341,19 +6696,19 @@ def tasks_batch_operation(request: Request):
                     needs_processing = True
                 elif operation == "faces" and not faces_exists_check(video):
                     needs_processing = True
-                
+
                 if needs_processing:
                     filtered_videos.append(video)
-            
+
             videos_to_process = filtered_videos
-        
+
         if not videos_to_process:
             return api_success({
                 "message": "No files need processing",
                 "fileCount": 0,
                 "job": None
             })
-        
+
         # Create job request
         task_name = operation
         if operation == "thumbnails":
@@ -6362,7 +6717,7 @@ def tasks_batch_operation(request: Request):
             task_name = "hover"  # Backend uses 'hover' for previews
 
         job_params = {}
-        
+
         # Map frontend params to backend params
         if operation == "thumbnails":
             job_params["time"] = params.get("offset", 10)
@@ -6418,7 +6773,7 @@ def tasks_batch_operation(request: Request):
             if bool(params.get("force", False)):
                 # Force recompute even if outputs exist
                 job_params["overwrite"] = True
-        
+
         # When running only missing, pass explicit targets so job progress reflects the actual work set
         targets: list[str] = []
         if mode == "missing" and videos_to_process:
@@ -6583,7 +6938,7 @@ def tasks_batch_operation(request: Request):
             "fileCount": len(videos_to_process),
             "message": f"Queued {len(created_jobs)} {operation} jobs for {len(videos_to_process)} files"
         })
-        
+
     except Exception as e:
         raise_api_error(f"Failed to start batch operation: {str(e)}")
 
@@ -6595,7 +6950,7 @@ def tasks_jobs():
     try:
         with JOB_LOCK:
             all_jobs = list(JOBS.values())
-        
+
         # Format jobs for frontend
         formatted_jobs = []
         root = STATE["root"].resolve()
@@ -6662,7 +7017,7 @@ def tasks_jobs():
                     formatted_job["target"] = target_path_str
             except Exception:
                 pass
-            
+
             # Calculate progress percentage
             total = job.get("total")
             processed = job.get("processed")
@@ -6681,16 +7036,16 @@ def tasks_jobs():
                 formatted_job["progress"] = 100
             else:
                 formatted_job["progress"] = pct_val if pct_val is not None else 0
-            
+
             formatted_jobs.append(formatted_job)
-        
+
         # Calculate stats
         now = time.time()
         # Active = actually running jobs (not queued)
         active_jobs = [j for j in all_jobs if j.get("state") == "running"]
         queued_jobs = [j for j in all_jobs if j.get("state") == "queued"]
         failed_jobs = [j for j in all_jobs if j.get("state") == "failed"]
-        
+
         # Count completed jobs from today
         completed_today = 0
         for job in all_jobs:
@@ -6698,14 +7053,14 @@ def tasks_jobs():
                 # Simple check for jobs completed in last 24 hours
                 if now - job.get("ended_at", 0) < 86400:
                     completed_today += 1
-        
+
         stats = {
             "active": len(active_jobs),
             "queued": len(queued_jobs),
             "failed": len(failed_jobs),
             "completedToday": completed_today
         }
-        
+
         # Prioritize live jobs (running first, then queued), then recent others.
         live = [j for j in formatted_jobs if j.get("status") in ("running", "queued")]
         rest = [j for j in formatted_jobs if j.get("status") not in ("running", "queued")]
@@ -6744,7 +7099,7 @@ def tasks_cancel_job(job_id: str):
         if ev is None:
             raise_api_error("Job not found", status_code=404)
             return  # This line will never execute but helps type checker
-        
+
         ev.set()
         # Immediately terminate any active subprocesses for this job (e.g., ffmpeg)
         try:
@@ -6755,11 +7110,11 @@ def tasks_cancel_job(job_id: str):
             j = JOBS.get(job_id)
             if j and j.get("state") in ("queued", "running"):
                 j["state"] = "cancel_requested"
-        
+
         _publish_job_event({"event": "cancel", "id": job_id})
-        
+
         return api_success({"message": "Job cancelled", "job": job_id})
-        
+
     except Exception as e:
         raise_api_error(f"Failed to cancel job: {str(e)}")
 
@@ -6818,6 +7173,69 @@ def tasks_cancel_all():
         return api_success({"canceled": count})
     except Exception as e:
         raise_api_error(f"Failed to cancel all jobs: {str(e)}")
+
+
+@api.post("/tasks/jobs/resume-restored")
+def tasks_resume_restored():
+    """
+    Resume all jobs in 'restored' state that have a saved request payload by queuing
+    worker threads. This is a manual alternative to auto-restore on startup.
+    """
+    try:
+        to_resume: list[tuple[str, dict]] = []
+        with JOB_LOCK:
+            for jid, j in JOBS.items():
+                if str(j.get("state") or "").lower() == "restored" and isinstance(j.get("request"), dict):
+                    to_resume.append((jid, dict(j["request"])))
+        count = 0
+        for jid, req_data in to_resume:
+            try:
+                jr = JobRequest(
+                    task=str(req_data.get("task") or ""),
+                    directory=req_data.get("directory"),
+                    recursive=bool(req_data.get("recursive", False)),
+                    force=bool(req_data.get("force", False)),
+                    params=dict(req_data.get("params") or {}),
+                )
+                def _runner(jid=jid, jr=jr):
+                    with JOB_RUN_SEM:
+                        _run_job_worker(jid, jr)
+                with JOB_LOCK:
+                    j = JOBS.get(jid)
+                    if j:
+                        j["state"] = "queued"
+                        _persist_job(jid)
+                threading.Thread(target=_runner, name=f"job-resume-{jid}", daemon=True).start()
+                count += 1
+            except Exception:
+                continue
+        return api_success({"resumed": count})
+    except Exception as e:
+        raise_api_error(f"Failed to resume restored jobs: {str(e)}")
+
+
+@api.post("/tasks/jobs/clear-restored")
+def tasks_clear_restored():
+    """
+    Remove jobs in 'restored' state from memory and delete their persisted .jobs files.
+    Useful to declutter after a dev session with auto-restore disabled.
+    """
+    try:
+        removed = 0
+        with JOB_LOCK:
+            ids = [jid for jid, j in JOBS.items() if str(j.get("state") or "").lower() == "restored"]
+            for jid in ids:
+                JOBS.pop(jid, None)
+                JOB_CANCEL_EVENTS.pop(jid, None)
+                removed += 1
+                try:
+                    _delete_persisted_job(jid)
+                except Exception:
+                    pass
+        _publish_job_event({"event": "purge_restored", "removed": removed})
+        return api_success({"removed": removed})
+    except Exception as e:
+        raise_api_error(f"Failed to clear restored jobs: {str(e)}")
 
 
 @api.get("/tasks/concurrency")
@@ -7362,7 +7780,7 @@ app.include_router(api)
 def serve_static_file(filepath: str):
     """
     Serve static files from root directory and subdirectories like components/tabs.html"""
-    
+
     file_path = _STATIC / filepath
     # Security check: ensure the resolved path is still within _STATIC
     try:
@@ -7370,7 +7788,7 @@ def serve_static_file(filepath: str):
         static_root = _STATIC.resolve()
         # Check if file_path is within static_root
         file_path.relative_to(static_root)
-        
+
         if file_path.exists() and file_path.is_file():
             # Determine MIME type
             mime_type, _ = mimetypes.guess_type(str(file_path))
@@ -8087,11 +8505,17 @@ def _run_job_worker(jid: str, jr: JobRequest):
                         continue
             else:
                 vids = _iter_videos(base, bool(jr.recursive))
-            # Simple per-file progress; avoid per-segment to keep single-pass robust pipeline
-            _set_job_progress(jid, total=max(0, len(vids)), processed_set=0)
+            # Progress semantics:
+            # - Single-file job: track per-segment progress so UI moves from 0% while encoding
+            # - Multi-file job: keep per-file progress (processed files out of total files)
             segments = int(prm.get("segments", 9))
             duration = float(prm.get("duration", 1.0))
             width = int(prm.get("width", 320))
+            single_file = len(vids) == 1
+            if single_file:
+                _set_job_progress(jid, total=max(1, segments), processed_set=0)
+            else:
+                _set_job_progress(jid, total=max(0, len(vids)), processed_set=0)
             done_files = 0
             for v in vids:
                 if _job_check_canceled(jid):
@@ -8104,10 +8528,24 @@ def _run_job_worker(jid: str, jr: JobRequest):
                     with lk:
                         if _file_nonempty(out_path) and not bool(jr.force):
                             done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
+                            # For multi-file jobs, count completed files; for single-file jobs, we'll set final below
+                            if single_file:
+                                _set_job_progress(jid, processed_set=segments)
+                            else:
+                                _set_job_progress(jid, processed_set=done_files)
                         else:
                             def _cc() -> bool:
                                 return _job_check_canceled(jid)
+                            def _pcb(i: int, n: int):
+                                # Only emit per-segment progress for single-file jobs
+                                if not single_file:
+                                    return
+                                try:
+                                    ni = max(1, int(n))
+                                    ii = max(0, min(int(i), ni))
+                                    _set_job_progress(jid, total=ni, processed_set=ii)
+                                except Exception:
+                                    pass
                             generate_hover_preview(
                                 v,
                                 segments=segments,
@@ -8115,14 +8553,21 @@ def _run_job_worker(jid: str, jr: JobRequest):
                                 width=width,
                                 fmt="webm",
                                 out=out_path,
-                                progress_cb=None,
+                                progress_cb=_pcb if single_file else None,
                                 cancel_check=_cc,
                             )
                             done_files += 1
-                            _set_job_progress(jid, processed_set=done_files)
+                            if single_file:
+                                _set_job_progress(jid, processed_set=segments)
+                            else:
+                                _set_job_progress(jid, processed_set=done_files)
                 except Exception:
                     done_files += 1
-                    _set_job_progress(jid, processed_set=done_files)
+                    if single_file:
+                        # On error, snap to 100% so job doesn't appear stuck
+                        _set_job_progress(jid, processed_set=segments)
+                    else:
+                        _set_job_progress(jid, processed_set=done_files)
             _set_job_current(jid, None)
             _job_set_result(jid, {"processed": len(vids)})
             _finish_job(jid)
@@ -8357,7 +8802,7 @@ def jobs_cancel(job_id: str):
     return {"id": job_id, "status": "cancel_requested"}
 
 
- 
+
 
 # Ensure the alias is registered even if defined after the router was included
 try:
@@ -8486,4 +8931,50 @@ if __name__ == "__main__":  # pragma: no cover
             STATE["root"] = Path(root).expanduser().resolve()
         except Exception:
             pass
-    uvicorn.run("app:app", host="127.0.0.1", port=9999, reload=True)
+    # Mirror serve.sh behavior when running directly: honor HOST/PORT and exclude
+    # artifact/state paths from reload to avoid thrashing/crashes during development.
+    host = os.environ.get("HOST", "127.0.0.1")
+    try:
+        port = int(os.environ.get("PORT", "9999") or 9999)
+    except Exception:
+        port = 9999
+    # Default to disabling job auto-restore under reload in direct runs
+    os.environ.setdefault("JOB_AUTORESTORE_DISABLE", "1")
+    # Only apply reload_excludes if the watchfiles backend is available
+    have_watchfiles = False
+    try:
+        import importlib  # noqa: F401
+        import watchfiles  # type: ignore  # noqa: F401
+        have_watchfiles = True
+    except Exception:
+        have_watchfiles = False
+    reload_excludes = None
+    if have_watchfiles:
+        reload_excludes = [
+            ".jobs/*",
+            "**/.jobs/*",
+            "**/.artifacts/*",
+            "**/.previews/*",
+            "**/*.preview.webm",
+        ]
+    try:
+        if reload_excludes is not None:
+            cfg = uvicorn.Config(
+                "app:app",
+                host=host,
+                port=port,
+                reload=True,
+                reload_excludes=reload_excludes,
+            )
+        else:
+            cfg = uvicorn.Config(
+                "app:app",
+                host=host,
+                port=port,
+                reload=True,
+            )
+        server = uvicorn.Server(cfg)
+        server.run()
+    except Exception:
+        # Fallback to basic run if Config signature differs (older uvicorn)
+        uvicorn.run("app:app", host=host, port=port, reload=True)
