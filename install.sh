@@ -13,7 +13,7 @@ cd "$SCRIPT_DIR"
 # Flags
 DO_REQUIRED=1
 DO_OPTIONAL=0
-DO_APT_OPENCV=0
+## apt-based OpenCV install is now part of optional flow; no separate flag needed
 
 # Baked-in dependency sets (no external files needed)
 # Adjust these arrays if you need to tweak dependencies.
@@ -27,27 +27,24 @@ REQUIRED_PKGS=(
 )
 
 # Optional extras for extended features (install with: ./install.sh --optional)
-# Raspberry Pi friendly, headless set:
-# - opencv-python-headless: Face detection without GUI deps
-# - numpy: required by face pipelines
+# Raspberry Pi friendly:
+# - numpy: required by face pipelines and OpenCV
 # Subtitles on Pi default to whisper.cpp (built automatically on Linux when --optional is used).
 # If you explicitly want faster-whisper, install it manually: `pip install faster-whisper`
 # (requires FFmpeg dev libs for PyAV on ARM).
 OPTIONAL_PKGS=(
-  opencv-python-headless
   numpy
 )
 
 usage() {
   cat <<'EOF'
-Usage: ./install.sh [--required|--no-required] [--optional|--no-optional] [--apt-opencv]
+Usage: ./install.sh [--required|--no-required] [--optional|--no-optional]
 
 Options:
   --required       Install required dependencies from requirements.txt (default)
   --no-required    Do not install required dependencies
-  --optional       Install optional extras from optional.txt (best effort)
+  --optional       Install optional extras (best effort). Also attempts to enable OpenCV via system package on Linux if needed.
   --no-optional    Do not install optional extras (default)
-  --apt-opencv     If OpenCV pip wheel fails and system OpenCV isn't found, attempt apt-get install python3-opencv (Linux/Debian)
   -h, --help       Show this help and exit
 EOF
 }
@@ -58,7 +55,6 @@ for arg in "$@"; do
     --no-required) DO_REQUIRED=0 ;;
     --optional) DO_OPTIONAL=1 ;;
     --no-optional) DO_OPTIONAL=0 ;;
-    --apt-opencv) DO_APT_OPENCV=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[install] Unknown argument: $arg" >&2; usage; exit 2 ;;
   esac
@@ -70,7 +66,7 @@ VENV_PATH="${VENV_PATH:-$SCRIPT_DIR/.venv}"
 echo "[install] Repo: $SCRIPT_DIR"
 echo "[install] Python: $(command -v "$PY_BIN" || echo not-found)"
 echo "[install] Venv: $VENV_PATH"
-echo "[install] Required: $DO_REQUIRED, Optional: $DO_OPTIONAL, Apt-OpenCV: $DO_APT_OPENCV"
+echo "[install] Required: $DO_REQUIRED, Optional: $DO_OPTIONAL"
 
 mkdir -p "$(dirname "$VENV_PATH")" || true
 if [ ! -x "$VENV_PATH/bin/python" ]; then
@@ -171,11 +167,11 @@ if [ "$DO_OPTIONAL" = "1" ]; then
       fi
     fi
 
-    # If still not found, optionally try apt-get (Debian/Raspbian/Ubuntu)
+    # If still not found, try apt-get (Debian/Raspbian/Ubuntu)
     if [ -z "$SYS_CV2_DIR" ] || [ ! -d "$SYS_CV2_DIR" ]; then
       echo "[install] System OpenCV not found in common Python paths."
-      if [ "$DO_APT_OPENCV" = "1" ] && command -v apt-get >/dev/null 2>&1; then
-        echo "[install] Installing python3-opencv via apt (requires sudo)..."
+      if command -v apt-get >/dev/null 2>&1; then
+        echo "[install] Attempting to install python3-opencv via apt (requires sudo)..."
         if sudo apt-get update && sudo apt-get install -y python3-opencv libopencv-dev; then
           # Retry detection once after install
           SYS_CV2_DIR="$($SYS_PY -c 'import os, sys, glob\ntry:\n    import cv2\n    print(os.path.dirname(cv2.__file__))\nexcept Exception:\n    pass\nfor p in sys.path:\n    try:\n        if os.path.isdir(os.path.join(p, "cv2")):\n            print(p); break\n        so = glob.glob(os.path.join(p, "cv2.*.so")) or glob.glob(os.path.join(p, "cv2.so"))\n        if so:\n            print(p); break\n        py = os.path.join(p, "cv2.py")\n        if os.path.isfile(py):\n            print(p); break\n    except Exception:\n        pass' 2>/dev/null || true)"
@@ -274,6 +270,10 @@ PY
       echo "[install] Using piwheels.org for ARM wheels (PIP_INDEX_URL)"
     fi
   fi
+  # First, try to enable OpenCV from system packages (on Linux). This will attempt apt-get if needed.
+  echo "[install] Optional: enabling OpenCV via system package if available (Linux only) ..."
+  link_system_opencv || true
+
   if [ ${#OPTIONAL_PKGS[@]} -eq 0 ]; then
     echo "[install] Optional package set is empty (none to install)"
   else
@@ -288,10 +288,6 @@ PY
       echo "[install] pip install $pkg"
       if ! pip install "$pkg"; then
         echo "[install] WARNING: failed to install $pkg — continuing"
-        # Fallback for OpenCV on Debian/Raspberry Pi: use system python3-opencv inside venv
-        if [ "$pkg" = "opencv-python-headless" ] && [ "$UNAME_S" = "Linux" ]; then
-          link_system_opencv || true
-        fi
       fi
     done
   fi

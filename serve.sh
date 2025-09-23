@@ -129,6 +129,9 @@ then
     --reload-exclude "**/.artifacts/*"
     --reload-exclude "**/.previews/*"
     --reload-exclude "**/*.preview.webm"
+    # Avoid reloads when editing or touching the CLI helper
+    --reload-exclude "artifacts.py"
+    --reload-exclude "**/artifacts.py"
   )
 else
   # Optional: restrict to current dir to avoid watching parent trees on some setups
@@ -136,8 +139,13 @@ else
   :
 fi
 
-exec uvicorn app:app \
-  --reload \
-  --host "$HOST" \
-  --port "$PORT" \
-  ${EXCLUDE_FLAGS:+"${EXCLUDE_FLAGS[@]}"}
+if [ "${DEV_STRICT_CONTENT_RELOAD:-}" = "1" ]; then
+  echo "[serve] Using strict content-change reloader (DEV_STRICT_CONTENT_RELOAD=1)"
+  exec python dev_reload.py
+else
+  exec uvicorn app:app \
+    --reload \
+    --host "$HOST" \
+    --port "$PORT" \
+    ${EXCLUDE_FLAGS:+"${EXCLUDE_FLAGS[@]}"}
+fi

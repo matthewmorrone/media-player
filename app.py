@@ -397,6 +397,7 @@ SUFFIX_HEATMAPS_JSON = ".heatmaps.json"
 SUFFIX_HEATMAPS_PNG = ".heatmaps.png"
 SUFFIX_FACES_JSON = ".faces.json"
 SUFFIX_PREVIEW_WEBM = ".preview.webm"
+SUFFIX_PREVIEW_JSON = ".preview.json"
 SUFFIX_SUBTITLES_SRT = ".subtitles.srt"
 HIDDEN_DIR_SUFFIX_PREVIEWS = ".previews"
 
@@ -484,10 +485,32 @@ def _terminate_job_processes(jid: str, grace_seconds: float = 2.0) -> int:
 # Global ffmpeg concurrency gate
 # -----------------------------
 try:
-    _FFMPEG_CONCURRENCY = max(1, min(8, int(os.environ.get("FFMPEG_CONCURRENCY", "2"))))
+    _FFMPEG_CONCURRENCY = max(1, min(16, int(os.environ.get("FFMPEG_CONCURRENCY", "2"))))
 except Exception:
     _FFMPEG_CONCURRENCY = 2
 _FFMPEG_SEM = threading.BoundedSemaphore(_FFMPEG_CONCURRENCY)
+_FFMPEG_SEM_GUARD = threading.Lock()
+
+def _set_ffmpeg_concurrency(new_val: int) -> int:
+    """Adjust the FFmpeg concurrency gate at runtime.
+    We swap the global semaphore safely; callers capture a local reference before acquire/release.
+    Returns the effective concurrency.
+    """
+    global _FFMPEG_CONCURRENCY, _FFMPEG_SEM
+    try:
+        target = max(1, min(16, int(new_val)))
+    except Exception:
+        target = 1
+    with _FFMPEG_SEM_GUARD:
+        # Swap semaphore; callers use local captured ref for release safety
+        _FFMPEG_SEM = threading.BoundedSemaphore(target)
+        _FFMPEG_CONCURRENCY = target
+    # Also mirror into environment for visibility
+    try:
+        os.environ["FFMPEG_CONCURRENCY"] = str(target)
+    except Exception:
+        pass
+    return _FFMPEG_CONCURRENCY
 
 # (removed: legacy global job concurrency gate; see Jobs subsystem for active JOB_RUN_SEM)
 
@@ -554,11 +577,17 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     if not is_ffmpeg:
         return _run_inner(cmd)
 
-    _FFMPEG_SEM.acquire()
+    # Capture local reference to tolerate runtime swaps
+    local_sem = _FFMPEG_SEM
+    local_sem.acquire()
     try:
         return _run_inner(cmd)
     finally:
-        _FFMPEG_SEM.release()
+        try:
+            local_sem.release()
+        except Exception:
+            # In case of unexpected swap or other error, avoid crashing
+            pass
 
 # -----------------------------
 # Per-file locks (in-proc + cross-proc)
@@ -829,6 +858,19 @@ def generate_hover_preview(
 ) -> Path:
     out = out or (artifact_dir(video) / f"{video.stem}.preview.{fmt}")
     out.parent.mkdir(parents=True, exist_ok=True)
+    # Collect debug/inspection info to persist next to the preview
+    hover_info: dict[str, Any] = {
+        "status": "started",
+        "strategy": None,
+        "video": str(video),
+        "output": str(out),
+        "fmt": (fmt or "webm").lower(),
+        "width": int(width),
+        "seg_dur": float(seg_dur),
+        "segments_planned": int(segments),
+        "segments_used": 0,
+        "points": [],
+    }
     # Allow operation without ffprobe: we'll skip duration probing and use uniform spacing
     # If explicitly disabled, or ffmpeg missing, write a lightweight stub to keep pipelines moving.
     if os.environ.get("FFPROBE_DISABLE") and not ffmpeg_available():
@@ -856,112 +898,141 @@ def generate_hover_preview(
     except Exception:
         dur = None
     segs = max(1, int(segments))
-    points = [((i + 1) / (segs + 1)) * (dur or (segs * seg_dur)) for i in range(segs)]
+    # Choose start times robustly; if we know duration, keep segments within [0, dur-seg_dur]
+    if dur and dur > 0:
+        max_start = max(0.0, float(dur) - float(seg_dur) * 1.05)
+        if max_start <= 0:
+            points = [0.0]
+            segs = 1
+        else:
+            points = [min(max_start, ((i + 1) / (segs + 1)) * max_start) for i in range(segs)]
+    else:
+        # Without duration, space samples conservatively starting at 0
+        points = [max(0.0, i * float(seg_dur)) for i in range(segs)]
+    try:
+        hover_info["points"] = [float(f"{p:.3f}") for p in points]
+    except Exception:
+        pass
 
-    # Prefer the robust single-pass filter graph; allow forcing fallback via env PREVIEW_SINGLE_PASS=0.
-    # IMPORTANT: When a progress callback is provided, prefer the multi-step path so we can
-    # emit per-segment progress updates. Single-pass ffmpeg cannot easily surface granular progress.
+    # Prefer single-pass when no progress callback; otherwise multi-step to report progress
     try:
         _psp = os.environ.get("PREVIEW_SINGLE_PASS", "1")
         try_single_pass = str(_psp).strip().lower() not in ("0", "false", "no")
     except Exception:
         try_single_pass = True
-    # If caller wants progress, force multi-step so we can report it
     if progress_cb is not None:
         try_single_pass = False
-    # Runtime tunables for verbosity
     ff_loglevel = os.environ.get("FFMPEG_LOGLEVEL", "error")
     ff_debug = os.environ.get("FFMPEG_DEBUG") is not None
-    # Per-file lock to avoid concurrent hover generation on the same file
-    with _PerFileLock(video, key="hover"):
-        if try_single_pass:
-            # Try a single-pass ffmpeg using filter_complex (split/trim/concat); fallback to multi-step on failure
-            try:
-                trim_chains = []
-                split_labels = "".join([f"[v{i}]" for i in range(segs)])
-                parts = [f"[0:v]split={segs}{split_labels}"]
-                for i, start in enumerate(points):
-                    parts.append(f"[v{i}]trim=start={start:.3f}:end={(start + seg_dur):.3f},setpts=PTS-STARTPTS[s{i}]")
-                    trim_chains.append(f"[s{i}]")
-                concat_inputs = "".join(trim_chains)
-                # Use -2 so ffmpeg chooses an even height (required by many encoders)
-                parts.append(f"{concat_inputs}concat=n={segs}:v=1:a=0,scale={int(width)}:-2:force_original_aspect_ratio=decrease[outv]")
-                filter_complex = ";".join(parts)
-                base_cmd = [
-                    "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                    *(_ffmpeg_hwaccel_flags()),
-                    "-i", str(video),
-                    "-filter_complex", filter_complex,
-                    "-map", "[outv]",
-                    "-an",
-                ]
-                # Try vp9 first, then fall back to libvpx if not available
-                if fmt == "mp4":
-                    cmd = base_cmd + [
-                        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
-                        "-pix_fmt", "yuv420p",
-                        "-movflags", "+faststart",
-                        *(_ffmpeg_threads_flags()),
-                        str(out),
+
+    # Per-file lock to avoid concurrent hover generation on same file
+    try:
+        with _PerFileLock(video, key="hover"):
+            if try_single_pass:
+                try:
+                    trim_chains: list[str] = []
+                    split_labels = "".join([f"[v{i}]" for i in range(segs)])
+                    parts = [f"[0:v]split={segs}{split_labels}"]
+                    for i, start in enumerate(points):
+                        parts.append(f"[v{i}]trim=start={start:.3f}:end={(start + seg_dur):.3f},setpts=PTS-STARTPTS[s{i}]")
+                        trim_chains.append(f"[s{i}]")
+                    concat_inputs = "".join(trim_chains)
+                    parts.append(
+                        f"{concat_inputs}concat=n={segs}:v=1:a=0,"
+                        f"scale={int(width)}:-2:force_original_aspect_ratio=decrease,"
+                        f"pad=ceil(iw/2)*2:ceil(ih/2)*2[outv]"
+                    )
+                    filter_complex = ";".join(parts)
+                    base_cmd = [
+                        "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+                        *(_ffmpeg_hwaccel_flags()),
+                        "-i", str(video),
+                        "-filter_complex", filter_complex,
+                        "-map", "[outv]",
+                        "-an",
                     ]
-                    if ff_debug:
-                        try:
-                            print("[hover] ffmpeg:", " ".join(cmd))
-                        except Exception:
-                            pass
-                    proc = _run(cmd)
-                else:
-                    cmd = base_cmd + [
-                        "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                        *_vp9_realtime_flags(),
-                        "-pix_fmt", "yuv420p",
-                        *(_ffmpeg_threads_flags()),
-                        str(out),
-                    ]
-                    if ff_debug:
-                        try:
-                            print("[hover] ffmpeg:", " ".join(cmd))
-                        except Exception:
-                            pass
-                    proc = _run(cmd)
-                    if (proc.returncode != 0 or not out.exists()):
-                        # Fallback to libvpx
+                    if fmt == "mp4":
                         cmd = base_cmd + [
-                            "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                            *_vp9_realtime_flags(),
+                            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                            "-pix_fmt", "yuv420p",
+                            "-movflags", "+faststart",
                             *(_ffmpeg_threads_flags()),
                             str(out),
                         ]
                         if ff_debug:
                             try:
-                                print("[hover] ffmpeg (fallback):", " ".join(cmd))
+                                print("[hover] ffmpeg:", " ".join(cmd))
                             except Exception:
                                 pass
                         proc = _run(cmd)
-                    if proc.returncode == 0 and out.exists():
-                        return out
-                    # else fall through to legacy path
-            except Exception:
-                pass
-        except Exception:
-            pass
+                        if proc.returncode == 0 and _file_nonempty(out):
+                            if ff_debug:
+                                try:
+                                    print(f"[hover] success (single-pass mp4): {out} size={out.stat().st_size}")
+                                except Exception:
+                                    pass
+                            try:
+                                hover_info.update({"status": "ok", "strategy": "single-pass-mp4", "segments_used": int(segs)})
+                                _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
+                            except Exception:
+                                pass
+                            return out
+                    else:
+                        cmd = base_cmd + [
+                            "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                            *_vp9_realtime_flags(),
+                            "-pix_fmt", "yuv420p",
+                            *(_ffmpeg_threads_flags()),
+                            str(out),
+                        ]
+                        if ff_debug:
+                            try:
+                                print("[hover] ffmpeg:", " ".join(cmd))
+                            except Exception:
+                                pass
+                        proc = _run(cmd)
+                        if (proc.returncode != 0 or not _file_nonempty(out)):
+                            cmd = base_cmd + [
+                                "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                                *_vp9_realtime_flags(),
+                                *(_ffmpeg_threads_flags()),
+                                str(out),
+                            ]
+                            if ff_debug:
+                                try:
+                                    print("[hover] ffmpeg (fallback):", " ".join(cmd))
+                                except Exception:
+                                    pass
+                            proc = _run(cmd)
+                        if proc.returncode == 0 and _file_nonempty(out):
+                            if ff_debug:
+                                try:
+                                    print(f"[hover] success (single-pass webm): {out} size={out.stat().st_size}")
+                                except Exception:
+                                    pass
+                            try:
+                                hover_info.update({"status": "ok", "strategy": "single-pass-webm", "segments_used": int(segs)})
+                                _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
+                            except Exception:
+                                pass
+                            return out
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
-        # Fallback: multi-step segments then concat (disabled by default since single-pass is preferred)
-        # Note: We keep this path for legacy/debug, but it's no longer selected by default.
-        with tempfile.TemporaryDirectory() as td:
-            td = str(td)
-            list_path = Path(td) / "list.txt"
+    # Multi-step fallback: segments then concat via filter
+    with tempfile.TemporaryDirectory() as td:
+        td = str(td)
+        list_path = Path(td) / "list.txt"
         clip_paths: list[Path] = []
-        # Strategy: if final fmt is webm, produce MP4 segments to avoid Matroska/EBML issues,
-        # concat to an MP4, then transcode the concatenated result to WebM.
         final_fmt = (fmt or "webm").lower()
         seg_fmt = "mp4" if final_fmt == "webm" else final_fmt
         for i, start in enumerate(points, start=1):
             if cancel_check and cancel_check():
                 raise RuntimeError("canceled")
             clip = Path(td) / f"seg_{i:02d}.{seg_fmt}"
-            # Use -2 so computed height is even and encoder-friendly
-            vfilter = f"scale={width}:-2:force_original_aspect_ratio=decrease"
+            vfilter = f"scale={width}:-2:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2"
             cmd = [
                 "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                 *(_ffmpeg_hwaccel_flags()),
@@ -999,7 +1070,6 @@ def generate_hover_preview(
                         pass
                 proc = _run(cmd)
                 if proc.returncode != 0 or not clip.exists():
-                    # Fallback to libvpx
                     cmd = [
                         "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                         *(_ffmpeg_hwaccel_flags()),
@@ -1020,6 +1090,12 @@ def generate_hover_preview(
                             pass
                     proc = _run(cmd)
             if proc.returncode != 0:
+                try:
+                    err = (proc.stderr or '').strip()
+                    if err:
+                        print('[hover] segment error:', err)
+                except Exception:
+                    pass
                 raise RuntimeError(proc.stderr.strip() or "ffmpeg segment failed")
             clip_paths.append(clip)
             if progress_cb:
@@ -1027,112 +1103,234 @@ def generate_hover_preview(
                     progress_cb(i, segs)
                 except Exception:
                     pass
-        with list_path.open("w") as f:
-            for cp in clip_paths:
-                f.write(f"file '{cp.as_posix()}'\n")
-        # Concat into an intermediate when segment fmt != final fmt; else write directly to 'out'
-        concat_out = (Path(td) / f"concat.{seg_fmt}") if seg_fmt != final_fmt else out
-        cmd2 = [
-            "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-            *(_ffmpeg_hwaccel_flags()),
-            "-f", "concat", "-safe", "0",
-            "-i", str(list_path),
-            # Map only the first video stream to avoid empty/mismatched outputs
-            "-map", "0:v:0",
-            "-an",
-        ]
-        if seg_fmt == "mp4":
-            cmd2 += [
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
-                "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart",
-                *(_ffmpeg_threads_flags()),
-                str(concat_out),
-            ]
-            if ff_debug:
-                try:
-                    print("[hover] ffmpeg concat:", " ".join(cmd2))
-                except Exception:
-                    pass
-            proc2 = _run(cmd2)
-        else:
-            cmd2 += [
-                "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                *_vp9_realtime_flags(),
-                "-pix_fmt", "yuv420p",
-                *(_ffmpeg_threads_flags()),
-                str(concat_out),
-            ]
-            if ff_debug:
-                try:
-                    print("[hover] ffmpeg concat:", " ".join(cmd2))
-                except Exception:
-                    pass
-            proc2 = _run(cmd2)
-            if proc2.returncode != 0 or not out.exists():
-                # Fallback to libvpx
-                cmd2 = [
+        # Validate segments have video streams; skip bad ones to avoid filtergraph ':v' errors
+        def _has_video_stream(p: Path) -> bool:
+            if not p.exists() or p.stat().st_size == 0:
+                return False
+            if not ffprobe_available():
+                return True
+            pr = _run([
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                str(p),
+            ])
+            return pr.returncode == 0 and bool((pr.stdout or '').strip())
+
+        valid_clip_paths: list[Path] = []
+        for cp in clip_paths:
+            if _has_video_stream(cp):
+                valid_clip_paths.append(cp)
+            else:
+                if ff_debug:
+                    try:
+                        print(f"[hover] skipping segment without video: {cp}")
+                    except Exception:
+                        pass
+        clip_paths = valid_clip_paths
+
+        if not clip_paths:
+            # Final fallback: try encoding a short preview directly from the source
+            # Attempt from 0s, then from 10% into the file if duration known
+            def _try_direct(start_time: float) -> bool:
+                base_cmd = [
                     "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                     *(_ffmpeg_hwaccel_flags()),
-                    "-f", "concat", "-safe", "0",
-                    "-i", str(list_path),
+                    "-ss", f"{max(0.0, start_time):.3f}", "-i", str(video), "-t", f"{float(seg_dur):.3f}",
+                    "-vf", f"scale={int(width)}:-2:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2",
                     "-an",
-                    "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                    *_vp9_realtime_flags(),
-                    "-pix_fmt", "yuv420p",
-                    *(_ffmpeg_threads_flags()),
-                    str(concat_out)
+                ]
+                if final_fmt == "webm":
+                    cmdx = base_cmd + [
+                        "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                        *_vp9_realtime_flags(),
+                        "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
+                    ]
+                else:
+                    cmdx = base_cmd + [
+                        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                        "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
+                    ]
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg direct-fallback:", " ".join(cmdx))
+                    except Exception:
+                        pass
+                pr = _run(cmdx)
+                return pr.returncode == 0 and _file_nonempty(out)
+
+            tried = _try_direct(0.0)
+            if not tried and (dur and dur > 0):
+                _ = _try_direct(max(0.0, float(dur) * 0.1))
+                tried = _file_nonempty(out)
+            if not tried:
+                raise RuntimeError("no hover segments with video; aborting concat")
+            # Direct fallback succeeded; return final output
+            try:
+                hover_info.update({
+                    "status": "ok",
+                    "strategy": "direct-fallback",
+                    "segments_used": 1,
+                })
+                _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
+            except Exception:
+                pass
+            return out
+
+        # If only a single valid segment, transcode straight to final output
+        if len(clip_paths) == 1:
+            single = clip_paths[0]
+            base_cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y", *(_ffmpeg_hwaccel_flags()), "-i", str(single), "-an",
+            ]
+            if final_fmt == "webm":
+                cmd1 = base_cmd + [
+                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()), *_vp9_realtime_flags(), "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
                 ]
                 if ff_debug:
                     try:
-                        print("[hover] ffmpeg concat (fallback):", " ".join(cmd2))
+                        print("[hover] ffmpeg single->webm:", " ".join(cmd1))
                     except Exception:
                         pass
-                proc2 = _run(cmd2)
-        if proc2.returncode != 0:
-            raise RuntimeError(proc2.stderr.strip() or "ffmpeg concat failed")
-        # If the final format is different from the segment/concat format (webm requested), transcode once more
-        if seg_fmt != final_fmt:
-            # Transcode MP4 -> WebM (VP9). Fallback to libvpx if needed.
-            cmd3 = [
-                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                *(_ffmpeg_hwaccel_flags()),
-                "-i", str(concat_out),
-                "-map", "0:v:0",
-                "-an",
+                pr = _run(cmd1)
+                if pr.returncode != 0:
+                    # Retry without hwaccel in case decoder selection is the issue
+                    cmd1 = [
+                        "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y", "-i", str(single), "-an", "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()), *_vp9_realtime_flags(), "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
+                    ]
+                    pr = _run(cmd1)
+            else:
+                cmd1 = base_cmd + [
+                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()), "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
+                ]
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg single->mp4:", " ".join(cmd1))
+                    except Exception:
+                        pass
+                pr = _run(cmd1)
+                if pr.returncode != 0:
+                    cmd1 = [
+                        "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+                        "-i", str(single), "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()), "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
+                    ]
+                    pr = _run(cmd1)
+            if pr.returncode != 0 or not out.exists():
+                try:
+                    err = (pr.stderr or '').strip()
+                    if err:
+                        print('[hover] single segment transcode error:', err)
+                except Exception:
+                    pass
+                raise RuntimeError(pr.stderr.strip() or "ffmpeg single segment transcode failed")
+            return out
+
+        # Concat via filter_complex with multiple inputs; encode directly to final output
+        try:
+            hover_info["segments_used"] = int(len(clip_paths))
+            hover_info["strategy"] = "segments-concat"
+        except Exception:
+            pass
+        cmd2 = [
+            "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+            *(_ffmpeg_hwaccel_flags()),
+        ]
+        for cp in clip_paths:
+            cmd2 += ["-i", str(cp)]
+        n = len(clip_paths)
+        inputs_chain = "".join([f"[{i}:v]" for i in range(n)])
+        filter_concat = (
+            f"{inputs_chain}concat=n={n}:v=1:a=0,"
+            f"pad=ceil(iw/2)*2:ceil(ih/2)*2[outv]"
+        )
+        cmd2 += [
+            "-filter_complex", filter_concat,
+            "-map", "[outv]",
+            "-an",
+        ]
+        if final_fmt == "webm":
+            cmd2 += [
                 "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                 *_vp9_realtime_flags(),
                 "-pix_fmt", "yuv420p",
                 *(_ffmpeg_threads_flags()),
                 str(out),
             ]
-            if ff_debug:
-                try:
-                    print("[hover] ffmpeg transcode (mp4->webm):", " ".join(cmd3))
-                except Exception:
+        else:
+            cmd2 += [
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                *(_ffmpeg_threads_flags()),
+                str(out),
+            ]
+        if ff_debug:
+            try:
+                print("[hover] ffmpeg concat-filter:", " ".join(cmd2))
+            except Exception:
+                pass
+        proc2 = _run(cmd2)
+        if proc2.returncode != 0:
+            # Retry without hwaccel flags once; sometimes decoder selection causes ':v' matching issues
+            cmd2_no_hw = []
+            for t in cmd2:
+                if isinstance(t, str):
+                    # simply rebuild without calling _ffmpeg_hwaccel_flags; easiest: reconstruct
                     pass
-            proc3 = _run(cmd3)
-            if (proc3.returncode != 0 or not out.exists()):
-                cmd3 = [
-                    "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                    *(_ffmpeg_hwaccel_flags()),
-                    "-i", str(concat_out),
-                    "-map", "0:v:0",
-                    "-an",
-                    "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+            cmd2_no_hw = [
+                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+            ]
+            for cp in clip_paths:
+                cmd2_no_hw += ["-i", str(cp)]
+            cmd2_no_hw += [
+                "-filter_complex", filter_concat,
+                "-map", "[outv]",
+                "-an",
+            ]
+            if final_fmt == "webm":
+                cmd2_no_hw += [
+                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                     *_vp9_realtime_flags(),
                     "-pix_fmt", "yuv420p",
                     *(_ffmpeg_threads_flags()),
                     str(out),
                 ]
-                if ff_debug:
-                    try:
-                        print("[hover] ffmpeg transcode fallback (mp4->webm):", " ".join(cmd3))
-                    except Exception:
-                        pass
-                proc3 = _run(cmd3)
-            if proc3.returncode != 0:
-                raise RuntimeError(proc3.stderr.strip() or "ffmpeg transcode failed")
+            else:
+                cmd2_no_hw += [
+                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                    *(_ffmpeg_threads_flags()),
+                    str(out),
+                ]
+            if ff_debug:
+                try:
+                    print("[hover] ffmpeg concat-filter (no hwaccel):", " ".join(cmd2_no_hw))
+                except Exception:
+                    pass
+            proc2 = _run(cmd2_no_hw)
+        if proc2.returncode != 0:
+            try:
+                err = (proc2.stderr or '').strip()
+                if err:
+                    print('[hover] concat-filter error:', err)
+            except Exception:
+                pass
+            raise RuntimeError(proc2.stderr.strip() or "ffmpeg concat filter failed")
+    # Final guard: only succeed with a non-empty output file
+    if not _file_nonempty(out):
+        raise RuntimeError("hover output missing or too small after processing")
+    if ff_debug:
+        try:
+            print(f"[hover] success: {out} size={out.stat().st_size}")
+        except Exception:
+            pass
+    try:
+        hover_info.update({"status": "ok"})
+        _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
+    except Exception:
+        pass
     return out
 
 # ---------
@@ -1383,19 +1581,80 @@ def generate_scene_artifacts(
             "-filter_complex", f"select='gt(scene,{thr})',showinfo",
             "-f", "null", "-",
         ]
-        proc = _run(cmd)
-    times: list[float] = []
-    if proc.returncode == 0:
-        for line in (proc.stderr or "").splitlines():
-            # showinfo lines contain "pts_time:<float>"
-            m = re.search(r"pts_time:(?P<t>[0-9]+\.[0-9]+)", line)
-            if m:
-                try:
-                    t = float(m.group("t"))
-                    if not times or abs(times[-1] - t) > 0.25:  # avoid duplicates
-                        times.append(t)
-                except Exception:
-                    pass
+        # Stream stderr/stdout to incrementally parse showinfo and emit progress
+        times: list[float] = []
+        # Estimate duration for progress (best-effort)
+        duration: Optional[float] = None
+        try:
+            if metadata_path(video).exists():
+                duration = extract_duration(json.loads(metadata_path(video).read_text()))
+            else:
+                metadata_single(video, force=False)
+                duration = extract_duration(json.loads(metadata_path(video).read_text()))
+        except Exception:
+            duration = None
+        _local_sem = _FFMPEG_SEM
+        _local_sem.acquire()
+        proc_rc: Optional[int] = None
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+            try:
+                _register_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+            except Exception:
+                pass
+            # Incremental parse
+            last_ts: float = 0.0
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    if not line:
+                        continue
+                    try:
+                        m = re.search(r"pts_time:(?P<t>[0-9]+\.[0-9]+)", line)
+                        if m:
+                            t = float(m.group("t"))
+                            # dedupe close times
+                            if (not times) or abs(times[-1] - t) > 0.25:
+                                times.append(t)
+                            last_ts = t
+                        # update approximate pass progress based on last seen timestamp
+                        if duration and duration > 0:
+                            frac = max(0.0, min(1.0, float(last_ts) / float(duration)))
+                            jid = getattr(JOB_CTX, "jid", None)
+                            if jid:
+                                try:
+                                    _set_job_progress(jid, total=100, processed_set=int(frac * 100))
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    # cancel check
+                    ev = JOB_CANCEL_EVENTS.get(getattr(JOB_CTX, "jid", ""))
+                    if ev is not None and ev.is_set():
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except Exception:
+                            proc.terminate()
+                        raise RuntimeError("canceled")
+            proc_rc = proc.wait()
+        finally:
+            try:
+                _local_sem.release()
+            except Exception:
+                pass
+            try:
+                _unregister_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+            except Exception:
+                pass
+    # Outside lock scope: continue processing
+    times = times if 'times' in locals() else []
+    if int(proc_rc or 0) != 0 and not times:
+        times = []
 
     if limit and limit > 0:
         times = times[: int(limit)]
@@ -1495,130 +1754,300 @@ def generate_sprite_sheet(
     if ffmpeg_available():
         # Lock per file to prevent concurrent sprite jobs for same video
         with _PerFileLock(video, key="sprites"):
-        # Build filter: fps (one frame per interval), scale to desired width, tile to mosaic
-            vf = f"fps=1/{max(0.001, float(interval))},scale={int(width)}:-2:flags=lanczos,tile={int(cols)}x{int(rows)}"
-        # Cap input read duration to roughly the amount needed to fill the grid
-            cap_secs = max(0.5, float(interval) * float(cols) * float(rows) + min(float(interval), 2.0))
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
-            *(_ffmpeg_hwaccel_flags()),
-            "-t", f"{cap_secs:.3f}",
-            "-i", str(video),
-            "-an",  # no audio processing
-            "-vf", vf,
-            "-vsync", "vfr",
-            "-frames:v", "1",
-            *(_ffmpeg_threads_flags()),
-            str(sheet),
-        ]
-        try:
-            # Helpful logging so users can see long-running sprite jobs
+            # Build filter:
+            # - Normalize timestamps to frame count to avoid hwaccel/decoder PTS oddities (prevents duplicate selection)
+            # - fps to sample one frame per interval with a slight start offset to avoid the very first frame
+            # - scale to desired width and tile to mosaic
+            start_time = max(0.0, float(interval) * 0.5)
+            vf = (
+                f"setpts=N/FRAME_RATE/TB,"
+                f"fps=1/{max(0.001, float(interval))}:start_time={start_time},"
+                f"scale={int(width)}:-2:flags=lanczos,"
+                f"tile={int(cols)}x{int(rows)}"
+            )
+            # Estimate an input cap to provide enough samples to fill the grid without over-reading
+            # Prefer real duration when available to prevent overrun on short clips.
             try:
-                print("[sprites] ffmpeg:", " ".join(shlex.quote(x) for x in cmd))  # type: ignore[name-defined]
+                dur = None
+                if metadata_path(video).exists():
+                    dur = extract_duration(json.loads(metadata_path(video).read_text()))
+                else:
+                    metadata_single(video, force=False)
+                    dur = extract_duration(json.loads(metadata_path(video).read_text()))
             except Exception:
-                pass
-                if progress_cb or cancel_check:
-                # Use Popen to allow polling for approximate progress and cancellation
-                # Enforce global ffmpeg concurrency even in this Popen path
-                    _FFMPEG_SEM.acquire()
+                dur = None
+            target_frames = int(max(1, int(cols) * int(rows)))
+            base_secs = float(interval) * float(target_frames)
+            if isinstance(dur, (int, float)) and dur and float(dur) > 0:
+                cap_secs = min(float(dur), base_secs + max(float(interval) * 2.0, 2.0))
+            else:
+                cap_secs = max(0.5, base_secs + max(float(interval) * 2.0, 2.0))
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
+                *(_ffmpeg_hwaccel_flags()),
+                "-t", f"{cap_secs:.3f}",
+                "-i", str(video),
+                "-an",  # no audio processing
+                "-vf", vf,
+                "-frames:v", "1",
+                *(_ffmpeg_threads_flags()),
+                str(sheet),
+            ]
+            try:
+                # Helpful logging so users can see long-running sprite jobs
                 try:
-                    proc = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        start_new_session=True,
-                    )
-                except Exception:
-                    # If spawn fails, release the slot and re-raise
-                    _FFMPEG_SEM.release()
-                    raise
-                try:
-                    _register_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+                    print("[sprites] ffmpeg:", " ".join(shlex.quote(x) for x in cmd))  # type: ignore[name-defined]
                 except Exception:
                     pass
-                start_time = time.time()
-                steps = 100
-                while True:
-                    rc = proc.poll()
-                    now = time.time()
-                    # update approx progress
-                    if progress_cb:
+                proc_rc: Optional[int] = None
+                proc_err_text: str = ""
+                if progress_cb or cancel_check:
+                    # Use Popen to allow polling for approximate progress and cancellation
+                    # Enforce global ffmpeg concurrency even in this Popen path
+                    _local_sem = _FFMPEG_SEM
+                    _local_sem.acquire()
+                    try:
+                        proc = subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            start_new_session=True,
+                        )
+                    except Exception:
+                        # If spawn fails, release the slot and re-raise
                         try:
-                            frac = 0.0
+                            _local_sem.release()
+                        except Exception:
+                            pass
+                        raise
+                    try:
+                        _register_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+                    except Exception:
+                        pass
+                    start_time = time.time()
+                    steps = 100
+                    while True:
+                        rc = proc.poll()
+                        now = time.time()
+                        # update approx progress
+                        if progress_cb:
                             try:
-                                frac = min(1.0, max(0.0, (now - start_time) / cap_secs))
-                            except Exception:
                                 frac = 0.0
-                            progress = int(frac * steps)
-                            progress_cb(progress, steps)
-                        except Exception:
-                            pass
-                    # handle cancel
-                    if cancel_check and cancel_check():
-                        try:
-                            proc.terminate()
-                            try:
-                                proc.wait(timeout=2)
-                            except Exception:
-                                proc.kill()
-                        except Exception:
-                            pass
-                        # Release ffmpeg slot on cancel
-                        try:
-                            _FFMPEG_SEM.release()
-                        except Exception:
-                            pass
-                        raise RuntimeError("canceled")
-                    if rc is not None:
-                        # ensure 100% on success
-                        if rc == 0 and progress_cb:
-                            try:
-                                progress_cb(steps, steps)
+                                try:
+                                    frac = min(1.0, max(0.0, (now - start_time) / cap_secs))
+                                except Exception:
+                                    frac = 0.0
+                                progress = int(frac * steps)
+                                progress_cb(progress, steps)
                             except Exception:
                                 pass
-                        # Release ffmpeg slot when the process ends
-                        try:
-                            _FFMPEG_SEM.release()
-                        except Exception:
-                            pass
-                        break
-                    time.sleep(0.2)
+                        # handle cancel
+                        if cancel_check and cancel_check():
+                            try:
+                                proc.terminate()
+                                try:
+                                    proc.wait(timeout=2)
+                                except Exception:
+                                    proc.kill()
+                            except Exception:
+                                pass
+                            # Release ffmpeg slot on cancel
+                            try:
+                                _local_sem.release()
+                            except Exception:
+                                pass
+                            try:
+                                _unregister_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+                            except Exception:
+                                pass
+                            raise RuntimeError("canceled")
+                        if rc is not None:
+                            # ensure 100% on success
+                            if rc == 0 and progress_cb:
+                                try:
+                                    progress_cb(steps, steps)
+                                except Exception:
+                                    pass
+                            # Release ffmpeg slot when the process ends
+                            try:
+                                _local_sem.release()
+                            except Exception:
+                                pass
+                            # Capture stderr for diagnostics and unregister tracked process
+                            try:
+                                _out_text, _err_text = proc.communicate()
+                                proc_err_text = str(_err_text or "")
+                            except Exception:
+                                proc_err_text = ""
+                            try:
+                                _unregister_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+                            except Exception:
+                                pass
+                            proc_rc = int(rc)
+                            break
+                        time.sleep(0.2)
                 else:
                     proc = _run(cmd)
-                if proc.returncode != 0:
-                    raise RuntimeError(proc.stderr or "ffmpeg sprite generation failed")
+                    proc_rc = int(proc.returncode)
+                    try:
+                        proc_err_text = str(proc.stderr or "")
+                    except Exception:
+                        proc_err_text = ""
+                if int(proc_rc or 0) != 0:
+                    try:
+                        err = (proc_err_text or '').strip()
+                        if err:
+                            print('[sprites] ffmpeg error:', err)
+                    except Exception:
+                        pass
+                    raise RuntimeError(proc_err_text or "ffmpeg sprite generation failed")
             except Exception:
                 # Fall back to replicated thumbnail flow below
                 pass
-            
-        else:
-            # Compute tile dimensions from output image
-            try:
-                from PIL import Image  # type: ignore
-                with Image.open(sheet) as im:
-                    sheet_w, sheet_h = im.size
-            except Exception:
-                # If PIL not available at runtime, approximate tile_h by 9:16 aspect
-                sheet_w = int(width * cols)
-                sheet_h = int((width * 9 // 16) * rows)
-            tile_w = int(max(1, sheet_w // max(1, cols)))
-            tile_h = int(max(1, sheet_h // max(1, rows)))
-            frames = int(cols * rows)
-            meta = {
-                "cols": int(cols),
-                "rows": int(rows),
-                "interval": float(interval),
-                "width": int(width),
-                "tile_width": int(tile_w),
-                "tile_height": int(tile_h),
-                "frames": int(frames),
-                # legacy keys for compatibility
-                "grid": [int(cols), int(rows)],
-                "tile": [int(tile_w), int(tile_h)],
-            }
-            j.write_text(json.dumps(meta, indent=2))
-            return
+            else:
+                # Compute tile dimensions from output image
+                try:
+                    from PIL import Image  # type: ignore
+                    with Image.open(sheet) as im:
+                        sheet_w, sheet_h = im.size
+                except Exception:
+                    # If PIL not available at runtime, approximate tile_h by 9:16 aspect
+                    sheet_w = int(width * cols)
+                    sheet_h = int((width * 9 // 16) * rows)
+                tile_w = int(max(1, sheet_w // max(1, cols)))
+                tile_h = int(max(1, sheet_h // max(1, rows)))
+                # Optional: sanity check for duplicate tiles; progressively try to improve uniqueness.
+                try:
+                    from PIL import Image  # type: ignore
+                    import hashlib
+
+                    def _unique_tiles_count(path: Path, tw: int, th: int, c: int, r: int) -> int:
+                        try:
+                            with Image.open(path) as _im:
+                                _im = _im.convert('RGB')
+                                _hashes: list[str] = []
+                                for _rr in range(r):
+                                    for _cc in range(c):
+                                        _box = (_cc * tw, _rr * th, (_cc + 1) * tw, (_rr + 1) * th)
+                                        _tile = _im.crop(_box)
+                                        _h = hashlib.md5(_tile.tobytes()).hexdigest()
+                                        _hashes.append(_h)
+                                return len(set(_hashes))
+                        except Exception:
+                            return 0
+
+                    total_tiles = int(cols * rows)
+                    # Start with conservative threshold: require at least 25% unique tiles
+                    min_unique = max(1, total_tiles // 4)
+                    unique = _unique_tiles_count(sheet, tile_w, tile_h, int(cols), int(rows))
+
+                    # Fallback 1: slight jitter to sampling start to avoid boundary/keyframe bias
+                    if unique < min_unique:
+                        try:
+                            jitter = max(0.01, float(interval) * 0.15)
+                            start_time2 = max(0.0, float(interval) * 0.5 + jitter)
+                            vf2 = (
+                                f"setpts=N/FRAME_RATE/TB,"
+                                f"fps=1/{max(0.001, float(interval))}:start_time={start_time2},"
+                                f"scale={int(width)}:-2:flags=lanczos,"
+                                f"tile={int(cols)}x{int(rows)}"
+                            )
+                            cmd2 = [
+                                "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
+                                *(_ffmpeg_hwaccel_flags()),
+                                "-t", f"{cap_secs:.3f}",
+                                "-i", str(video),
+                                "-an",
+                                "-vf", vf2,
+                                "-frames:v", "1",
+                                *(_ffmpeg_threads_flags()),
+                                str(sheet),
+                            ]
+                            _run(cmd2)
+                            unique = _unique_tiles_count(sheet, tile_w, tile_h, int(cols), int(rows))
+                        except Exception:
+                            pass
+
+                    # Fallback 2: drop near-identical frames before sampling (mpdecimate), then fps
+                    if unique < min_unique:
+                        try:
+                            vf3 = (
+                                f"setpts=N/FRAME_RATE/TB,"
+                                f"mpdecimate,"
+                                f"fps=1/{max(0.001, float(interval))}:start_time={max(0.0, float(interval) * 0.5)},"
+                                f"scale={int(width)}:-2:flags=lanczos,"
+                                f"tile={int(cols)}x{int(rows)}"
+                            )
+                            cmd3 = [
+                                "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
+                                *(_ffmpeg_hwaccel_flags()),
+                                # For decimation, scan more broadly (omit -t cap)
+                                "-i", str(video),
+                                "-an",
+                                "-vf", vf3,
+                                "-frames:v", "1",
+                                *(_ffmpeg_threads_flags()),
+                                str(sheet),
+                            ]
+                            _run(cmd3)
+                            unique = _unique_tiles_count(sheet, tile_w, tile_h, int(cols), int(rows))
+                        except Exception:
+                            pass
+
+                    # Fallback 3: scene-change-driven sampling as a last resort
+                    if unique < min_unique:
+                        try:
+                            try:
+                                thr_env = os.environ.get("SPRITES_SCENE_THRESHOLD")
+                                scene_thr = float(thr_env) if thr_env not in (None, "") else 0.03
+                            except Exception:
+                                scene_thr = 0.03
+                            vf4 = (
+                                f"select='gt(scene,{scene_thr})',"
+                                f"setpts=PTS-STARTPTS,"
+                                f"scale={int(width)}:-2:flags=lanczos,"
+                                f"tile={int(cols)}x{int(rows)}"
+                            )
+                            cmd4 = [
+                                "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
+                                *(_ffmpeg_hwaccel_flags()),
+                                "-i", str(video),
+                                "-an",
+                                "-vf", vf4,
+                                "-frames:v", "1",
+                                *(_ffmpeg_threads_flags()),
+                                str(sheet),
+                            ]
+                            _run(cmd4)
+                            unique = _unique_tiles_count(sheet, tile_w, tile_h, int(cols), int(rows))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Final guard: ensure we actually wrote a non-empty sheet
+                if not _file_nonempty(sheet, min_size=64):
+                    raise RuntimeError("sprite sheet output missing or too small after processing")
+                frames = int(cols * rows)
+                meta = {
+                    "cols": int(cols),
+                    "rows": int(rows),
+                    "interval": float(interval),
+                    "width": int(width),
+                    "tile_width": int(tile_w),
+                    "tile_height": int(tile_h),
+                    "frames": int(frames),
+                    # legacy keys for compatibility
+                    "grid": [int(cols), int(rows)],
+                    "tile": [int(tile_w), int(tile_h)],
+                }
+                j.write_text(json.dumps(meta, indent=2))
+                try:
+                    print(f"[sprites] wrote {sheet.name} and {j.name}")
+                except Exception:
+                    pass
+                return
 
     # Fallback: use a repeated thumbnail (last-resort)
     try:
@@ -1724,41 +2153,82 @@ def compute_heatmaps(
             "-vf", vf,
             "-f", "null", "-",
         ]
-        # Run and parse YAVG (average luma) from metadata print lines
-        proc = _run(cmd)
-        if proc.returncode == 0:
-            # Parse lines like: frame: pts:... pts_time:... lavfi.signalstats.YAVG:XX.X ...
-            for line in (proc.stderr or proc.stdout or "").splitlines():
-                if "signalstats" in line and "YAVG" in line:
+        # Stream combined output to parse YAVG incrementally and update progress
+        _local_sem = _FFMPEG_SEM
+        _local_sem.acquire()
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+            try:
+                _register_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+            except Exception:
+                pass
+            last_idx = 0
+            last_ts = 0.0
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    if not line:
+                        continue
                     try:
                         # Extract pts_time if available for timestamp
                         m_ts = re.search(r"pts_time:([0-9]+\.[0-9]+)", line)
                         t_val = float(m_ts.group(1)) if m_ts else None
                         m = re.search(r"YAVG:([0-9]+\.?[0-9]*)", line)
                         if not m:
-                            # alt format via metadata=print: lavfi.signalstats.YAVG=XX.X
                             m = re.search(r"lavfi\.signalstats\.YAVG[=:]([0-9]+\.?[0-9]*)", line)
                         if m:
                             yavg = float(m.group(1))
                             v = max(0.0, min(1.0, yavg / 255.0))
                             samples.append({"t": round(t_val, 3) if t_val is not None else None, "v": v})
+                            last_idx += 1
+                            if isinstance(t_val, float):
+                                last_ts = t_val
                             if progress_cb and total_steps:
                                 try:
-                                    progress_cb(min(len(samples), total_steps), total_steps)
+                                    progress_cb(min(last_idx, total_steps), total_steps)
                                 except Exception:
                                     pass
+                        # Approximate progress by timestamp if frame count lags
+                        elif duration and duration > 0 and progress_cb and ("signalstats" in line):
+                            try:
+                                frac = max(0.0, min(1.0, float(last_ts) / float(duration)))
+                                progress_cb(int(frac * total_steps), total_steps)
+                            except Exception:
+                                pass
                     except Exception:
-                        # Skip malformed line
                         continue
-            # Backfill timestamps if not provided
-            if samples and samples[0].get("t") is None:
-                t = 0.0
-                step = max(0.1, float(interval))
-                for i in range(len(samples)):
-                    samples[i]["t"] = round(t, 3)
-                    t += step
-        else:
-            samples = []  # force fallback
+                    # cancellation
+                    ev = JOB_CANCEL_EVENTS.get(getattr(JOB_CTX, "jid", ""))
+                    if ev is not None and ev.is_set():
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except Exception:
+                            proc.terminate()
+                        raise RuntimeError("canceled")
+            rc = proc.wait()
+            if rc != 0 and not samples:
+                samples = []  # force fallback
+        finally:
+            try:
+                _local_sem.release()
+            except Exception:
+                pass
+            try:
+                _unregister_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+            except Exception:
+                pass
+        # Backfill timestamps if not provided
+        if samples and samples[0].get("t") is None:
+            t = 0.0
+            step = max(0.1, float(interval))
+            for i in range(len(samples)):
+                samples[i]["t"] = round(t, 3)
+                t += step
     except Exception:
         samples = []
 
@@ -1807,7 +2277,10 @@ def compute_heatmaps(
                     except Exception:
                         pass
 
-    data = {"interval": float(interval), "samples": samples}
+    data = {
+        "interval": float(interval), 
+        "samples": samples
+    }
     heatmaps_json_path(video).write_text(json.dumps(data, indent=2))
     if png and samples:
         # Simple bar chart visualization
@@ -1886,7 +2359,11 @@ def run_whisper_backend(
 ) -> List[Dict[str, Any]]:
     # Returns list of segments: {start,end,text}
     if os.environ.get("FFPROBE_DISABLE"):
-        segs = [{"start": i * 2.0, "end": i * 2.0 + 1.5, "text": f"Stub segment {i+1}"} for i in range(3)]
+        segs = [{
+            "start": i * 2.0, 
+            "end": i * 2.0 + 1.5, 
+            "text": f"Stub segment {i+1}"
+        } for i in range(3)]
         if progress_cb:
             try:
                 for i, s in enumerate(segs, start=1):
@@ -1945,7 +2422,11 @@ def run_whisper_backend(
         segs: List[Dict[str, Any]] = []
         for s in result.get("segments", []):
             if isinstance(s, dict):
-                segs.append({"start": s.get("start"), "end": s.get("end"), "text": s.get("text")})
+                segs.append({
+                    "start": s.get("start"), 
+                    "end": s.get("end"), 
+                    "text": s.get("text")
+                })
                 if progress_cb:
                     try:
                         # Best-effort fractional progress based on segment index
@@ -2277,7 +2758,12 @@ def _detect_faces(
     except Exception:
         # As a last resort, return a clearly marked sentinel that our exists_check will treat as stub.
         # The caller (compute_face_embeddings) will convert this into a hard error so we don't write stubs.
-        return [{"time": 0.0, "box": [0, 0, 100, 100], "score": 1.0, "embedding": []}]
+        return [{
+            "time": 0.0, 
+            "box": [0, 0, 100, 100], 
+            "score": 1.0, 
+            "embedding": []
+        }]
 
 
 def compute_face_embeddings(
@@ -2596,9 +3082,44 @@ JOB_EVENT_SUBS: list[tuple[asyncio.Queue[str], asyncio.AbstractEventLoop]] = []
 JOB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 
 # Global concurrency control for running jobs
-# Built-in conservative default: 1 concurrent job unless overridden by env
-JOB_MAX_CONCURRENCY = int(os.environ.get("JOB_MAX_CONCURRENCY", "1"))
+# Default to 4 unless overridden by env JOB_MAX_CONCURRENCY
+JOB_MAX_CONCURRENCY = int(os.environ.get("JOB_MAX_CONCURRENCY", "4"))
 JOB_RUN_SEM = threading.Semaphore(JOB_MAX_CONCURRENCY)
+
+def _set_job_concurrency(new_val: int) -> int:
+    """
+    Adjust the existing JOB_RUN_SEM to match new concurrency immediately.
+    - If increasing, release additional tokens so more jobs can start now.
+    - If decreasing, acquire tokens (non-blocking) to reduce available permits;
+      any remainder takes effect as running jobs complete and release.
+    Returns the effective concurrency stored in JOB_MAX_CONCURRENCY.
+    """
+    global JOB_MAX_CONCURRENCY
+    try:
+        target = max(1, min(128, int(new_val)))
+    except Exception:
+        target = 1
+    cur = int(JOB_MAX_CONCURRENCY)
+    delta = target - cur
+    if delta > 0:
+        # Increase: release delta tokens
+        for _ in range(delta):
+            try:
+                JOB_RUN_SEM.release()
+            except ValueError:
+                # Not bounded; ignore
+                pass
+    elif delta < 0:
+        # Decrease: acquire up to -delta tokens non-blocking to immediately shrink availability
+        need = -delta
+        for _ in range(need):
+            try:
+                if not JOB_RUN_SEM.acquire(blocking=False):
+                    break
+            except Exception:
+                break
+    JOB_MAX_CONCURRENCY = target
+    return JOB_MAX_CONCURRENCY
 
 # Per-file/task locks to avoid duplicate heavy work on the same target
 FILE_TASK_LOCKS: dict[tuple[str, str], threading.Lock] = {}
@@ -4362,12 +4883,12 @@ def cover_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     # Skip if exists and not overwriting
                     if thumbs_path(p).exists() and not force:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     try:
                         lk = _file_task_lock(p, "cover")
                         with JOB_RUN_SEM:
@@ -4388,6 +4909,12 @@ def cover_create_batch(
                                 pass
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"cover-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -4440,6 +4967,9 @@ def hover_head(path: str = Query(...)):
 def _hover_concat_path(video: Path) -> Path:
     # Store concatenated preview at artifact root (consistent location)
     return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_WEBM}"
+
+def _hover_info_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}"
 
 
 
@@ -4506,6 +5036,20 @@ def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_d
         raise_api_error(f"hover create failed: {e}", status_code=500)
 
 
+@api.get("/hover/info")
+def hover_info(path: str = Query(...)):
+    name, directory = _name_and_dir(path)
+    video = Path(directory) / name
+    info = _hover_info_path(video)
+    if not info.exists():
+        raise_api_error("hover info not found", status_code=404)
+    try:
+        data = json.loads(info.read_text())
+    except Exception:
+        raise_api_error("invalid hover info", status_code=500)
+    return api_success({"data": data})
+
+
 @api.post("/hover/create/batch")
 def hover_create_batch(
     path: str = Query(default=""),
@@ -4537,12 +5081,12 @@ def hover_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     # Skip already-good previews when only_missing=True
                     if only_missing and _file_nonempty(_hover_concat_path(p)):
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     jid = _new_job("hover", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
@@ -4559,7 +5103,7 @@ def hover_create_batch(
                                     except Exception:
                                         pass
                                 out_path = _hover_concat_path(p)
-                                out_ret = generate_hover_preview(
+                                _ = generate_hover_preview(
                                     p,
                                     segments=int(segments),
                                     seg_dur=float(seg_dur),
@@ -4583,10 +5127,15 @@ def hover_create_batch(
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"hover-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            # Wait for all items to complete
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -4727,7 +5276,15 @@ def scenes_create(path: str = Query(...), threshold: float = Query(default=0.4),
     # Scene detection and outputs require ffmpeg present
     _require_ffmpeg_or_error("scene detection")
     def _do():
-        generate_scene_artifacts(fp, threshold=float(threshold), limit=int(limit), gen_thumbs=bool(thumbs), gen_clips=bool(clips), thumbs_width=int(thumbs_width), clip_duration=float(clip_duration))
+        # Wire a progress callback that maps internal steps to the job
+        jid = getattr(JOB_CTX, "jid", None)
+        def _pcb(i: int, n: int):
+            if jid:
+                try:
+                    _set_job_progress(jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                except Exception:
+                    pass
+        generate_scene_artifacts(fp, threshold=float(threshold), limit=int(limit), gen_thumbs=bool(thumbs), gen_clips=bool(clips), thumbs_width=int(thumbs_width), clip_duration=float(clip_duration), progress_cb=_pcb)
         return api_success({"created": True, "path": str(scenes_json_path(fp))})
     try:
         return _wrap_job("scenes", str(fp.relative_to(STATE["root"])), _do)
@@ -4777,6 +5334,77 @@ def scenes_list(path: str = Query(default=""), recursive: bool = Query(default=T
     return api_success({"total": total, "have": have, "missing": max(0, total - have)})
 
 
+@api.post("/scenes/create/batch")
+def scenes_create_batch(
+    path: str = Query(default=""),
+    recursive: bool = Query(default=True),
+    threshold: float = Query(default=0.4),
+    limit: int = Query(default=0),
+    thumbs: bool = Query(default=False),
+    clips: bool = Query(default=False),
+    thumbs_width: int = Query(default=320),
+    clip_duration: float = Query(default=2.0),
+    only_missing: bool = Query(default=True),
+):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    if not base.exists() or not base.is_dir():
+        raise_api_error("Not found", status_code=404)
+    # Scenes generation requires ffmpeg for thumbs/clips; enforce upfront
+    _require_ffmpeg_or_error("scene detection")
+    sup_jid = _new_job("scenes-batch", str(base))
+    _start_job(sup_jid)
+    def _worker():
+        try:
+            vids: list[Path] = []
+            it = base.rglob("*") if recursive else base.iterdir()
+            for p in it:
+                if _is_original_media_file(p, base):
+                    vids.append(p)
+            _set_job_progress(sup_jid, total=len(vids), processed_set=0)
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
+                try:
+                    if only_missing and scenes_json_exists(p):
+                        return
+                    jid = _new_job("scenes", str(p.relative_to(STATE["root"])) )
+                    _start_job(jid)
+                    try:
+                        lk = _file_task_lock(p, "scenes")
+                        with JOB_RUN_SEM:
+                            with lk:
+                                def _pcb(i: int, n: int, _jid=jid):
+                                    try:
+                                        _set_job_progress(_jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                                    except Exception:
+                                        pass
+                                generate_scene_artifacts(
+                                    p,
+                                    threshold=float(threshold),
+                                    limit=int(limit),
+                                    gen_thumbs=bool(thumbs),
+                                    gen_clips=bool(clips),
+                                    thumbs_width=int(thumbs_width),
+                                    clip_duration=float(clip_duration),
+                                    progress_cb=_pcb,
+                                )
+                        _finish_job(jid, None)
+                    except Exception as e:
+                        _finish_job(jid, str(e))
+                finally:
+                    _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"scenes-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
+            _finish_job(sup_jid, None)
+        except Exception as e:
+            _finish_job(sup_jid, str(e))
+    threading.Thread(target=_worker, daemon=True).start()
+    return api_success({"started": True, "job": sup_jid})
+
+
 # --- Sprites (Scrubbing Thumbnails) ---
 @api.get("/sprites/json")
 def sprites_json(path: str = Query(...)):
@@ -4806,7 +5434,14 @@ def sprites_create(path: str = Query(...), interval: float = Query(default=12.0)
     # Sprites need ffmpeg for high-quality real output; block if unavailable
     _require_ffmpeg_or_error("sprites generation")
     def _do():
-        generate_sprite_sheet(fp, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality))
+        jid = getattr(JOB_CTX, "jid", None)
+        def _pcb(i: int, n: int):
+            if jid:
+                try:
+                    _set_job_progress(jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                except Exception:
+                    pass
+        generate_sprite_sheet(fp, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality), progress_cb=_pcb)
         return api_success({"created": True})
     try:
         return _wrap_job("sprites", str(fp.relative_to(STATE["root"])), _do)
@@ -4830,22 +5465,32 @@ def sprites_create_batch(path: str = Query(default=""), recursive: bool = Query(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     jid = _new_job("sprites", str(p.relative_to(STATE["root"])) )
-                    _start_job(jid)
                     try:
                         lk = _file_task_lock(p, "sprites")
                         with JOB_RUN_SEM:
                             with lk:
-                                generate_sprite_sheet(p, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality))
+                                _start_job(jid)
+                                def _pcb(i: int, n: int, _jid=jid):
+                                    try:
+                                        _set_job_progress(_jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                                    except Exception:
+                                        pass
+                                generate_sprite_sheet(p, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality), progress_cb=_pcb)
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"sprites-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -4928,7 +5573,14 @@ def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0)
     # Heatmap sampling uses ffmpeg signalstats; block if missing
     _require_ffmpeg_or_error("heatmaps generation")
     def _do():
-        d = compute_heatmaps(fp, float(interval), str(mode), bool(png))
+        jid = getattr(JOB_CTX, "jid", None)
+        def _pcb(i: int, n: int):
+            if jid:
+                try:
+                    _set_job_progress(jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                except Exception:
+                    pass
+        d = compute_heatmaps(fp, float(interval), str(mode), bool(png), progress_cb=_pcb)
         return api_success({"created": True, "path": str(heatmaps_json_path(fp)), "samples": len(d.get("samples", []))})
     try:
         return _wrap_job("heatmaps", str(fp.relative_to(STATE["root"])), _do)
@@ -4952,26 +5604,34 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     if only_missing and heatmaps_json_exists(p):
-                        # Skip already-generated heatmaps when only_missing=True
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     jid = _new_job("heatmaps", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
                         lk = _file_task_lock(p, "heatmaps")
                         with JOB_RUN_SEM:
                             with lk:
-                                compute_heatmaps(p, float(interval), str(mode), bool(png))
+                                def _pcb(i: int, n: int, _jid=jid):
+                                    try:
+                                        _set_job_progress(_jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                                    except Exception:
+                                        pass
+                                compute_heatmaps(p, float(interval), str(mode), bool(png), progress_cb=_pcb)
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"heatmaps-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -5212,7 +5872,21 @@ def subtitles_create(
         force = True
         compute_type = None
     def _do():
-        generate_subtitles(fp, out_file, model=_Ns.subtitles_model, language=_Ns.subtitles_language, translate=_Ns.subtitles_translate)
+        # Map fractional progress from backend to integer steps [0..100]
+        jid = getattr(JOB_CTX, "jid", None)
+        if jid:
+            try:
+                _set_job_progress(jid, total=100, processed_set=0)
+            except Exception:
+                pass
+        def _pcb(frac: float):
+            if jid:
+                try:
+                    p = int(max(0.0, min(1.0, float(frac))) * 100)
+                    _set_job_progress(jid, total=100, processed_set=p)
+                except Exception:
+                    pass
+        generate_subtitles(fp, out_file, model=_Ns.subtitles_model, language=_Ns.subtitles_language, translate=_Ns.subtitles_translate, progress_cb=_pcb)
         return api_success({"created": True, "path": str(out_file)})
     try:
         return _wrap_job("subtitles", str(fp.relative_to(STATE["root"])), _do)
@@ -5255,26 +5929,36 @@ def subtitles_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     out_file = artifact_dir(p) / f"{p.stem}{SUFFIX_SUBTITLES_SRT}"
                     if out_file.exists() and not overwrite:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     jid = _new_job("subtitles", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
                         lk = _file_task_lock(p, "subtitles")
                         with JOB_RUN_SEM:
                             with lk:
-                                generate_subtitles(p, out_file, model=model, language=(language or "en"), translate=bool(translate))
+                                def _pcb(frac: float, _jid=jid):
+                                    try:
+                                        p = int(max(0.0, min(1.0, float(frac))) * 100)
+                                        _set_job_progress(_jid, total=100, processed_set=p)
+                                    except Exception:
+                                        pass
+                                generate_subtitles(p, out_file, model=model, language=(language or "en"), translate=bool(translate), progress_cb=_pcb)
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"subtitles-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -5957,12 +6641,11 @@ def faces_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     if (only_missing and not force) and faces_exists_check(p):
-                        # Skip already-generated faces when only_missing=True
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     jid = _new_job("faces", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
@@ -5979,10 +6662,14 @@ def faces_create_batch(
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"faces-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -7253,19 +7940,82 @@ def tasks_set_concurrency(value: int = Query(..., ge=1, le=128)):
     """
     Update max concurrency (process-wide)."""
     try:
-        global JOB_MAX_CONCURRENCY, JOB_RUN_SEM
         new_val = int(value)
-        if new_val < 1:
-            new_val = 1
-        if new_val > 128:
-            new_val = 128
-        # Replace the semaphore to apply new limit going forward
-        JOB_MAX_CONCURRENCY = new_val
-        JOB_RUN_SEM = threading.Semaphore(JOB_MAX_CONCURRENCY)
-        _publish_job_event({"event": "concurrency", "value": JOB_MAX_CONCURRENCY})
-        return api_success({"maxConcurrency": JOB_MAX_CONCURRENCY})
+        eff = _set_job_concurrency(new_val)
+        _publish_job_event({"event": "concurrency", "value": eff})
+        return api_success({"maxConcurrency": eff})
     except Exception as e:
         raise_api_error(f"Failed to set concurrency: {str(e)}")
+
+# -----------------------------
+# FFmpeg runtime settings API
+# -----------------------------
+@api.get("/settings/ffmpeg")
+def ffmpeg_get_settings():
+    """Return current FFmpeg settings: concurrency, threads, timelimit."""
+    try:
+        try:
+            threads = int(os.environ.get("FFMPEG_THREADS", "1") or 1)
+        except Exception:
+            threads = 1
+        try:
+            timelimit = int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600)
+        except Exception:
+            timelimit = 600
+        return api_success({
+            "concurrency": int(_FFMPEG_CONCURRENCY),
+            "threads": max(1, threads),
+            "timelimit": max(0, timelimit),
+        })
+    except Exception as e:
+        raise_api_error(f"Failed to get ffmpeg settings: {str(e)}")
+
+@api.post("/settings/ffmpeg")
+def ffmpeg_set_settings(
+    concurrency: Optional[int] = Query(None, ge=1, le=16),
+    threads: Optional[int] = Query(None, ge=1, le=32),
+    timelimit: Optional[int] = Query(None, ge=0, le=86400),
+):
+    """Update FFmpeg settings at runtime. Any omitted field is left unchanged.
+    - concurrency: number of parallel ffmpeg processes allowed
+    - threads: passed to ffmpeg as -threads N for encoders/filters
+    - timelimit: passed as -timelimit seconds to cap each run (0 to disable)
+    """
+    try:
+        applied = {}
+        if concurrency is not None:
+            eff = _set_ffmpeg_concurrency(int(concurrency))
+            applied["concurrency"] = int(eff)
+        if threads is not None:
+            try:
+                os.environ["FFMPEG_THREADS"] = str(int(threads))
+            except Exception:
+                pass
+            applied["threads"] = int(os.environ.get("FFMPEG_THREADS", threads))
+        if timelimit is not None:
+            try:
+                os.environ["FFMPEG_TIMELIMIT"] = str(int(timelimit))
+            except Exception:
+                pass
+            applied["timelimit"] = int(os.environ.get("FFMPEG_TIMELIMIT", timelimit))
+        # Return current values (fully populated)
+        try:
+            threads_cur = int(os.environ.get("FFMPEG_THREADS", "1") or 1)
+        except Exception:
+            threads_cur = 1
+        try:
+            timelimit_cur = int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600)
+        except Exception:
+            timelimit_cur = 600
+        current = {
+            "concurrency": int(_FFMPEG_CONCURRENCY),
+            "threads": max(1, threads_cur),
+            "timelimit": max(0, timelimit_cur),
+        }
+        _publish_job_event({"event": "ffmpeg_settings", "value": current})
+        return api_success(current)
+    except Exception as e:
+        raise_api_error(f"Failed to set ffmpeg settings: {str(e)}")
 
 
 @api.post("/tasks/jobs/clear-completed")

@@ -18,7 +18,6 @@
         <button id="refresh" class="btn" title="Reload">Reload</button>
       </div>
     </div>
-    
     <!-- Tab Navigation -->
     <nav class="tab-nav" role="tablist" aria-label="Main navigation">
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="player-panel" id="player-tab" data-tab="player">
@@ -38,202 +37,173 @@
       </button>
     </nav>
   </header>
-  
   <main>
     <!-- Tab Panels -->
     <div class="tab-panels">
       <!-- Player Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="player-tab" id="player-panel" hidden>
-        <div id="playerLayout" style="display:flex; gap:12px; align-items:stretch; padding: 8px 0;">
+        <div id="playerLayout" class="player-layout">
           <!-- Sidebar -->
-          <aside id="playerSidebar" style="width: 280px; min-width: 240px; max-width: 360px; background: #0f1320; border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 12px; display:flex; flex-direction:column; gap:12px;">
+          <aside id="playerSidebar" class="player-sidebar">
             <div>
-              <div id="sbFileName" style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">No file</div>
-              <div id="sbMeta" style="color: var(--muted, #7a859f); font-size:12px;">—</div>
+              <div id="sbFileName">No file</div>
+              <div id="sbMeta">—</div>
             </div>
-            <div style="height:1px; background: rgba(255,255,255,0.06);"></div>
-            
+            <div class="divider-h"></div>
             <!-- Sidebar Tabs -->
             <div class="sidebar-tabs">
               <button class="sidebar-tab active" data-tab="artifacts">Artifacts</button>
               <button class="sidebar-tab" data-tab="filters">Filters</button>
             </div>
-            
             <!-- Artifacts Tab -->
-            <div id="artifactsTab" class="sidebar-tab-content active" style="display:flex; flex-direction:column; gap:10px;">
-              <div id="artifactBadges" style="display:flex; flex-direction:column; gap:8px;">
-                <button id="badgeHeatmap" class="btn-sm" title="Heatmap status or generate" data-present="0">Heatmap <span id="badgeHeatmapStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgeScenes" class="btn-sm" title="Scenes status or generate" data-present="0">Scenes <span id="badgeScenesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgeSubtitles" class="btn-sm" title="Subtitles status or generate" data-present="0">Subtitles <span id="badgeSubtitlesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgeSprites" class="btn-sm" title="Sprites status or generate" data-present="0">Sprites <span id="badgeSpritesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgeFaces" class="btn-sm" title="Faces status or generate" data-present="0">Faces <span id="badgeFacesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgeHover" class="btn-sm" title="Hover preview status or generate" data-present="0">Hover Preview <span id="badgeHoverStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgePhash" class="btn-sm" title="pHash status or generate" data-present="0">pHash <span id="badgePhashStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
+            <div id="artifactsTab" class="sidebar-tab-content active vstack-10">
+              <div id="artifactBadges" class="artifact-badges">
+                <button id="badgeHeatmap" class="btn-sm" title="Heatmap status or generate" data-present="0">Heatmap <span id="badgeHeatmapStatus" class="badge-status">✗</span></button>
+                <button id="badgeScenes" class="btn-sm" title="Scenes status or generate" data-present="0">Scenes <span id="badgeScenesStatus" class="badge-status">✗</span></button>
+                <button id="badgeSubtitles" class="btn-sm" title="Subtitles status or generate" data-present="0">Subtitles <span id="badgeSubtitlesStatus" class="badge-status">✗</span></button>
+                <button id="badgeSprites" class="btn-sm" title="Sprites status or generate" data-present="0">Sprites <span id="badgeSpritesStatus" class="badge-status">✗</span></button>
+                <button id="badgeFaces" class="btn-sm" title="Faces status or generate" data-present="0">Faces <span id="badgeFacesStatus" class="badge-status">✗</span></button>
+                <button id="badgeHover" class="btn-sm" title="Hover preview status or generate" data-present="0">Hover Preview <span id="badgeHoverStatus" class="badge-status">✗</span></button>
+                <button id="badgePhash" class="btn-sm" title="pHash status or generate" data-present="0">pHash <span id="badgePhashStatus" class="badge-status">✗</span></button>
               </div>
             </div>
-            
             <!-- Filters Tab -->
-            <div id="filtersTab" class="sidebar-tab-content" style="display:none; flex-direction:column; gap:12px;">
+            <div id="filtersTab" class="sidebar-tab-content vstack-12">
               <div class="filter-section">
-                <h4 style="margin:0 0 8px 0; font-size:14px; color:#e2e8f0;">Filters</h4>
-                
+                <h4>Filters</h4>
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Brightness</span>
+                  <label class="filter-label-row">
+                    <span class="text-12">Brightness</span>
                   </label>
-                  <span id="brightnessValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <span id="brightnessValue" class="text-subtle">100%</span>
                   <input type="range" id="brightnessSlider" min="0" max="200" value="100" step="5" class="filter-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Contrast</span>
+                  <label class="filter-label-row">
+                    <span class="text-12">Contrast</span>
                   </label>
-                  <span id="contrastValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <span id="contrastValue" class="text-subtle">100%</span>
                   <input type="range" id="contrastSlider" min="0" max="200" value="100" step="5" class="filter-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Gamma</span>
+                  <label class="filter-label-row">
+                    <span class="text-12">Gamma</span>
                   </label>
-                  <span id="gammaValue" style="font-size:12px; color:#64748b;">0</span>
+                  <span id="gammaValue" class="text-subtle">0</span>
                   <input type="range" id="gammaSlider" min="-50" max="50" value="0" step="1" class="filter-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Saturation</span>
+                  <label class="filter-label-row">
+                    <span class="text-12">Saturation</span>
                   </label>
-                  <span id="saturationValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <span id="saturationValue" class="text-subtle">100%</span>
                   <input type="range" id="saturationSlider" min="0" max="200" value="100" step="5" class="filter-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Hue</span>
+                  <label class="filter-label-row">
+                    <span class="text-12">Hue</span>
                   </label>
-                  <span id="hueValue" style="font-size:12px; color:#64748b;">0°</span>
+                  <span id="hueValue" class="text-subtle">0°</span>
                   <input type="range" id="hueSlider" min="-180" max="180" value="0" step="5" class="filter-slider hue-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Warmth</span>
+                  <label class="filter-label-row">
+                    <span class="text-12">Warmth</span>
                   </label>
-                  <span id="warmthValue" style="font-size:12px; color:#64748b;">0</span>
+                  <span id="warmthValue" class="text-subtle">0</span>
                   <input type="range" id="warmthSlider" min="-50" max="50" value="0" step="1" class="filter-slider warmth-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Red</span>
+                  <label class="filter-label-row">
+                    <span class="text-12">Red</span>
                   </label>
-                  <span id="redValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <span id="redValue" class="text-subtle">100%</span>
                   <input type="range" id="redSlider" min="0" max="200" value="100" step="5" class="filter-slider red-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Green</span>
+                  <label class="filter-label-row">
+                    <span class="text-12">Green</span>
                   </label>
-                  <span id="greenValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <span id="greenValue" class="text-subtle">100%</span>
                   <input type="range" id="greenSlider" min="0" max="200" value="100" step="5" class="filter-slider green-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Blue</span>
+                  <label class="filter-label-row">
+                    <span class="text-12">Blue</span>
                   </label>
-                  <span id="blueValue" style="font-size:12px; color:#64748b;">100%</span>
+                  <span id="blueValue" class="text-subtle">100%</span>
                   <input type="range" id="blueSlider" min="0" max="200" value="100" step="5" class="filter-slider blue-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Blur</span>
+                  <label class="filter-label-row">
+                    <span class="text-12">Blur</span>
                   </label>
-                  <span id="blurValue" style="font-size:12px; color:#64748b;">0px</span>
+                  <span id="blurValue" class="text-subtle">0px</span>
                   <input type="range" id="blurSlider" min="0" max="10" value="0" step="0.5" class="filter-slider">
                 </div>
               </div>
-              
               <div class="filter-section">
-                <h4 style="margin:0 0 8px 0; font-size:14px; color:#e2e8f0;">Transforms</h4>
-                
+                <h4>Transforms</h4>
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Rotate</span>
-                    <span id="rotateValue" style="font-size:12px; color:#64748b;">0°</span>
-                  </label>
+                  <label class="filter-label-row"><span class="text-12">Rotate</span><span id="rotateValue" class="text-subtle">0°</span></label>
                   <input type="range" id="rotateSlider" min="-180" max="180" value="0" step="1" class="filter-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Scale</span>
-                    <span id="scaleValue" style="font-size:12px; color:#64748b;">100%</span>
-                  </label>
+                  <label class="filter-label-row"><span class="text-12">Scale</span><span id="scaleValue" class="text-subtle">100%</span></label>
                   <input type="range" id="scaleSlider" min="25" max="200" value="100" step="5" class="filter-slider">
                 </div>
-                
                 <div class="filter-control">
-                  <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-size:12px;">Aspect</span>
-                    <span id="aspectValue" style="font-size:12px; color:#64748b;">0</span>
-                  </label>
+                  <label class="filter-label-row"><span class="text-12">Aspect</span><span id="aspectValue" class="text-subtle">0</span></label>
                   <input type="range" id="aspectSlider" min="-50" max="50" value="0" step="1" class="filter-slider">
                 </div>
               </div>
-              
-              <div class="filter-actions" style="display:flex; flex-direction:column; gap:6px;">
-                <div style="display:flex; gap:6px;">
-                  <button id="rotateLeftBtn" class="btn-sm" style="flex:1;">Rotate Left & Scale</button>
-                  <button id="rotateRightBtn" class="btn-sm" style="flex:1;">Rotate Right & Scale</button>
+              <div class="filter-actions vertical">
+                <div class="hstack-6">
+                  <button id="rotateLeftBtn" class="btn-sm flex-1">Rotate Left & Scale</button>
+                  <button id="rotateRightBtn" class="btn-sm flex-1">Rotate Right & Scale</button>
                 </div>
-                <div style="display:flex; gap:6px;">
-                  <button id="resetFiltersBtn" class="btn-sm" style="flex:1;">Reset Filters</button>
-                  <button id="resetTransformsBtn" class="btn-sm" style="flex:1;">Reset Transforms</button>
+                <div class="hstack-6">
+                  <button id="resetFiltersBtn" class="btn-sm flex-1">Reset Filters</button>
+                  <button id="resetTransformsBtn" class="btn-sm flex-1">Reset Transforms</button>
                 </div>
               </div>
             </div>
           </aside>
-          
           <!-- Main Player Area -->
-          <div id="playerContainer" style="display:flex; flex-direction:column; gap:10px; padding: 0; flex:1;">
-            <div class="player-header" style="display:flex; align-items:center; gap:12px; justify-content:space-between;">
-              <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
-                <div id="playerTitle" style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">No file</div>
-                <div id="playerMeta" style="color: var(--muted, #7a859f); font-size:12px;">—</div>
+          <div id="playerContainer" class="player-container">
+            <div class="player-header">
+              <div class="vstack-4 minw-0">
+                <div id="playerTitle">No file</div>
+                <div id="playerMeta">—</div>
               </div>
-              <div class="player-actions" style="display:flex; gap:8px;">
+              <div class="player-actions hstack-8">
                 <button id="btnSetThumb" class="btn-sm" title="Set the cover thumbnail to current frame">Set Thumbnail</button>
                 <button id="btnAddMarker" class="btn-sm" title="Add a scene marker at current time">Add Marker</button>
               </div>
             </div>
-            <div class="player-video" style="position:relative; background:#000;">
-              <video id="playerVideo" playsinline style="display:block; width:100%; max-height:72vh; background:#000;"></video>
+            <div class="player-video">
+              <video id="playerVideo" playsinline></video>
             </div>
             <!-- Controls and timeline below video -->
-            <div id="playerControlsContainer" style="position:relative; display:flex; flex-direction:column; gap:8px;">
-              <div id="timeline" style="position:relative; height:28px; border-radius:6px; background: #121624; overflow:hidden; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,0.35);">
-                <div id="timelineHeatmap" style="position:absolute; inset:0; background-position: left center; background-size: 100% 100%; opacity:0.85;"></div>
-                <canvas id="timelineHeatmapCanvas" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; opacity:0.95;"></canvas>
-                <div id="timelineProgress" style="position:absolute; inset:0; width:0%; background: linear-gradient(90deg, rgba(79,140,255,0.6), rgba(79,140,255,0.25)); mix-blend-mode: screen;"></div>
-                <div id="timelineMarkers" style="position:absolute; inset:0;"></div>
+            <div id="playerControlsContainer">
+              <div id="timeline">
+                <div id="timelineHeatmap"></div>
+                <canvas id="timelineHeatmapCanvas"></canvas>
+                <div id="timelineProgress"></div>
+                <div id="timelineMarkers"></div>
               </div>
               <!-- Sprite preview tooltip (bottom-aligned above controls) -->
-              <div id="spritePreview" style="position:absolute; left:8px; width:240px; height:135px; background:#111 center/cover no-repeat; border:1px solid rgba(255,255,255,0.15); border-radius:6px; display:none; pointer-events:none; box-shadow:0 4px 16px rgba(0,0,0,0.4); z-index:6; opacity:0.8;"></div>
-              <div id="controlsRow" style="display:flex; align-items:center; justify-content:space-between; gap:8px; background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 6px 10px;">
-                <div style="font-size:12px; color: var(--muted, #7a859f); display:flex; align-items:center; gap:4px;">
+              <div id="spritePreview"></div>
+              <div id="controlsRow">
+                <div class="time-display">
                   <span id="curTime">00:00</span>
-                  <span style="opacity:0.5;">/</span>
+                  <span class="op-50">/</span>
                   <span id="totalTime">00:00</span>
                 </div>
-                <div id="playerControls" class="player-controls" style="display:flex; align-items:center; gap:8px;">
+                <div id="playerControls" class="player-controls">
                   <button id="btnPlayPause" class="btn-sm" title="Play/Pause" aria-label="Play/Pause">▶︎</button>
                   <button id="btnMute" class="btn-sm" title="Mute/Unmute" aria-label="Mute">🔊</button>
-                  <input id="volSlider" type="range" min="0" max="1" step="0.01" value="1" title="Volume" style="width:120px;">
+                  <input id="volSlider" type="range" min="0" max="1" step="0.01" value="1" title="Volume">
                   <button id="btnCC" class="btn-sm" title="Toggle captions" aria-label="Captions">CC</button>
                   <div class="select">
                     <select id="rateSelect" class="control-select" title="Playback speed" aria-label="Playback speed">
@@ -252,11 +222,10 @@
                 </div>
               </div>
             </div>
-            <div class="player-timeline" style="display:none;"></div>
+            <div class="player-timeline"></div>
           </div>
         </div>
       </div>
-      
       <!-- Library Tab Panel -->
       <div class="tab-panel active" role="tabpanel" aria-labelledby="library-tab" id="library-panel">
         <div class="controls-panel">
@@ -309,10 +278,8 @@
           <button id="selectAllBtn" class="btn-sm">Select All</button>
           <button id="selectNoneBtn" class="btn-sm">Select None</button>
         </div>
-        
         <div id="spinner" class="spinner"></div>
         <div id="status"></div>
-
         <!-- Card template (hidden) -->
         <template id="cardTemplate">
           <div class="card">
@@ -334,7 +301,6 @@
             </div>
           </div>
         </template>
-        
         <!-- Directory card template (hidden) -->
         <template id="dirTemplate">
           <div class="card">
@@ -350,25 +316,21 @@
             </div>
           </div>
         </template>
-        
         <div id="grid" class="grid" hidden></div>
       </div>
-      
       <!-- Tasks Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="tasks-tab" id="tasks-panel" hidden>
         <div class="tasks-container">
-          
           <!-- Job Monitor Section -->
           <div class="task-section">
             <div class="section-header">
-          <h2>Job Monitor</h2>
-          <div class="section-actions">
-            <button id="cancelAllBtn" class="btn-sm" title="Cancel all queued and running jobs" style="display:none;">Cancel All</button>
-            <button id="cancelQueuedBtn" class="btn-sm" title="Cancel all queued jobs" style="display:none;">Cancel Queued</button>
-            <button id="clearCompletedBtn" class="btn-sm" title="Remove completed jobs from the list" style="display:none;">Clear Completed</button>
-          </div>
+              <h2>Job Monitor</h2>
+              <div class="section-actions">
+                <button id="cancelAllBtn" class="btn-sm" title="Cancel all queued and running jobs">Cancel All</button>
+                <button id="cancelQueuedBtn" class="btn-sm" title="Cancel all queued jobs">Cancel Queued</button>
+                <button id="clearCompletedBtn" class="btn-sm" title="Remove completed jobs from the list">Clear Completed</button>
+              </div>
             </div>
-            
             <div class="job-stats">
               <div class="stat-card" id="filterQueued" data-filter="queued" title="Show only queued jobs">
                 <span class="stat-label">Queued</span>
@@ -387,7 +349,6 @@
                 <span class="stat-value" id="failedJobsCount">0</span>
               </div>
             </div>
-            
             <div class="job-table-container" id="jobTableContainer">
               <table class="job-table">
                 <thead>
@@ -407,13 +368,11 @@
               <div class="resize-handle" id="jobResizeHandle" title="Drag to resize"></div>
             </div>
           </div>
-
           <!-- Artifact Generation Section -->
           <div class="task-section">
             <div class="section-header">
               <h2>Generate Artifacts</h2>
             </div>
-
             <!-- File Selection -->
             <div class="file-selection">
               <div class="selection-options">
@@ -425,13 +384,11 @@
                   <input type="radio" name="fileSelection" value="selected">
                   Selected files (<span id="selectedFileCount">0</span>)
                 </label>
-                <button id="generateAllBtn" class="btn-sm" title="Queue all missing artifacts for the chosen scope" style="margin-left:auto;">Generate All</button>
+                <button id="generateAllBtn" class="btn-sm" title="Queue all missing artifacts for the chosen scope">Generate All</button>
               </div>
             </div>
-
             <!-- Artifact Types -->
             <div class="artifact-grid">
-              
               <div class="artifact-card" data-artifact="metadata">
                 <div class="artifact-header">
                   <div class="artifact-info">
@@ -445,11 +402,10 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="metadata-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="metadata-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute" data-operation="metadata-all">Recompute All</button>
                   </div>
                 </div>
               </div>
-
               <div class="artifact-card" data-artifact="thumbnails">
                 <div class="artifact-header">
                   <div class="artifact-info">
@@ -465,22 +421,20 @@
                     <button class="btn-generate" data-operation="thumbnails-missing" title="Generate missing thumbnails">
                       Generate Missing
                     </button>
-                    <button class="btn-recompute" data-operation="thumbnails-all" title="Recompute all thumbnails" style="display:none;">
+                    <button class="btn-recompute" data-operation="thumbnails-all" title="Recompute all thumbnails">
                       Recompute All
                     </button>
                     <button class="btn-options" data-artifact="thumbnails" title="Options">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <use href="icons.svg#icon-options"></use>
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="thumbnailsOptions" style="display:none;">
+                <div class="options-tooltip" id="thumbnailsOptions">
                   <label>Offset (seconds): <input type="number" id="thumbnailOffset" value="10" min="1" max="3600"></label>
                 </div>
               </div>
-
               <div class="artifact-card" data-artifact="sprites">
                 <div class="artifact-header">
                   <div class="artifact-info">
@@ -494,22 +448,20 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="sprites-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="sprites-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute" data-operation="sprites-all">Recompute All</button>
                     <button class="btn-options" data-artifact="sprites">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <use href="icons.svg#icon-options"></use>
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="spritesOptions" style="display:none;">
+                <div class="options-tooltip" id="spritesOptions">
                   <label>Interval (sec): <input type="number" id="spriteInterval" value="10" min="1" max="60"></label>
                   <label>Width (px): <input type="number" id="spriteWidth" value="320" min="160" max="1920"></label>
                   <label>Columns: <input type="number" id="spriteCols" value="10" min="5" max="20"></label>
                 </div>
               </div>
-
               <div class="artifact-card" data-artifact="previews">
                 <div class="artifact-header">
                   <div class="artifact-info">
@@ -523,7 +475,7 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="previews-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="previews-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute" data-operation="previews-all">Recompute All</button>
                     <button class="btn-options" data-artifact="previews">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"/>
@@ -532,12 +484,11 @@
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="previewsOptions" style="display:none;">
+                <div class="options-tooltip" id="previewsOptions">
                   <label>Segments: <input type="number" id="previewSegments" value="9" min="5" max="20"></label>
                   <label>Duration (sec): <input type="number" id="previewDuration" value="1.0" min="0.5" max="3.0" step="0.1"></label>
                 </div>
               </div>
-
               <div class="artifact-card" data-artifact="phash">
                 <div class="artifact-header">
                   <div class="artifact-info">
@@ -551,7 +502,7 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="phash-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="phash-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute" data-operation="phash-all">Recompute All</button>
                     <button class="btn-options" data-artifact="phash">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"/>
@@ -560,9 +511,9 @@
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="phashOptions" style="display:none;">
+                <div class="options-tooltip" id="phashOptions">
                   <label>Frames: <input type="number" id="phashFrames" value="5" min="3" max="10"></label>
-                  <label>Algorithm: 
+                  <label>Algorithm:
                     <div class="select">
                       <select id="phashAlgo" class="control-select">
                         <option value="ahash">Average Hash</option>
@@ -574,7 +525,6 @@
                   </label>
                 </div>
               </div>
-
               <div class="artifact-card" data-artifact="scenes">
                 <div class="artifact-header">
                   <div class="artifact-info">
@@ -588,7 +538,7 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="scenes-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="scenes-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute" data-operation="scenes-all">Recompute All</button>
                     <button class="btn-options" data-artifact="scenes">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"/>
@@ -597,12 +547,11 @@
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="scenesOptions" style="display:none;">
+                <div class="options-tooltip" id="scenesOptions">
                   <label>Threshold: <input type="number" id="sceneThreshold" value="0.4" min="0.1" max="1.0" step="0.1"></label>
                   <label>Limit: <input type="number" id="sceneLimit" value="0" min="0" max="100"></label>
                 </div>
               </div>
-
               <div class="artifact-card" data-artifact="heatmaps">
                 <div class="artifact-header">
                   <div class="artifact-info">
@@ -616,7 +565,7 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="heatmaps-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="heatmaps-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute" data-operation="heatmaps-all">Recompute All</button>
                     <button class="btn-preview" id="previewHeatmapsBtn" title="Preview a sample heatmap PNG">Preview</button>
                     <button class="btn-options" data-artifact="heatmaps">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -626,9 +575,9 @@
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="heatmapsOptions" style="display:none;">
+                <div class="options-tooltip" id="heatmapsOptions">
                   <label>Interval (sec): <input type="number" id="heatmapInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
-                  <label>Mode: 
+                  <label>Mode:
                     <div class="select">
                       <select id="heatmapMode" class="control-select">
                         <option value="brightness">Brightness</option>
@@ -640,7 +589,6 @@
                   </label>
                 </div>
               </div>
-
               <div class="artifact-card" data-artifact="subtitles">
                 <div class="artifact-header">
                   <div class="artifact-info">
@@ -654,7 +602,7 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="subtitles-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="subtitles-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute" data-operation="subtitles-all">Recompute All</button>
                     <button class="btn-options" data-artifact="subtitles">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"/>
@@ -663,8 +611,8 @@
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="subtitlesOptions" style="display:none;">
-                  <label>Model: 
+                <div class="options-tooltip" id="subtitlesOptions">
+                  <label>Model:
                     <div class="select">
                       <select id="subtitleModel" class="control-select">
                         <option value="tiny">Tiny</option>
@@ -679,7 +627,6 @@
                   <label>Language: <input type="text" id="subtitleLang" placeholder="auto" maxlength="5"></label>
                 </div>
               </div>
-
               <div class="artifact-card" data-artifact="faces">
                 <div class="artifact-header">
                   <div class="artifact-info">
@@ -693,7 +640,7 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="faces-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="faces-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute" data-operation="faces-all">Recompute All</button>
                     <button class="btn-options" data-artifact="faces">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"/>
@@ -702,7 +649,7 @@
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="facesOptions" style="display:none;">
+                <div class="options-tooltip" id="facesOptions">
                   <label>Interval (sec): <input type="number" id="faceInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
                   <label>Min Size: <input type="number" id="faceMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
                   <label>Backend:
@@ -718,17 +665,16 @@
                   <label>Scale Factor: <input type="number" id="faceScale" value="1.1" min="1.01" max="2.0" step="0.01"></label>
                   <label>Min Neighbors: <input type="number" id="faceMinNeighbors" value="5" min="0" max="20" step="1"></label>
                   <label>Similarity Thresh: <input type="number" id="faceSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
-                  <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08);">
+                  <div class="mt-8 pt-8 border-top-muted">
                     <button class="btn-sm" id="facesBrowserBtn" title="Detect faces in your browser and upload the result">
                       Generate Faces (Browser)
                     </button>
-                    <div style="color: var(--muted); font-size: 12px; line-height:1.4; margin-top:6px;">
+                    <div class="muted text-12 lh-14 mt-6">
                       Uses your browser's built-in FaceDetector to find faces and uploads boxes. The server will compute lightweight embeddings for clustering.
                     </div>
                   </div>
                 </div>
               </div>
-
               <!-- Embeddings (recompute embeddings without re-detecting boxes) -->
               <div class="artifact-card" data-artifact="embed">
                 <div class="artifact-header">
@@ -743,7 +689,7 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="embed-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="embed-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute" data-operation="embed-all">Recompute All</button>
                     <button class="btn-options" data-artifact="embed" title="Options">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"/>
@@ -752,7 +698,7 @@
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="embedOptions" style="display:none;">
+                <div class="options-tooltip" id="embedOptions">
                   <label>Interval (sec): <input type="number" id="embedInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
                   <label>Min Size: <input type="number" id="embedMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
                   <label>Backend:
@@ -768,16 +714,13 @@
                   <label>Similarity Thresh: <input type="number" id="embedSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
                 </div>
               </div>
-
             </div>
           </div>
-
           <!-- Orphaned Artifacts Section -->
           <div class="task-section">
             <div class="section-header">
               <h2>Orphaned Artifacts</h2>
             </div>
-            
             <div class="orphan-card">
               <div class="orphan-header">
                 <div class="orphan-info">
@@ -792,7 +735,7 @@
                   <button class="btn-preview" id="previewOrphansBtn" disabled>Preview</button>
                 </div>
               </div>
-              <div class="orphan-details" id="orphanDetails" style="display:none;">
+              <div class="orphan-details" id="orphanDetails">
                 <div class="orphan-list" id="orphanList">
                   <!-- Orphan files will be listed here -->
                 </div>
@@ -801,7 +744,6 @@
           </div>
         </div>
       </div>
-
       <!-- Duplicates Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="duplicates-tab" id="duplicates-panel" hidden>
         <div class="tasks-container">
@@ -813,11 +755,11 @@
               </div>
             </div>
             <div class="controls-panel">
-              <div class="controls-row" style="flex-wrap:wrap; gap:10px;">
-                <div class="control-group" style="min-width:280px; flex:1;">
+              <div class="controls-row wrap-10">
+                <div class="control-group minw-280 flex-1">
                   <input id="dupDirInput" type="text" class="control-input" placeholder="Folder (relative to root). Empty = root" />
                 </div>
-                <label class="control-group" style="display:flex; align-items:center; gap:6px;">
+                <label class="control-group hstack-6">
                   <input id="dupRecursive" type="checkbox" />
                   <span>Recursive</span>
                 </label>
@@ -847,8 +789,7 @@
                 </div>
               </div>
             </div>
-
-            <div class="job-stats" style="margin-top:6px;">
+            <div class="job-stats mt-6">
               <div class="stat-card">
                 <span class="stat-label">Pairs</span>
                 <span class="stat-value" id="dupPairsCount">0</span>
@@ -858,7 +799,6 @@
                 <span class="stat-value" id="dupPageInfo">1 / 1</span>
               </div>
             </div>
-
             <div class="job-table-container" id="dupTableContainer">
               <table class="job-table">
                 <thead>
@@ -873,48 +813,47 @@
                   <!-- Results here -->
                 </tbody>
               </table>
-              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px;">
+              <div class="hstack-8 justify-between mt-8">
                 <button id="dupPrevBtn" class="btn-sm" title="Previous page">‹</button>
-                <div id="dupStatus" class="muted" style="flex:1; text-align:center;"></div>
+                <div id="dupStatus" class="muted flex-1 text-center"></div>
                 <button id="dupNextBtn" class="btn-sm" title="Next page">›</button>
               </div>
             </div>
           </div>
         </div>
       </div>
-
       <!-- Duplicate Compare Modal -->
       <div id="dupCompareModal" class="modal" hidden>
-        <div class="panel" style="max-width: 1100px;">
+        <div class="panel maxw-1100">
           <header>
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-              <div style="display:flex; align-items:center; gap:10px;">
+            <div class="hstack-12 justify-between">
+              <div class="hstack-10">
                 <strong>Compare Files</strong>
                 <span class="muted" id="dupSimVal" title="pHash similarity"></span>
               </div>
               <button class="btn" id="dupCompareClose">Close</button>
             </div>
           </header>
-          <div class="body" style="display:flex; flex-direction:column; gap:12px;">
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; align-items:center;">
+          <div class="body vstack-12">
+            <div class="grid-two-col">
               <div>
-                <div id="dupAPath" class="muted" style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
-                <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
+                <div id="dupAPath" class="muted text-12 truncate"></div>
+                <div class="hstack-6 mt-6 flex-wrap">
                   <button id="dupOpenA" class="btn-sm">Open A</button>
                   <button id="dupRevealA" class="btn-sm">Reveal A</button>
-                  <button id="dupDeleteA" class="btn-sm" style="background:#7a1f2b; border-color:#913544;">Delete A</button>
+                  <button id="dupDeleteA" class="btn-sm btn-danger">Delete A</button>
                 </div>
               </div>
               <div>
-                <div id="dupBPath" class="muted" style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
-                <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; justify-content:flex-start;">
+                <div id="dupBPath" class="muted text-12 truncate"></div>
+                <div class="hstack-6 mt-6 flex-wrap justify-start">
                   <button id="dupOpenB" class="btn-sm">Open B</button>
                   <button id="dupRevealB" class="btn-sm">Reveal B</button>
-                  <button id="dupDeleteB" class="btn-sm" style="background:#7a1f2b; border-color:#913544;">Delete B</button>
+                  <button id="dupDeleteB" class="btn-sm btn-danger">Delete B</button>
                 </div>
               </div>
             </div>
-            <div class="job-table-container" style="max-height: unset;">
+            <div class="job-table-container no-max-height">
               <table class="job-table">
                 <thead>
                   <tr>
@@ -931,96 +870,98 @@
           </div>
         </div>
       </div>
-      
       <!-- Settings Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="settings-tab" id="settings-panel" hidden>
         <div class="tab-content">
           <h2>Settings</h2>
-          <div class="task-section" style="margin-top: 12px;">
+          <div class="task-section mt-12">
             <div class="section-header">
               <h2>Player Preferences</h2>
             </div>
-            <div class="file-selection" style="padding: 12px 0;">
-              <label class="selection-option" style="gap: 10px; align-items: flex-start;">
+            <div class="file-selection py-12">
+              <label class="selection-option items-start gap-10">
                 <input type="checkbox" id="settingAutoplayResume" />
                 <div>
-                  <div style="font-weight:600; display:flex; align-items:center; gap:8px;">
+                  <div class="hstack-8 fw-600">
                     Autoplay on load when previously playing
                     <!-- reference subtitle icon placeholder (from user image) -->
-                    <span aria-hidden="true" title="Subtitle icon reference" style="display:inline-block; width:16px; height:12px; border-radius:3px; background:#2c323d; position:relative; overflow:hidden;">
-                      <span style="position:absolute; left:2px; right:2px; top:3px; height:3px; background:#12161f; border-radius:2px;"></span>
-                      <span style="position:absolute; left:6px; right:2px; bottom:3px; height:3px; background:#12161f; border-radius:2px;"></span>
+                    <span aria-hidden="true" title="Subtitle icon reference" class="subtitle-icon">
+                      <span class="bar1"></span>
+                      <span class="bar2"></span>
                     </span>
                   </div>
-                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                  <div class="muted text-12 lh-14">
                     If enabled, the player resumes playback automatically when a video was playing before closing. Default is off.
                   </div>
                 </div>
               </label>
-
-              <label class="selection-option" style="gap: 10px; align-items: flex-start; margin-top: 12px;">
+              <label class="selection-option items-start mt-12 gap-10">
                 <input type="checkbox" id="settingShowHeatmap" />
                 <div>
-                  <div style="font-weight:600;">Show timeline heatmap</div>
-                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                  <div class="fw-600">Show timeline heatmap</div>
+                  <div class="muted text-12 lh-14">
                     Toggle the heatmap overlay on the player timeline. This only affects display; artifacts and badges still load as usual.
                   </div>
                 </div>
               </label>
-
-              <label class="selection-option" style="gap: 10px; align-items: flex-start; margin-top: 12px;">
+              <label class="selection-option items-start mt-12 gap-10">
                 <input type="checkbox" id="settingShowScenes" />
                 <div>
-                  <div style="font-weight:600;">Show scene boundary markers</div>
-                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                  <div class="fw-600">Show scene boundary markers</div>
+                  <div class="muted text-12 lh-14">
                     Toggle the scene boundary ticks on the player timeline. This only affects display; scenes data still loads as usual.
                   </div>
                 </div>
               </label>
             </div>
           </div>
-          <div class="task-section" style="margin-top: 12px;">
+          <div class="task-section mt-12">
             <div class="section-header">
               <h2>Library Preferences</h2>
             </div>
-            <div class="file-selection" style="padding: 12px 0;">
-              <label class="selection-option" style="gap: 10px; align-items: flex-start;">
+            <div class="file-selection py-12">
+              <label class="selection-option items-start gap-10">
                 <input type="checkbox" id="settingHoverPreviews" />
                 <div>
-                  <div style="font-weight:600;">Enable hover video previews</div>
-                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                  <div class="fw-600">Enable hover video previews</div>
+                  <div class="muted text-12 lh-14">
                     When enabled, cards will play a small preview on hover. Previews are only played if they already exist; no background generation is triggered automatically.
                   </div>
                 </div>
               </label>
-              <label class="selection-option" style="gap: 10px; align-items: flex-start; margin-top: 12px;">
+              <label class="selection-option items-start mt-12 gap-10">
                 <input type="checkbox" id="settingHoverOnDemand" />
                 <div>
-                  <div style="font-weight:600;">Generate hover previews on demand</div>
-                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                  <div class="fw-600">Generate hover previews on demand</div>
+                  <div class="muted text-12 lh-14">
                     When enabled, hovering a card will request the server to create a preview if one doesn’t exist yet. This may start background work and use CPU.
                   </div>
                 </div>
               </label>
             </div>
           </div>
-          <div class="task-section" style="margin-top: 12px;">
+          <div class="task-section mt-12">
             <div class="section-header">
               <h2>Job Processing</h2>
             </div>
-            <div class="file-selection" style="padding: 12px 0; display:flex; align-items:center; justify-content: space-between; gap:16px;">
-              <div style="display:flex; align-items:center; gap:16px; width:100%;">
-                <div style="font-weight:600;">Max concurrent jobs</div>
-                <input type="number" id="settingConcurrency" min="1" max="16" step="1" value="4" style="width:120px;" />
+            <div class="file-selection py-12 vstack-12 gap-12">
+              <div class="hstack-16 w-100 items-center">
+                <label for="settingConcurrency" class="fw-600">Max concurrent jobs</label>
+                <input type="number" id="settingConcurrency" min="1" max="16" step="1" value="4" class="w-120 ml-8" />
+              </div>
+              <div class="hstack-16 w-100 items-center">
+                <label for="settingFfmpegConcurrency" class="fw-600">Max concurrent ffmpeg</label>
+                <input type="number" id="settingFfmpegConcurrency" min="1" max="16" step="1" value="2" class="w-120 ml-8" />
+              </div>
+              <div class="hstack-16 w-100 items-center">
+                <label for="settingFfmpegThreads" class="fw-600">ffmpeg threads per process</label>
+                <input type="number" id="settingFfmpegThreads" min="1" max="32" step="1" value="1" class="w-120 ml-8" />
               </div>
             </div>
           </div>
         </div>
       </div>
-      
     </div>
   </main>
-  
-  
 </body>
 </html>

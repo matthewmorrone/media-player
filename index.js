@@ -33,6 +33,10 @@ let totalFiles = 0;
 let currentDensity = parseInt((densitySlider && densitySlider.value) || '12', 10);
 const selectedItems = new Set();
 
+// Hover preview settings (loaded via Settings panel wiring)
+let hoverPreviewsEnabled = false;
+let hoverOnDemandEnabled = false;
+
 // Density config: [pageSize (unused), columns, label]
 // Density configuration helpers
 // Direct mapping: slider value (1..8) equals columns (1..8)
@@ -136,6 +140,8 @@ function videoCard(file) {
   const root = frag.querySelector('.card');
   const p = file.path || '';
   if (root) root.dataset.path = p;
+  // Hover preview overlay wiring (grid)
+  try { if (root) attachHoverOverlay(root, p); } catch(_) {}
   // Checkbox
   const cb = frag.querySelector('.card-checkbox');
   if (cb) {
@@ -179,6 +185,75 @@ function videoCard(file) {
   // Open behavior
   if (root) root.addEventListener('click', (e) => handleCardClick(e, p));
   return root || frag;
+}
+
+// Attach a video hover overlay to a card element that plays a small preview on hover
+function attachHoverOverlay(cardEl, relPath) {
+  if (!cardEl || cardEl._hoverWired) return;
+  cardEl._hoverWired = true;
+  const wrap = cardEl.querySelector('.thumb-wrap') || cardEl;
+  const overlay = document.createElement('div');
+  overlay.className = 'video-hover-preview';
+  const v = document.createElement('video');
+  v.muted = true; v.loop = true; v.playsInline = true; v.preload = 'none';
+  overlay.appendChild(v);
+  wrap.appendChild(overlay);
+
+  let fetching = null; // Promise<string|null>
+  async function ensureSrc() {
+    if (v.src) return v.src;
+    if (fetching) return fetching;
+    fetching = (async () => {
+      const url = new URL('/api/hover/get', window.location.origin);
+      url.searchParams.set('path', relPath);
+      const src = url.toString();
+      try {
+        const head = await fetch(src, { method: 'HEAD', cache: 'no-store' });
+        if (head.ok) return src;
+      } catch(_) {}
+      if (!hoverOnDemandEnabled) return null;
+      // Kick off creation on demand
+      try {
+        const createUrl = new URL('/api/hover/create', window.location.origin);
+        createUrl.searchParams.set('path', relPath);
+        await fetch(createUrl.toString(), { method: 'POST' });
+      } catch(_) {}
+      // Poll for availability (up to ~8s)
+      const start = Date.now();
+      while (Date.now() - start < 8000) {
+        try {
+          const r = await fetch(src, { method: 'HEAD', cache: 'no-store' });
+          if (r.ok) return src;
+        } catch(_) {}
+        await new Promise(res => setTimeout(res, 400));
+      }
+      return null;
+    })();
+    const got = await fetching; fetching = null; return got;
+  }
+
+  function onEnter() {
+    if (!hoverPreviewsEnabled) return;
+    ensureSrc().then((src) => {
+      if (!src) return;
+      if (!v.src) v.src = src + `&t=${Date.now()}`; // bust cache once
+      overlay.classList.add('active');
+      v.play().catch(()=>{});
+    });
+  }
+  function onLeave() {
+    overlay.classList.remove('active');
+    try { v.pause(); } catch(_) {}
+  }
+  cardEl.addEventListener('mouseenter', onEnter);
+  cardEl.addEventListener('mouseleave', onLeave);
+  // Safety: pause when card scrolls off or grid is hidden
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (!e.isIntersecting) onLeave(); });
+  }, { root: document.querySelector('#library-panel') || null, threshold: 0 });
+  try { obs.observe(cardEl); } catch(_) {}
+  // Handle error -> hide overlay gracefully
+  v.addEventListener('error', () => { overlay.classList.remove('active'); });
 }
 
 function dirCard(dir) {
@@ -305,8 +380,16 @@ function beginInlineRename(titleEl, relPath) {
   } catch (_) {}
 }
 
-// Some modules call this; safe no-op when hover previews disabled
-function stopAllTileHovers() {}
+// Some modules call this; stop any active tile hover previews
+function stopAllTileHovers() {
+  try {
+    document.querySelectorAll('.video-hover-preview').forEach(el => {
+      el.classList.remove('active');
+      const v = el.querySelector('video');
+      if (v) { try { v.pause(); } catch(_) {} }
+    });
+  } catch(_) {}
+}
 
 // Library loader (wrapped around previously orphaned block)
 async function loadLibrary() {
@@ -575,6 +658,8 @@ function wireSettings() {
   const cbPlay = document.getElementById('settingHoverPreviews');
   const cbDemand = document.getElementById('settingHoverOnDemand');
   const concurrencyInput = document.getElementById('settingConcurrency');
+  const ffmpegConcInput = document.getElementById('settingFfmpegConcurrency');
+  const ffmpegThreadsInput = document.getElementById('settingFfmpegThreads');
   const cbAutoplayResume = document.getElementById('settingAutoplayResume');
   const cbShowHeatmap = document.getElementById('settingShowHeatmap');
   const cbShowScenes = document.getElementById('settingShowScenes');
@@ -642,6 +727,23 @@ function wireSettings() {
     } catch (_) {
       if (concurrencyInput) concurrencyInput.value = String(Number(localStorage.getItem('setting.maxConcurrency')) || 4);
     }
+    // Load ffmpeg settings
+    try {
+      const r2 = await fetch('/api/settings/ffmpeg');
+      if (r2.ok) {
+        const d2 = await r2.json();
+        const c = Number(d2?.data?.concurrency) || 2;
+        const th = Number(d2?.data?.threads) || 1;
+        if (ffmpegConcInput) ffmpegConcInput.value = String(c);
+        if (ffmpegThreadsInput) ffmpegThreadsInput.value = String(th);
+      } else {
+        if (ffmpegConcInput) ffmpegConcInput.value = String(Number(localStorage.getItem('setting.ffmpegConcurrency')) || 2);
+        if (ffmpegThreadsInput) ffmpegThreadsInput.value = String(Number(localStorage.getItem('setting.ffmpegThreads')) || 1);
+      }
+    } catch (_) {
+      if (ffmpegConcInput) ffmpegConcInput.value = String(Number(localStorage.getItem('setting.ffmpegConcurrency')) || 2);
+      if (ffmpegThreadsInput) ffmpegThreadsInput.value = String(Number(localStorage.getItem('setting.ffmpegThreads')) || 1);
+    }
   })();
   // Debounced autosave on change
   if (concurrencyInput) {
@@ -669,6 +771,40 @@ function wireSettings() {
     };
     concurrencyInput.addEventListener('change', handle);
     concurrencyInput.addEventListener('input', handle);
+  }
+
+  // FFmpeg concurrency + threads
+  const debouncedPush = (() => {
+    let t;
+    return (fn) => { clearTimeout(t); t = setTimeout(fn, 400); };
+  })();
+  const pushFfmpegSettings = async () => {
+    try {
+      const conc = Math.max(1, Math.min(16, Number(ffmpegConcInput?.value || 2)));
+      const th = Math.max(1, Math.min(32, Number(ffmpegThreadsInput?.value || 1)));
+      const url = `/api/settings/ffmpeg?concurrency=${conc}&threads=${th}`;
+      const r = await fetch(url, { method: 'POST' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const appliedC = Number(d?.data?.concurrency) || conc;
+      const appliedT = Number(d?.data?.threads) || th;
+      if (ffmpegConcInput) ffmpegConcInput.value = String(appliedC);
+      if (ffmpegThreadsInput) ffmpegThreadsInput.value = String(appliedT);
+      try { localStorage.setItem('setting.ffmpegConcurrency', String(appliedC)); } catch (_) {}
+      try { localStorage.setItem('setting.ffmpegThreads', String(appliedT)); } catch (_) {}
+      tasksManager?.showNotification(`FFmpeg settings updated (concurrency=${appliedC}, threads=${appliedT})`, 'success');
+    } catch (e) {
+      tasksManager?.showNotification('Failed to update FFmpeg settings', 'error');
+    }
+  };
+  if (ffmpegConcInput) {
+    const h = () => debouncedPush(pushFfmpegSettings);
+    ffmpegConcInput.addEventListener('input', () => debouncedPush(pushFfmpegSettings));
+    ffmpegConcInput.addEventListener('change', () => debouncedPush(pushFfmpegSettings));
+  }
+  if (ffmpegThreadsInput) {
+    ffmpegThreadsInput.addEventListener('input', () => debouncedPush(pushFfmpegSettings));
+    ffmpegThreadsInput.addEventListener('change', () => debouncedPush(pushFfmpegSettings));
   }
 }
 
@@ -1323,6 +1459,8 @@ const Player = (() => {
   let sprites = null; // { index, sheet }
   let scenes = [];
   let hasHeatmap = false;
+  // Cache last heatmap samples so we can redraw on resize
+  let lastHeatmapSamples = null;
   let subtitlesUrl = null;
   let timelineMouseDown = false;
 
@@ -1472,6 +1610,23 @@ const Player = (() => {
       timelineEl.addEventListener('mouseenter', () => { spriteHoverEnabled = true; });
       timelineEl.addEventListener('mouseleave', () => { spriteHoverEnabled = false; hideSprite(); });
       timelineEl.addEventListener('mousemove', (e) => handleSpriteHover(e));
+
+      // Redraw waveform on resize for crispness
+      try {
+        const ro = new ResizeObserver(() => {
+          if (showHeatmap && hasHeatmap && lastHeatmapSamples) drawHeatmapCanvas(lastHeatmapSamples);
+        });
+        ro.observe(timelineEl);
+      } catch(_) {
+        // Fallback: window resize debounce
+        let t = null;
+        window.addEventListener('resize', () => {
+          clearTimeout(t);
+          t = setTimeout(() => {
+            if (showHeatmap && hasHeatmap && lastHeatmapSamples) drawHeatmapCanvas(lastHeatmapSamples);
+          }, 150);
+        });
+      }
     }
     if (btnSetThumb && !btnSetThumb._wired) {
       btnSetThumb._wired = true;
@@ -1779,6 +1934,7 @@ const Player = (() => {
           const hm = jj?.data?.heatmaps || jj?.heatmaps || jj;
           const samples = Array.isArray(hm?.samples) ? hm.samples : [];
           if (samples.length && heatmapCanvasEl) {
+            lastHeatmapSamples = samples;
             drawHeatmapCanvas(samples);
             // Clear any PNG bg under it
             heatmapEl.style.backgroundImage = '';
@@ -1829,6 +1985,7 @@ const Player = (() => {
     try {
       const ctx = heatmapCanvasEl.getContext('2d');
       ctx.clearRect(0, 0, heatmapCanvasEl.width || 0, heatmapCanvasEl.height || 0);
+      lastHeatmapSamples = null;
     } catch (_) {}
   }
 
@@ -1845,35 +2002,80 @@ const Player = (() => {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    // Normalize and smooth values with a simple moving average
-    const vals = samples.map(s => Math.max(0, Math.min(1, Number(s.v) || 0)));
-    const win = Math.max(2, Math.round(vals.length / 100)); // adaptive window
-    const smoothed = new Array(vals.length);
+    // Normalize values 0..1 and lightly smooth, downsample to match width
+    const raw = samples.map(s => Math.max(0, Math.min(1, Number(s.v) || 0)));
+    const targetPts = Math.max(32, Math.min(512, Math.floor(w)));
+    const step = Math.max(1, Math.floor(raw.length / targetPts));
+    const down = [];
+    for (let i = 0; i < raw.length; i += step) down.push(raw[i]);
+    const win = Math.max(2, Math.round(down.length / 64));
+    const vals = new Array(down.length);
     let sum = 0;
-    for (let i = 0; i < vals.length; i++) {
-      sum += vals[i];
-      if (i >= win) sum -= vals[i - win];
-      smoothed[i] = (i >= win - 1) ? (sum / win) : (sum / Math.max(1, i + 1));
+    for (let i = 0; i < down.length; i++) {
+      sum += down[i];
+      if (i >= win) sum -= down[i - win];
+      const v = (i >= win - 1) ? (sum / win) : (sum / Math.max(1, i + 1));
+      // Ease dynamic range so quiet areas still show shape
+      vals[i] = Math.pow(v, 0.8);
     }
 
-    // Draw as vertical strips across the width
-    ctx.save();
-    for (let i = 0; i < smoothed.length; i++) {
-      const x0 = Math.floor((i / smoothed.length) * w);
-      const x1 = Math.floor(((i + 1) / smoothed.length) * w);
-      const ww = Math.max(1, x1 - x0);
-      const v = smoothed[i];
-      // Color map: dark -> blue -> magenta/orange
-      const color = heatColor(v);
-      ctx.fillStyle = color;
-      ctx.fillRect(x0, 0, ww, h);
+    const yMid = h / 2;
+    const ampMax = Math.max(2, (h / 2) - 2);
+    const N = vals.length;
+    if (N < 2) return;
+    const xs = new Array(N);
+    const topYs = new Array(N);
+    const botYs = new Array(N);
+    for (let i = 0; i < N; i++) {
+      const x = (i / (N - 1)) * w;
+      const a = Math.max(0, Math.min(1, vals[i])) * ampMax;
+      xs[i] = x;
+      topYs[i] = yMid - a;
+      botYs[i] = yMid + a;
     }
-    ctx.restore();
-    // Subtle vignette for contrast
+
+    // Fill gradient resembling the reference style
+    const fillGrad = ctx.createLinearGradient(0, 0, 0, h);
+    fillGrad.addColorStop(0.0, 'rgba(79,140,255,0.35)');
+    fillGrad.addColorStop(1.0, 'rgba(255,122,89,0.35)');
+    ctx.fillStyle = fillGrad;
+
+    // Closed path: top curve left->right, bottom curve right->left
+    ctx.beginPath();
+    ctx.moveTo(xs[0], yMid);
+    for (let i = 1; i < N; i++) {
+      const xc = (xs[i - 1] + xs[i]) / 2;
+      const yc = (topYs[i - 1] + topYs[i]) / 2;
+      ctx.quadraticCurveTo(xs[i - 1], topYs[i - 1], xc, yc);
+    }
+    ctx.lineTo(xs[N - 1], yMid);
+    for (let i = N - 1; i > 0; i--) {
+      const xc = (xs[i] + xs[i - 1]) / 2;
+      const yc = (botYs[i] + botYs[i - 1]) / 2;
+      ctx.quadraticCurveTo(xs[i], botYs[i], xc, yc);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Delicate outline on top ridge
+    ctx.beginPath();
+    ctx.moveTo(xs[0], topYs[0]);
+    for (let i = 1; i < N; i++) {
+      const xc = (xs[i - 1] + xs[i]) / 2;
+      const yc = (topYs[i - 1] + topYs[i]) / 2;
+      ctx.quadraticCurveTo(xs[i - 1], topYs[i - 1], xc, yc);
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 1;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.stroke();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Soft vignette to blend
     const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, 'rgba(0,0,0,0.25)');
+    grad.addColorStop(0, 'rgba(0,0,0,0.20)');
     grad.addColorStop(0.5, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.35)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.30)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
   }
@@ -3223,8 +3425,8 @@ class TasksManager {
     const tbody = document.getElementById('jobTableBody');
     if (!tbody) return;
     const all = Array.from(this.jobs.values());
-    // Filtering
-    let visible = all;
+    // Filtering: when no filters selected, show none (not all)
+    let visible = [];
     if (this.activeFilters && this.activeFilters.size > 0) {
       visible = all.filter(j => this.activeFilters.has(this.normalizeStatus(j)));
     }
