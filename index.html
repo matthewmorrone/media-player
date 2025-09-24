@@ -32,6 +32,9 @@
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="duplicates-panel" id="duplicates-tab" data-tab="duplicates">
         Duplicates
       </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="performers-panel" id="performers-tab" data-tab="performers">
+        Performers
+      </button>
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="settings-panel" id="settings-tab" data-tab="settings">
         Settings
       </button>
@@ -53,6 +56,7 @@
             <!-- Sidebar Tabs -->
             <div class="sidebar-tabs">
               <button class="sidebar-tab active" data-tab="artifacts">Artifacts</button>
+              <button class="sidebar-tab" data-tab="performers">Performers</button>
               <button class="sidebar-tab" data-tab="filters">Filters</button>
             </div>
             <!-- Artifacts Tab -->
@@ -65,6 +69,18 @@
                 <button id="badgeFaces" class="btn-sm" title="Faces status or generate" data-present="0">Faces <span id="badgeFacesStatus" class="badge-status">✗</span></button>
                 <button id="badgeHover" class="btn-sm" title="Hover preview status or generate" data-present="0">Hover Preview <span id="badgeHoverStatus" class="badge-status">✗</span></button>
                 <button id="badgePhash" class="btn-sm" title="pHash status or generate" data-present="0">pHash <span id="badgePhashStatus" class="badge-status">✗</span></button>
+              </div>
+            </div>
+            <!-- Performers Tab -->
+            <div id="performersTab" class="sidebar-tab-content vstack-12">
+              <div class="filter-section">
+                <h4>Performers</h4>
+                <div id="perfChips" class="chips" aria-label="Assigned performers"></div>
+                <div class="chip-input-row">
+                  <input id="perfInput" type="text" class="control-input" placeholder="Add performer… (Enter)" list="perfSuggestions" aria-label="Add performer" />
+                  <datalist id="perfSuggestions"></datalist>
+                </div>
+                <div class="muted text-12 lh-14">Type a name and press Enter to add. Click a chip’s × to remove.</div>
               </div>
             </div>
             <!-- Filters Tab -->
@@ -176,10 +192,7 @@
                 <div id="playerTitle">No file</div>
                 <div id="playerMeta">—</div>
               </div>
-              <div class="player-actions hstack-8">
-                <button id="btnSetThumb" class="btn-sm" title="Set the cover thumbnail to current frame">Set Thumbnail</button>
-                <button id="btnAddMarker" class="btn-sm" title="Add a scene marker at current time">Add Marker</button>
-              </div>
+              <div class="player-actions hstack-8"></div>
             </div>
             <div class="player-video">
               <video id="playerVideo" playsinline></video>
@@ -219,6 +232,19 @@
                   </div>
                   <button id="btnPip" class="btn-sm" title="Picture in Picture" aria-label="Picture in Picture">⧉</button>
                   <button id="btnFullscreen" class="btn-sm" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+                  <button id="btnSetThumb" class="btn-sm icon-btn" title="Set cover thumbnail to current frame" aria-label="Set Thumbnail">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z" />
+                      <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    <span class="visually-hidden">Set Thumbnail</span>
+                  </button>
+                  <button id="btnAddMarker" class="btn-sm icon-btn" title="Add scene marker at current time" aria-label="Add Marker">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M6 2h12a2 2 0 0 1 2 2v14.5a.5.5 0 0 1-.79.407L12 15l-7.21 3.907A.5.5 0 0 1 4 18.5V4a2 2 0 0 1 2-2z" />
+                    </svg>
+                    <span class="visually-hidden">Add Marker</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -818,6 +844,58 @@
                 <div id="dupStatus" class="muted flex-1 text-center"></div>
                 <button id="dupNextBtn" class="btn-sm" title="Next page">›</button>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Performers Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="performers-tab" id="performers-panel" hidden>
+        <div class="tasks-container">
+          <div class="task-section">
+            <div class="section-header">
+              <h2>Performers</h2>
+              <div class="section-actions">
+                <button id="perfRefreshBtn" class="btn-sm" title="Reload performers list">Refresh</button>
+              </div>
+            </div>
+            <div class="controls-panel">
+              <div class="controls-row wrap-10">
+                <div class="control-group minw-280 flex-1">
+                  <input id="perfCreateName" type="text" class="control-input" placeholder="Add performer name" />
+                </div>
+                <div class="control-group">
+                  <button id="perfCreateBtn" class="btn">Add</button>
+                </div>
+              </div>
+            </div>
+            <div class="controls-panel">
+              <div class="controls-row wrap-10">
+                <div class="control-group minw-400 flex-1">
+                  <textarea id="perfImportInput" class="control-input" rows="4" placeholder='Import performers as JSON or line-separated names'></textarea>
+                </div>
+                <label class="control-group hstack-6">
+                  <input id="perfImportReplace" type="checkbox" />
+                  <span>Replace registry (instead of merge)</span>
+                </label>
+                <div class="control-group">
+                  <button id="perfImportBtn" class="btn" title="Import performers">Import</button>
+                </div>
+                <div class="control-group flex-1 minw-200" style="flex-basis:100%;">
+                  <div id="perfDropZoneHint" class="import-hint text-12 muted">Drag & drop a .txt or .json file onto the box to load performers</div>
+                </div>
+              </div>
+            </div>
+            <div class="job-table-container" id="perfTableContainer">
+              <table class="job-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Usage</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="perfTableBody"></tbody>
+              </table>
             </div>
           </div>
         </div>

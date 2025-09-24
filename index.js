@@ -1452,6 +1452,10 @@ const Player = (() => {
   let badgeHeatmap, badgeScenes, badgeSubtitles, badgeSprites, badgeFaces, badgeHover, badgePhash;
   let badgeHeatmapStatus, badgeScenesStatus, badgeSubtitlesStatus, badgeSpritesStatus, badgeFacesStatus, badgeHoverStatus, badgePhashStatus;
   let btnSetThumb, btnAddMarker;
+  // Performers sidebar refs/state
+  let perfChipsEl, perfInputEl, perfSuggestionsEl;
+  let currentPerformers = [];
+  let perfSuggestionsCache = null;
 
   // State
   let currentPath = null; // relative path from /api library
@@ -1545,6 +1549,9 @@ const Player = (() => {
     // Sidebar
     sbFileNameEl = qs('sbFileName');
     sbMetaEl = qs('sbMeta');
+  perfChipsEl = qs('perfChips');
+  perfInputEl = qs('perfInput');
+  perfSuggestionsEl = document.getElementById('perfSuggestions');
 
     // Wire basic events
     if (videoEl) {
@@ -1640,7 +1647,7 @@ const Player = (() => {
           url.searchParams.set('overwrite', 'true');
           const r = await fetch(url, { method: 'POST' });
           if (!r.ok) throw new Error('HTTP ' + r.status);
-          notify('Cover updated from current frame.', 'success');
+          notify('Thumbnail set', 'success');
           // Refresh library tile if visible by reloading page 1 quickly
           setTimeout(() => loadLibrary(), 200);
         } catch (e) {
@@ -1719,6 +1726,20 @@ const Player = (() => {
     // Compact badges are wired in wireBadgeActions()
     // Apply initial display toggles now that elements are captured
     applyTimelineDisplayToggles();
+
+    // Wire performers sidebar input once
+    if (perfInputEl && !perfInputEl._wired) {
+      perfInputEl._wired = true;
+      perfInputEl.addEventListener('keydown', async (e) => {
+        if (e.key !== 'Enter') return;
+        const val = (perfInputEl.value || '').trim();
+        if (!val) return;
+        await addPerformerToVideo(val);
+        perfInputEl.value = '';
+      });
+      // Prime suggestions on focus
+      perfInputEl.addEventListener('focus', () => { refreshPerformerSuggestions(); });
+    }
   }
 
   function syncControls() {
@@ -1796,6 +1817,9 @@ const Player = (() => {
     wireBadgeActions();
     // Initialize filter controls
     initFilterControls();
+    // Load performers and suggestions for sidebar
+    loadVideoPerformers();
+    refreshPerformerSuggestions();
   }
 
   // Run browser-side face detection using the FaceDetector API and upload results to server
@@ -2401,6 +2425,135 @@ const Player = (() => {
     } catch(_) {}
   }
 
+
+  // -----------------------------
+  // Performers (Player sidebar)
+  // -----------------------------
+  function splitRelPath(p) {
+    p = String(p || '');
+    const i = p.lastIndexOf('/');
+    if (i === -1) return { dir: '', name: p };
+    return { dir: p.slice(0, i), name: p.slice(i + 1) };
+  }
+
+  async function loadVideoPerformers() {
+    try {
+      if (!currentPath) return;
+      const { dir, name } = splitRelPath(currentPath);
+      const url = new URL('/api/videos/' + encodeURIComponent(name) + '/tags', window.location.origin);
+      if (dir) url.searchParams.set('directory', dir);
+      const r = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const data = j?.data || j || {};
+      currentPerformers = Array.isArray(data.performers) ? data.performers : [];
+      renderPerformerChips();
+    } catch(_) {
+      currentPerformers = [];
+      renderPerformerChips();
+    }
+  }
+
+  function renderPerformerChips() {
+    if (!perfChipsEl) return;
+    perfChipsEl.innerHTML = '';
+    if (!currentPerformers || currentPerformers.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'muted text-12';
+      empty.textContent = 'No performers yet';
+      perfChipsEl.appendChild(empty);
+      return;
+    }
+    for (const name of currentPerformers) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      const label = document.createElement('span');
+      label.textContent = name;
+      const btn = document.createElement('button');
+      btn.className = 'remove';
+      btn.title = 'Remove performer';
+      btn.textContent = '×';
+      btn.addEventListener('click', async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        await removePerformerFromVideo(name);
+      });
+      chip.appendChild(label);
+      chip.appendChild(btn);
+      perfChipsEl.appendChild(chip);
+    }
+  }
+
+  async function addPerformerToVideo(name) {
+    try {
+      if (!currentPath || !name) return;
+      const { dir, name: base } = splitRelPath(currentPath);
+      const url = new URL('/api/videos/' + encodeURIComponent(base) + '/tags', window.location.origin);
+      if (dir) url.searchParams.set('directory', dir);
+      const body = { performers_add: [name] };
+      const r = await fetch(url.toString(), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      notify('Added performer', 'success');
+      await loadVideoPerformers();
+      // Optional: add to registry if missing to improve suggestions
+      try { await ensurePerformerInRegistry(name); } catch(_) {}
+      // Refresh top-level table if present
+      try { if (window.performersManager) window.performersManager.refreshCountsSoon(); } catch(_) {}
+    } catch(_) {
+      notify('Failed to add performer', 'error');
+    }
+  }
+
+  async function removePerformerFromVideo(name) {
+    try {
+      if (!currentPath || !name) return;
+      const { dir, name: base } = splitRelPath(currentPath);
+      const url = new URL('/api/videos/' + encodeURIComponent(base) + '/tags', window.location.origin);
+      if (dir) url.searchParams.set('directory', dir);
+      const body = { performers_remove: [name] };
+      const r = await fetch(url.toString(), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      notify('Removed performer', 'success');
+      await loadVideoPerformers();
+      try { if (window.performersManager) window.performersManager.refreshCountsSoon(); } catch(_) {}
+    } catch(_) {
+      notify('Failed to remove performer', 'error');
+    }
+  }
+
+  async function refreshPerformerSuggestions(force = false) {
+    try {
+      if (!perfSuggestionsEl) return;
+      if (!force && perfSuggestionsCache) return; // already loaded
+      const url = new URL('/api/registry/performers', window.location.origin);
+      const r = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const items = (j?.data?.performers) || [];
+      perfSuggestionsCache = items;
+      // Populate datalist
+      perfSuggestionsEl.innerHTML = '';
+      for (const it of items) {
+        const opt = document.createElement('option');
+        opt.value = it.name || it.slug || '';
+        perfSuggestionsEl.appendChild(opt);
+      }
+    } catch(_) { /* ignore */ }
+  }
+
+  async function ensurePerformerInRegistry(name) {
+    try {
+      const exists = Array.isArray(perfSuggestionsCache) && perfSuggestionsCache.some(p => (p.name||'').toLowerCase() === String(name).toLowerCase());
+      if (exists) return;
+      const url = new URL('/api/registry/performers/create', window.location.origin);
+      await fetch(url.toString(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      perfSuggestionsCache = null; // bust cache
+      refreshPerformerSuggestions(true);
+    } catch(_) {}
+  }
+
+  // Expose a tiny API for other modules
+  function _refreshPerfSidebar() { loadVideoPerformers(); refreshPerformerSuggestions(); }
+  function _currentRelPath() { return currentPath; }
   // Video Filter Controls
   let filterState = {
     brightness: 100,
@@ -2470,6 +2623,9 @@ const Player = (() => {
 
     // Wire action buttons
     if (btnRotateLeft) {
+        _refreshPerformerSuggestions: refreshPerformerSuggestions,
+        _refreshPerfSidebar,
+        _currentRelPath,
       btnRotateLeft.addEventListener('click', () => {
         filterState.rotate = (filterState.rotate - 90) % 360;
         if (filterState.rotate < 0) filterState.rotate += 360;
@@ -2535,31 +2691,73 @@ const Player = (() => {
   }
 
   function initSidebarTabs() {
-    // Wire sidebar tab switching
+    // Prevent duplicate wiring if already initialized
+    if (initSidebarTabs._wired) return;
+    initSidebarTabs._wired = true;
     const sidebarTabs = document.querySelectorAll('.sidebar-tab');
     const sidebarTabContents = document.querySelectorAll('.sidebar-tab-content');
+
+    // Defensive normalization: ensure only a single active content remains
+    let activeContent = null;
+    sidebarTabContents.forEach(content => {
+      if (content.classList.contains('active') && !activeContent) {
+        activeContent = content;
+      } else if (content.classList.contains('active')) {
+        content.classList.remove('active');
+      }
+      content.style.display = 'none';
+    });
+    if (!activeContent && sidebarTabContents.length) {
+      activeContent = sidebarTabContents[0];
+      activeContent.classList.add('active');
+    }
+    if (activeContent) activeContent.style.display = 'flex';
+    // Sync tab button to active content
+    if (activeContent) {
+      const id = activeContent.id.replace(/Tab$/, '');
+      sidebarTabs.forEach(tab => {
+        if (tab.getAttribute('data-tab') === id) tab.classList.add('active'); else tab.classList.remove('active');
+      });
+    }
 
     sidebarTabs.forEach(tab => {
       tab.addEventListener('click', () => {
         const targetTab = tab.getAttribute('data-tab');
-        
-        // Remove active class from all tabs and contents
+        if (!targetTab) return;
+        // Clear active state
         sidebarTabs.forEach(t => t.classList.remove('active'));
-        sidebarTabContents.forEach(content => {
-          content.classList.remove('active');
-          content.style.display = 'none';
-        });
-
-        // Add active class to clicked tab
+        sidebarTabContents.forEach(c => { c.classList.remove('active'); c.style.display = 'none'; });
+        // Activate
         tab.classList.add('active');
-
-        // Show corresponding content
         const targetContent = document.getElementById(targetTab + 'Tab');
-        if (targetContent) {
-          targetContent.classList.add('active');
-          targetContent.style.display = 'flex';
-        }
-      });
+        if (targetContent) { targetContent.classList.add('active'); targetContent.style.display = 'flex'; }
+      }, { passive: true });
+    });
+  }
+
+  // Early global delegation so tabs are clickable even before a video is opened
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', delegateSidebarTabs, { once: true });
+  } else {
+    delegateSidebarTabs();
+  }
+
+  function delegateSidebarTabs() {
+    const sidebar = document.getElementById('playerSidebar');
+    if (!sidebar || sidebar._delegated) return;
+    sidebar._delegated = true;
+    sidebar.addEventListener('click', (ev) => {
+      const tabBtn = ev.target.closest('.sidebar-tab');
+      if (!tabBtn) return;
+      const targetTab = tabBtn.getAttribute('data-tab');
+      if (!targetTab) return;
+      const tabs = sidebar.querySelectorAll('.sidebar-tab');
+      const contents = sidebar.querySelectorAll('.sidebar-tab-content');
+      tabs.forEach(t => t.classList.remove('active'));
+      contents.forEach(c => { c.classList.remove('active'); c.style.display = 'none'; });
+      tabBtn.classList.add('active');
+      const content = document.getElementById(targetTab + 'Tab');
+      if (content) { content.classList.add('active'); content.style.display = 'flex'; }
     });
   }
 
@@ -4917,4 +5115,243 @@ if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => { duplicatesManager = new DuplicatesManager(); });
 } else {
   duplicatesManager = new DuplicatesManager();
+}
+
+// -----------------------------
+// Performers Manager (Top-level tab)
+// -----------------------------
+class PerformersManager {
+  constructor() {
+    this.items = [];
+    this.counts = {}; // name -> usage count
+    this.refreshTimer = null;
+    this.init();
+  }
+
+  init() {
+    // Wire buttons
+    const createBtn = document.getElementById('perfCreateBtn');
+    const createName = document.getElementById('perfCreateName');
+    const importBtn = document.getElementById('perfImportBtn');
+    const importInput = document.getElementById('perfImportInput');
+    const importReplace = document.getElementById('perfImportReplace');
+    const refreshBtn = document.getElementById('perfRefreshBtn');
+  const dropHint = document.getElementById('perfDropZoneHint');
+
+    if (createBtn && !createBtn._wired) {
+      createBtn._wired = true;
+      createBtn.addEventListener('click', async () => {
+        const name = (createName && createName.value || '').trim();
+        if (!name) return;
+        try {
+          await fetch('/api/registry/performers/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+          if (createName) createName.value = '';
+          notify('Performer added', 'success');
+          await this.loadAll();
+          try { if (window.Player) Player._refreshPerformerSuggestions?.(true); } catch(_) {}
+        } catch(_) { notify('Failed to add performer', 'error'); }
+      });
+    }
+
+    if (importBtn && !importBtn._wired) {
+      importBtn._wired = true;
+      importBtn.addEventListener('click', async () => {
+        const raw = (importInput && importInput.value || '').trim();
+        const replace = !!(importReplace && importReplace.checked);
+        if (!raw) return;
+        try {
+          // Try parse JSON first
+          let payload = null;
+          try {
+            const j = JSON.parse(raw);
+            // Accept array of strings or full registry shape
+            if (Array.isArray(j)) {
+              payload = { performers: { next_id: 1, performers: j.map(n => ({ name: String(n), slug: String(n).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') })) }, replace };
+            } else if (j && typeof j === 'object') {
+              if (Array.isArray(j.performers)) payload = { performers: { next_id: Number(j.next_id||1), performers: j.performers }, replace };
+              else if (Array.isArray(j.tags) || j.tags) payload = { performers: j.performers ? j : { next_id: 1, performers: [] }, replace };
+              else payload = { performers: j, replace };
+            }
+          } catch(_) {}
+          if (!payload) {
+            // Treat as line-separated
+            const names = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            payload = { performers: { next_id: 1, performers: names.map(n => ({ name: n, slug: n.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') })) }, replace };
+          }
+          const r = await fetch('/api/registry/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          notify('Import complete', 'success');
+          if (importInput) importInput.value = '';
+          await this.loadAll();
+          try { if (window.Player) Player._refreshPerformerSuggestions?.(true); } catch(_) {}
+        } catch(_) { notify('Import failed', 'error'); }
+      });
+    }
+
+    // Drag & drop support for import (JSON or text)
+    if (importInput && !importInput._dragWired) {
+      importInput._dragWired = true;
+      const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+      ['dragenter','dragover','dragleave','drop'].forEach(ev => {
+        importInput.addEventListener(ev, stop);
+      });
+      importInput.addEventListener('dragenter', () => { importInput.classList.add('drag-hover'); });
+      importInput.addEventListener('dragover', () => { importInput.classList.add('drag-hover'); });
+      importInput.addEventListener('dragleave', (e) => {
+        // Only remove if actually left the element
+        if (!importInput.contains(e.relatedTarget)) importInput.classList.remove('drag-hover');
+      });
+      importInput.addEventListener('drop', async (e) => {
+        importInput.classList.remove('drag-hover');
+        try {
+          const files = Array.from(e.dataTransfer.files || []);
+          if (!files.length) return;
+          const file = files[0];
+          const nameLc = file.name.toLowerCase();
+          if (!/\.(json|txt|text)$/.test(nameLc)) {
+            notify('Unsupported file type (use .json or .txt)', 'error');
+            return;
+          }
+          const text = await file.text();
+          if (!text.trim()) { notify('File is empty', 'error'); return; }
+          // If JSON, pretty-print canonical; else leave as-is
+          let finalText = text;
+          if (nameLc.endsWith('.json')) {
+            try { finalText = JSON.stringify(JSON.parse(text), null, 2); } catch(_) {}
+          }
+          importInput.value = finalText;
+          if (dropHint) dropHint.classList.add('hidden');
+          notify('Loaded file: ' + file.name, 'success');
+        } catch(err) {
+          notify('Failed to read dropped file', 'error');
+        }
+      });
+    }
+
+    if (refreshBtn && !refreshBtn._wired) {
+      refreshBtn._wired = true;
+      refreshBtn.addEventListener('click', () => this.loadAll());
+    }
+
+    // Auto-load when opening the tab
+    window.addEventListener('tabchange', (e) => {
+      if (e.detail.activeTab === 'performers') {
+        if (!this.items || this.items.length === 0) this.loadAll();
+      }
+    });
+
+    // Initial lazy load (don’t block app startup)
+    setTimeout(() => this.loadAll(), 200);
+  }
+
+  async loadAll() {
+    try {
+      const [list, counts] = await Promise.all([
+        this.fetchPerformers(),
+        this.fetchCounts()
+      ]);
+      this.items = list;
+      this.counts = counts;
+      this.renderTable();
+    } catch(_) {
+      this.items = [];
+      this.counts = {};
+      this.renderTable();
+    }
+  }
+
+  async fetchPerformers() {
+    try {
+      const r = await fetch('/api/registry/performers', { headers: { 'Accept': 'application/json' } });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      return Array.isArray(j?.data?.performers) ? j.data.performers : [];
+    } catch(_) { return []; }
+  }
+
+  async fetchCounts() {
+    try {
+      const dir = currentPath(); // relative directory currently browsed in Library
+      const u = new URL('/api/tags/summary', window.location.origin);
+      if (dir) u.searchParams.set('path', dir);
+      const r = await fetch(u.toString(), { headers: { 'Accept': 'application/json' } });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      return j?.data?.performers || j?.performers || {};
+    } catch(_) { return {}; }
+  }
+
+  renderTable() {
+    const body = document.getElementById('perfTableBody');
+    if (!body) return;
+    body.innerHTML = '';
+    const items = Array.isArray(this.items) ? this.items : [];
+    for (const it of items) {
+      const name = it.name || it.slug || '';
+      const count = Number(this.counts[name] || 0);
+      const tr = document.createElement('tr');
+      const tdName = document.createElement('td');
+      tdName.textContent = name;
+      const tdUsage = document.createElement('td');
+      tdUsage.textContent = String(count);
+      const tdAct = document.createElement('td');
+      tdAct.className = 'cell-action';
+      const btnOpen = document.createElement('button'); btnOpen.className = 'btn-secondary'; btnOpen.textContent = 'Filter';
+      btnOpen.addEventListener('click', () => this.filterLibraryByPerformer(name));
+      const btnRename = document.createElement('button'); btnRename.className = 'btn-secondary'; btnRename.textContent = 'Rename';
+      btnRename.addEventListener('click', async () => { const nn = prompt('New name for performer', name); if (nn && nn !== name) await this.renamePerformer(name, nn); });
+      const btnDelete = document.createElement('button'); btnDelete.className = 'btn-danger'; btnDelete.textContent = 'Delete';
+      btnDelete.addEventListener('click', async () => { if (confirm('Delete performer from registry (does not remove from videos)?')) await this.deletePerformer(name); });
+      tdAct.append(btnOpen, btnRename, btnDelete);
+      tr.appendChild(tdName); tr.appendChild(tdUsage); tr.appendChild(tdAct);
+      body.appendChild(tr);
+    }
+  }
+
+  async renamePerformer(oldName, newName) {
+    try {
+      const r = await fetch('/api/registry/performers/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: oldName, new_name: newName }) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      notify('Renamed performer', 'success');
+      await this.loadAll();
+      try { Player._refreshPerformerSuggestions?.(true); } catch(_) {}
+    } catch(_) { notify('Rename failed', 'error'); }
+  }
+
+  async deletePerformer(name) {
+    try {
+      const r = await fetch('/api/registry/performers/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      notify('Deleted performer', 'success');
+      await this.loadAll();
+      try { Player._refreshPerformerSuggestions?.(true); } catch(_) {}
+    } catch(_) { notify('Delete failed', 'error'); }
+  }
+
+  async filterLibraryByPerformer(name) {
+    try {
+      // Set search to include performer: syntax or do server-side when list endpoint supports it.
+      // For now, jump to Library and set search query to name.
+      if (window.tabSystem) window.tabSystem.switchToTab('library');
+      if (searchInput) {
+        searchInput.value = name;
+        await loadLibrary();
+      }
+    } catch(_) {}
+  }
+
+  refreshCountsSoon() {
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(async () => {
+      try { this.counts = await this.fetchCounts(); this.renderTable(); } catch(_) {}
+    }, 300);
+  }
+}
+
+// Initialize performers manager when DOM is ready
+let performersManager;
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => { performersManager = new PerformersManager(); window.performersManager = performersManager; });
+} else {
+  performersManager = new PerformersManager(); window.performersManager = performersManager;
 }
