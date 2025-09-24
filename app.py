@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Callable
 import json
+import copy
 import mimetypes
 import os
 import shutil
@@ -16,25 +17,23 @@ import uuid
 import shlex
 import logging
 import asyncio
-# from pydantic import BaseModel
 try:
-    from pydantic import BaseModel  # type: ignore # prefer normal import (v1/v2)
-except Exception:
+    from pydantic import BaseModel, Field  # type: ignore
+except Exception:  # pragma: no cover
     try:
-        from pydantic.v1 import BaseModel  # type: ignore # pydantic v2 compatibility layer
-    except Exception:
-        class BaseModel:
-            """
-    Minimal fallback to avoid hard import errors when pydantic isn't installed.
-            Note: FastAPI requires pydantic at runtime; this is mainly for tooling/tests.
-            """
+        from pydantic.v1 import BaseModel  # type: ignore
+        from pydantic.v1 import Field  # type: ignore
+    except Exception:  # pragma: no cover
+        class BaseModel:  # fallback minimal stub
             def __init__(self, **data):
                 for k, v in data.items():
                     setattr(self, k, v)
-            def dict(self, *args, **kwargs):
+            def dict(self, *args, **kwargs):  # type: ignore
                 return dict(getattr(self, "__dict__", {}))
-            def model_dump(self, *args, **kwargs):  # pydantic v2-like
+            def model_dump(self, *args, **kwargs):  # type: ignore
                 return dict(getattr(self, "__dict__", {}))
+        def Field(default=None, **kwargs):  # type: ignore
+            return default
 from difflib import SequenceMatcher
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response # type: ignore
@@ -98,6 +97,8 @@ def _load_server_config() -> dict:
 
 
 STATE["config"] = _load_server_config()
+STATE["config_path"] = os.environ.get("MEDIA_PLAYER_CONFIG") or str((Path.cwd() / "config.json").resolve())
+_CONFIG_LOCK = threading.Lock()
 
 
 def _sprite_defaults() -> dict[str, int | float]:
@@ -398,6 +399,19 @@ SUFFIX_HEATMAPS_PNG = ".heatmaps.png"
 SUFFIX_FACES_JSON = ".faces.json"
 SUFFIX_PREVIEW_WEBM = ".preview.webm"
 SUFFIX_PREVIEW_JSON = ".preview.json"
+SUFFIX_WAVEFORM_PNG = ".waveform.png"
+SUFFIX_MOTION_JSON = ".motion.json"
+
+def preview_json_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}"
+
+def preview_webm_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_WEBM}"
+
+def waveform_png_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}{SUFFIX_WAVEFORM_PNG}"
+def motion_json_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}{SUFFIX_MOTION_JSON}"
 SUFFIX_SUBTITLES_SRT = ".subtitles.srt"
 HIDDEN_DIR_SUFFIX_PREVIEWS = ".previews"
 
@@ -1331,6 +1345,89 @@ def generate_hover_preview(
         _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
     except Exception:
         pass
+    return out
+
+# -----------------------------
+# Waveform generator (audio amplitude over time)
+# -----------------------------
+def generate_waveform(video: Path, *, force: bool = False, width: int = 800, height: int = 160, color: str = "#4fa0ff") -> Path:
+    out = waveform_png_path(video)
+    if out.exists() and not force:
+        return out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not ffmpeg_available():
+        out.write_bytes(b"WF")
+        return out
+    # Use ffmpeg showwavespic for fast waveform (mono mix)
+    cmd = [
+        "ffmpeg", "-y", "-i", str(video),
+        "-filter_complex", f"aformat=channel_layouts=stereo,showwavespic=s={width}x{height}:colors={color}",
+        "-frames:v", "1",
+        str(out)
+    ]
+    try:
+        _run(cmd)
+    except Exception:
+        try:
+            out.write_bytes(b"WFERR")
+        except Exception:
+            pass
+    return out
+
+# -----------------------------
+# Motion activity generator (frame differencing)
+# -----------------------------
+def generate_motion_activity(video: Path, *, force: bool = False, interval: float = 1.0) -> Path:
+    out = motion_json_path(video)
+    if out.exists() and not force:
+        return out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not ffmpeg_available():
+        out.write_text(json.dumps({"interval": interval, "samples": []}, indent=2))
+        return out
+    # Sample frames at fps=1/interval, compute simple L2 diff versus previous frame
+    with tempfile.TemporaryDirectory() as td:
+        pattern = Path(td) / "frame_%05d.jpg"
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(video),
+            "-vf", f"fps=1/{max(0.1, float(interval))},scale=160:-1:force_original_aspect_ratio=decrease", str(pattern)
+        ]
+        try:
+            _run(cmd)
+        except Exception:
+            out.write_text(json.dumps({"interval": interval, "samples": []}, indent=2))
+            return out
+        frames = sorted(Path(td).glob("frame_*.jpg"))
+        vals: list[dict[str, float]] = []
+        prev_pixels: list[int] | None = None
+        try:
+            from PIL import Image  # type: ignore
+        except Exception:
+            out.write_text(json.dumps({"interval": interval, "samples": []}, indent=2))
+            return out
+        for idx, fp in enumerate(frames):
+            try:
+                im = Image.open(fp).convert("L")
+                px = list(im.getdata())
+                im.close()
+            except Exception:
+                continue
+            if prev_pixels is None:
+                prev_pixels = px
+                vals.append({"t": idx * interval, "v": 0.0})
+                continue
+            # Compute normalized average absolute difference
+            try:
+                diff_sum = 0
+                L = min(len(px), len(prev_pixels))
+                for i in range(L):
+                    diff_sum += abs(px[i] - prev_pixels[i])
+                ndiff = (diff_sum / (L * 255.0)) if L else 0.0
+                vals.append({"t": idx * interval, "v": round(float(ndiff), 5)})
+            except Exception:
+                vals.append({"t": idx * interval, "v": 0.0})
+            prev_pixels = px
+    out.write_text(json.dumps({"interval": interval, "samples": vals}, indent=2))
     return out
 
 # ---------
@@ -3857,6 +3954,21 @@ def health():
 
 @app.get("/config")
 def config_info():
+    """Unified configuration endpoint.
+
+    Combines legacy environment/dependency info with dynamic runtime config
+    (previously available at /api/config). Provides three sections:
+      - raw: raw persisted config file contents
+      - defaults: derived default values (e.g., sprites)
+      - effective: defaults overlaid with raw overrides
+    Retains legacy keys (features, deps, versions) for backward compatibility.
+    """
+    with _CONFIG_LOCK:
+        raw_cfg = copy.deepcopy(STATE.get("config") or {})
+    defaults = {"sprites": _sprite_defaults()}
+    effective = {
+        "sprites": {**defaults["sprites"], **(raw_cfg.get("sprites") or {})},
+    }
     return {
         "root": str(STATE.get("root")),
         "env": {k: os.environ.get(k) for k in ["MEDIA_ROOT", "FFPROBE_DISABLE", "MEDIA_EXTS"]},
@@ -3894,16 +4006,15 @@ def config_info():
             "pillow": _module_version("PIL"),
         },
         "capabilities": {
-            # What backend would be selected right now in auto mode
             "subtitles_backend": detect_backend("auto"),
             "faces_backend": detect_face_backend("auto"),
-            # Simple booleans the UI or users can read at a glance
             "subtitles_enabled": detect_backend("auto") != "stub",
             "faces_enabled": (detect_face_backend("auto") in ("opencv", "insightface")) and (_has_module("cv2") or _has_module("insightface")),
         },
-        "defaults": {
-            "sprites": _sprite_defaults(),
-        },
+        "raw": raw_cfg,
+        "defaults": defaults,
+        "effective": effective,
+        "config_path": STATE.get("config_path"),
         "version": app.version,
     }
 
@@ -4675,6 +4786,25 @@ def api_duplicates_list(
         "pairs": page_items,
     })
 
+# Legacy parity alias for prior path; delegates to unified duplicates logic
+@api.get("/phash/duplicates")
+def api_phash_duplicates(
+    directory: str = Query("."),
+    recursive: bool = Query(False),
+    phash_threshold: float = Query(0.90, ge=0.0, le=1.0),
+    min_similarity: Optional[float] = Query(None, ge=0.0, le=1.0),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=1000),
+):
+    return api_duplicates_list(
+        directory=directory,
+        recursive=recursive,
+        phash_threshold=phash_threshold,
+        min_similarity=min_similarity,
+        page=page,
+        page_size=page_size,
+    )
+
 
 # -----------------
 # Report
@@ -4728,7 +4858,127 @@ def report(directory: str = Query("."), recursive: bool = Query(False)):
         for k, present in flags.items():
             if present:
                 counts[k] += 1
+    # Parity alias: expose 'previews' mirroring 'hovers' for legacy clients
+    try:
+        counts["previews"] = counts.get("hovers", 0)
+    except Exception:
+        pass
     return {"counts": counts, "total": len(vids)}
+
+
+# -----------------
+# Compare (SSIM / PSNR)
+# -----------------
+@api.get("/compare")
+def api_compare(
+    a: str = Query(..., description="First video path (relative to root)"),
+    b: str = Query(..., description="Second video path (relative to root)"),
+    normalize: bool = Query(True, description="Scale both videos to the smaller resolution before comparing"),
+    timeout: int = Query(60, ge=1, le=600),
+):
+    """Compute perceptual similarity metrics between two videos.
+
+    Returns SSIM (Y/U/V/All) and PSNR (Y/U/V/Avg/Max) along with a qualitative rating.
+    """
+    if STATE.get("root") is None:
+        raise_api_error("Root not set", status_code=400)
+    va = safe_join(STATE["root"], a)
+    vb = safe_join(STATE["root"], b)
+    if not va.exists() or not vb.exists():
+        raise_api_error("One or both files not found", status_code=404)
+    if not ffprobe_available():
+        raise_api_error("ffprobe not available", status_code=500)
+    if shutil.which("ffmpeg") is None:
+        raise_api_error("ffmpeg not available", status_code=500)
+
+    def _probe_dim(p: Path) -> tuple[Optional[int], Optional[int]]:
+        meta = _ffprobe_streams_safe(p)
+        try:
+            for st in meta.get("streams", []) or []:
+                if (st or {}).get("codec_type") == "video":
+                    w = st.get("width")
+                    h = st.get("height")
+                    return int(w) if w else None, int(h) if h else None
+        except Exception:
+            pass
+        return None, None
+
+    wa, ha = _probe_dim(va)
+    wb, hb = _probe_dim(vb)
+    target_w = target_h = None
+    if normalize and wa and ha and wb and hb:
+        # choose the smaller area (or min dims) to preserve detail where both overlap
+        if (wa * ha) <= (wb * hb):
+            target_w, target_h = wa, ha
+        else:
+            target_w, target_h = wb, hb
+        # Ensure even dimensions for codecs/filters
+        if target_w:
+            target_w -= target_w % 2
+        if target_h:
+            target_h -= target_h % 2
+
+    # Build filter graph
+    if target_w and target_h:
+        filt = f"[0:v]scale={target_w}:{target_h}:flags=bicubic[va];[1:v]scale={target_w}:{target_h}:flags=bicubic[vb];[va][vb]ssim;[va][vb]psnr"
+    else:
+        filt = "[0:v][1:v]ssim;[0:v][1:v]psnr"
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "info", "-nostdin",
+        "-i", str(va),
+        "-i", str(vb),
+        "-lavfi", filt,
+        "-an", "-f", "null", "-",
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise_api_error("Comparison timed out", status_code=504)
+    out = (proc.stdout.decode("utf-8", "ignore") + "\n" + proc.stderr.decode("utf-8", "ignore"))
+    import re as _re
+    ssim_match = None
+    psnr_match = None
+    for line in out.splitlines():
+        if "SSIM Y:" in line:
+            ssim_match = line
+        if "PSNR y:" in line:
+            psnr_match = line
+    ssim_vals = {}
+    psnr_vals = {}
+    if ssim_match:
+        m = _re.search(r"SSIM Y:([0-9.]+).*?U:([0-9.]+).*?V:([0-9.]+).*?All:([0-9.]+)", ssim_match)
+        if m:
+            ssim_vals = {"y": float(m.group(1)), "u": float(m.group(2)), "v": float(m.group(3)), "all": float(m.group(4))}
+    if psnr_match:
+        m = _re.search(r"PSNR y:([0-9.]+) u:([0-9.]+) v:([0-9.]+) t:([0-9.]+) max:([0-9.]+)", psnr_match)
+        if m:
+            psnr_vals = {"y": float(m.group(1)), "u": float(m.group(2)), "v": float(m.group(3)), "avg": float(m.group(4)), "max": float(m.group(5))}
+    if not ssim_vals and not psnr_vals:
+        raise_api_error("Failed to parse comparison metrics", status_code=500)
+    # Qualitative rating
+    all_ssim = ssim_vals.get("all") or 0.0
+    avg_psnr = psnr_vals.get("avg") or 0.0
+    if all_ssim >= 0.995 or avg_psnr >= 45:
+        rating = "identical"
+    elif all_ssim >= 0.99 or avg_psnr >= 40:
+        rating = "excellent"
+    elif all_ssim >= 0.97 or avg_psnr >= 35:
+        rating = "good"
+    elif all_ssim >= 0.94 or avg_psnr >= 32:
+        rating = "fair"
+    else:
+        rating = "poor"
+    return api_success({
+        "a": a,
+        "b": b,
+        "normalized": bool(target_w and target_h),
+        "width": target_w,
+        "height": target_h,
+        "ssim": ssim_vals,
+        "psnr": psnr_vals,
+        "rating": rating,
+    })
 
 
 def _serve_range(request: Request, file_path: Path, media_type: str):
@@ -8616,835 +8866,1351 @@ def _job_set_result(jid: str, result: Any) -> None:
     _publish_job_event({"event": "result", "id": jid})
 
 
+def _handle_transcode_job(jid: str, jr: JobRequest, base: Path) -> None:
+    """Execute a transcode job (plan already resolved into JobRequest).
+
+    Parameters used from jr.params:
+      - profile: transcode profile key (h264_aac_mp4 | vp9_opus_webm)
+      - targets: optional list of relative paths; else iterate directory (respect recursive)
+      - replace: bool (replace originals / keep .orig)
+    Honors job cancellation and updates progress.
+    """
+    prm = jr.params or {}
+    profile = str(prm.get("profile", "h264_aac_mp4"))
+    replace = bool(prm.get("replace", False))
+    force = bool(jr.force)
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    done = 0
+    results: list[dict[str, Any]] = []
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        rel = str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)
+        out_path = v
+        tmp_out: Optional[Path] = None
+        try:
+            vc = "libx264"; ac = "aac"; container = ".mp4"
+            if profile == "vp9_opus_webm":
+                vc = "libvpx-vp9"; ac = "libopus"; container = ".webm"
+            target_path = v.with_suffix(container)
+            if not force and target_path.exists() and not replace:
+                results.append({"file": rel, "status": "skip_exists", "target": str(target_path.name)})
+                done += 1
+                _set_job_progress(jid, processed_set=done)
+                continue
+            tmp_out = v.parent / f".{v.stem}.transcode.{uuid.uuid4().hex}{container}"
+            cmd = [
+                "ffmpeg", "-y", "-i", str(v),
+                "-c:v", vc, "-c:a", ac,
+            ]
+            if container == ".mp4":
+                cmd += ["-movflags", "+faststart"]
+            cmd += [str(tmp_out)]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if proc.returncode != 0:
+                results.append({"file": rel, "status": "error", "code": proc.returncode})
+            else:
+                if replace:
+                    backup = None
+                    if v != target_path:
+                        backup = v
+                    if target_path.exists() and target_path != v:
+                        target_path.unlink()
+                    shutil.move(str(tmp_out), str(target_path))
+                    if backup and backup.exists():
+                        try:
+                            backup.rename(backup.with_suffix(backup.suffix + ".orig"))
+                        except Exception:
+                            pass
+                    out_path = target_path
+                else:
+                    if target_path.exists() and not force:
+                        target_path = v.parent / f"{v.stem}.transcoded{container}"
+                    shutil.move(str(tmp_out), str(target_path))
+                    out_path = target_path
+                results.append({"file": rel, "status": "ok", "target": str(out_path.name)})
+        except Exception as e:
+            results.append({"file": rel, "status": "error", "error": str(e)})
+        finally:
+            try:
+                if tmp_out and tmp_out.exists():
+                    tmp_out.unlink()
+            except Exception:
+                pass
+            done += 1
+            _set_job_progress(jid, processed_set=done)
+    _job_set_result(jid, {"profile": profile, "results": results})
+    _finish_job(jid)
+
+
+def _handle_autotag_job(jid: str, jr: JobRequest, base: Path) -> None:
+    vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    prm = jr.params or {}
+    perf_list = [str(x).strip() for x in (prm.get("performers") or []) if str(x).strip()]
+    tag_list = [str(x).strip() for x in (prm.get("tags") or []) if str(x).strip()]
+    def _mk_patterns(items: list[str]):
+        pats: list[re.Pattern] = []
+        for it in items:
+            s = re.escape(it.lower())
+            s = s.replace(r"\ ", r"[\s._-]+")
+            pats.append(re.compile(rf"(?<![A-Za-z0-9]){s}(?![A-Za-z0-9])"))
+        return pats
+    perf_pats = _mk_patterns(perf_list)
+    tag_pats = _mk_patterns(tag_list)
+    changed = 0
+    matched_count = 0
+    for i, v in enumerate(vids, start=1):
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            name = v.name.rsplit(".", 1)[0].lower()
+            hay = re.sub(r"[\s._-]+", " ", name)
+            found_perfs: list[str] = []
+            for pat, raw in zip(perf_pats, perf_list):
+                if pat.search(hay):
+                    found_perfs.append(raw)
+            found_tags: list[str] = []
+            for pat, raw in zip(tag_pats, tag_list):
+                if pat.search(hay):
+                    found_tags.append(raw)
+            if not found_perfs and not found_tags:
+                _set_job_progress(jid, processed_set=i)
+                continue
+            matched_count += 1
+            tfile = _tags_file(v)
+            if tfile.exists():
+                try:
+                    data = json.loads(tfile.read_text())
+                except Exception:
+                    data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
+            else:
+                data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
+            data.setdefault("tags", [])
+            data.setdefault("performers", [])
+            before_t = set(data["tags"])
+            before_p = set(data["performers"])
+            for t in found_tags:
+                if t not in data["tags"]:
+                    data["tags"].append(t)
+            for p in found_perfs:
+                if p not in data["performers"]:
+                    data["performers"].append(p)
+            if set(data["tags"]) != before_t or set(data["performers"]) != before_p:
+                try:
+                    tfile.write_text(json.dumps(data, indent=2))
+                    changed += 1
+                except Exception:
+                    pass
+        finally:
+            _set_job_progress(jid, processed_set=i)
+    _job_set_result(jid, {"matched_files": matched_count, "updated_files": changed, "total": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_cover_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    time_spec = str(prm.get("t", prm.get("time", 10))) if prm.get("t", prm.get("time")) is not None else "middle"
+    q = int(prm.get("quality", 2))
+    force = bool(jr.force) or bool(prm.get("overwrite", False))
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        _set_job_current(jid, str(v))
+        lk = _file_task_lock(v, "cover")
+        with lk:
+            try:
+                generate_thumbnail(v, force=force, time_spec=time_spec, quality=q)
+            except Exception:
+                pass
+        cur = JOBS.get(jid, {}).get("processed", 0)
+        _set_job_progress(jid, processed_set=int(cur) + 1)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_embed_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    prm2 = jr.params or {}
+    overwrite = bool(prm2.get("overwrite", False))
+    sim_thresh = float(prm2.get("sim_thresh", 0.9))
+    interval = float(prm2.get("interval", 1.0))
+    scale_factor = float(prm2.get("scale_factor", 1.2))
+    min_neighbors = int(prm2.get("min_neighbors", 7))
+    min_size_frac = float(prm2.get("min_size_frac", 0.10))
+    backend = str(prm2.get("backend", "auto"))
+    done_files = 0
+    skipped = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "faces")
+            with lk:
+                if faces_exists_check(v) and not (bool(jr.force) or overwrite):
+                    done_files += 1
+                    skipped += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_embed(i: int, n: int):
+                        try:
+                            n = max(1, int(n))
+                            i = max(0, min(int(i), n))
+                            overall = (done_files * 100) + int((i / n) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    compute_face_embeddings(
+                        v,
+                        sim_thresh=sim_thresh,
+                        interval=interval,
+                        scale_factor=scale_factor,
+                        min_neighbors=min_neighbors,
+                        min_size_frac=min_size_frac,
+                        backend=backend,
+                        progress_cb=_pcb_embed,
+                    )
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids), "skipped": skipped})
+    _finish_job(jid)
+
+
+def _handle_clip_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    _src_val = prm.get("file")
+    src = Path(str(_src_val)).expanduser().resolve() if _src_val else None
+    ranges = prm.get("ranges") or []
+    _dest_val = prm.get("dest")
+    dest = Path(str(_dest_val)).expanduser().resolve() if _dest_val else None
+    if not src or not src.exists() or not dest:
+        _finish_job(jid, error="invalid clip params")
+        return
+    try:
+        src.relative_to(STATE["root"])  # type: ignore[arg-type]
+        dest.relative_to(STATE["root"])  # type: ignore[arg-type]
+    except Exception:
+        _finish_job(jid, error="paths outside root")
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    files_out: list[str] = []
+    _set_job_progress(jid, total=len(ranges), processed_set=0)
+    for i, r in enumerate(ranges):
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        start = float(r.get("start", 0.0))
+        end = float(r.get("end", start))
+        outp = dest / f"clip_{i+1:02d}.mp4"
+        if ffmpeg_available():
+            cmd = [
+                "ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(src),
+                "-c", "copy", str(outp),
+            ]
+            try:
+                _run(cmd)
+            except Exception:
+                outp.write_bytes(b"")
+        else:
+            outp.write_bytes(b"CLIP")
+        files_out.append(str(outp))
+        _set_job_progress(jid, processed_inc=1)
+    _job_set_result(jid, {"files": files_out})
+    _finish_job(jid)
+
+
+def _handle_cleanup_artifacts_job(jid: str, jr: JobRequest, base: Path) -> None:
+    base_dir = Path(jr.directory or str(STATE["root"]))
+    base_dir = base_dir.expanduser().resolve()
+    prm = jr.params or {}
+    dry_run = bool(prm.get("dry_run", False))
+    keep_orphans = bool(prm.get("keep_orphans", False))
+    artifacts: list[Path] = []
+    for p in base_dir.rglob(".artifacts"):
+        if not p.is_dir():
+            continue
+        for f in p.iterdir():
+            if f.is_file() and _parse_artifact_name(f.name):
+                artifacts.append(f)
+    _set_job_progress(jid, total=len(artifacts), processed_set=0)
+    media_by_stem, meta_by_stem = _collect_media_and_meta(base_dir)
+    media_durations: dict[str, float] = {}
+    for stem, v in media_by_stem.items():
+        try:
+            m = meta_by_stem.get(stem) or {}
+            d = m.get("duration")
+            if isinstance(d, (int, float)):
+                media_durations[stem] = float(d)
+        except Exception:
+            pass
+    renamed: list[dict] = []
+    deleted: list[str] = []
+    kept: list[str] = []
+    for art in artifacts:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            parsed = _parse_artifact_name(art.name)
+            if not parsed:
+                continue
+            a_stem, kind = parsed
+            parent_dir = art.parent
+            cand_media = media_by_stem.get(a_stem)
+            if cand_media and cand_media.exists():
+                kept.append(str(art))
+                continue
+            a_duration: float | None = None
+            try:
+                if kind == SUFFIX_METADATA_JSON:
+                    raw = json.loads(art.read_text())
+                    a_duration = extract_duration(raw)
+                else:
+                    meta_file = parent_dir / f"{a_stem}{SUFFIX_METADATA_JSON}"
+                    if meta_file.exists():
+                        raw = json.loads(meta_file.read_text())
+                        a_duration = extract_duration(raw)
+            except Exception:
+                a_duration = None
+            best: tuple[float, Path] | None = None
+            for stem, v in media_by_stem.items():
+                try:
+                    same_parent_boost = 0.05 if v.parent == parent_dir.parent else 0.0
+                except Exception:
+                    same_parent_boost = 0.0
+                name_sim = SequenceMatcher(a=a_stem.lower(), b=stem.lower()).ratio()
+                dur_sim = 0.0
+                if a_duration is not None:
+                    d = media_durations.get(stem)
+                    if isinstance(d, (int, float)) and d > 0:
+                        diff = abs(float(d) - float(a_duration))
+                        dur_sim = max(0.0, 1.0 - (diff / max(d, 1.0)))
+                score = (0.65 * name_sim) + (0.35 * dur_sim) + same_parent_boost
+                if best is None or score > best[0]:
+                    best = (score, v)
+            matched: Optional[Path] = None
+            if best and best[0] >= 0.80:
+                matched = best[1]
+            if matched is not None:
+                dst_dir = artifact_dir(matched)
+                new_name = f"{matched.stem}{kind}"
+                dst_path = dst_dir / new_name
+                if dry_run:
+                    renamed.append({"from": str(art), "to": str(dst_path)})
+                else:
+                    try:
+                        dst_dir.mkdir(parents=True, exist_ok=True)
+                        os.rename(art, dst_path)
+                        renamed.append({"from": str(art), "to": str(dst_path)})
+                    except Exception:
+                        kept.append(str(art))
+            else:
+                if keep_orphans or dry_run:
+                    kept.append(str(art))
+                else:
+                    try:
+                        art.unlink()
+                        deleted.append(str(art))
+                    except Exception:
+                        kept.append(str(art))
+        except Exception:
+            kept.append(str(art))
+        finally:
+            _set_job_progress(jid, processed_inc=1)
+    _job_set_result(jid, {"renamed": renamed, "deleted": deleted, "kept": kept, "dry_run": dry_run})
+    _finish_job(jid)
+
+
+def _handle_sprites_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    sd = _sprite_defaults()
+    interval = float(prm.get("interval", sd["interval"]))  # type: ignore[index]
+    width = int(prm.get("width", sd["width"]))  # type: ignore[index]
+    cols = int(prm.get("cols", sd["cols"]))  # type: ignore[index]
+    rows = int(prm.get("rows", sd["rows"]))  # type: ignore[index]
+    quality = int(prm.get("quality", sd["quality"]))  # type: ignore[index]
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "sprites")
+            with lk:
+                s, jj = sprite_sheet_paths(v)
+                if s.exists() and jj.exists() and not bool(jr.force):
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_sprites(step: int, steps: int):
+                        try:
+                            steps = max(1, int(steps))
+                            step = max(0, min(int(step), steps))
+                            overall = (done_files * 100) + int((step / steps) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    generate_sprite_sheet(
+                        v,
+                        interval=interval,
+                        width=width,
+                        cols=cols,
+                        rows=rows,
+                        quality=quality,
+                        progress_cb=_pcb_sprites,
+                        cancel_check=_cc,
+                    )
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_heatmaps_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    interval = float(prm.get("interval", 5.0))
+    mode = str(prm.get("mode", "both"))
+    png = bool(prm.get("png", True))
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "heatmaps")
+            with lk:
+                if heatmaps_json_exists(v) and not bool(jr.force):
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_heat(i: int, n: int):
+                        try:
+                            n = max(1, int(n))
+                            i = max(0, min(int(i), n))
+                            overall = (done_files * 100) + int((i / n) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    compute_heatmaps(v, interval=interval, mode=mode, png=png, progress_cb=_pcb_heat, cancel_check=_cc)
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_faces_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    overwrite = bool(prm.get("overwrite", False))
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    sim_thresh = float(prm.get("sim_thresh", 0.9))
+    interval = float(prm.get("interval", 1.0))
+    scale_factor = float(prm.get("scale_factor", 1.2))
+    min_neighbors = int(prm.get("min_neighbors", 7))
+    min_size_frac = float(prm.get("min_size_frac", 0.10))
+    backend = str(prm.get("backend", "auto"))
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "faces")
+            with lk:
+                if faces_exists_check(v) and not (bool(jr.force) or overwrite):
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_faces(i: int, n: int):
+                        try:
+                            n = max(1, int(n))
+                            i = max(0, min(int(i), n))
+                            overall = (done_files * 100) + int((i / n) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    compute_face_embeddings(
+                        v,
+                        sim_thresh=sim_thresh,
+                        interval=interval,
+                        scale_factor=scale_factor,
+                        min_neighbors=min_neighbors,
+                        min_size_frac=min_size_frac,
+                        backend=backend,
+                        progress_cb=_pcb_faces,
+                    )
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_hover_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    segments = int(prm.get("segments", 9))
+    duration = float(prm.get("duration", 1.0))
+    width = int(prm.get("width", 320))
+    single_file = len(vids) == 1
+    if single_file:
+        _set_job_progress(jid, total=max(1, segments), processed_set=0)
+    else:
+        _set_job_progress(jid, total=max(0, len(vids)), processed_set=0)
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            out_path = _hover_concat_path(v)
+            lk = _file_task_lock(v, "hover")
+            with lk:
+                if _file_nonempty(out_path) and not bool(jr.force):
+                    done_files += 1
+                    if single_file:
+                        _set_job_progress(jid, processed_set=segments)
+                    else:
+                        _set_job_progress(jid, processed_set=done_files)
+                else:
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    def _pcb(i: int, n: int):
+                        if not single_file:
+                            return
+                        try:
+                            ni = max(1, int(n))
+                            ii = max(0, min(int(i), ni))
+                            _set_job_progress(jid, total=ni, processed_set=ii)
+                        except Exception:
+                            pass
+                    generate_hover_preview(
+                        v,
+                        segments=segments,
+                        seg_dur=duration,
+                        width=width,
+                        fmt="webm",
+                        out=out_path,
+                        progress_cb=_pcb if single_file else None,
+                        cancel_check=_cc,
+                    )
+                    done_files += 1
+                    if single_file:
+                        _set_job_progress(jid, processed_set=segments)
+                    else:
+                        _set_job_progress(jid, processed_set=done_files)
+        except Exception:
+            done_files += 1
+            if single_file:
+                _set_job_progress(jid, processed_set=segments)
+            else:
+                _set_job_progress(jid, processed_set=done_files)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_subtitles_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    model = str(prm.get("model", "small"))
+    language = prm.get("language")
+    translate = bool(prm.get("translate", False))
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            out_file = artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}"
+            lk = _file_task_lock(v, "subtitles")
+            with lk:
+                if out_file.exists() and not bool(jr.force):
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_sub(frac: float):
+                        try:
+                            frac = max(0.0, min(1.0, float(frac)))
+                            overall = (done_files * 100) + int(frac * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    generate_subtitles(
+                        v, out_file, model=model, language=(language or None), translate=translate,
+                        progress_cb=_pcb_sub, cancel_check=_cc,
+                    )
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_scenes_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    threshold = float(prm.get("threshold", 0.4))
+    limit = int(prm.get("limit", 0))
+    gen_thumbs = bool(prm.get("thumbs", False))
+    gen_clips = bool(prm.get("clips", False))
+    thumbs_width = int(prm.get("thumbs_width", 320))
+    clip_duration = float(prm.get("clip_duration", 2.0))
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "scenes")
+            with lk:
+                if scenes_json_exists(v) and not bool(jr.force):
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_scenes(i: int, n: int):
+                        try:
+                            n = max(1, int(n))
+                            i = max(0, min(int(i), n))
+                            overall = (done_files * 100) + int((i / n) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    generate_scene_artifacts(
+                        v,
+                        threshold=threshold,
+                        limit=limit,
+                        gen_thumbs=gen_thumbs,
+                        gen_clips=gen_clips,
+                        thumbs_width=thumbs_width,
+                        clip_duration=clip_duration,
+                        progress_cb=_pcb_scenes,
+                        cancel_check=_cc,
+                    )
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_sample_job(jid: str, jr: JobRequest, base: Path) -> None:
+    """Generate synthetic sample media files for testing pipeline.
+
+    jr.params fields:
+      count: number of files to generate (default 3)
+      pattern: filename pattern with {i} placeholder (default "sample_{i:02d}.mp4")
+      duration: seconds per clip (default 4)
+      size: resolution WxH (default "640x360")
+      silence: if true, omit audio track
+      color: optional ffmpeg color source (e.g. "red") cycling if list provided
+    """
+    prm = jr.params or {}
+    count = int(prm.get("count", 3))
+    pattern = str(prm.get("pattern", "sample_{i:02d}.mp4"))
+    duration = float(prm.get("duration", 4.0))
+    size = str(prm.get("size", "640x360"))
+    silence = bool(prm.get("silence", False))
+    color_param = prm.get("color")
+    # Colors: allow single string or list
+    colors: list[str]
+    if isinstance(color_param, list):
+        colors = [str(c) for c in color_param if str(c).strip()]
+    elif isinstance(color_param, str) and color_param.strip():
+        colors = [color_param.strip()]
+    else:
+        colors = ["black", "gray", "navy", "maroon"]
+    target_dir = base
+    target_dir.mkdir(parents=True, exist_ok=True)
+    _set_job_progress(jid, total=count, processed_set=0)
+    generated: list[str] = []
+    for i in range(1, count + 1):
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        fname = pattern.format(i=i)
+        # ensure .mp4 suffix
+        if not fname.lower().endswith(".mp4"):
+            fname += ".mp4"
+        outp = target_dir / fname
+        col = colors[(i - 1) % len(colors)]
+        if ffmpeg_available():
+            # Use color + testsrc overlay for variation; add tone if not silence
+            vf = f"color=c={col}:s={size}:d={duration}" if silence else f"testsrc=size={size}:rate=30:duration={duration}"
+            cmd = ["ffmpeg", "-hide_banner", "-y",
+                   "-f", "lavfi", "-i", vf]
+            if not silence:
+                cmd += ["-f", "lavfi", "-i", f"sine=frequency={440 + (i*20)%200}:duration={duration}",
+                        "-shortest",
+                        "-c:v", "libx264", "-t", f"{duration}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", str(outp)]
+            else:
+                cmd += ["-c:v", "libx264", "-t", f"{duration}", "-pix_fmt", "yuv420p", str(outp)]
+            try:
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            except Exception:
+                outp.write_bytes(b"")
+        else:
+            # Fallback: small placeholder file
+            outp.write_bytes(b"SAMPLE")
+        generated.append(str(outp))
+        _set_job_progress(jid, processed_inc=1)
+    _job_set_result(jid, {"generated": generated, "count": len(generated)})
+    _finish_job(jid)
+
+def _handle_waveform_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    width = int(prm.get("width", 800))
+    height = int(prm.get("height", 160))
+    color = str(prm.get("color", "#4fa0ff"))
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    done = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid); return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "waveform")
+            with lk:
+                if waveform_png_path(v).exists() and not bool(jr.force):
+                    pass
+                else:
+                    generate_waveform(v, force=bool(jr.force), width=width, height=height, color=color)
+        finally:
+            done += 1
+            _set_job_progress(jid, processed_set=done)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+def _handle_motion_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    interval = float(prm.get("interval", 1.0))
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    done = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid); return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "motion")
+            with lk:
+                if motion_json_path(v).exists() and not bool(jr.force):
+                    pass
+                else:
+                    generate_motion_activity(v, force=bool(jr.force), interval=interval)
+        finally:
+            done += 1
+            _set_job_progress(jid, processed_set=done)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+def _handle_chain_job(jid: str, jr: JobRequest, base: Path) -> None:
+    """Execute a sequence of child jobs sequentially.
+
+    jr.params fields:
+      steps: list[ { task: str, params?: dict, directory?, recursive?, force? } ]
+      continue_on_error: bool (default False) – if False abort chain on first error.
+      propagate_force: bool (default False) – if True, apply parent jr.force to each step unless step overrides force.
+    Progress model: total = steps * 100. Each completed child increments processed by 100.
+    While a child runs, we map its fractional progress into current step's 0..100 slice.
+    Result contains per-step summary with child job id and outcome.
+    """
+    prm = jr.params or {}
+    steps = prm.get("steps") or []
+    if not isinstance(steps, list) or not steps:
+        _finish_job(jid, error="no steps provided")
+        return
+    continue_on_error = bool(prm.get("continue_on_error", False))
+    propagate_force = bool(prm.get("propagate_force", False))
+    # Determine allowed tasks (reuse handlers registry excluding chain itself)
+    allowed_tasks = {
+        "transcode", "autotag", "cover", "embed", "clip", "cleanup-artifacts",
+        "sprites", "heatmaps", "faces", "hover", "subtitles", "scenes", "sample",
+        "waveform", "motion", "index-embeddings", "integrity-scan"
+    }
+    # Validate steps
+    norm_steps: list[dict[str, Any]] = []
+    for idx, st in enumerate(steps):
+        if not isinstance(st, dict):
+            _finish_job(jid, error=f"invalid step {idx}")
+            return
+        task = str(st.get("task", "")).lower()
+        if task not in allowed_tasks:
+            _finish_job(jid, error=f"unsupported task: {task}")
+            return
+        norm_steps.append(st)
+    total_slices = len(norm_steps) * 100
+    _set_job_progress(jid, total=total_slices, processed_set=0)
+    results: list[dict[str, Any]] = []
+    for i, st in enumerate(norm_steps):
+        if _job_check_canceled(jid):
+            results.append({"step": i, "task": st.get("task"), "status": "canceled"})
+            break
+        task = str(st.get("task"))
+        step_dir = st.get("directory") or jr.directory
+        step_recursive = st.get("recursive") if st.get("recursive") is not None else jr.recursive
+        step_force = bool(st.get("force")) if st.get("force") is not None else (jr.force if propagate_force else False)
+        step_params = st.get("params") or {}
+        child_req = JobRequest(
+            task=task,
+            directory=step_dir,
+            params=step_params,
+            recursive=bool(step_recursive),
+            force=bool(step_force),
+        )
+        # Submit child job
+        try:
+            resp = jobs_submit(child_req)
+            child_jid_any = resp.get("id")  # type: ignore
+            child_jid = str(child_jid_any) if child_jid_any else ""
+        except Exception as e:
+            results.append({"step": i, "task": task, "status": "submit_error", "error": str(e)})
+            if not continue_on_error:
+                _job_set_result(jid, {"steps": results})
+                _finish_job(jid)
+                return
+            continue
+        if not child_jid:
+            results.append({"step": i, "task": task, "status": "submit_error", "error": "no child id"})
+            if not continue_on_error:
+                _job_set_result(jid, {"steps": results})
+                _finish_job(jid)
+                return
+            continue
+        # Monitor child job
+        slice_base = i * 100
+        while True:
+            if _job_check_canceled(jid):
+                ev = JOB_CANCEL_EVENTS.get(child_jid) if child_jid else None
+                if ev:
+                    ev.set()  # attempt to cancel child
+                results.append({"step": i, "task": task, "status": "canceled", "child": child_jid})
+                break
+            job_info = JOBS.get(child_jid) or {}
+            state = job_info.get("state")
+            total = max(1, int(job_info.get("total", 100)))
+            processed = int(job_info.get("processed", 0))
+            # Map to chain progress
+            frac = min(1.0, max(0.0, processed / total))
+            _set_job_progress(jid, processed_set=slice_base + int(frac * 100))
+            if state in ("finished", "error", "canceled"):
+                # capture result
+                res_entry = {
+                    "step": i,
+                    "task": task,
+                    "child": child_jid,
+                    "state": state,
+                }
+                if job_info.get("error"):
+                    res_entry["error"] = job_info.get("error")
+                if job_info.get("result") is not None:
+                    res_entry["result"] = job_info.get("result")
+                results.append(res_entry)
+                if state == "error" and not continue_on_error:
+                    _job_set_result(jid, {"steps": results})
+                    _finish_job(jid)
+                    return
+                # Advance processed to end of slice
+                _set_job_progress(jid, processed_set=slice_base + 100)
+                break
+            time.sleep(0.25)
+    _job_set_result(jid, {"steps": results})
+    _finish_job(jid)
+
+
+def _handle_integrity_scan_job(jid: str, jr: JobRequest, base: Path) -> None:
+    """Scan library for artifact integrity.
+
+    For each video:
+      - missing: artifact kinds not present
+      - stale: artifact older than source video (mtime comparison)
+    Globally:
+      - orphaned: artifact files whose base media file is missing (de-duplicated)
+
+    jr.params options:
+      kinds: optional list of artifact kinds to restrict (defaults FINISH_ARTIFACT_ORDER)
+      include_ok: if true include entries even when no issues
+    """
+    prm = jr.params or {}
+    include_ok = bool(prm.get("include_ok", False))
+    limit_kinds = prm.get("kinds") or FINISH_ARTIFACT_ORDER
+    if isinstance(limit_kinds, str):  # allow comma list
+        limit_kinds = [k.strip() for k in limit_kinds.split(',') if k.strip()]
+    kinds: list[str] = [k for k in FINISH_ARTIFACT_ORDER if k in set(limit_kinds)] or FINISH_ARTIFACT_ORDER
+    # Gather videos
+    vids = _iter_videos(base, bool(jr.recursive))
+    # Pre-compute artifact file path resolvers
+    def _artifact_paths(v: Path) -> dict[str, list[Path]]:
+        mp: dict[str, list[Path]] = {
+            "metadata": [metadata_path(v)],
+            "thumbnail": [thumbs_path(v)],
+            "preview": [preview_webm_path(v), preview_json_path(v)],
+            "sprites": list(sprite_sheet_paths(v)),
+            "scenes": [scenes_json_path(v)],
+            "heatmaps": [heatmaps_json_path(v), heatmaps_png_path(v)],
+            "phash": [phash_path(v)],
+            "faces": [faces_path(v)],
+            "subtitles": [artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}", v.with_suffix(SUFFIX_SUBTITLES_SRT)],
+        }
+        return mp
+    base_root = STATE["root"]
+    rel = lambda p: str(p.relative_to(base_root)) if str(p).startswith(str(base_root)) else str(p)
+    results: list[dict[str, Any]] = []
+    # We'll also collect all artifact files to later detect orphans
+    all_artifact_files: list[Path] = []
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        _set_job_current(jid, str(v))
+        try:
+            art_map = _artifact_paths(v)
+            missing: list[str] = []
+            stale: list[str] = []
+            try:
+                v_mtime = v.stat().st_mtime
+            except Exception:
+                v_mtime = 0.0
+            for k in kinds:
+                paths = art_map.get(k, [])
+                exists_any = False
+                stale_any = False
+                for ap in paths:
+                    if ap.exists():
+                        exists_any = True
+                        all_artifact_files.append(ap)
+                        try:
+                            if v_mtime and ap.stat().st_mtime < v_mtime:
+                                stale_any = True
+                        except Exception:
+                            pass
+                if not exists_any:
+                    missing.append(k)
+                elif stale_any:
+                    stale.append(k)
+            if include_ok or missing or stale:
+                results.append({
+                    "file": rel(v),
+                    **({"missing": missing} if missing else {}),
+                    **({"stale": stale} if stale else {}),
+                })
+        finally:
+            _set_job_progress(jid, processed_inc=1)
+    # Orphans: search artifact dirs for files not linked to a known video stem
+    video_stems = {v.stem for v in vids}
+    orphaned: list[str] = []
+    for v in vids:
+        pass  # placeholder to keep local variable used - vids used already
+    # Instead of iterating only videos, enumerate all .artifacts subdirs under base
+    for p in base.rglob(".artifacts"):
+        if not p.is_dir():
+            continue
+        for f in p.iterdir():
+            if not f.is_file():
+                continue
+            parsed = _parse_artifact_name(f.name)
+            if not parsed:
+                continue
+            stem, _kind = parsed
+            if stem not in video_stems:
+                try:
+                    orphaned.append(rel(f))
+                except Exception:
+                    orphaned.append(str(f))
+    summary = {
+        "videos_scanned": len(vids),
+        "entries": len(results),
+        "missing_total": sum(len(r.get("missing", [])) for r in results),
+        "stale_total": sum(len(r.get("stale", [])) for r in results),
+        "orphaned_total": len(orphaned),
+    }
+    _job_set_result(jid, {"results": results, "orphaned": orphaned[:500], "summary": summary, "kinds": kinds})
+    _finish_job(jid)
+
+# -----------------------------
+# Embeddings & Search (Batch 2)
+# -----------------------------
+
+EMB_INDEX_LOCK = threading.Lock()
+STATE.setdefault("embedding_index", None)  # will hold {built_at, entries:[...]}
+
+def _hex_to_bits(h: str) -> list[int]:
+    bits: list[int] = []
+    try:
+        for c in h.strip():
+            v = int(c, 16)
+            for i in range(3, -1, -1):
+                bits.append(1 if (v >> i) & 1 else 0)
+    except Exception:
+        return []
+    return bits
+
+def _vec_norm(v: list[float]) -> list[float]:
+    try:
+        import math
+        s = math.sqrt(sum(x*x for x in v))
+        if s <= 0:
+            return v
+        return [x / s for x in v]
+    except Exception:
+        return v
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b:
+        return 0.0
+    L = min(len(a), len(b))
+    num = 0.0
+    da = 0.0
+    db = 0.0
+    for i in range(L):
+        x = float(a[i]); y = float(b[i])
+        num += x * y
+        da += x * x
+        db += y * y
+    try:
+        import math
+        if da <= 0 or db <= 0:
+            return 0.0
+        return float(num) / float(math.sqrt(da) * math.sqrt(db))
+    except Exception:
+        return 0.0
+
+def _placeholder_clip_embedding(seed_text: str) -> list[float]:
+    """Deterministic pseudo embedding (size 128) using sha256 of seed."""
+    import hashlib
+    h = hashlib.sha256(seed_text.encode("utf-8", "ignore")).digest()
+    # Expand to 128 floats by hashing blocks
+    out: list[float] = []
+    cur = h
+    while len(out) < 128:
+        cur = hashlib.sha256(cur).digest()
+        for b in cur:
+            out.append((b / 255.0) * 2 - 1)  # [-1,1]
+            if len(out) >= 128:
+                break
+    return _vec_norm(out)
+
+def _average_face_embedding(faces_json: dict) -> list[float]:
+    faces = faces_json.get("faces") if isinstance(faces_json, dict) else None
+    if not isinstance(faces, list) or not faces:
+        return []
+    accum: list[float] = []
+    count = 0
+    for f in faces:
+        try:
+            emb = f.get("embedding") if isinstance(f, dict) else None
+            if not isinstance(emb, list) or not emb:
+                continue
+            if not accum:
+                accum = [0.0]*len(emb)
+            if len(emb) != len(accum):
+                continue
+            for i, val in enumerate(emb):
+                accum[i] += float(val)
+            count += 1
+        except Exception:
+            continue
+    if not accum or count == 0:
+        return []
+    return _vec_norm([x / count for x in accum])
+
+def _combined_vector(ent: dict[str, Any], mode: str) -> list[float]:
+    mode = mode.lower()
+    vec: list[float] = []
+    if mode in ("auto", "phash", "all"):
+        pv = ent.get("phash_vec")
+        if isinstance(pv, list) and pv:
+            vec.extend([1.0 if bool(b) else -1.0 for b in pv])
+    if mode in ("auto", "faces", "all"):
+        fv = ent.get("face_vec")
+        if isinstance(fv, list) and fv:
+            vec.extend([float(x) for x in fv])
+    if mode in ("auto", "clip", "all"):
+        cv = ent.get("clip_vec")
+        if isinstance(cv, list) and cv:
+            vec.extend([float(x) for x in cv])
+    return _vec_norm(vec)
+
+def _handle_index_embeddings_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    mode = str(prm.get("mode", "auto"))
+    vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    entries: list[dict[str, Any]] = []
+    for i, v in enumerate(vids, start=1):
+        if _job_check_canceled(jid):
+            _finish_job(jid); return
+        rel = str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)
+        phash_hex = None
+        phash_vec: list[int] = []
+        try:
+            pp = phash_path(v)
+            if not pp.exists():
+                try:
+                    phash_create_single(v)  # type: ignore[arg-type]
+                except Exception:
+                    pass
+            if pp.exists():
+                data = json.loads(pp.read_text())
+                phash_hex = data.get("phash")
+                if isinstance(phash_hex, str) and phash_hex:
+                    phash_vec = _hex_to_bits(phash_hex)
+        except Exception:
+            pass
+        face_vec: list[float] = []
+        try:
+            fp = faces_path(v)
+            if fp.exists():
+                fdata = json.loads(fp.read_text())
+                face_vec = _average_face_embedding(fdata)
+        except Exception:
+            pass
+        clip_vec: list[float] = []
+        try:
+            clip_vec = _placeholder_clip_embedding(rel)
+        except Exception:
+            pass
+        ent = {
+            "file": rel,
+            "phash_hex": phash_hex,
+            "phash_vec": phash_vec,
+            "face_vec": face_vec,
+            "clip_vec": clip_vec,
+        }
+        entries.append(ent)
+        _set_job_progress(jid, processed_set=i)
+    with EMB_INDEX_LOCK:
+        STATE["embedding_index"] = {
+            "built_at": time.time(),
+            "count": len(entries),
+            "mode": mode,
+            "entries": entries,
+        }
+    _job_set_result(jid, {"count": len(entries), "mode": mode})
+    _finish_job(jid)
+
+
 def _run_job_worker(jid: str, jr: JobRequest):
     try:
-        # set job context for this worker thread
         try:
             JOB_CTX.jid = jid  # type: ignore[name-defined]
         except Exception:
             pass
-        task = (jr.task or "").lower()
-        # If cancel was requested while queued, exit immediately before any work
         if _job_check_canceled(jid):
-            _finish_job(jid)
-            return
-        # Mark job as running as soon as the worker starts
+            _finish_job(jid); return
         _start_job(jid)
-        # Enforce job working directory within root
         if jr.directory:
             cand = Path(jr.directory).expanduser()
             if cand.is_absolute():
                 try:
                     cand.resolve().relative_to(STATE["root"])  # type: ignore[arg-type]
                 except Exception:
-                    _finish_job(jid, error="invalid directory")
-                    return
+                    _finish_job(jid, error="invalid directory"); return
                 base = cand.resolve()
             else:
                 base = safe_join(STATE["root"], jr.directory)
         else:
             base = STATE["root"].resolve()  # type: ignore[attr-defined]
-        if task == "autotag":
-            vids = _iter_videos(base, bool(jr.recursive))
-            _set_job_progress(jid, total=len(vids), processed_set=0)
-            prm = jr.params or {}
-            perf_list = [str(x).strip() for x in (prm.get("performers") or []) if str(x).strip()]
-            tag_list = [str(x).strip() for x in (prm.get("tags") or []) if str(x).strip()]
-            # Precompile simple word-boundary regex for each candidate
-            def _mk_patterns(items: list[str]):
-                pats = []
-                for it in items:
-                    s = re.escape(it.lower())
-                    # allow separators like ., _, -, space between words by replacing spaces with a character class
-                    s = s.replace(r"\ ", r"[\s._-]+")
-                    pats.append(re.compile(rf"(?<![A-Za-z0-9]){s}(?![A-Za-z0-9])"))
-                return pats
-            perf_pats = _mk_patterns(perf_list)
-            tag_pats = _mk_patterns(tag_list)
-            changed = 0
-            matched_count = 0
-            for i, v in enumerate(vids, start=1):
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    name = v.name.rsplit(".", 1)[0].lower()
-                    # normalize separators
-                    hay = re.sub(r"[\s._-]+", " ", name)
-                    found_perfs: list[str] = []
-                    for pat, raw in zip(perf_pats, perf_list):
-                        if pat.search(hay):
-                            found_perfs.append(raw)
-                    found_tags: list[str] = []
-                    for pat, raw in zip(tag_pats, tag_list):
-                        if pat.search(hay):
-                            found_tags.append(raw)
-                    if not found_perfs and not found_tags:
-                        _set_job_progress(jid, processed_set=i)
-                        continue
-                    matched_count += 1
-                    # Load current tags
-                    tfile = _tags_file(v)
-                    if tfile.exists():
-                        try:
-                            data = json.loads(tfile.read_text())
-                        except Exception:
-                            data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
-                    else:
-                        data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
-                    data.setdefault("tags", [])
-                    data.setdefault("performers", [])
-                    before_t = set(data["tags"])
-                    before_p = set(data["performers"])
-                    for t in found_tags:
-                        if t not in data["tags"]:
-                            data["tags"].append(t)
-                    for p in found_perfs:
-                        if p not in data["performers"]:
-                            data["performers"].append(p)
-                    if set(data["tags"]) != before_t or set(data["performers"]) != before_p:
-                        try:
-                            tfile.write_text(json.dumps(data, indent=2))
-                            changed += 1
-                        except Exception:
-                            pass
-                finally:
-                    _set_job_progress(jid, processed_set=i)
-            _job_set_result(jid, {"matched_files": matched_count, "updated_files": changed, "total": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "cover":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            _set_job_progress(jid, total=len(vids), processed_set=0)
-            time_spec = str(prm.get("t", prm.get("time", 10))) if prm.get("t", prm.get("time")) is not None else "middle"
-            q = int(prm.get("quality", 2))
-            force = bool(jr.force) or bool(prm.get("overwrite", False))
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "cover")
-                    with lk:
-                        if thumbs_path(v).exists() and not force:
-                            pass
-                        else:
-                            generate_thumbnail(v, force=force, time_spec=time_spec, quality=q)
-                except Exception:
-                    pass
-                _set_job_progress(jid, processed_inc=1)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "metadata":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            _set_job_progress(jid, total=len(vids), processed_set=0)
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "metadata")
-                    with lk:
-                        metadata_single(v, force=bool(jr.force))
-                except Exception:
-                    pass
-                _set_job_progress(jid, processed_inc=1)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "phash":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smooth progress across frames
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            frames = int(prm.get("frames", 5))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "phash")
-                    with lk:
-                        if phash_path(v).exists() and not bool(jr.force):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            phash_create_single(v, frames=frames, progress_cb=_pcb, cancel_check=_cc)
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "embed":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress and honor overwrite/force
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            overwrite = bool(prm.get("overwrite", False))
-            sim_thresh = float(prm.get("sim_thresh", 0.9))
-            interval = float(prm.get("interval", 1.0))
-            scale_factor = float(prm.get("scale_factor", 1.2))
-            min_neighbors = int(prm.get("min_neighbors", 7))
-            min_size_frac = float(prm.get("min_size_frac", 0.10))
-            backend = str(prm.get("backend", "auto"))
-            done_files = 0
-            skipped = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "faces")
-                    with lk:
-                        # Skip if faces JSON exists and is non-stub, unless forced
-                        if faces_exists_check(v) and not (bool(jr.force) or overwrite):
-                            done_files += 1
-                            skipped += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_embed(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            compute_face_embeddings(
-                                v,
-                                sim_thresh=sim_thresh,
-                                interval=interval,
-                                scale_factor=scale_factor,
-                                min_neighbors=min_neighbors,
-                                min_size_frac=min_size_frac,
-                                backend=backend,
-                                progress_cb=_pcb_embed,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids), "skipped": skipped})
-            _finish_job(jid)
-            return
-        if task == "clip":
-            prm = jr.params or {}
-            _src_val = prm.get("file")
-            src = Path(str(_src_val)).expanduser().resolve() if _src_val else None
-            ranges = prm.get("ranges") or []
-            _dest_val = prm.get("dest")
-            dest = Path(str(_dest_val)).expanduser().resolve() if _dest_val else None
-            if not src or not src.exists() or not dest:
-                _finish_job(jid, error="invalid clip params")
-                return
-            # Guard: src and dest must be within root
-            try:
-                src.relative_to(STATE["root"])  # type: ignore[arg-type]
-                dest.relative_to(STATE["root"])  # type: ignore[arg-type]
-            except Exception:
-                _finish_job(jid, error="paths outside root")
-                return
-            dest.mkdir(parents=True, exist_ok=True)
-            files_out: list[str] = []
-            _set_job_progress(jid, total=len(ranges), processed_set=0)
-            for i, r in enumerate(ranges):
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                start = float(r.get("start", 0.0))
-                end = float(r.get("end", start))
-                outp = dest / f"clip_{i+1:02d}.mp4"
-                if ffmpeg_available():
-                    # best-effort fast clip
-                    cmd = [
-                        "ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(src),
-                        "-c", "copy", str(outp),
-                    ]
-                    try:
-                        _run(cmd)
-                    except Exception:
-                        outp.write_bytes(b"")
-                else:
-                    # create a stub file
-                    outp.write_bytes(b"CLIP")
-                files_out.append(str(outp))
-                _set_job_progress(jid, processed_inc=1)
-            _job_set_result(jid, {"files": files_out})
-            _finish_job(jid)
-            return
-        if task == "cleanup-artifacts":
-            base = Path(jr.directory or str(STATE["root"]))
-            base = base.expanduser().resolve()
-            prm = jr.params or {}
-            dry_run = bool(prm.get("dry_run", False))
-            keep_orphans = bool(prm.get("keep_orphans", False))
-            # Gather all artifacts under .artifacts directories
-            artifacts: list[Path] = []
-            for p in base.rglob(".artifacts"):
-                if not p.is_dir():
-                    continue
-                for f in p.iterdir():
-                    if f.is_file() and _parse_artifact_name(f.name):
-                        artifacts.append(f)
-            _set_job_progress(jid, total=len(artifacts), processed_set=0)
-            media_by_stem, meta_by_stem = _collect_media_and_meta(base)
-            # Build duration lookup for media
-            media_durations: dict[str, float] = {}
-            for stem, v in media_by_stem.items():
-                try:
-                    m = meta_by_stem.get(stem) or {}
-                    d = m.get("duration")
-                    if isinstance(d, (int, float)):
-                        media_durations[stem] = float(d)
-                except Exception:
-                    pass
-            renamed: list[dict] = []
-            deleted: list[str] = []
-            kept: list[str] = []
-            for art in artifacts:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    parsed = _parse_artifact_name(art.name)
-                    if not parsed:
-                        continue
-                    a_stem, kind = parsed
-                    parent_dir = art.parent
-                    # Fast-path: if same-stem media exists in same parent
-                    cand_media = media_by_stem.get(a_stem)
-                    if cand_media and cand_media.exists():
-                        # Artifact already matches existing media; keep
-                        kept.append(str(art))
-                        continue
-                    # Try to find a best candidate among media by comparing duration and name similarity
-                    # Load artifact's associated metadata duration if available
-                    a_duration: float | None = None
-                    try:
-                        if kind == SUFFIX_METADATA_JSON:
-                            raw = json.loads(art.read_text())
-                            a_duration = extract_duration(raw)
-                        else:
-                            # If not a metadata sidecar, try reading sibling metadata file with same stem
-                            meta_file = parent_dir / f"{a_stem}{SUFFIX_METADATA_JSON}"
-                            if meta_file.exists():
-                                raw = json.loads(meta_file.read_text())
-                                a_duration = extract_duration(raw)
-                    except Exception:
-                        a_duration = None
-                    # Score candidates
-                    best: tuple[float, Path] | None = None
-                    for stem, v in media_by_stem.items():
-                        # Prefer files in the same grandparent directory
-                        try:
-                            same_parent_boost = 0.05 if v.parent == parent_dir.parent else 0.0
-                        except Exception:
-                            same_parent_boost = 0.0
-                        name_sim = SequenceMatcher(a=a_stem.lower(), b=stem.lower()).ratio()
-                        dur_sim = 0.0
-                        if a_duration is not None:
-                            d = media_durations.get(stem)
-                            if isinstance(d, (int, float)) and d > 0:
-                                diff = abs(float(d) - float(a_duration))
-                                # 0 diff -> 1.0, 5% diff -> ~0.0
-                                dur_sim = max(0.0, 1.0 - (diff / max(d, 1.0)))
-                        score = (0.65 * name_sim) + (0.35 * dur_sim) + same_parent_boost
-                        if best is None or score > best[0]:
-                            best = (score, v)
-                    matched: Optional[Path] = None
-                    if best and best[0] >= 0.80:  # threshold for confident match
-                        matched = best[1]
-                    if matched is not None:
-                        # Rename artifact to new stem in the matched media's .artifacts
-                        dst_dir = artifact_dir(matched)
-                        new_name = f"{matched.stem}{kind}"
-                        dst_path = dst_dir / new_name
-                        if dry_run:
-                            renamed.append({"from": str(art), "to": str(dst_path)})
-                        else:
-                            try:
-                                dst_dir.mkdir(parents=True, exist_ok=True)
-                                os.rename(art, dst_path)
-                                renamed.append({"from": str(art), "to": str(dst_path)})
-                            except Exception:
-                                # If rename fails, keep for manual inspection
-                                kept.append(str(art))
-                    else:
-                        # No match — delete unless keep_orphans
-                        if keep_orphans or dry_run:
-                            kept.append(str(art))
-                        else:
-                            try:
-                                art.unlink()
-                                deleted.append(str(art))
-                            except Exception:
-                                kept.append(str(art))
-                except Exception:
-                    # On any unexpected error, keep artifact
-                    kept.append(str(art))
-                finally:
-                    _set_job_progress(jid, processed_inc=1)
-            _job_set_result(jid, {"renamed": renamed, "deleted": deleted, "kept": kept, "dry_run": dry_run})
-            _finish_job(jid)
-            return
-        if task == "sprites":
-            # If explicit targets provided (relative to root), use them so progress reflects actual missing set
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale total by 100 to allow per-file fractional progress updates
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            sd = _sprite_defaults()
-            interval = float(prm.get("interval", sd["interval"]))  # type: ignore[index]
-            width = int(prm.get("width", sd["width"]))  # type: ignore[index]
-            cols = int(prm.get("cols", sd["cols"]))  # type: ignore[index]
-            rows = int(prm.get("rows", sd["rows"]))  # type: ignore[index]
-            quality = int(prm.get("quality", sd["quality"]))  # type: ignore[index]
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "sprites")
-                    with lk:
-                        # Skip if both sheet and json already exist, unless force=True
-                        s, jj = sprite_sheet_paths(v)
-                        if s.exists() and jj.exists() and not bool(jr.force):
-                            # Count as fully done for progress purposes
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_sprites(step: int, steps: int):
-                                try:
-                                    steps = max(1, int(steps))
-                                    step = max(0, min(int(step), steps))
-                                    overall = (done_files * 100) + int((step / steps) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            generate_sprite_sheet(
-                                v,
-                                interval=interval,
-                                width=width,
-                                cols=cols,
-                                rows=rows,
-                                quality=quality,
-                                progress_cb=_pcb_sprites,
-                                cancel_check=_cc,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    # On error, still advance to next file; mark this file as completed in progress scale
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "heatmaps":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress based on sample count
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            interval = float(prm.get("interval", 5.0))
-            mode = str(prm.get("mode", "both"))
-            png = bool(prm.get("png", True))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "heatmaps")
-                    with lk:
-                        if heatmaps_json_exists(v) and not bool(jr.force):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_heat(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            compute_heatmaps(v, interval=interval, mode=mode, png=png, progress_cb=_pcb_heat, cancel_check=_cc)
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "faces":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            overwrite = bool(prm.get("overwrite", False))
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            sim_thresh = float(prm.get("sim_thresh", 0.9))
-            interval = float(prm.get("interval", 1.0))
-            scale_factor = float(prm.get("scale_factor", 1.2))
-            min_neighbors = int(prm.get("min_neighbors", 7))
-            min_size_frac = float(prm.get("min_size_frac", 0.10))
-            backend = str(prm.get("backend", "auto"))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "faces")
-                    with lk:
-                        if faces_exists_check(v) and not (bool(jr.force) or overwrite):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_faces(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            compute_face_embeddings(
-                                v,
-                                sim_thresh=sim_thresh,
-                                interval=interval,
-                                scale_factor=scale_factor,
-                                min_neighbors=min_neighbors,
-                                min_size_frac=min_size_frac,
-                                backend=backend,
-                                progress_cb=_pcb_faces,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "hover":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Progress semantics:
-            # - Single-file job: track per-segment progress so UI moves from 0% while encoding
-            # - Multi-file job: keep per-file progress (processed files out of total files)
-            segments = int(prm.get("segments", 9))
-            duration = float(prm.get("duration", 1.0))
-            width = int(prm.get("width", 320))
-            single_file = len(vids) == 1
-            if single_file:
-                _set_job_progress(jid, total=max(1, segments), processed_set=0)
-            else:
-                _set_job_progress(jid, total=max(0, len(vids)), processed_set=0)
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    out_path = _hover_concat_path(v)
-                    lk = _file_task_lock(v, "hover")
-                    with lk:
-                        if _file_nonempty(out_path) and not bool(jr.force):
-                            done_files += 1
-                            # For multi-file jobs, count completed files; for single-file jobs, we'll set final below
-                            if single_file:
-                                _set_job_progress(jid, processed_set=segments)
-                            else:
-                                _set_job_progress(jid, processed_set=done_files)
-                        else:
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            def _pcb(i: int, n: int):
-                                # Only emit per-segment progress for single-file jobs
-                                if not single_file:
-                                    return
-                                try:
-                                    ni = max(1, int(n))
-                                    ii = max(0, min(int(i), ni))
-                                    _set_job_progress(jid, total=ni, processed_set=ii)
-                                except Exception:
-                                    pass
-                            generate_hover_preview(
-                                v,
-                                segments=segments,
-                                seg_dur=duration,
-                                width=width,
-                                fmt="webm",
-                                out=out_path,
-                                progress_cb=_pcb if single_file else None,
-                                cancel_check=_cc,
-                            )
-                            done_files += 1
-                            if single_file:
-                                _set_job_progress(jid, processed_set=segments)
-                            else:
-                                _set_job_progress(jid, processed_set=done_files)
-                except Exception:
-                    done_files += 1
-                    if single_file:
-                        # On error, snap to 100% so job doesn't appear stuck
-                        _set_job_progress(jid, processed_set=segments)
-                    else:
-                        _set_job_progress(jid, processed_set=done_files)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "subtitles":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress via backend segment callbacks
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            model = str(prm.get("model", "small"))
-            language = prm.get("language")
-            translate = bool(prm.get("translate", False))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    out_file = artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}"
-                    lk = _file_task_lock(v, "subtitles")
-                    with lk:
-                        if out_file.exists() and not bool(jr.force):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_sub(frac: float):
-                                try:
-                                    frac = max(0.0, min(1.0, float(frac)))
-                                    overall = (done_files * 100) + int(frac * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            generate_subtitles(
-                                v, out_file, model=model, language=(language or None), translate=translate,
-                                progress_cb=_pcb_sub, cancel_check=_cc,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "scenes":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress based on scene items processed
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            threshold = float(prm.get("threshold", 0.4))
-            limit = int(prm.get("limit", 0))
-            gen_thumbs = bool(prm.get("thumbs", False))
-            gen_clips = bool(prm.get("clips", False))
-            thumbs_width = int(prm.get("thumbs_width", 320))
-            clip_duration = float(prm.get("clip_duration", 2.0))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "scenes")
-                    with lk:
-                        # Skip if scenes already exist unless recomputing
-                        if scenes_json_exists(v) and not bool(jr.force):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_scenes(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            generate_scene_artifacts(
-                                v,
-                                threshold=threshold,
-                                limit=limit,
-                                gen_thumbs=gen_thumbs,
-                                gen_clips=gen_clips,
-                                thumbs_width=thumbs_width,
-                                clip_duration=clip_duration,
-                                progress_cb=_pcb_scenes,
-                                cancel_check=_cc,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        # Unknown task
-        _finish_job(jid, error="unknown task")
+        task = (jr.task or "").lower()
+        handlers: dict[str, Callable[[str, JobRequest, Path], None]] = {
+            "transcode": _handle_transcode_job,
+            "autotag": _handle_autotag_job,
+            "cover": _handle_cover_job,
+            "embed": _handle_embed_job,
+            "clip": _handle_clip_job,
+            "cleanup-artifacts": _handle_cleanup_artifacts_job,
+            "sprites": _handle_sprites_job,
+            "heatmaps": _handle_heatmaps_job,
+            "faces": _handle_faces_job,
+            "hover": _handle_hover_job,
+            "subtitles": _handle_subtitles_job,
+            "scenes": _handle_scenes_job,
+                    "sample": _handle_sample_job,
+            "chain": _handle_chain_job,
+            "integrity-scan": _handle_integrity_scan_job,
+            "index-embeddings": _handle_index_embeddings_job,
+        "waveform": _handle_waveform_job,
+        "motion": _handle_motion_job,
+        }
+        h = handlers.get(task)
+        if not h:
+            _finish_job(jid, error="unknown task"); return
+        h(jid, jr, base)
     except Exception as e:
         _finish_job(jid, error=str(e))
 
@@ -9482,6 +10248,107 @@ def jobs_submit(req: JobRequest):
     t = threading.Thread(target=_runner, daemon=True)
     t.start()
     return {"id": jid, "status": "queued"}
+
+# -----------------------------
+# Waveform & Motion query endpoints (Batch 3)
+# -----------------------------
+@app.get("/waveform")
+def get_waveform(
+    file: str = Query(..., description="Video file path (relative to root or absolute)"),
+    force: bool = Query(False, description="Regenerate waveform even if it exists"),
+    width: int = Query(800, ge=32, le=4096),
+    height: int = Query(160, ge=32, le=2048),
+    color: str = Query("#4fa0ff", description="Waveform color (hex)"),
+):
+    base = STATE["root"]
+    # Support absolute path (must reside under root) or relative path
+    try:
+        if os.path.isabs(file):
+            video = Path(file).resolve()
+            # Enforce containment within media root
+            if not str(video).startswith(str(base)):
+                raise HTTPException(400, "absolute path is outside media root")
+        else:
+            video = safe_join(base, file)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"invalid path: {e}")
+    if not video.exists() or not video.is_file():
+        raise HTTPException(404, f"video not found: {file}")
+    lk = _file_task_lock(video, "waveform")
+    with lk:
+        try:
+            generate_waveform(video, force=force, width=width, height=height, color=color)
+        except Exception as e:
+            raise HTTPException(500, f"waveform generation failed: {e}")
+    wf = waveform_png_path(video)
+    if not wf.exists():
+        raise HTTPException(500, "waveform artifact missing after generation")
+    return FileResponse(str(wf), media_type="image/png")
+
+
+@app.get("/motion")
+def get_motion_activity(
+    file: str = Query(..., description="Video file path (relative to root or absolute)"),
+    force: bool = Query(False, description="Regenerate motion JSON even if it exists"),
+    interval: float = Query(1.0, ge=0.1, le=30.0, description="Frame sampling interval (seconds)"),
+    top: int = Query(5, ge=1, le=100, description="Return top-N highest motion samples"),
+):
+    base = STATE["root"]
+    try:
+        if os.path.isabs(file):
+            video = Path(file).resolve()
+            if not str(video).startswith(str(base)):
+                raise HTTPException(400, "absolute path is outside media root")
+        else:
+            video = safe_join(base, file)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"invalid path: {e}")
+    if not video.exists() or not video.is_file():
+        raise HTTPException(404, f"video not found: {file}")
+    lk = _file_task_lock(video, "motion")
+    with lk:
+        try:
+            generate_motion_activity(video, force=force, interval=interval)
+        except Exception as e:
+            raise HTTPException(500, f"motion generation failed: {e}")
+    mp = motion_json_path(video)
+    if not mp.exists():
+        raise HTTPException(500, "motion artifact missing after generation")
+    try:
+        data = json.loads(mp.read_text() or "{}")
+    except Exception as e:
+        raise HTTPException(500, f"failed to parse motion json: {e}")
+    samples = data.get("samples") or []
+    if samples:
+        vals = [float(s.get("value", 0.0)) for s in samples]
+        total = sum(vals)
+        avg = total / len(vals) if vals else 0.0
+        max_v = max(vals) if vals else 0.0
+        indexed = list(enumerate(vals))
+        indexed.sort(key=lambda x: x[1], reverse=True)
+        top_list = [
+            {
+                "rank": i + 1,
+                "index": idx,
+                "time": float(idx) * float(data.get("interval", interval)),
+                "value": v,
+            }
+            for i, (idx, v) in enumerate(indexed[:top])
+        ]
+        data["stats"] = {
+            "count": len(vals),
+            "avg": avg,
+            "max": max_v,
+            "sum": total,
+            "top": top_list,
+        }
+    else:
+        data["stats"] = {"count": 0, "avg": 0.0, "max": 0.0, "sum": 0.0, "top": []}
+    return JSONResponse(data)
 
 
 @app.get("/jobs/events")
@@ -9660,6 +10527,839 @@ def api_tags_summary(path: str = Query(default=""), recursive: bool = Query(defa
         for t in data.get("performers", []) or []:
             perf_counts[t] = perf_counts.get(t, 0) + 1
     return {"tags": tag_counts, "performers": perf_counts}
+
+
+# -----------------------------
+# Doctor / system diagnostics (transcode roadmap prerequisite)
+# -----------------------------
+
+def _which_version(cmd: str) -> tuple[bool, Optional[str]]:
+    exe = shutil.which(cmd)
+    if not exe:
+        return False, None
+    try:
+        out = subprocess.check_output([cmd, "-version"], stderr=subprocess.STDOUT, timeout=5)
+        first = out.decode("utf-8", "ignore").splitlines()[0].strip()
+        return True, first
+    except Exception:
+        return True, None
+
+
+def _model_available(name: str) -> bool:
+    # Placeholder heuristic until face/subtitle models formalized
+    if name == "whisper":
+        return _has_module("whisper") or _has_module("faster_whisper")
+    if name == "faces":
+        return _has_module("insightface") or _has_module("facenet_pytorch") or _has_module("dlib")
+    return False
+
+
+@api.get("/system/doctor")
+def api_system_doctor():
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: Optional[str] = None):
+        checks.append({"name": name, "status": "ok" if ok else "fail", **({"detail": detail} if detail else {})})
+
+    # ffmpeg / ffprobe
+    ff_ok, ff_ver = _which_version("ffmpeg")
+    add("ffmpeg", ff_ok, ff_ver)
+    fp_ok, fp_ver = _which_version("ffprobe")
+    add("ffprobe", fp_ok, fp_ver)
+
+    # concurrency env
+    add("env.FFMPEG_THREADS", True, os.environ.get("FFMPEG_THREADS", "(default)"))
+    add("env.FFMPEG_TIMELIMIT", True, os.environ.get("FFMPEG_TIMELIMIT", "(default)"))
+
+    # hwaccel
+    hw = os.environ.get("FFMPEG_HWACCEL")
+    add("hwaccel", bool(hw), hw or "(none)")
+
+    # root writable
+    try:
+        test_file = STATE["root"] / ".artifacts" / "__doctor_write.test"
+        test_file.parent.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("ok")
+        test_file.unlink(missing_ok=True)  # type: ignore[arg-type]
+        add("artifacts_writable", True)
+    except Exception as e:
+        add("artifacts_writable", False, str(e))
+
+    # optional models
+    add("model.whisper", _model_available("whisper"))
+    add("model.faces", _model_available("faces"))
+
+    # python deps snapshot (selected)
+    for mod in ["PIL", "numpy", "torch", "onnx", "opencv-python"]:
+        add(f"dep.{mod}", _has_module(mod.lower().replace("-", "_")))
+
+    # config echo (subset)
+    cfg = STATE.get("config") or {}
+    diagnostics = {
+        "root": str(STATE["root"]),
+        "config_keys": sorted(list(cfg.keys())),
+        "ffmpeg_threads_flags": _ffmpeg_threads_flags(),
+    }
+    summary = {
+        "ok": all(c["status"] == "ok" for c in checks if not c["name"].startswith("dep.")),
+        "failures": [c for c in checks if c["status"] != "ok"],
+    }
+    return {"checks": checks, "summary": summary, "diagnostics": diagnostics}
+
+
+# -----------------------------
+# Additional legacy vid feature ports: codecs scan & finish
+# -----------------------------
+
+class CodecsScanResult(BaseModel):  # minimal pydantic model for structured response
+    file: str
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    width: int | None = None
+    height: int | None = None
+    duration: float | None = None
+    size_bytes: int | None = None
+    bitrate: int | None = None
+    pix_fmt: str | None = None
+    r_frame_rate: str | None = None
+    errors: list[str] | None = None
+
+
+def _ffprobe_streams_safe(path: Path) -> dict[str, Any]:
+    if not ffprobe_available():
+        return {}
+    try:
+        cmd = [
+            "ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        return json.loads(out.decode("utf-8", "ignore"))
+    except Exception as e:  # pragma: no cover
+        return {"error": str(e)}
+
+
+def _codecs_reasoning(v: Path, rec: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    reasons: list[dict[str, Any]] = []
+    suggest: dict[str, Any] = {}
+    video = (rec.get("video_codec") or "").lower() if isinstance(rec.get("video_codec"), str) else None
+    audio = (rec.get("audio_codec") or "").lower() if isinstance(rec.get("audio_codec"), str) else None
+    pix_fmt = (rec.get("pix_fmt") or "").lower() if isinstance(rec.get("pix_fmt"), str) else None
+    width = rec.get("width") or 0
+    height = rec.get("height") or 0
+    bitrate = rec.get("bitrate") or 0
+    duration = rec.get("duration") or 0.0
+    ext = v.suffix.lower()
+    def add(code: str, level: str = "info", message: str | None = None, **extra):
+        reasons.append({"code": code, "level": level, **({"message": message} if message else {}), **extra})
+    # Video codec suitability
+    if video and video not in {"h264", "hevc", "vp9", "av1"}:
+        add("uncommon_video_codec", "warn", f"Video codec '{video}' may have limited playback support")
+    if not video:
+        add("missing_video_stream", "error", "No video stream detected")
+    # Audio
+    if not audio:
+        add("missing_audio", "warn", "File has no audio track")
+    elif audio not in {"aac", "opus", "mp3"}:
+        add("uncommon_audio_codec", "info", f"Audio codec '{audio}' is less common for web delivery")
+    # Pixel format
+    if pix_fmt and pix_fmt not in {"yuv420p", "yuvj420p"}:
+        add("non_standard_pix_fmt", "info", f"Pixel format {pix_fmt} may trigger transcode for compatibility")
+    # Resolution
+    area = width * height
+    if area >= 3840*2160:
+        add("ultra_hd", "info", "4K/UHD content may benefit from AV1/VP9 for efficiency")
+    elif area > 1920*1080:
+        add("above_full_hd", "info", "Resolution above 1080p")
+    # Bitrate heuristic thresholds
+    if bitrate and duration:
+        # rough per-second bytes
+        if area <= 1920*1080 and bitrate > 12_000_000:
+            add("high_bitrate", "warn", f"Bitrate {bitrate} > 12Mbps for <=1080p; consider re-encoding")
+        if area >= 3840*2160 and bitrate > 40_000_000:
+            add("very_high_bitrate", "warn", f"Bitrate {bitrate} > 40Mbps for 4K; consider more efficient codec")
+    # Container/codec mismatch
+    if ext == ".webm" and video and video not in {"vp8", "vp9", "av1"}:
+        add("container_codec_mismatch", "warn", f"{video} inside .webm (expect VP9/AV1)")
+    if ext == ".mp4" and video in {"vp9", "av1"}:
+        add("container_codec_mismatch", "info", f"{video} in mp4 may have limited support; consider .webm for {video}")
+    # Suggest simple profile
+    if video in {"h264", "hevc"} and (audio in {"aac", None}):
+        suggest["recommended_profile"] = "h264_aac_mp4"
+    elif video in {"vp9"} and audio in {"opus", None}:
+        suggest["recommended_profile"] = "vp9_opus_webm"
+    elif video in {"av1"}:
+        suggest["recommended_profile"] = "av1 (not yet defined profile)"
+    # If high bitrate + non standard pix fmt, strong transcode suggestion
+    if any(r["code"] in ("high_bitrate", "very_high_bitrate") for r in reasons):
+        suggest["action"] = "transcode"
+    return reasons, suggest
+
+@api.get("/codecs")
+def api_codecs_scan(path: str = Query(default=""), recursive: bool = Query(default=False), reasons: bool = Query(default=False)):
+    """Profile media files (lightweight ffprobe summary).
+
+    Query params:
+      path: base directory relative to root
+      recursive: recurse into subdirectories
+      reasons: if true, add heuristic quality/compatibility analysis & suggestions
+    """
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    vids = _iter_videos(base, recursive)
+    out: list[dict[str, Any]] = []
+    for v in vids:
+        info = _ffprobe_streams_safe(v)
+        rec: dict[str, Any] = {
+            "file": str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v),
+            "video_codec": None,
+            "audio_codec": None,
+        }
+        try:
+            if "error" in info:
+                rec["errors"] = [info["error"]]
+            fmt = (info.get("format") or {}) if isinstance(info, dict) else {}
+            if fmt:
+                try:
+                    dur_v = fmt.get("duration")
+                    rec["duration"] = float(dur_v) if dur_v not in (None, "") else None
+                except Exception:
+                    pass
+                try:
+                    size_v = fmt.get("size")
+                    rec["size_bytes"] = int(size_v) if size_v not in (None, "") else None
+                except Exception:
+                    pass
+                try:
+                    br_v = fmt.get("bit_rate")
+                    rec["bitrate"] = int(br_v) if br_v not in (None, "") else None
+                except Exception:
+                    pass
+            streams = info.get("streams") if isinstance(info, dict) else None
+            if isinstance(streams, list):
+                for s in streams:
+                    if not isinstance(s, dict):
+                        continue
+                    ct = s.get("codec_type")
+                    if ct == "video" and rec.get("video_codec") is None:
+                        rec["video_codec"] = s.get("codec_name")
+                        rec["width"] = s.get("width")
+                        rec["height"] = s.get("height")
+                        rec["pix_fmt"] = s.get("pix_fmt")
+                        rec["r_frame_rate"] = s.get("r_frame_rate")
+                    elif ct == "audio" and rec.get("audio_codec") is None:
+                        rec["audio_codec"] = s.get("codec_name")
+        except Exception:
+            rec.setdefault("errors", []).append("parse_error")
+        if reasons:
+            rlist, suggest = _codecs_reasoning(v, rec)
+            if rlist:
+                rec["reasons"] = rlist
+            if suggest:
+                rec["suggest"] = suggest
+        out.append(rec)
+    return {"items": out, "count": len(out)}
+
+
+# -----------------------------
+# Transcode plan endpoint
+# -----------------------------
+@api.get("/transcode/plan")
+def api_transcode_plan(
+    path: str = Query(default=""),
+    recursive: bool = Query(default=False),
+    target_profile: str = Query(default="auto"),
+    max_items: int = Query(default=0, description="If >0, limit number of plan entries"),
+):
+    """Analyze which files would benefit from transcode.
+
+    For each media file produce:
+      file, current_profile (heuristic), recommended_profile, action (keep|transcode),
+      est_size_reduction (bytes, heuristic), reasons (subset) and raw probe summary.
+    """
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    vids = _iter_videos(base, recursive)
+    out: list[dict[str, Any]] = []
+    for v in vids:
+        info = _ffprobe_streams_safe(v)
+        rec: dict[str, Any] = {"file": str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)}
+        try:
+            fmt = (info.get("format") or {}) if isinstance(info, dict) else {}
+            duration = None
+            size_bytes = None
+            bitrate = None
+            if isinstance(fmt, dict):
+                raw_duration = fmt.get("duration")
+                if raw_duration not in (None, ""):
+                    try:
+                        duration = float(raw_duration)  # type: ignore[arg-type]
+                    except Exception:
+                        duration = None
+                raw_size = fmt.get("size")
+                if raw_size not in (None, ""):
+                    try:
+                        size_bytes = int(raw_size)  # type: ignore[arg-type]
+                    except Exception:
+                        size_bytes = None
+                raw_br = fmt.get("bit_rate")
+                if raw_br not in (None, ""):
+                    try:
+                        bitrate = int(raw_br)  # type: ignore[arg-type]
+                    except Exception:
+                        bitrate = None
+            vcodec = None; acodec = None; width=None; height=None; pix_fmt=None
+            streams = info.get("streams") if isinstance(info, dict) else None
+            if isinstance(streams, list):
+                for s in streams:
+                    if not isinstance(s, dict):
+                        continue
+                    if s.get("codec_type") == "video" and vcodec is None:
+                        vcodec = s.get("codec_name"); width=s.get("width"); height=s.get("height"); pix_fmt=s.get("pix_fmt")
+                    elif s.get("codec_type") == "audio" and acodec is None:
+                        acodec = s.get("codec_name")
+            rec.update({
+                "video_codec": vcodec,
+                "audio_codec": acodec,
+                "width": width,
+                "height": height,
+                "duration": duration,
+                "bitrate": bitrate,
+                "size_bytes": size_bytes,
+                "pix_fmt": pix_fmt,
+            })
+        except Exception:
+            rec.setdefault("errors", []).append("probe_error")
+        reasons, suggest = _codecs_reasoning(v, rec)
+        # Derive current simple profile
+        cur_profile = None
+        if vcodec in {"h264", "hevc"} and (acodec in {"aac", None}):
+            cur_profile = "h264_aac_mp4"
+        elif vcodec == "vp9" and (acodec in {"opus", None}):
+            cur_profile = "vp9_opus_webm"
+        elif vcodec == "av1":
+            cur_profile = "av1"
+        # Decide recommended
+        if target_profile == "auto":
+            rec_profile = suggest.get("recommended_profile") if suggest else cur_profile
+        else:
+            rec_profile = target_profile
+        # Heuristic size reduction estimate
+        size_red = None
+        try:
+            if rec.get("size_bytes") and rec.get("bitrate"):
+                br = rec.get("bitrate") or 0
+                # crude rule: if high_bitrate reason present, assume 35% reduction, else 0
+                if any(r.get("code") in ("high_bitrate", "very_high_bitrate") for r in reasons):
+                    size_red = int(int(rec["size_bytes"]) * 0.35)
+        except Exception:
+            size_red = None
+        action = "keep"
+        if rec_profile and rec_profile != cur_profile:
+            action = "transcode"
+        if action == "keep" and any(r.get("code") in ("high_bitrate", "very_high_bitrate", "non_standard_pix_fmt") for r in reasons):
+            action = "transcode"
+        plan_ent = {
+            **rec,
+            "current_profile": cur_profile,
+            "recommended_profile": rec_profile,
+            "action": action,
+            **({"est_size_reduction": size_red} if size_red is not None else {}),
+            "reasons": reasons[:10],  # cap
+        }
+        if action == "transcode":
+            out.append(plan_ent)
+        else:
+            # include keeps only if explicitly desired? For now exclude to keep concise.
+            pass
+        if max_items and len(out) >= max_items:
+            break
+    return {"items": out, "count": len(out), "target_profile": target_profile}
+
+
+# -----------------------------
+# Embedding / Similarity Search API
+# -----------------------------
+@api.post("/embeddings/index")
+def api_embeddings_index(path: str = Query(default=""), recursive: bool = Query(default=True), mode: str = Query(default="auto")):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    req = JobRequest(task="index-embeddings", directory=str(base), recursive=bool(recursive), force=False, params={"mode": mode})
+    jid = _new_job(req.task, req.directory or str(STATE["root"]))
+    def _runner():
+        with JOB_RUN_SEM:
+            _run_job_worker(jid, req)
+    threading.Thread(target=_runner, daemon=True).start()
+    return api_success({"job": jid, "queued": True})
+
+@api.get("/embeddings/index")
+def api_embeddings_index_status():
+    with EMB_INDEX_LOCK:
+        idx = STATE.get("embedding_index")
+        if not idx:
+            return api_success({"indexed": False})
+        shallow = {k: v for k, v in idx.items() if k != "entries"}
+        shallow["entries"] = idx.get("count", 0)
+        return api_success({"indexed": True, **shallow})
+
+def _search_similar_vector(query_vec: list[float], top_k: int, mode: str) -> list[dict[str, Any]]:
+    with EMB_INDEX_LOCK:
+        idx = STATE.get("embedding_index")
+        entries = (idx or {}).get("entries") if isinstance(idx, dict) else None
+    if not isinstance(entries, list) or not entries:
+        return []
+    scored: list[tuple[float, dict]] = []
+    for ent in entries:
+        try:
+            vec = _combined_vector(ent, mode)
+            if not vec:
+                continue
+            score = _cosine(query_vec, vec)
+            if score <= 0:
+                continue
+            scored.append((score, ent))
+        except Exception:
+            continue
+    scored.sort(key=lambda x: x[0], reverse=True)
+    out: list[dict[str, Any]] = []
+    for s, e in scored[: max(1, min(top_k, 200))]:
+        out.append({"file": e.get("file"), "score": round(float(s), 6)})
+    return out
+
+@api.get("/search/by-file")
+def api_search_by_file(file: str = Query(...), mode: str = Query(default="auto"), top_k: int = Query(default=10)):
+    target = safe_join(STATE["root"], file)
+    if not target.exists():
+        raise_api_error("file not found", status_code=404)
+    with EMB_INDEX_LOCK:
+        idx = STATE.get("embedding_index")
+        entries = (idx or {}).get("entries") if isinstance(idx, dict) else None
+    if not isinstance(entries, list):
+        raise_api_error("index not built", status_code=400)
+    ent: Optional[dict[str, Any]] = None
+    if isinstance(entries, list):
+        for e in entries:
+            try:
+                if isinstance(e, dict) and e.get("file") == file:
+                    ent = e
+                    break
+            except Exception:
+                continue
+    if not ent:
+        raise_api_error("file not indexed", status_code=400)
+    qvec = _combined_vector(ent, mode)  # type: ignore[arg-type]
+    if not qvec:
+        raise_api_error("no vector for file (missing embeddings)", status_code=400)
+    res = _search_similar_vector(qvec, top_k, mode)
+    # remove self
+    res = [r for r in res if r.get("file") != file]
+    return {"items": res, "count": len(res), "mode": mode}
+
+@api.get("/search/by-text")
+def api_search_by_text(q: str = Query(..., min_length=1), mode: str = Query(default="auto"), top_k: int = Query(default=10)):
+    qvec = _placeholder_clip_embedding(q)
+    res = _search_similar_vector(qvec, top_k, mode)
+    return {"items": res, "count": len(res), "mode": mode}
+
+@api.post("/search/by-vector")
+def api_search_by_vector(payload: dict = Body(default_factory=dict)):
+    vec = payload.get("vector") or []
+    mode = str(payload.get("mode", "auto"))
+    top_k = int(payload.get("top_k", 10))
+    if not isinstance(vec, list) or not vec:
+        raise_api_error("vector required")
+    try:
+        qvec = [float(x) for x in vec]
+    except Exception:
+        raise_api_error("invalid vector values")
+    qvec = _vec_norm(qvec)
+    res = _search_similar_vector(qvec, top_k, mode)
+    return {"items": res, "count": len(res), "mode": mode}
+
+
+# -----------------------------
+# Rename undo ledger
+# -----------------------------
+RENAME_UNDO_LOG: list[dict[str, Any]] = []  # each entry: {plan_id, time, actions:[{from,to}]}
+RENAME_UNDO_LOCK = threading.Lock()
+
+@api.post("/rename/undo")
+def api_rename_undo(payload: dict = Body(default_factory=dict)):
+    plan_id = str(payload.get("plan_id") or "").strip()
+    steps = int(payload.get("steps", 1))
+    reverted: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+    if plan_id:
+        # Undo only that plan id
+        with RENAME_UNDO_LOCK:
+            entries = [e for e in RENAME_UNDO_LOG if e.get("plan_id") == plan_id]
+    else:
+        with RENAME_UNDO_LOCK:
+            entries = list(RENAME_UNDO_LOG)[-steps:][::-1]
+    for ent in entries:
+        acts = ent.get("actions") or []
+        base = Path(ent.get("base") or STATE["root"])  # original base recorded
+        for a in acts:
+            src = base / a.get("to", "")
+            dst = base / a.get("from", "")
+            if not src.exists():
+                errors.append({"to": a.get("to", ""), "error": "missing_current"})
+                continue
+            if dst.exists():
+                errors.append({"to": a.get("to", ""), "error": "original_exists"})
+                continue
+            try:
+                src.rename(dst)
+                reverted.append({"from": a.get("to", ""), "to": a.get("from", "")})
+            except Exception as e:
+                errors.append({"to": a.get("to", ""), "error": str(e)})
+    return {"reverted": reverted, "errors": errors, "entries": len(entries)}
+
+
+# Integrity scan job submit endpoint
+@api.post("/integrity/scan")
+def api_integrity_scan(path: str = Query(default=""), recursive: bool = Query(default=True), kinds: str = Query(default="")):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    prm: dict[str, Any] = {}
+    if kinds:
+        prm["kinds"] = kinds
+    req = JobRequest(task="integrity-scan", directory=str(base), recursive=bool(recursive), params=prm, force=False)
+    jid = _new_job(req.task, req.directory or str(STATE["root"]))
+    def _runner():
+        with JOB_RUN_SEM:
+            _run_job_worker(jid, req)
+    threading.Thread(target=_runner, daemon=True).start()
+    return api_success({"job": jid, "queued": True})
+
+
+def _artifact_exists(video: Path, kind: str) -> bool:
+    if kind == "metadata":
+        return metadata_path(video).exists()
+    if kind == "thumbnail":
+        return thumbs_path(video).exists()
+    if kind == "preview":
+        return preview_webm_path(video).exists() or preview_json_path(video).exists()
+    if kind == "sprites":
+        s, j = sprite_sheet_paths(video)
+        return s.exists() and j.exists()
+    if kind == "scenes":
+        return scenes_json_exists(video)
+    if kind == "heatmaps":
+        return heatmaps_json_exists(video)
+    if kind == "phash":
+        return phash_path(video).exists()
+    if kind == "faces":
+        return faces_exists_check(video)
+    if kind == "subtitles":
+        return find_subtitles(video) is not None
+    if kind == "waveform":
+        return waveform_png_path(video).exists()
+    if kind == "motion":
+        return motion_json_path(video).exists()
+    return False
+
+
+FINISH_ARTIFACT_ORDER = [
+    "metadata", "thumbnail", "preview", "sprites", "scenes", "heatmaps", "phash", "faces", "subtitles", "waveform", "motion"
+]
+
+# -----------------------------
+# Batch rename (plan/apply)
+# -----------------------------
+RENAME_PLANS: dict[str, dict[str, Any]] = {}
+RENAME_PLANS_LOCK = threading.Lock()
+
+def _validate_rename_pattern(pattern: str) -> re.Pattern:
+    try:
+        return re.compile(pattern)
+    except Exception as e:  # pragma: no cover
+        # raise_api_error always raises; add explicit raise for type analyzers
+        raise_api_error(f"invalid regex: {e}")
+        raise
+
+def _mk_rename_plan(base: Path, recursive: bool, pattern: str, replacement: str, dry_run: bool, limit: int | None, include_ext: bool) -> dict[str, Any]:
+    rx = _validate_rename_pattern(pattern)
+    vids = _iter_videos(base, recursive)
+    mapping: list[dict[str, str]] = []
+    seen_targets: set[str] = set()
+    collisions: list[dict[str, str]] = []
+    count = 0
+    for v in vids:
+        stem = v.name if include_ext else v.stem
+        new_name_body = rx.sub(replacement, stem)
+        if new_name_body == stem:
+            continue
+        new_filename = new_name_body if include_ext else new_name_body + v.suffix
+        if new_filename in seen_targets:
+            collisions.append({"source": v.name, "target": new_filename, "reason": "duplicate_target_in_plan"})
+            continue
+        target_path = v.parent / new_filename
+        if target_path.exists():
+            collisions.append({"source": v.name, "target": new_filename, "reason": "target_exists"})
+            continue
+        mapping.append({"source": v.name, "target": new_filename})
+        seen_targets.add(new_filename)
+        count += 1
+        if limit and count >= limit:
+            break
+    plan_id = uuid.uuid4().hex
+    plan = {
+        "id": plan_id,
+        "base": str(base),
+        "recursive": recursive,
+        "pattern": pattern,
+        "replacement": replacement,
+        "dry_run": dry_run,
+        "include_ext": include_ext,
+        "created": time.time(),
+        "items": mapping,
+        "collisions": collisions,
+    }
+    with RENAME_PLANS_LOCK:
+        RENAME_PLANS[plan_id] = plan
+    return plan
+
+@api.post("/rename/plan")
+def api_rename_plan(payload: dict = Body(default_factory=dict)):
+    pattern = payload.get("pattern")
+    replacement = payload.get("replacement", "")
+    if not pattern:
+        raise_api_error("pattern required")
+    path = payload.get("path") or ""
+    recursive = bool(payload.get("recursive", False))
+    dry_run = bool(payload.get("dry_run", True))
+    limit = payload.get("limit")
+    include_ext = bool(payload.get("include_ext", False))
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    plan = _mk_rename_plan(base, recursive, str(pattern), replacement, dry_run, limit, include_ext)
+    return {"plan": {k: v for k, v in plan.items() if k != "_applied"}, "count": len(plan["items"]), "collisions": plan["collisions"]}
+
+@api.post("/rename/apply")
+def api_rename_apply(payload: dict = Body(default_factory=dict)):
+    plan_id_val = payload.get("plan_id")
+    plan_id = str(plan_id_val) if plan_id_val else ""
+    if not plan_id:
+        raise_api_error("plan_id required")
+    with RENAME_PLANS_LOCK:
+        plan_any = RENAME_PLANS.get(plan_id)
+    if plan_any is None:
+        raise_api_error("plan not found", status_code=404)
+    plan: dict[str, Any] = plan_any  # type: ignore[assignment]
+    if plan.get("_applied"):
+        raise_api_error("plan already applied")
+    applied: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+    base = Path(plan["base"]) if plan.get("base") else STATE["root"]
+    # Re-validate collisions still absent
+    for entry in plan["items"]:
+        src = base / entry["source"]
+        dst = base / entry["target"]
+        if not src.exists():
+            errors.append({"source": entry["source"], "error": "missing_source"})
+            continue
+        if dst.exists():
+            errors.append({"source": entry["source"], "error": "target_exists"})
+            continue
+        try:
+            src.rename(dst)
+            applied.append({"source": entry["source"], "target": entry["target"]})
+        except Exception as e:  # pragma: no cover
+            errors.append({"source": entry["source"], "error": str(e)})
+    # Mark plan applied
+    with RENAME_PLANS_LOCK:
+        plan["_applied"] = True
+        plan["applied_at"] = time.time()
+        plan["applied_count"] = len(applied)
+        plan["errors"] = errors
+    # Persist optional log
+    try:
+        log_dir = STATE["root"] / ".artifacts"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"rename.{plan_id}.json").write_text(json.dumps({"plan_id": plan_id, "applied": applied, "errors": errors}, indent=2))
+    except Exception:
+        pass
+    # Record undo entry if there are applied renames
+    if applied:
+        try:
+            entry = {
+                "plan_id": plan_id,
+                "time": time.time(),
+                "actions": [{"from": a["source"], "to": a["target"]} for a in applied],
+                "base": str(base),
+            }
+            with RENAME_UNDO_LOCK:
+                RENAME_UNDO_LOG.append(entry)
+                # Keep only last 50 entries to bound memory
+                if len(RENAME_UNDO_LOG) > 50:
+                    del RENAME_UNDO_LOG[:-50]
+        except Exception:
+            pass
+    return {"applied": applied, "errors": errors, "plan_id": plan_id, "count": len(applied)}
+
+# -----------------------------
+# Config ingestion (schema + GET/POST)
+# -----------------------------
+
+class SpritesConfig(BaseModel):  # type: ignore
+    interval: Optional[float] = Field(None, gt=0)
+    width: Optional[int] = Field(None, gt=0)
+    cols: Optional[int] = Field(None, gt=0)
+    rows: Optional[int] = Field(None, gt=0)
+    quality: Optional[int] = Field(None, ge=1, le=10)
+
+class ConfigUpdate(BaseModel):  # type: ignore
+    sprites: Optional[SpritesConfig] = None
+    # Future: add sections (transcode profiles, feature toggles, etc.)
+
+def _apply_config_update(update: ConfigUpdate) -> dict:
+    with _CONFIG_LOCK:
+        cfg = STATE.get("config") or {}
+        changed: dict[str, Any] = {}
+        if update.sprites is not None:
+            sprites_cur = cfg.get("sprites") or {}
+            sprites_new = sprites_cur.copy()
+            for k, v in update.sprites.model_dump(exclude_unset=True).items():  # type: ignore
+                if v is not None:
+                    sprites_new[k] = v
+            if sprites_new != sprites_cur:
+                cfg["sprites"] = sprites_new
+                changed["sprites"] = sprites_new
+        if changed:
+            STATE["config"] = cfg
+            # Persist to disk best-effort
+            try:
+                path = Path(str(STATE.get("config_path")))
+                path.write_text(json.dumps(cfg, indent=2, sort_keys=True))
+            except Exception:
+                pass
+        return {"changed": changed, "effective": STATE["config"]}
+
+@api.post("/config")
+def api_config_post(payload: dict = Body(default_factory=dict)):
+    try:
+        upd = ConfigUpdate(**payload)
+    except Exception as e:
+        raise_api_error(f"invalid payload: {e}")
+    result = _apply_config_update(upd)
+    return result
+
+
+@api.get("/finish/plan")
+def api_finish_plan(
+    path: str = Query(default=""),
+    recursive: bool = Query(default=True),
+    artifacts: Optional[str] = Query(default=None, description="Comma-separated subset of artifact kinds to consider"),
+    include_existing: bool = Query(default=False, description="If true, list all requested artifacts (marking existing vs missing).")
+):
+    """Return missing (or all) artifact status per video.
+
+    artifacts: optional comma list (e.g. metadata,thumbnail,preview) to restrict scope.
+    include_existing: when true, each record returns two arrays: missing & existing.
+    """
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    subset: list[str] | None = None
+    if artifacts:
+        subset = [a.strip() for a in artifacts.split(',') if a.strip()]
+    vids = _iter_videos(base, recursive)
+    plan: list[dict[str, Any]] = []
+    for v in vids:
+        kinds = subset or FINISH_ARTIFACT_ORDER
+        missing = [k for k in kinds if not _artifact_exists(v, k)]
+        existing: list[str] = []
+        if include_existing:
+            existing = [k for k in kinds if _artifact_exists(v, k)]
+        if missing or include_existing:
+            plan.append({
+                "file": str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v),
+                "missing": missing,
+                **({"existing": existing} if include_existing else {}),
+            })
+    return {"items": plan, "count": len(plan), "artifacts": subset or FINISH_ARTIFACT_ORDER}
+
+
+@api.post("/finish/run")
+def api_finish_run(payload: dict = Body(default_factory=dict)):
+    """Generate missing (or requested) artifacts.
+
+    Payload fields:
+      path: base directory (relative to root)
+      recursive: bool
+      artifacts: optional list or comma-separated string of artifact kinds
+      force: bool (regenerate even if present)
+      force_faces: bool (legacy toggle kept for compatibility)
+    Returns detailed per-file action results with timings.
+    """
+    path = payload.get("path") or ""
+    recursive = bool(payload.get("recursive", True))
+    force = bool(payload.get("force", False))
+    force_faces = bool(payload.get("force_faces", False))
+    arts = payload.get("artifacts")
+    if isinstance(arts, str):
+        artifacts_list = [a.strip() for a in arts.split(',') if a.strip()]
+    elif isinstance(arts, list):
+        artifacts_list = [str(a) for a in arts]
+    else:
+        artifacts_list = FINISH_ARTIFACT_ORDER
+    # Preserve ordering from FINISH_ARTIFACT_ORDER while filtering
+    order_filtered = [a for a in FINISH_ARTIFACT_ORDER if a in artifacts_list]
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    vids = _iter_videos(base, recursive)
+    results: list[dict[str, Any]] = []
+    for v in vids:
+        rel = str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)
+        needed = [k for k in order_filtered if force or not _artifact_exists(v, k)]
+        if not needed:
+            continue
+        entry: dict[str, Any] = {"file": rel, "planned": needed, "actions": []}
+        # Job-backed artifacts first
+        job_map = {"sprites": "sprites", "scenes": "scenes", "subtitles": "subtitles"}
+        for kind in [k for k in needed if k in job_map]:
+            jobs_submit(JobRequest(task=job_map[kind], directory=str(v.parent), params={"targets": [rel]}, force=force, recursive=False))  # type: ignore[arg-type]
+            entry["actions"].append({"name": kind, "mode": "job", "status": "queued"})
+        # Inline artifacts
+        inline = [k for k in needed if k not in job_map]
+        lk = _file_task_lock(v, "finish-inline")
+        with lk:
+            for kind in inline:
+                start = time.time()
+                status = "ok"
+                err: Optional[str] = None
+                try:
+                    if kind == "metadata":
+                        try:
+                            _ = _probe_metadata(v, force=force)  # type: ignore[name-defined]
+                        except NameError:  # pragma: no cover
+                            _ = probe_metadata(v, force=force)  # type: ignore[name-defined]
+                    elif kind == "thumbnail":
+                        generate_thumbnail(v, force=force)
+                    elif kind == "preview":
+                        generate_hover_preview(v, segments=9, seg_dur=0.8, width=240, fmt="webm")
+                    elif kind == "heatmaps":
+                        _ = _generate_heatmap(v)  # type: ignore[name-defined]
+                    elif kind == "phash":
+                        _ = phash_create_single(v, overwrite=force)  # type: ignore[name-defined]
+                    elif kind == "faces":
+                        if force or force_faces or not faces_exists_check(v):
+                            _ = _detect_faces(v, stride=30)  # type: ignore[name-defined]
+                        else:
+                            status = "skipped"
+                    else:
+                        status = "unsupported"
+                except Exception as e:  # pragma: no cover
+                    status = "error"
+                    err = str(e)
+                elapsed = int((time.time() - start) * 1000)
+                entry["actions"].append({
+                    "name": kind,
+                    "mode": "inline",
+                    "status": status,
+                    "elapsed_ms": elapsed,
+                    **({"error": err} if err else {}),
+                })
+        results.append(entry)
+    summary = {
+        "files": len(results),
+        "actions": sum(len(r.get("actions", [])) for r in results),
+        "force": force,
+        "artifacts": order_filtered,
+    }
+    return {"results": results, "summary": summary}
 
 
 if __name__ == "__main__":  # pragma: no cover
