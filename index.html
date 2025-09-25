@@ -858,45 +858,34 @@
                 <button id="perfRefreshBtn" class="btn-sm" title="Reload performers list">Refresh</button>
               </div>
             </div>
-            <div class="controls-panel">
+            <div class="controls-panel compact" id="perfTopBar">
               <div class="controls-row wrap-10">
-                <div class="control-group minw-280 flex-1">
-                  <input id="perfCreateName" type="text" class="control-input" placeholder="Add performer name" />
+                <div class="control-group minw-260">
+                  <input id="perfCreateName" type="text" class="control-input perf-mini-input" placeholder="Search performers… (Enter to add if new / dbl‑click for bulk)" title="Type to filter performers. If no exact match, press Enter to add. Double‑click to open bulk import." />
                 </div>
                 <div class="control-group">
-                  <button id="perfCreateBtn" class="btn">Add</button>
+                  <button id="perfCreateBtn" class="btn-sm" title="Add performer" hidden>Add</button>
+                </div>
+                <div class="control-group">
+                  <button id="perfOpenImportModal" class="btn-sm" title="Open bulk import (or double‑click input)">Bulk Import</button>
+                </div>
+                <div class="control-group">
+                  <button id="perfAutoTagBtn" class="btn-sm" title="Start job to tag videos by matching performer names in filenames">Auto‑tag by Filenames</button>
+                </div>
+                <div class="control-group hstack-4">
+                  <button id="perfPrevPage" class="btn-sm" title="Previous page">‹</button>
+                  <span id="perfPageInfo" class="text-12 muted" title="Current page / total">1 / 1</span>
+                  <button id="perfNextPage" class="btn-sm" title="Next page">›</button>
+                  <select id="perfPageSize" class="btn-sm" title="Items per page" style="min-width:70px;">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="250">250</option>
+                    <option value="500">500</option>
+                  </select>
                 </div>
               </div>
             </div>
-            <div class="controls-panel">
-              <div class="controls-row wrap-10">
-                <div class="control-group minw-400 flex-1">
-                  <textarea id="perfImportInput" class="control-input" rows="4" placeholder='Import performers as JSON or line-separated names'></textarea>
-                </div>
-                <label class="control-group hstack-6">
-                  <input id="perfImportReplace" type="checkbox" />
-                  <span>Replace registry (instead of merge)</span>
-                </label>
-                <div class="control-group">
-                  <button id="perfImportBtn" class="btn" title="Import performers">Import</button>
-                </div>
-                <div class="control-group flex-1 minw-200" style="flex-basis:100%;">
-                  <div id="perfDropZoneHint" class="import-hint text-12 muted">Drag & drop a .txt or .json file onto the box to load performers</div>
-                </div>
-              </div>
-            </div>
-            <div class="job-table-container" id="perfTableContainer">
-              <table class="job-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Usage</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="perfTableBody"></tbody>
-              </table>
-            </div>
+            <div id="perfGrid" class="perf-grid" aria-live="polite" aria-label="Performers grid"></div>
           </div>
         </div>
       </div>
@@ -945,6 +934,32 @@
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      </div>
+      <!-- Performers Bulk Import Modal -->
+      <div id="perfImportModal" class="modal" hidden aria-hidden="true" aria-labelledby="perfImportModalTitle" role="dialog">
+        <div class="panel maxw-800">
+          <header>
+            <div class="hstack-12 justify-between">
+              <strong id="perfImportModalTitle">Bulk Import Performers</strong>
+              <button class="btn" id="perfImportModalClose" title="Close">Close</button>
+            </div>
+          </header>
+          <div class="body vstack-12">
+            <div class="muted text-12 lh-16">
+              Paste or drop a .json (registry or array) or .txt (line‑separated) list. Drag & drop supported. Double‑click the small input in the Performers tab to reopen this.
+            </div>
+            <textarea id="perfImportInput" class="control-input" rows="10" placeholder='[{ "name": "Alice" }, { "name": "Bob" }] OR\nAlice\nBob'></textarea>
+            <div class="hstack-12 flex-wrap">
+              <label class="hstack-6 text-14">
+                <input id="perfImportReplace" type="checkbox" />
+                <span>Replace existing registry (instead of merge)</span>
+              </label>
+              <div class="spacer"></div>
+              <button id="perfImportBtn" class="btn" title="Import performers">Import</button>
+            </div>
+            <div id="perfDropZoneHint" class="import-hint text-12 muted">Drag & drop a .txt or .json file here to load performers</div>
           </div>
         </div>
       </div>

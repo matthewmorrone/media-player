@@ -5125,32 +5125,73 @@ class PerformersManager {
     this.items = [];
     this.counts = {}; // name -> usage count
     this.refreshTimer = null;
+    this.importModalOpen = false;
+    this.searchTerm = '';
+  // Restore pagination (pageSize=0 means dynamic fill)
+  const savedPageSize = parseInt(localStorage.getItem('perfPageSize')||'0', 10);
+  const savedPage = parseInt(localStorage.getItem('perfPage')||'1', 10);
+  this.pageSize = [0,50,100,250,500].includes(savedPageSize) ? savedPageSize : 0;
+  this.page = savedPage > 0 ? savedPage : 1;
+  this.totalPages = 1;
+  this._allItems = [];
+  this._resizeHandler = null;
     this.init();
   }
 
   init() {
     // Wire buttons
-    const createBtn = document.getElementById('perfCreateBtn');
-    const createName = document.getElementById('perfCreateName');
-    const importBtn = document.getElementById('perfImportBtn');
-    const importInput = document.getElementById('perfImportInput');
-    const importReplace = document.getElementById('perfImportReplace');
-    const refreshBtn = document.getElementById('perfRefreshBtn');
+  const createBtn = document.getElementById('perfCreateBtn');
+  const createName = document.getElementById('perfCreateName');
+  const importBtn = document.getElementById('perfImportBtn');
+  const importInput = document.getElementById('perfImportInput');
+  const importReplace = document.getElementById('perfImportReplace');
+  const refreshBtn = document.getElementById('perfRefreshBtn');
   const dropHint = document.getElementById('perfDropZoneHint');
+  const openImportBtn = document.getElementById('perfOpenImportModal');
+  const importModal = document.getElementById('perfImportModal');
+  const importModalClose = document.getElementById('perfImportModalClose');
+  const autoTagBtn = document.getElementById('perfAutoTagBtn');
+  const prevPageBtn = document.getElementById('perfPrevPage');
+  const nextPageBtn = document.getElementById('perfNextPage');
+  const pageInfoEl = document.getElementById('perfPageInfo');
+  const pageSizeSel = document.getElementById('perfPageSize');
 
     if (createBtn && !createBtn._wired) {
       createBtn._wired = true;
-      createBtn.addEventListener('click', async () => {
-        const name = (createName && createName.value || '').trim();
-        if (!name) return;
-        try {
-          await fetch('/api/registry/performers/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-          if (createName) createName.value = '';
-          notify('Performer added', 'success');
-          await this.loadAll();
-          try { if (window.Player) Player._refreshPerformerSuggestions?.(true); } catch(_) {}
-        } catch(_) { notify('Failed to add performer', 'error'); }
+      createBtn.addEventListener('click', () => this._attemptAddPerformer());
+    }
+
+    if (createName && !createName._wired) {
+      createName._wired = true;
+      createName.addEventListener('input', () => {
+        this.searchTerm = (createName.value || '').trim();
+        this.page = 1; // reset to first page on new search
+        this.renderTable();
+        this._updateAddButtonVisibility();
       });
+      createName.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          this._attemptAddPerformer();
+        }
+      });
+      createName.addEventListener('dblclick', () => this.openImportModal());
+    }
+
+    if (openImportBtn && !openImportBtn._wired) {
+      openImportBtn._wired = true;
+      openImportBtn.addEventListener('click', () => this.openImportModal());
+    }
+
+    if (importModalClose && !importModalClose._wired) {
+      importModalClose._wired = true;
+      importModalClose.addEventListener('click', () => this.closeImportModal());
+    }
+
+    if (importModal && !importModal._backdropWired) {
+      importModal._backdropWired = true;
+      importModal.addEventListener('click', (e) => { if (e.target === importModal) this.closeImportModal(); });
+      window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && this.importModalOpen) this.closeImportModal(); });
     }
 
     if (importBtn && !importBtn._wired) {
@@ -5188,49 +5229,51 @@ class PerformersManager {
       });
     }
 
-    // Drag & drop support for import (JSON or text)
-    if (importInput && !importInput._dragWired) {
-      importInput._dragWired = true;
-      const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
-      ['dragenter','dragover','dragleave','drop'].forEach(ev => {
-        importInput.addEventListener(ev, stop);
-      });
-      importInput.addEventListener('dragenter', () => { importInput.classList.add('drag-hover'); });
-      importInput.addEventListener('dragover', () => { importInput.classList.add('drag-hover'); });
-      importInput.addEventListener('dragleave', (e) => {
-        // Only remove if actually left the element
-        if (!importInput.contains(e.relatedTarget)) importInput.classList.remove('drag-hover');
-      });
-      importInput.addEventListener('drop', async (e) => {
-        importInput.classList.remove('drag-hover');
-        try {
-          const files = Array.from(e.dataTransfer.files || []);
-          if (!files.length) return;
-          const file = files[0];
-          const nameLc = file.name.toLowerCase();
-          if (!/\.(json|txt|text)$/.test(nameLc)) {
-            notify('Unsupported file type (use .json or .txt)', 'error');
-            return;
-          }
-          const text = await file.text();
-          if (!text.trim()) { notify('File is empty', 'error'); return; }
-          // If JSON, pretty-print canonical; else leave as-is
-          let finalText = text;
-          if (nameLc.endsWith('.json')) {
-            try { finalText = JSON.stringify(JSON.parse(text), null, 2); } catch(_) {}
-          }
-          importInput.value = finalText;
-          if (dropHint) dropHint.classList.add('hidden');
-          notify('Loaded file: ' + file.name, 'success');
-        } catch(err) {
-          notify('Failed to read dropped file', 'error');
-        }
-      });
-    }
+    // Drag & drop (modal textarea)
+    this.wireImportDragDrop();
 
     if (refreshBtn && !refreshBtn._wired) {
       refreshBtn._wired = true;
       refreshBtn.addEventListener('click', () => this.loadAll());
+    }
+
+    if (prevPageBtn && !prevPageBtn._wired) {
+      prevPageBtn._wired = true;
+      prevPageBtn.addEventListener('click', () => { if (this.page > 1) { this.page--; this.renderTable(); this._updatePageControls?.(); localStorage.setItem('perfPage', String(this.page)); } });
+    }
+    if (nextPageBtn && !nextPageBtn._wired) {
+      nextPageBtn._wired = true;
+      nextPageBtn.addEventListener('click', () => { if (this.page < this.totalPages) { this.page++; this.renderTable(); this._updatePageControls?.(); localStorage.setItem('perfPage', String(this.page)); } });
+    }
+    this._updatePageControls = () => {
+      if (pageInfoEl) pageInfoEl.textContent = `${this.page} / ${this.totalPages}`;
+      if (prevPageBtn) prevPageBtn.disabled = this.page <= 1;
+      if (nextPageBtn) nextPageBtn.disabled = this.page >= this.totalPages;
+      if (pageSizeSel) {
+        if (!pageSizeSel._initSet) {
+          pageSizeSel.value = String(this.pageSize);
+          pageSizeSel._initSet = true;
+        }
+      }
+    };
+
+    if (pageSizeSel && !pageSizeSel._wired) {
+      pageSizeSel._wired = true;
+      pageSizeSel.addEventListener('change', () => {
+        const v = parseInt(pageSizeSel.value, 10);
+        if ([0,50,100,250,500].includes(v)) {
+          this.pageSize = v;
+          this.page = 1;
+          localStorage.setItem('perfPageSize', String(v));
+          this.renderTable();
+          this._updatePageControls?.();
+        }
+      });
+    }
+
+    if (autoTagBtn && !autoTagBtn._wired) {
+      autoTagBtn._wired = true;
+      autoTagBtn.addEventListener('click', () => this.previewAutoTagPerformers(autoTagBtn));
     }
 
     // Auto-load when opening the tab
@@ -5242,38 +5285,85 @@ class PerformersManager {
 
     // Initial lazy load (don’t block app startup)
     setTimeout(() => this.loadAll(), 200);
+
+    // Recompute dynamic pagination on resize (debounced)
+    this._resizeHandler = () => {
+      if (this.pageSize !== 0) return; // only for dynamic mode
+      clearTimeout(this._resizeTimer);
+      this._resizeTimer = setTimeout(() => { this.renderTable(); this._updatePageControls?.(); }, 120);
+    };
+    window.addEventListener('resize', this._resizeHandler);
   }
 
   async loadAll() {
+    const grid = document.getElementById('perfGrid');
+    grid?.classList.add('loading');
     try {
-      const [list, counts] = await Promise.all([
-        this.fetchPerformers(),
+      const [allList, counts] = await Promise.all([
+        this.fetchAllPerformers(),
         this.fetchCounts()
       ]);
-      this.items = list;
+      this._allItems = allList;
+      this._recomputePagination();
       this.counts = counts;
       this.renderTable();
+      this._updatePageControls?.();
     } catch(_) {
+      this._allItems = [];
       this.items = [];
       this.counts = {};
       this.renderTable();
+      this._updatePageControls?.();
+    } finally {
+      grid?.classList.remove('loading');
     }
+    try { localStorage.setItem('perfPage', String(this.page)); } catch(_) {}
   }
 
-  async fetchPerformers() {
+  async fetchAllPerformers() {
     try {
-      const r = await fetch('/api/registry/performers', { headers: { 'Accept': 'application/json' } });
+      const url = new URL('/api/registry/performers', window.location.origin);
+      url.searchParams.set('all', '1');
+      const r = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
       return Array.isArray(j?.data?.performers) ? j.data.performers : [];
     } catch(_) { return []; }
   }
 
+  _recomputePagination() {
+    const total = this._allItems.length;
+    let ps = this.pageSize;
+    if (ps === 0) {
+      const grid = document.getElementById('perfGrid');
+      const w = (grid && grid.clientWidth) || window.innerWidth;
+      const h = window.innerHeight;
+      // Force at most 5 columns matching CSS definition
+      const min = 200; // approximate width; actual column width flexes
+      const gap = 24;
+      let perRow = Math.max(1, Math.floor((w + gap) / (min + gap)));
+      if (perRow > 5) perRow = 5; // cap to 5 columns
+      // Estimate rows to fill viewport below top bar
+      let topBarBottom = 0;
+      try { const topBar = document.getElementById('perfTopBar'); if (topBar) { const r = topBar.getBoundingClientRect(); topBarBottom = r.bottom; } } catch(_) {}
+      const availableH = Math.max(200, h - topBarBottom - 80);
+      const cardH = 180 + gap; // updated approximate height with new padding
+      const rows = Math.max(1, Math.floor(availableH / cardH));
+      ps = perRow * rows;
+    }
+    this._currentPageSizeResolved = ps;
+    this.totalPages = Math.max(1, Math.ceil(total / ps));
+    if (this.page > this.totalPages) this.page = this.totalPages;
+    const start = (this.page - 1) * ps;
+    const end = start + ps;
+    this.items = this._allItems.slice(start, end);
+  }
+
   async fetchCounts() {
     try {
-      const dir = currentPath(); // relative directory currently browsed in Library
+      // Always fetch counts recursively from root so performer usage reflects entire library
       const u = new URL('/api/tags/summary', window.location.origin);
-      if (dir) u.searchParams.set('path', dir);
+      u.searchParams.set('recursive','true');
       const r = await fetch(u.toString(), { headers: { 'Accept': 'application/json' } });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
@@ -5281,31 +5371,264 @@ class PerformersManager {
     } catch(_) { return {}; }
   }
 
-  renderTable() {
-    const body = document.getElementById('perfTableBody');
-    if (!body) return;
-    body.innerHTML = '';
-    const items = Array.isArray(this.items) ? this.items : [];
+  renderTable() { this.renderGrid(); }
+
+  renderGrid() {
+    const container = document.getElementById('perfGrid');
+    if (!container) return;
+    container.innerHTML = '';
+    if (this._allItems.length) this._recomputePagination();
+    let items = Array.isArray(this.items) ? [...this.items] : [];
+    // Apply search filter (case-insensitive substring match)
+    const term = (this.searchTerm || '').toLowerCase();
+    if (term) {
+      // Filter from full list then re-slice manually ignoring existing pagination items list
+      const source = this._allItems.filter(it => (it.name||it.slug||'').toLowerCase().includes(term));
+      // Recompute pagination boundaries on filtered set
+      const ps = this._currentPageSizeResolved || 50;
+      this.totalPages = Math.max(1, Math.ceil(source.length / ps));
+      if (this.page > this.totalPages) this.page = this.totalPages;
+      const start = (this.page - 1) * ps;
+      const end = start + ps;
+      items = source.slice(start, end);
+    }
+    // Sort by usage count desc, then name
+    items.sort((a,b) => {
+      const an = a.name || a.slug || '';
+      const bn = b.name || b.slug || '';
+      const ac = Number(this.counts[an] || 0);
+      const bc = Number(this.counts[bn] || 0);
+      if (bc !== ac) return bc - ac;
+      return an.localeCompare(bn);
+    });
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'muted text-12';
+      empty.style.padding = '12px 4px';
+      empty.textContent = term ? 'No performers match your search. Press Enter to add.' : 'No performers yet. Add one above or bulk import.';
+      container.appendChild(empty);
+      return;
+    }
     for (const it of items) {
       const name = it.name || it.slug || '';
       const count = Number(this.counts[name] || 0);
-      const tr = document.createElement('tr');
-      const tdName = document.createElement('td');
-      tdName.textContent = name;
-      const tdUsage = document.createElement('td');
-      tdUsage.textContent = String(count);
-      const tdAct = document.createElement('td');
-      tdAct.className = 'cell-action';
-      const btnOpen = document.createElement('button'); btnOpen.className = 'btn-secondary'; btnOpen.textContent = 'Filter';
-      btnOpen.addEventListener('click', () => this.filterLibraryByPerformer(name));
-      const btnRename = document.createElement('button'); btnRename.className = 'btn-secondary'; btnRename.textContent = 'Rename';
-      btnRename.addEventListener('click', async () => { const nn = prompt('New name for performer', name); if (nn && nn !== name) await this.renamePerformer(name, nn); });
-      const btnDelete = document.createElement('button'); btnDelete.className = 'btn-danger'; btnDelete.textContent = 'Delete';
-      btnDelete.addEventListener('click', async () => { if (confirm('Delete performer from registry (does not remove from videos)?')) await this.deletePerformer(name); });
-      tdAct.append(btnOpen, btnRename, btnDelete);
-      tr.appendChild(tdName); tr.appendChild(tdUsage); tr.appendChild(tdAct);
-      body.appendChild(tr);
+      const card = document.createElement('div');
+      card.className = 'perf-card';
+      card.dataset.name = name;
+      const title = document.createElement('div');
+      title.className = 'perf-name';
+      title.textContent = name;
+  const usage = document.createElement('div');
+  usage.className = 'perf-usage';
+  usage.textContent = count === 1 ? '1 video' : `${count} videos`;
+      const actions = document.createElement('div');
+      actions.className = 'perf-actions';
+      const mk = (label, cls, fn, title) => { const b=document.createElement('button'); b.className=cls; b.textContent=label; if(title) b.title=title; b.addEventListener('click',(e)=>{e.stopPropagation(); fn();}); return b; };
+      const btnFilter = mk('Filter','btn-sm', () => this.filterLibraryByPerformer(name), 'Filter library by this performer');
+      const btnRename = mk('Rename','btn-sm', async () => { const nn = prompt('New name for performer', name); if (nn && nn !== name) await this.renamePerformer(name, nn); }, 'Rename performer');
+      const btnDelete = mk('Delete','btn-sm btn-danger', async () => { if (confirm('Delete performer from registry (does not remove from videos)?')) await this.deletePerformer(name); }, 'Delete performer');
+      actions.append(btnFilter, btnRename, btnDelete);
+      card.append(title, usage, actions);
+      container.appendChild(card);
     }
+  }
+
+  _updateAddButtonVisibility() {
+    const createBtn = document.getElementById('perfCreateBtn');
+    const createName = document.getElementById('perfCreateName');
+    if (!createBtn || !createName) return;
+    const name = (createName.value || '').trim();
+    if (!name) { createBtn.hidden = true; return; }
+    const exists = this._allItems.some(it => (it.name||it.slug||'').toLowerCase() === name.toLowerCase());
+    createBtn.hidden = exists; // show only if new
+  }
+
+  async _attemptAddPerformer() {
+    const createBtn = document.getElementById('perfCreateBtn');
+    const createName = document.getElementById('perfCreateName');
+    if (!createName) return;
+    const name = (createName.value || '').trim();
+    if (!name) return;
+    const exists = this._allItems.some(it => (it.name||it.slug||'').toLowerCase() === name.toLowerCase());
+    if (exists) return; // nothing to add; search only
+    try {
+      createBtn && (createBtn.disabled = true);
+      await fetch('/api/registry/performers/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      notify('Performer added', 'success');
+      createName.value = '';
+      this.searchTerm = '';
+      await this.loadAll();
+      this._updateAddButtonVisibility();
+      try { if (window.Player) Player._refreshPerformerSuggestions?.(true); } catch(_) {}
+    } catch(_) {
+      notify('Failed to add performer', 'error');
+    } finally {
+      createBtn && (createBtn.disabled = false);
+    }
+  }
+
+  async previewAutoTagPerformers(buttonEl) {
+    if (!buttonEl) return;
+    try {
+      buttonEl.disabled = true; buttonEl.classList.add('btn-busy');
+      const dir = currentPath();
+      const body = { path: dir || undefined, recursive: true, apply: false };
+      const r = await fetch('/api/autotag/performers/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) {
+        let detail = '';
+        try {
+          const ct = r.headers.get('Content-Type') || '';
+          if (ct.includes('application/json')) {
+            const jerr = await r.json();
+            detail = jerr?.detail || JSON.stringify(jerr).slice(0,200);
+          } else {
+            detail = (await r.text()).slice(0,200);
+          }
+        } catch(_) {}
+        throw new Error('HTTP ' + r.status + (detail ? ' - ' + detail : ''));
+      }
+      const j = await r.json();
+      const matches = j?.data?.matches || [];
+      if (!matches.length) { notify('No filename performer matches found.', 'info'); return; }
+      const modalId = 'perfAutoTagPreviewModal';
+      let modal = document.getElementById(modalId);
+      if (!modal) {
+        modal = document.createElement('div');
+        modal.id = modalId;
+        modal.className = 'modal';
+        modal.innerHTML = `\n<div class="panel maxw-900">\n  <header><h3>Performer Auto‑tag Preview</h3></header>\n  <div class="body" style="max-height:60vh; overflow:auto;">\n    <table class="table compact">\n      <thead><tr><th>File</th><th>Performers Found</th></tr></thead>\n      <tbody id="perfAutoTagPreviewBody"></tbody>\n    </table>\n    <p class="muted text-12" id="perfAutoTagSummary"></p>\n  </div>\n  <footer class="row gap-12 justify-between items-center">\n    <div id="perfAutoTagStats" class="muted text-12"></div>\n    <div class="row gap-8">\n      <button class="btn-sm" id="perfAutoTagCancel">Cancel</button>\n      <button class="btn-sm btn-primary" id="perfAutoTagApply">Apply Tags</button>\n    </div>\n  </footer>\n</div>`;
+        document.body.appendChild(modal);
+      }
+      const tbody = modal.querySelector('#perfAutoTagPreviewBody');
+      const summary = modal.querySelector('#perfAutoTagSummary');
+      const statsEl = modal.querySelector('#perfAutoTagStats');
+      if (tbody) {
+        tbody.innerHTML = '';
+        const MAX_DIRECT = 5000; // safety limit for huge lists before simple virtualization
+        if (matches.length > MAX_DIRECT) {
+          const note = document.createElement('tr');
+          const td = document.createElement('td'); td.colSpan = 2; td.textContent = `Large result set (${matches.length}). Showing first ${MAX_DIRECT}.`; note.appendChild(td); tbody.appendChild(note);
+          const frag = document.createDocumentFragment();
+          for (const m of matches.slice(0, MAX_DIRECT)) {
+            const tr = document.createElement('tr');
+            const tdFile = document.createElement('td'); tdFile.textContent = m.file;
+            const tdFound = document.createElement('td');
+            const already = m.already_present || [];
+            const wouldAdd = m.would_add || [];
+            const addedList = (wouldAdd.length ? ` + ${wouldAdd.join(', ')}` : '');
+            tdFound.innerHTML = `<span>${(already.concat(wouldAdd)).join(', ')}</span>${addedList ? `<span class="muted" style="margin-left:6px;">${addedList}</span>`:''}`;
+            tr.append(tdFile, tdFound); frag.appendChild(tr);
+          }
+          tbody.appendChild(frag);
+        } else {
+          const frag = document.createDocumentFragment();
+          for (const m of matches) {
+            const tr = document.createElement('tr');
+            const tdFile = document.createElement('td'); tdFile.textContent = m.file;
+            const tdFound = document.createElement('td'); tdFound.textContent = (m.performers_found||[]).join(', ');
+            tr.append(tdFile, tdFound); frag.appendChild(tr);
+          }
+          tbody.appendChild(frag);
+        }
+      }
+      if (summary) summary.textContent = `${matches.length} file(s) have performer matches${matches.length>5000?' (showing first 5000)':''}.`;
+      if (statsEl) {
+        const mc = j?.data?.match_count || matches.length;
+        const wu = j?.data?.would_update_files ?? 0;
+        const ac = j?.data?.already_complete_files ?? 0;
+        statsEl.textContent = `${mc} matches: ${wu} will update, ${ac} already complete`;
+      }
+      const cancelBtn = modal.querySelector('#perfAutoTagCancel');
+      const applyBtn = modal.querySelector('#perfAutoTagApply');
+      modal.hidden = false; modal.setAttribute('aria-hidden','false');
+      const close = () => { modal.hidden = true; modal.setAttribute('aria-hidden','true'); };
+      cancelBtn.onclick = () => close();
+      applyBtn.onclick = async () => {
+        applyBtn.disabled = true; applyBtn.textContent = 'Applying…';
+        try {
+          const r2 = await fetch('/api/autotag/performers/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: dir || undefined, recursive: true, apply: true }) });
+          if (!r2.ok) {
+            let detail = '';
+            try {
+              const ct = r2.headers.get('Content-Type') || '';
+              if (ct.includes('application/json')) {
+                const jerr = await r2.json();
+                detail = jerr?.detail || JSON.stringify(jerr).slice(0,200);
+              } else {
+                detail = (await r2.text()).slice(0,200);
+              }
+            } catch(_) {}
+            throw new Error('HTTP ' + r2.status + (detail ? ' - ' + detail : ''));
+          }
+          const j2 = await r2.json();
+          const upd = j2?.data?.updated_files || 0;
+          const mc2 = j2?.data?.match_count || 0;
+          const wu2 = j2?.data?.would_update_files ?? upd;
+          const ac2 = j2?.data?.already_complete_files ?? 0;
+          notify(`Applied performer tags to ${upd} file(s).`, 'success');
+          if (statsEl) statsEl.textContent = `${mc2} matches: ${wu2} would update (${upd} applied), ${ac2} already complete`;
+          close();
+        } catch(err) {
+          notify('Apply failed' + (err && err.message ? ': ' + err.message : ''), 'error');
+        } finally {
+          applyBtn.disabled = false; applyBtn.textContent = 'Apply Tags';
+          this.fetchCounts().then(c => { this.counts = c; this.renderTable(); });
+        }
+      };
+    } catch(e) {
+      console.error('Performer autotag preview error', e);
+      notify('Preview failed' + (e && e.message ? ': ' + e.message : ''), 'error');
+    } finally {
+      buttonEl.classList.remove('btn-busy');
+      buttonEl.disabled = false;
+    }
+  }
+
+  openImportModal() {
+    const modal = document.getElementById('perfImportModal');
+    if (!modal) return;
+    modal.hidden = false;
+    modal.setAttribute('aria-hidden', 'false');
+    this.importModalOpen = true;
+    const ta = document.getElementById('perfImportInput');
+    if (ta) setTimeout(()=> ta.focus(), 30);
+  }
+
+  closeImportModal() {
+    const modal = document.getElementById('perfImportModal');
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute('aria-hidden', 'true');
+    this.importModalOpen = false;
+  }
+
+  wireImportDragDrop() {
+    const importInput = document.getElementById('perfImportInput');
+    const dropHint = document.getElementById('perfDropZoneHint');
+    if (!importInput || importInput._dragWired) return;
+    importInput._dragWired = true;
+    const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+    ['dragenter','dragover','dragleave','drop'].forEach(ev => importInput.addEventListener(ev, stop));
+    importInput.addEventListener('dragenter', () => importInput.classList.add('drag-hover'));
+    importInput.addEventListener('dragover', () => importInput.classList.add('drag-hover'));
+    importInput.addEventListener('dragleave', (e) => { if (!importInput.contains(e.relatedTarget)) importInput.classList.remove('drag-hover'); });
+    importInput.addEventListener('drop', async (e) => {
+      importInput.classList.remove('drag-hover');
+      try {
+        const files = Array.from(e.dataTransfer.files || []);
+        if (!files.length) return;
+        const file = files[0];
+        const nameLc = file.name.toLowerCase();
+        if (!/\.(json|txt|text)$/.test(nameLc)) { notify('Unsupported file type (use .json or .txt)', 'error'); return; }
+        const text = await file.text();
+        if (!text.trim()) { notify('File is empty', 'error'); return; }
+        let finalText = text;
+        if (nameLc.endsWith('.json')) { try { finalText = JSON.stringify(JSON.parse(text), null, 2); } catch(_) {} }
+        importInput.value = finalText;
+        if (dropHint) dropHint.classList.add('hidden');
+        notify('Loaded file: ' + file.name, 'success');
+      } catch(_) { notify('Failed to read dropped file', 'error'); }
+    });
   }
 
   async renamePerformer(oldName, newName) {
