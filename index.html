@@ -6,6 +6,19 @@
   <title>Media Library</title>
   <link rel="stylesheet" href="index.css" />
   <script src="index.js" defer></script>
+  <script defer>
+    // Lightweight Fire TV detection before main bundle runs
+    (function(){
+      try {
+        var ua = navigator.userAgent || navigator.appVersion || '';
+        // Common Fire TV indicators
+        if (/AFTB|AFTM|AFTN|AFTS|AFTT|AFTMM|Fire\sTV|Silk\//i.test(ua)) {
+          document.documentElement.classList.add('firetv');
+          document.addEventListener('DOMContentLoaded', function(){ document.body.classList.add('firetv'); });
+        }
+      } catch(e) {}
+    })();
+  </script>
 </head>
 <body>
   <header>

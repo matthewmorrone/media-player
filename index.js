@@ -51,6 +51,45 @@ function getColumns() {
   return 4;
 }
 
+// --- Fire TV helpers ---
+function fireTvColumns(base) { return Math.max(1, Math.round(base * 0.6)); }
+function setupFireTvMode() {
+  // Adjust columns immediately
+  try {
+    const rawCols = sliderToColumns(densitySlider ? densitySlider.value : 4);
+    const cols = fireTvColumns(rawCols);
+    document.documentElement.style.setProperty('--columns', String(cols));
+  } catch(_){ }
+  // Make cards focusable & enable arrow navigation
+  const gridEl = document.getElementById('grid');
+  if (gridEl) {
+    const ensureTabIndex = () => gridEl.querySelectorAll('.card').forEach(c => { if (!c.hasAttribute('tabindex')) c.tabIndex = 0; });
+    const mo = new MutationObserver(ensureTabIndex);
+    mo.observe(gridEl, { childList: true, subtree: true });
+    ensureTabIndex();
+    gridEl.addEventListener('keydown', (e) => {
+      if (!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) return;
+      const cards = Array.from(gridEl.querySelectorAll('.card'));
+      if (!cards.length) return;
+      let idx = cards.indexOf(document.activeElement);
+      if (idx === -1) idx = 0;
+      const cols = parseInt(getComputedStyle(gridEl).getPropertyValue('--columns')||'4',10) || 4;
+      if (e.key === 'ArrowLeft') idx = Math.max(0, idx - 1);
+      else if (e.key === 'ArrowRight') idx = Math.min(cards.length - 1, idx + 1);
+      else if (e.key === 'ArrowUp') idx = Math.max(0, idx - cols);
+      else if (e.key === 'ArrowDown') idx = Math.min(cards.length - 1, idx + cols);
+      cards[idx]?.focus();
+      e.preventDefault();
+    });
+    setTimeout(() => { const first = gridEl.querySelector('.card'); if (first) first.focus(); }, 600);
+  }
+}
+
+if (document.documentElement.classList.contains('firetv')) {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setupFireTvMode);
+  else setupFireTvMode();
+}
+
 // Apply columns to the grid via CSS var and persist user preference
 function setColumns(cols) {
   const c = Math.max(1, Math.min(8, Number(cols) || 4));

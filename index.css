@@ -11,6 +11,45 @@
   --card-hover: #232b3d;
   --grid-gap: 14px;
 }
+
+/* Fire TV (large screen / remote) layout adjustments */
+html.firetv body.firetv {
+  font-size: 18px;
+}
+html.firetv header { padding: 8px 16px; gap: 8px; }
+html.firetv .header-top h1 { font-size: 18px; }
+html.firetv #folderInput { padding: 6px 10px; font-size: 14px; border-radius: 8px; }
+html.firetv .tab-nav { margin-top: 0; }
+html.firetv .tab-button { padding: 6px 10px; font-size: 14px; }
+html.firetv main { padding: 8px 16px; }
+html.firetv .controls-panel { padding: 8px 10px; margin: 0 8px 8px 8px; border-radius: 8px; }
+html.firetv .controls-row { flex-wrap: nowrap; gap: 8px; }
+html.firetv .control-group { gap: 4px; }
+html.firetv .control-input, html.firetv .control-select, html.firetv .btn-sm, html.firetv .order-btn { height: 34px; padding: 6px 10px; font-size: 13px; }
+html.firetv #searchInput { width: 200px; }
+html.firetv #densitySlider { width: 140px; }
+html.firetv .pagination-group { gap: 8px; }
+html.firetv .grid { --grid-gap: 10px; margin: 0 8px; }
+html.firetv .card { border-radius: 8px; }
+html.firetv .title { font-size: 14px; }
+html.firetv .sub { font-size: 11px; }
+html.firetv .thumb { aspect-ratio: 16/9; }
+/* Enlarge cards for easier D-pad focus */
+html.firetv .grid .card { transition: transform .12s ease, box-shadow .12s ease; }
+html.firetv .grid .card:focus { outline: 3px solid var(--accent); outline-offset: -3px; }
+html.firetv .grid .card:focus-visible { outline: 3px solid var(--accent); }
+html.firetv .grid .card:focus, html.firetv .grid .card:hover { transform: scale(1.04); z-index: 5; }
+/* Increase base column size (fewer, bigger cards) by mapping density slider differently via an attribute */
+html.firetv .grid { grid-auto-rows: 1fr; }
+/* Performers tab tweaks */
+html.firetv .perf-grid { gap: 18px; padding: 8px 8px 40px; }
+html.firetv .perf-card { padding: 14px 12px 48px; min-height: 150px; }
+html.firetv .perf-card .perf-name { font-size: 15px; }
+html.firetv .perf-card button { height: 32px; font-size: 11px; }
+/* Reduce top bar in performers */
+html.firetv .controls-panel.compact { padding: 6px 8px; margin-bottom: 8px; }
+/* Focus outline for remote nav */
+html.firetv .btn-sm:focus, html.firetv .control-input:focus, html.firetv .control-select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
@@ -407,6 +446,69 @@ main { padding: 24px 64px; }
 }
 #perfDropZoneHint { margin-top: 6px; }
 #perfDropZoneHint.hidden { display: none; }
+
+/* Performers grid */
+.perf-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 24px;
+  padding: 12px 16px 48px;
+  position: relative;
+}
+.perf-grid.loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(10,14,22,0.72);
+  backdrop-filter: blur(2px);
+  z-index: 10;
+}
+.perf-grid.loading::before {
+  content: "";
+  position: absolute;
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 48px; height: 48px;
+  border: 5px solid rgba(255,255,255,0.15);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  z-index: 11;
+}
+@keyframes spin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+.perf-card {
+  position: relative;
+  background: var(--card);
+  border: 1px solid #2a3144;
+  border-radius: 14px;
+  padding: 18px 16px 56px;
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: default;
+  transition: background .15s ease, transform .1s ease, border-color .15s ease, box-shadow .15s ease;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.25);
+}
+.perf-card:hover { background: var(--card-hover); border-color: #385077; box-shadow: 0 4px 10px rgba(0,0,0,0.35); }
+.perf-card .perf-name { font-weight: 600; font-size: 16px; line-height: 1.25; word-break: break-word; letter-spacing: .25px; }
+.perf-card .perf-usage { font-size: 13px; color: var(--muted); }
+.perf-card .perf-actions { position: absolute; bottom: 10px; left: 12px; right: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+.perf-card button { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 8px 10px; height: 34px; }
+.perf-card button.btn-danger { background:#3a1d22; border-color:#70363f; }
+.perf-card button.btn-danger:hover { background:#5a262f; border-color:#a74c59; }
+
+.perf-mini-input { height: 38px; font-size: 13px; padding: 8px 12px; }
+.controls-panel.compact { padding: 12px 16px; margin-bottom: 16px; }
+
+/* Import modal tweaks */
+#perfImportModal .body { max-height: min(70vh, 640px); overflow: auto; }
+#perfImportModal textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+
+@media (max-width: 1600px) { .perf-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 1280px) { .perf-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 960px) { .perf-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 620px) { .perf-grid { grid-template-columns: repeat(1, 1fr); } }
+@media (max-width: 820px) { .perf-card { padding: 14px 12px 50px; min-height: 150px; } }
 
 /* Quality badge (resolution) — Stash-like overlay styling */
 .quality-badge {
