@@ -93,6 +93,27 @@ if (document.documentElement.classList.contains('firetv')) {
   else setupFireTvMode();
 }
 
+// Fire TV header auto-hide / reveal logic
+(function(){
+  if (!document.documentElement.classList.contains('firetv')) return;
+  let hideTimer = null;
+  function showHeader() {
+    const h = document.querySelector('header');
+    if (!h) return;
+    h.classList.add('firetv-show');
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => hideHeader(), 4000);
+  }
+  function hideHeader() {
+    const h = document.querySelector('header');
+    if (!h) return;
+    h.classList.remove('firetv-show');
+  }
+  function activity() { showHeader(); }
+  ['keydown','mousemove','touchstart','click'].forEach(ev => window.addEventListener(ev, activity, { passive: true }));
+  document.addEventListener('DOMContentLoaded', () => setTimeout(hideHeader, 600));
+})();
+
 // Apply columns to the grid via CSS var and persist user preference
 function setColumns(cols) {
   const c = Math.max(1, Math.min(8, Number(cols) || 4));

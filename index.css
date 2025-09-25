@@ -17,10 +17,23 @@ html.firetv body.firetv {
   font-size: 18px;
 }
 html.firetv header { padding: 8px 16px; gap: 8px; }
+html.firetv header { transform: translateY(-100%); opacity:0; transition: transform .35s ease, opacity .35s ease; }
+html.firetv header.firetv-show { transform: translateY(0); opacity:1; }
+html.firetv body.firetv { padding-top: 0; }
+html.firetv main { margin-top: 0; }
 html.firetv .header-top h1 { font-size: 18px; }
 html.firetv #folderInput { padding: 6px 10px; font-size: 14px; border-radius: 8px; }
 html.firetv .tab-nav { margin-top: 0; }
 html.firetv .tab-button { padding: 6px 10px; font-size: 14px; }
+/* Compress tabs if they overflow */
+@media (max-width: 900px) {
+  .tab-nav { flex-wrap: wrap; }
+  .tab-button { flex: 1 1 auto; min-width: 90px; text-align:center; padding: 8px 6px; font-size:13px; }
+}
+@media (max-width: 620px) {
+  .tab-button { font-size:12px; padding:6px 4px; }
+  #folderInput { flex:1 1 260px; }
+}
 html.firetv main { padding: 8px 16px; }
 html.firetv .controls-panel { padding: 8px 10px; margin: 0 8px 8px 8px; border-radius: 8px; }
 html.firetv .controls-row { flex-wrap: nowrap; gap: 8px; }
