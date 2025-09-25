@@ -5367,7 +5367,18 @@ class PerformersManager {
       const r = await fetch(u.toString(), { headers: { 'Accept': 'application/json' } });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
-      return j?.data?.performers || j?.performers || {};
+      const raw = j?.data?.performers || j?.performers || {};
+      // Build a normalized lookup so name, lowercase name, and slug variants all resolve
+      const norm = {};
+      for (const [k,v] of Object.entries(raw)) {
+        if (typeof v !== 'number') continue;
+        norm[k] = v; // original
+        const lower = k.toLowerCase();
+        if (!(lower in norm)) norm[lower] = v;
+        const slug = lower.replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+        if (slug && !(slug in norm)) norm[slug] = v;
+      }
+      return norm;
     } catch(_) { return {}; }
   }
 
@@ -5396,8 +5407,8 @@ class PerformersManager {
     items.sort((a,b) => {
       const an = a.name || a.slug || '';
       const bn = b.name || b.slug || '';
-      const ac = Number(this.counts[an] || 0);
-      const bc = Number(this.counts[bn] || 0);
+      const ac = this._resolveCount(an);
+      const bc = this._resolveCount(bn);
       if (bc !== ac) return bc - ac;
       return an.localeCompare(bn);
     });
@@ -5411,7 +5422,7 @@ class PerformersManager {
     }
     for (const it of items) {
       const name = it.name || it.slug || '';
-      const count = Number(this.counts[name] || 0);
+      const count = this._resolveCount(name);
       const card = document.createElement('div');
       card.className = 'perf-card';
       card.dataset.name = name;
@@ -5431,6 +5442,20 @@ class PerformersManager {
       card.append(title, usage, actions);
       container.appendChild(card);
     }
+  }
+
+  _resolveCount(name) {
+    if (!name) return 0;
+    // Try exact, lowercase, and slug variants
+    const exact = this.counts[name];
+    if (typeof exact === 'number') return exact;
+    const lower = name.toLowerCase();
+    const lc = this.counts[lower];
+    if (typeof lc === 'number') return lc;
+    const slug = lower.replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+    const sc = this.counts[slug];
+    if (typeof sc === 'number') return sc;
+    return 0;
   }
 
   _updateAddButtonVisibility() {
