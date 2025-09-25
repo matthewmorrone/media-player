@@ -211,15 +211,16 @@
             </div>
             <div class="player-video">
               <video id="playerVideo" playsinline></video>
-            </div>
-            <!-- Controls and timeline below video -->
-            <div id="playerControlsContainer">
-              <div id="timeline">
+              <!-- Overlay timeline on bottom of video -->
+              <div id="timeline" class="overlay-timeline">
                 <div id="timelineHeatmap"></div>
                 <canvas id="timelineHeatmapCanvas"></canvas>
                 <div id="timelineProgress"></div>
                 <div id="timelineMarkers"></div>
               </div>
+            </div>
+            <!-- Controls (timeline now overlays video) -->
+            <div id="playerControlsContainer">
               <!-- Sprite preview tooltip (bottom-aligned above controls) -->
               <div id="spritePreview"></div>
               <div id="controlsRow">

@@ -1661,6 +1661,10 @@ body, .tab-panels, .tab-panel { overscroll-behavior: contain; }
 .player-header { display:flex; align-items:center; gap:12px; justify-content:space-between; }
 .player-video { position:relative; background:#000; }
 #playerVideo { display:block; width:100%; max-height:72vh; background:#000; }
+#timeline.overlay-timeline { position:absolute; left:12px; right:12px; bottom:8px; box-shadow:0 4px 14px rgba(0,0,0,0.6); background:rgba(18,22,36,0.85); backdrop-filter:blur(4px); }
+#playerVideo:hover + #timeline.overlay-timeline,
+.player-video:hover #timeline.overlay-timeline { opacity:1; }
+#timeline.overlay-timeline { transition: opacity .25s ease; }
 #playerControlsContainer { position:relative; display:flex; flex-direction:column; gap:8px; }
 #timeline { position:relative; height:28px; border-radius:6px; background:#121624; overflow:hidden; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,0.35); }
 #timelineHeatmap { position:absolute; inset:0; background-position:left center; background-size:100% 100%; opacity:0.85; }
