@@ -11,7 +11,6 @@
     (function(){
       try {
         var ua = navigator.userAgent || navigator.appVersion || '';
-        // Common Fire TV indicators
         if (/AFTB|AFTM|AFTN|AFTS|AFTT|AFTMM|Fire\sTV|Silk\//i.test(ua)) {
           document.documentElement.classList.add('firetv');
           document.addEventListener('DOMContentLoaded', function(){ document.body.classList.add('firetv'); });
@@ -19,134 +18,6 @@
       } catch(e) {}
     })();
   </script>
-</head>
-<body>
-  <header>
-    <div class="header-top">
-      <h1>Media Library</h1>
-      <div id="folderBar">
-        <input id="folderInput" type="text" placeholder="Type a folder (relative) to browse, or an absolute path to set root — Enter. Double-click to pick." title="Enter a relative folder within the library (e.g., Shows/Season 1), or an absolute path (e.g., /Volumes/Media or ~/Movies) to set the library root. Press Enter. Double-click to open the picker." />
-      </div>
-      <div id="controls">
-        <button id="refresh" class="btn" title="Reload">Reload</button>
-      </div>
-    </div>
-    <!-- Tab Navigation -->
-    <nav class="tab-nav" role="tablist" aria-label="Main navigation">
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="player-panel" id="player-tab" data-tab="player">
-        Player
-      </button>
-      <button class="tab-button active" role="tab" aria-selected="true" aria-controls="library-panel" id="library-tab" data-tab="library">
-        Library
-      </button>
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="settings-panel" id="settings-tab" data-tab="settings">
-        Settings
-      </button>
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="tasks-panel" id="tasks-tab" data-tab="tasks">
-        Tasks
-      </button>
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="duplicates-panel" id="duplicates-tab" data-tab="duplicates">
-        Duplicates
-      </button>
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="performers-panel" id="performers-tab" data-tab="performers">
-        Performers
-      </button>
-    </nav>
-  </header>
-  <main>
-    <!-- Tab Panels -->
-    <div class="tab-panels">
-      <!-- Player Tab Panel -->
-      <div class="tab-panel" role="tabpanel" aria-labelledby="player-tab" id="player-panel" hidden>
-        <div id="playerLayout" class="player-layout">
-          <!-- Sidebar -->
-          <aside id="playerSidebar" class="player-sidebar">
-            <div>
-              <div id="sbFileName">No file</div>
-              <div id="sbMeta">—</div>
-            </div>
-            <div class="divider-h"></div>
-            <!-- Sidebar Tabs -->
-            <div class="sidebar-tabs">
-              <button class="sidebar-tab active" data-tab="artifacts">Artifacts</button>
-              <button class="sidebar-tab" data-tab="performers">Performers</button>
-              <button class="sidebar-tab" data-tab="filters">Filters</button>
-            </div>
-            <!-- Artifacts Tab -->
-            <div id="artifactsTab" class="sidebar-tab-content active vstack-10">
-              <div id="artifactBadges" class="artifact-badges">
-                <button id="badgeCover" class="btn-sm" title="Thumbnail status or generate" data-present="0">Cover<span id="badgeCoverStatus" class="badge-status">✗</span></button>
-                <button id="badgeHover" class="btn-sm" title="Hover preview status or generate" data-present="0">Hover<span id="badgeHoverStatus" class="badge-status">✗</span></button>
-                <button id="badgeHeatmap" class="btn-sm" title="Heatmap status or generate" data-present="0">Heatmap<span id="badgeHeatmapStatus" class="badge-status">✗</span></button>
-                <button id="badgeScenes" class="btn-sm" title="Scenes status or generate" data-present="0">Scenes<span id="badgeScenesStatus" class="badge-status">✗</span></button>
-                <button id="badgeSubtitles" class="btn-sm" title="Subtitles status or generate" data-present="0">Subtitles<span id="badgeSubtitlesStatus" class="badge-status">✗</span></button>
-                <button id="badgeSprites" class="btn-sm" title="Sprites status or generate" data-present="0">Sprites<span id="badgeSpritesStatus" class="badge-status">✗</span></button>
-                <button id="badgeFaces" class="btn-sm" title="Faces status or generate" data-present="0">Faces<span id="badgeFacesStatus" class="badge-status">✗</span></button>
-                <button id="badgePhash" class="btn-sm" title="pHash status or generate" data-present="0">pHash<span id="badgePhashStatus" class="badge-status">✗</span></button>
-              </div>
-            </div>
-            <!-- Performers Tab -->
-            <div id="performersTab" class="sidebar-tab-content vstack-12">
-              <div class="filter-section">
-                <h4>Performers</h4>
-                <div id="perfChips" class="chips" aria-label="Assigned performers"></div>
-                <div class="chip-input-row">
-                  <input id="perfInput" type="text" class="control-input" placeholder="Add performer… (Enter)" list="perfSuggestions" aria-label="Add performer" />
-                  <datalist id="perfSuggestions"></datalist>
-                </div>
-                <div class="muted text-12 lh-14">Type a name and press Enter to add. Click a chip’s × to remove.</div>
-              </div>
-            </div>
-            <!-- Filters Tab -->
-            <div id="filtersTab" class="sidebar-tab-content vstack-12">
-              <div class="filter-section">
-                <h4>Filters</h4>
-                <div class="filter-control">
-                  <label class="filter-label-row">
-                    <span class="text-12">Brightness</span>
-                  </label>
-                  <span id="brightnessValue" class="text-subtle">100%</span>
-                  <input type="range" id="brightnessSlider" min="0" max="200" value="100" step="5" class="filter-slider">
-                </div>
-                <div class="filter-control">
-                  <label class="filter-label-row">
-                    <span class="text-12">Contrast</span>
-                  </label>
-                  <span id="contrastValue" class="text-subtle">100%</span>
-                  <input type="range" id="contrastSlider" min="0" max="200" value="100" step="5" class="filter-slider">
-                </div>
-                <div class="filter-control">
-                  <label class="filter-label-row">
-                    <span class="text-12">Gamma</span>
-                  </label>
-                  <span id="gammaValue" class="text-subtle">0</span>
-                  <input type="range" id="gammaSlider" min="-50" max="50" value="0" step="1" class="filter-slider">
-                </div>
-                <div class="filter-control">
-                  <label class="filter-label-row">
-                    <span class="text-12">Saturation</span>
-                  </label>
-                  <span id="saturationValue" class="text-subtle">100%</span>
-                  <input type="range" id="saturationSlider" min="0" max="200" value="100" step="5" class="filter-slider">
-                </div>
-                <div class="filter-control">
-                  <label class="filter-label-row">
-                    <span class="text-12">Hue</span>
-                  </label>
-                  <span id="hueValue" class="text-subtle">0°</span>
-                  <input type="range" id="hueSlider" min="-180" max="180" value="0" step="5" class="filter-slider hue-slider">
-                </div>
-                <div class="filter-control">
-                  <label class="filter-label-row">
-                    <span class="text-12">Warmth</span>
-                  </label>
-                  <span id="warmthValue" class="text-subtle">0</span>
-                  <input type="range" id="warmthSlider" min="-50" max="50" value="0" step="1" class="filter-slider warmth-slider">
-                </div>
-                <div class="filter-control">
-                  <label class="filter-label-row">
-                    <span class="text-12">Red</span>
-                  </label>
                   <span id="redValue" class="text-subtle">100%</span>
                   <input type="range" id="redSlider" min="0" max="200" value="100" step="5" class="filter-slider red-slider">
                 </div>
@@ -307,66 +178,9 @@
                 <!-- <span class="control-label">Density</span> -->
                 <input id="densitySlider" type="range" min="1" max="8" value="4" step="1" class="control-slider" title="Adjust grid density (columns)" />
               </div>
-              <div class="pagination">
-                <button id="prevBtn" class="btn-sm" title="Previous page">‹</button>
-                <span id="pageInfo" class="page-info">Page 1 of 1</span>
-                <button id="nextBtn" class="btn-sm" title="Next page">›</button>
               </div>
-            </div>
-          </div>
-        </div>
-        <div id="selectionBar" class="selection-bar" hidden>
-          <span id="selectionCount" class="selection-count">0 selected</span>
-          <button id="selectAllBtn" class="btn-sm">Select All</button>
-          <button id="selectNoneBtn" class="btn-sm">Select None</button>
-        </div>
-        <div id="spinner" class="spinner"></div>
-        <div id="status"></div>
-        <!-- Card template (hidden) -->
-        <template id="cardTemplate">
-          <div class="card">
-            <div class="card-checkbox"></div>
-            <div class="thumb-wrap">
-              <div class="quality-badge" aria-hidden="true"></div>
-              <img class="thumb" loading="lazy" />
-              <!-- Overlay info (resolution only) -->
-              <div class="overlay-info" aria-hidden="true">
-                <span class="overlay-resolution"></span>
-              </div>
-            </div>
-            <div class="meta">
-              <p class="title"></p>
-              <div class="row sub">
-                <span class="duration"></span>
-                <span class="size"></span>
-              </div>
-            </div>
-          </div>
-        </template>
-        <!-- Directory card template (hidden) -->
-        <template id="dirTemplate">
-          <div class="card">
-            <div class="thumb dir-thumb">
-              <div class="dir-thumb-inner">
-                <span class="dir-icon"></span>
-                <span class="dir-name"></span>
-              </div>
-            </div>
-            <div class="meta">
-              <p class="title"></p>
-              <div class="row sub"><span>Folder</span><span></span></div>
-            </div>
-          </div>
-        </template>
-        <div id="grid" class="grid" hidden></div>
-      </div>
-      <!-- Tasks Tab Panel -->
-      <div class="tab-panel" role="tabpanel" aria-labelledby="tasks-tab" id="tasks-panel" hidden>
-        <div class="tasks-container">
-          <!-- Job Monitor Section -->
-          <div class="task-section">
-            <div class="section-header">
-              <h2>Job Monitor</h2>
+              <button id="sidebarToggle" class="sidebar-toggle" aria-label="Toggle sidebar" title="Toggle sidebar" data-state="open">◀</button>
+            </aside>
               <div class="section-actions">
                 <button id="cancelAllBtn" class="btn-sm" title="Cancel all queued and running jobs">Cancel All</button>
                 <button id="cancelQueuedBtn" class="btn-sm" title="Cancel all queued jobs">Cancel Queued</button>
