@@ -111,7 +111,12 @@ if (document.documentElement.classList.contains('firetv')) {
   }
   function activity() { showHeader(); }
   ['keydown','mousemove','touchstart','click'].forEach(ev => window.addEventListener(ev, activity, { passive: true }));
-  document.addEventListener('DOMContentLoaded', () => setTimeout(hideHeader, 600));
+  // On first load, do not show header-top (hidden by CSS). Show on first activity.
+  document.addEventListener('DOMContentLoaded', () => {
+    // If desired, briefly show then hide after initial delay; currently remain hidden until activity.
+    // Uncomment below to auto-show once then hide.
+    // showHeader(); hideTimer = setTimeout(() => hideHeader(), 2500);
+  });
 })();
 
 // Apply columns to the grid via CSS var and persist user preference
