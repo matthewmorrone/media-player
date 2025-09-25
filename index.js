@@ -4767,6 +4767,35 @@ class TasksManager {
   }
 }
 
+// Attempt to auto-open the last video on initial load (after DOM ready)
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    if (!document.getElementById('playerVideo')) return; // player not present
+    const last = (function(){ try { return localStorage.getItem('mediaPlayer:lastVideo'); } catch(_){ return null; } })();
+    if (last) {
+      // Defer open to allow other init code (tabs etc.) to wire
+      setTimeout(() => { if (typeof Player !== 'undefined' && Player && Player.open) Player.open(last); }, 250);
+    }
+  } catch(_) {}
+});
+
+// Periodic autosave (in case of abrupt refresh/close without timeupdate firing)
+setInterval(() => {
+  try {
+    if (!document.hidden && typeof Player !== 'undefined') {
+      const v = document.getElementById('playerVideo');
+      const path = (function(){ try { return localStorage.getItem('mediaPlayer:lastVideo'); } catch(_){ return null; } })();
+      if (v && path) {
+        const dur = Number(v.duration)||0;
+        const t = Number(v.currentTime)||0;
+        if (dur > 0 && t >= 0) {
+          localStorage.setItem(`mediaPlayer:video:${path}`, JSON.stringify({ t, d: dur, paused: v.paused, rate: v.playbackRate, ts: Date.now() }));
+        }
+      }
+    }
+  } catch(_) {}
+}, 8000);
+
 // Initialize tasks manager when DOM is ready
 let tasksManager;
 if (document.readyState === 'loading') {

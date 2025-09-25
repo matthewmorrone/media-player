@@ -39,6 +39,9 @@
       <button class="tab-button active" role="tab" aria-selected="true" aria-controls="library-panel" id="library-tab" data-tab="library">
         Library
       </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="settings-panel" id="settings-tab" data-tab="settings">
+        Settings
+      </button>
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="tasks-panel" id="tasks-tab" data-tab="tasks">
         Tasks
       </button>
@@ -48,9 +51,6 @@
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="performers-panel" id="performers-tab" data-tab="performers">
         Performers
       </button>
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="settings-panel" id="settings-tab" data-tab="settings">
-        Settings
-      </button>
     </nav>
   </header>
   <main>
@@ -59,7 +59,6 @@
       <!-- Player Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="player-tab" id="player-panel" hidden>
         <div id="playerLayout" class="player-layout">
-          <button id="sidebarToggle" class="sidebar-toggle" aria-label="Toggle sidebar" title="Toggle sidebar" data-state="open">◀</button>
           <!-- Sidebar -->
           <aside id="playerSidebar" class="player-sidebar">
             <div>
@@ -76,13 +75,14 @@
             <!-- Artifacts Tab -->
             <div id="artifactsTab" class="sidebar-tab-content active vstack-10">
               <div id="artifactBadges" class="artifact-badges">
-                <button id="badgeHeatmap" class="btn-sm" title="Heatmap status or generate" data-present="0">Heatmap <span id="badgeHeatmapStatus" class="badge-status">✗</span></button>
-                <button id="badgeScenes" class="btn-sm" title="Scenes status or generate" data-present="0">Scenes <span id="badgeScenesStatus" class="badge-status">✗</span></button>
-                <button id="badgeSubtitles" class="btn-sm" title="Subtitles status or generate" data-present="0">Subtitles <span id="badgeSubtitlesStatus" class="badge-status">✗</span></button>
-                <button id="badgeSprites" class="btn-sm" title="Sprites status or generate" data-present="0">Sprites <span id="badgeSpritesStatus" class="badge-status">✗</span></button>
-                <button id="badgeFaces" class="btn-sm" title="Faces status or generate" data-present="0">Faces <span id="badgeFacesStatus" class="badge-status">✗</span></button>
-                <button id="badgeHover" class="btn-sm" title="Hover preview status or generate" data-present="0">Hover Preview <span id="badgeHoverStatus" class="badge-status">✗</span></button>
-                <button id="badgePhash" class="btn-sm" title="pHash status or generate" data-present="0">pHash <span id="badgePhashStatus" class="badge-status">✗</span></button>
+                <button id="badgeCover" class="btn-sm" title="Thumbnail status or generate" data-present="0">Cover<span id="badgeCoverStatus" class="badge-status">✗</span></button>
+                <button id="badgeHover" class="btn-sm" title="Hover preview status or generate" data-present="0">Hover<span id="badgeHoverStatus" class="badge-status">✗</span></button>
+                <button id="badgeHeatmap" class="btn-sm" title="Heatmap status or generate" data-present="0">Heatmap<span id="badgeHeatmapStatus" class="badge-status">✗</span></button>
+                <button id="badgeScenes" class="btn-sm" title="Scenes status or generate" data-present="0">Scenes<span id="badgeScenesStatus" class="badge-status">✗</span></button>
+                <button id="badgeSubtitles" class="btn-sm" title="Subtitles status or generate" data-present="0">Subtitles<span id="badgeSubtitlesStatus" class="badge-status">✗</span></button>
+                <button id="badgeSprites" class="btn-sm" title="Sprites status or generate" data-present="0">Sprites<span id="badgeSpritesStatus" class="badge-status">✗</span></button>
+                <button id="badgeFaces" class="btn-sm" title="Faces status or generate" data-present="0">Faces<span id="badgeFacesStatus" class="badge-status">✗</span></button>
+                <button id="badgePhash" class="btn-sm" title="pHash status or generate" data-present="0">pHash<span id="badgePhashStatus" class="badge-status">✗</span></button>
               </div>
             </div>
             <!-- Performers Tab -->
@@ -198,6 +198,7 @@
                 </div>
               </div>
             </div>
+            <button id="sidebarToggle" class="sidebar-toggle" aria-label="Toggle sidebar" title="Toggle sidebar" data-state="open">◀</button>
           </aside>
           <!-- Main Player Area -->
           <div id="playerContainer" class="player-container">

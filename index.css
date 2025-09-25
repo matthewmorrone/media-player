@@ -1629,23 +1629,17 @@ main { padding: 24px 64px; }
 
 /* Components */
 .player-layout { display:flex; gap:12px; align-items:stretch; padding: 8px 0; }
-.player-sidebar { width:280px; min-width:240px; max-width:360px; background:#0f1320; border:1px solid rgba(255,255,255,0.06); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:12px; }
+.player-sidebar { position:relative; width:280px; min-width:240px; max-width:360px; background:#0f1320; border:1px solid rgba(255,255,255,0.06); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:12px; }
 #sbFileName, #playerTitle { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #sbMeta, #playerMeta { color: var(--muted, #7a859f); font-size:12px; }
 .divider-h { height:1px; background: rgba(255,255,255,0.06); }
 .artifact-badges { display:flex; flex-direction:column; gap:8px; }
 
 /* Sidebar collapse toggle */
-.sidebar-toggle { position:relative; z-index:20; align-self:stretch; width:28px; border:1px solid rgba(255,255,255,0.08); background:#1a2130; color:#ccc; border-radius:8px; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:600; transition:background .15s ease, color .15s ease; }
+.sidebar-toggle { position:absolute; top:0; right:-34px; bottom:0; z-index:20; width:34px; border:1px solid rgba(255,255,255,0.08); background:#1a2130; color:#ccc; border-radius:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:600; transition:background .15s ease, color .15s ease; writing-mode:vertical-rl; text-orientation:mixed; }
 .sidebar-toggle:hover { background:#202a3d; color:#fff; }
 .player-layout.collapsed .player-sidebar { width:0; min-width:0; padding:0; margin:0; overflow:hidden; border-width:0; }
-.player-layout.collapsed .sidebar-toggle { order:0; }
-.player-layout .sidebar-toggle { order:-1; }
-.player-layout.collapsed .sidebar-toggle { width:32px; }
-.player-layout.collapsed .sidebar-toggle::after { content:''; }
-.player-layout.collapsed .sidebar-toggle { background:#182030; }
-.player-layout .sidebar-toggle[data-state="open"] { writing-mode:vertical-rl; text-orientation: mixed; }
-.player-layout.collapsed .sidebar-toggle[data-state="closed"] { writing-mode:vertical-rl; text-orientation: mixed; }
+.player-layout.collapsed .sidebar-toggle { right:auto; left:0; border-top-left-radius:10px; border-bottom-left-radius:10px; }
 
 /* Ensure main player container flex-grows smoothly when sidebar collapsed */
 .player-layout .player-container { flex:1; min-width:0; display:flex; flex-direction:column; }
