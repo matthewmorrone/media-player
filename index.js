@@ -5377,6 +5377,8 @@ class PerformersManager {
         if (!(lower in norm)) norm[lower] = v;
         const slug = lower.replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
         if (slug && !(slug in norm)) norm[slug] = v;
+        const stripped = lower.replace(/[^a-z0-9]+/g,'');
+        if (stripped && !(stripped in norm)) norm[stripped] = v;
       }
       return norm;
     } catch(_) { return {}; }
@@ -5455,6 +5457,20 @@ class PerformersManager {
     const slug = lower.replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
     const sc = this.counts[slug];
     if (typeof sc === 'number') return sc;
+    // Stripped variant (remove all non-alphanumerics)
+    const stripped = lower.replace(/[^a-z0-9]+/g,'');
+    const stc = this.counts[stripped];
+    if (typeof stc === 'number') return stc;
+    // Last resort: O(n) scan comparing stripped forms (only if counts small)
+    const keys = Object.keys(this.counts);
+    if (keys.length < 5000) {
+      for (const k of keys) {
+        if (k.replace(/[^a-z0-9]+/g,'') === stripped) {
+          const v = this.counts[k];
+            if (typeof v === 'number') return v;
+        }
+      }
+    }
     return 0;
   }
 
