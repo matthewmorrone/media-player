@@ -33,6 +33,9 @@ let totalFiles = 0;
 let currentDensity = parseInt((densitySlider && densitySlider.value) || '12', 10);
 const selectedItems = new Set();
 
+// Sidebar collapse state
+let sidebarCollapsed = false;
+
 // Hover preview settings (loaded via Settings panel wiring)
 let hoverPreviewsEnabled = false;
 let hoverOnDemandEnabled = false;
@@ -117,6 +120,50 @@ function currentPath() {
   if (!val) return '';
   return isAbsolutePath(val) ? '' : val;
 }
+
+// Sidebar toggle wiring
+function initSidebarToggle() {
+  const toggle = document.getElementById('sidebarToggle');
+  const layout = document.getElementById('playerLayout');
+  if (!toggle || !layout) return;
+  if (toggle._wired) return; toggle._wired = true;
+  const update = () => {
+    if (sidebarCollapsed) {
+      layout.classList.add('collapsed');
+      toggle.textContent = '▶';
+      toggle.dataset.state = 'closed';
+    } else {
+      layout.classList.remove('collapsed');
+      toggle.textContent = '◀';
+      toggle.dataset.state = 'open';
+    }
+  };
+  toggle.addEventListener('click', () => { sidebarCollapsed = !sidebarCollapsed; update(); });
+  update();
+}
+
+document.addEventListener('DOMContentLoaded', initSidebarToggle);
+
+// Fullscreen helper fallback for browsers / Fire TV Silk
+async function toggleFullscreen(el) {
+  try {
+    if (!document.fullscreenElement) {
+      if (el.requestFullscreen) await el.requestFullscreen();
+      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    } else {
+      if (document.exitFullscreen) await document.exitFullscreen();
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    }
+  } catch(_){ /* swallow */ }
+}
+
+// Scroll jank mitigation: throttle wheel-induced reflows
+let _scrollBusy = false;
+window.addEventListener('wheel', () => {
+  if (_scrollBusy) return;
+  _scrollBusy = true;
+  requestAnimationFrame(()=> { _scrollBusy = false; });
+}, { passive: true });
 
 // ----- Card helpers -----
 function fmtDuration(sec) {
@@ -1737,10 +1784,8 @@ const Player = (() => {
     if (btnFullscreen && !btnFullscreen._wired) {
       btnFullscreen._wired = true;
       btnFullscreen.addEventListener('click', async () => {
-        try {
-          const container = videoEl && videoEl.parentElement ? videoEl.parentElement : document.body;
-          if (!document.fullscreenElement) await container.requestFullscreen(); else await document.exitFullscreen();
-        } catch (_) {}
+        const container = videoEl && videoEl.parentElement ? videoEl.parentElement : document.body;
+        await toggleFullscreen(container);
       });
     }
     if (btnAddMarker && !btnAddMarker._wired) {

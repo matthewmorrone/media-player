@@ -1620,6 +1620,30 @@ main { padding: 24px 64px; }
 #sbMeta, #playerMeta { color: var(--muted, #7a859f); font-size:12px; }
 .divider-h { height:1px; background: rgba(255,255,255,0.06); }
 .artifact-badges { display:flex; flex-direction:column; gap:8px; }
+
+/* Sidebar collapse toggle */
+.sidebar-toggle { position:relative; z-index:20; align-self:stretch; width:28px; border:1px solid rgba(255,255,255,0.08); background:#1a2130; color:#ccc; border-radius:8px; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:600; transition:background .15s ease, color .15s ease; }
+.sidebar-toggle:hover { background:#202a3d; color:#fff; }
+.player-layout.collapsed .player-sidebar { width:0; min-width:0; padding:0; margin:0; overflow:hidden; border-width:0; }
+.player-layout.collapsed .sidebar-toggle { order:0; }
+.player-layout .sidebar-toggle { order:-1; }
+.player-layout.collapsed .sidebar-toggle { width:32px; }
+.player-layout.collapsed .sidebar-toggle::after { content:''; }
+.player-layout.collapsed .sidebar-toggle { background:#182030; }
+.player-layout .sidebar-toggle[data-state="open"] { writing-mode:vertical-rl; text-orientation: mixed; }
+.player-layout.collapsed .sidebar-toggle[data-state="closed"] { writing-mode:vertical-rl; text-orientation: mixed; }
+
+/* Ensure main player container flex-grows smoothly when sidebar collapsed */
+.player-layout .player-container { flex:1; min-width:0; display:flex; flex-direction:column; }
+
+/* Smooth scroll behavior fix for jank: reduce layout thrash */
+html { scroll-behavior: smooth; }
+body, .tab-panels, .tab-panel { overscroll-behavior: contain; }
+
+/* Fullscreen adjustments */
+:fullscreen .header, :fullscreen header { display:none !important; }
+:fullscreen body { overflow:hidden; }
+:fullscreen #playerContainer { height:100vh; }
 .badge-status { opacity:0.8; margin-left:6px; }
 .filter-label-row { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
 .text-subtle { font-size:12px; color:#64748b; }
