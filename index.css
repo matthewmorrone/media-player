@@ -1629,7 +1629,7 @@ main { padding: 24px 64px; }
 
 /* Components */
 .player-layout { display:flex; gap:12px; align-items:stretch; padding: 8px 0; }
-.player-sidebar { position:relative; width:280px; min-width:240px; max-width:360px; background:#0f1320; border:1px solid rgba(255,255,255,0.06); border-radius:10px; padding:12px 44px 12px 12px; display:flex; flex-direction:column; gap:12px; }
+.player-sidebar { position:relative; width:240px; min-width:200px; max-width:320px; background:#0f1320; border:1px solid rgba(255,255,255,0.06); border-radius:10px; padding:10px 44px 10px 10px; display:flex; flex-direction:column; gap:10px; }
 #sbFileName, #playerTitle { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #sbMeta, #playerMeta { color: var(--muted, #7a859f); font-size:12px; }
 .divider-h { height:1px; background: rgba(255,255,255,0.06); }
@@ -1641,6 +1641,20 @@ main { padding: 24px 64px; }
 .player-layout.collapsed .player-sidebar { width:34px; min-width:34px; padding:0; margin:0; overflow:hidden; border-width:1px; }
 .player-layout.collapsed .player-sidebar > :not(#sidebarToggle) { display:none !important; }
 .player-layout.collapsed .sidebar-toggle { right:0; left:auto; border-radius:10px; }
+
+/* Fire TV sidebar compression: reduce width, padding, gaps, font sizes to avoid scroll */
+html.firetv .player-sidebar { width:200px; min-width:180px; padding:8px 40px 8px 8px; gap:8px; }
+html.firetv .player-sidebar #sbFileName { font-size:13px; }
+html.firetv .player-sidebar #sbMeta { font-size:11px; }
+html.firetv .player-sidebar .artifact-badges { gap:6px; }
+html.firetv .player-sidebar .artifact-badges .btn-sm { padding:4px 6px; font-size:11px; }
+html.firetv .player-sidebar .chips { gap:4px; }
+html.firetv .player-sidebar .chip { padding:2px 6px; font-size:11px; }
+html.firetv .player-sidebar .filter-section h4 { font-size:12px; margin:6px 0 4px; }
+html.firetv .player-sidebar .filter-control { margin-bottom:4px; }
+html.firetv .player-sidebar .filter-control .text-12, html.firetv .player-sidebar .text-subtle { font-size:11px; }
+html.firetv .player-sidebar input[type=range] { height:4px; }
+html.firetv .player-sidebar .filter-section { padding-bottom:2px; }
 
 /* Ensure main player container flex-grows smoothly when sidebar collapsed */
 .player-layout .player-container { flex:1; min-width:0; display:flex; flex-direction:column; }
