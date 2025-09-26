@@ -2463,6 +2463,42 @@ app = FastAPI(title="Media Player", version="3.0")
 api = APIRouter(prefix="/api")
 
 # -----------------------------
+# Root directory API (from stash salvage)
+# -----------------------------
+class RootUpdate(BaseModel):  # simple pydantic model for updating root
+    root: str
+
+@api.get("/root")
+def get_root_api():
+    """Return the currently configured library root directory.
+
+    Response: { root: <str or null> }
+    """
+    try:
+        r = STATE.get("root")
+        return api_success({"root": str(r) if r else None})
+    except Exception as e:  # noqa: BLE001
+        return api_error(f"failed to get root: {e}")
+
+
+@api.post("/root")
+def set_root_api(update: RootUpdate):
+    """Set a new library root. Path must exist and be a directory.
+
+    This mutates in-memory STATE only; restart will re-evaluate MEDIA_ROOT env.
+    """
+    try:
+        p = Path(update.root).expanduser().resolve()
+        if not p.exists() or not p.is_dir():
+            raise_api_error("root not found", status_code=404)
+        STATE["root"] = p
+        return api_success({"root": str(p)})
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise_api_error(f"failed to set root: {e}", status_code=500)
+
+# -----------------------------
 # CORS: allow UI from file:// or other hosts to call the API
 # Configure via CORS_ALLOW_ORIGINS (comma-separated). Defaults to * for dev.
 # -----------------------------

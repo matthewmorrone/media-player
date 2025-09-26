@@ -55,4 +55,46 @@ if [ -n "${WHISPER_CPP_BIN:-}" ] && [ -n "${WHISPER_CPP_MODEL:-}" ]; then
 fi
 
 # Exclude scripts directory to avoid noisy reloads from helper scripts
-exec uvicorn app:app --reload --host "$HOST" --port "$PORT"
+
+echo "[serve.sh] Starting Media Player on ${HOST}:${PORT} (MEDIA_ROOT=${MEDIA_ROOT})" 1>&2
+
+# Runner resolution (from salvaged stash logic, adapted)
+choose_runner() {
+  if [ -n "${UVICORN_BIN:-}" ]; then
+    echo "$UVICORN_BIN"; return 0
+  fi
+  if command -v uvicorn >/dev/null 2>&1; then
+    command -v uvicorn; return 0
+  fi
+  if [ -x ".venv/bin/uvicorn" ]; then
+    echo ".venv/bin/uvicorn"; return 0
+  fi
+  if python3 -c 'import uvicorn' >/dev/null 2>&1; then
+    echo "python3 -m uvicorn"; return 0
+  fi
+  return 1
+}
+
+probe_runner() {
+  # shellcheck disable=SC2086
+  $1 --version >/dev/null 2>&1
+}
+
+RUN_UVICORN="$(choose_runner || true)"
+if [ -z "$RUN_UVICORN" ] || ! probe_runner "$RUN_UVICORN"; then
+  for cand in "$(command -v uvicorn 2>/dev/null || true)" \
+             ".venv/bin/uvicorn" \
+             "python3 -m uvicorn"; do
+    if [ -n "$cand" ] && probe_runner "$cand"; then
+      RUN_UVICORN="$cand"; break
+    fi
+  done
+fi
+
+if [ -z "$RUN_UVICORN" ] || ! probe_runner "$RUN_UVICORN"; then
+  echo "[serve.sh] ERROR: uvicorn not found or not runnable. Activate venv or install deps (./install.sh)." 1>&2
+  exit 1
+fi
+
+# shellcheck disable=SC2086
+exec env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN app:app --reload --host "$HOST" --port "$PORT"
