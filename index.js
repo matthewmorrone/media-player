@@ -205,31 +205,6 @@ async function ensureHover(v) {
     // Status unknown (not cached); treat as absent for now.
     status = { hover: false };
   }
-  if (!status.hover && hoverOnDemandEnabled) {
-    // Trigger creation (POST). This should not 404.
-    try {
-      await fetch(`/api/hover/create?path=${qp}`, { method: "POST" });
-    } catch (_) {}
-    // Poll status a few times (bounded) without fetching blob until reported present.
-    for (let i = 0; i < 4; i++) {
-      // ~4 * 350ms = 1.4s max wait
-      await new Promise((r) => setTimeout(r, 350));
-      const s2 = await refreshStatus();
-      if (s2 && s2.hover) {
-        try {
-          const r = await fetch(`/api/hover/get?path=${qp}`);
-          if (!r.ok) return "";
-          const blob = await r.blob();
-          if (!blob || !blob.size) return "";
-          const obj = URL.createObjectURL(blob);
-          v.hover_url = obj;
-          return obj;
-        } catch (_) {
-          return "";
-        }
-      }
-    }
-  }
   return "";
 }
 
@@ -371,10 +346,7 @@ function videoCard(v) {
     // Populate Stash-like bottom-left overlay info (resolution + duration)
     if (overlay) {
       const hasRes = !!label;
-      if (overlayRes) {
-        overlayRes.textContent = hasRes ? String(label).toUpperCase() : "";
-        overlayRes.style.display = hasRes ? "inline" : "none";
-      }
+      // (Removed accidental SSE logic injection here)
       if (hasRes) {
         overlay.style.display = "inline-flex";
         try {
@@ -649,6 +621,23 @@ async function loadLibrary() {
     grid.hidden = true;
   }
 }
+
+// One-time capability check to decide if we should attempt SSE at all (avoids blind 404 probes)
+;(async () => {
+  if (!window.__JOBS_SSE_ENABLED) return;
+  if (window.__JOBS_SSE_UNAVAILABLE) return; // already decided
+  try {
+    const res = await fetch('/config', { cache: 'no-store' });
+    if (!res.ok) return;
+    const cfg = await res.json();
+    const has = !!(cfg && cfg.features && cfg.features.jobs_sse);
+    if (!has) {
+      window.__JOBS_SSE_UNAVAILABLE = true;
+    }
+  } catch (_) {
+    // Silent; fallback polling continues
+  }
+})();
 
 refreshBtn.addEventListener("click", loadLibrary);
 
@@ -1831,7 +1820,7 @@ const Player = (() => {
       const accRoot = document.getElementById("sidebarAccordion");
       if (accRoot && !accRoot._wired) {
         accRoot._wired = true;
-        const LS_KEY = "accordion.player.sidebar.state";
+        const LS_KEY = "mediaPlayer:sidebarCollapsed";
         const loadState = () => {
           try {
             return JSON.parse(localStorage.getItem(LS_KEY) || "{}") || {};
@@ -4123,8 +4112,7 @@ class TasksManager {
 
   init() {
     this.initEventListeners();
-    // SSE job events are optional; enable only if page sets window.__JOBS_SSE_ENABLED = true before this script executes
-    if (window.__JOBS_SSE_ENABLED) this.initJobEvents();
+  // SSE job events deferred until /config confirms capability (prevents 404 noise)
     this.startJobPolling();
     // Load backend capabilities and apply UI gating
     this.loadConfigAndApplyGates();
@@ -4151,6 +4139,12 @@ class TasksManager {
         this.capabilities.ffprobe = Boolean(
           deps.ffprobe ?? data.ffprobe ?? true
         );
+        // Now that we know if SSE exists, decide whether to attach
+        if (window.__JOBS_SSE_ENABLED && feats.jobs_sse && !window.__JOBS_SSE_UNAVAILABLE) {
+          this.initJobEvents();
+        } else {
+          window.__JOBS_SSE_UNAVAILABLE = true;
+        }
         this.capabilities.subtitles_enabled = Boolean(
           caps.subtitles_enabled ?? true
         );
@@ -4328,72 +4322,71 @@ class TasksManager {
   }
 
   initJobEvents() {
-    // Quiet mode: preflight the SSE endpoint once; only attach if available.
-    (async () => {
+    // New approach: avoid any preflight fetches that can 404. Attempt primary EventSource; on immediate failure, try alias once.
+    if (window.__JOBS_SSE_UNAVAILABLE) return;
+    const primary = "/jobs/events";
+    const fallback = "/api/jobs/events";
+    const throttle = 400;
+    const attach = (url, isFallback) => {
+      let es;
       try {
-        const resp = await fetch("/api/jobs/events", {
-          method: "GET",
-          headers: { Accept: "text/event-stream" },
-        });
-        if (!resp.ok) return; // do not attach SSE; rely on polling
-        // We cannot reuse the response body for EventSource; need a fresh EventSource if reachable.
+        es = new EventSource(url);
+      } catch (_) {
+        return false;
+      }
+      this._jobEventsUrl = url;
+      let lastUpdate = 0;
+      const doRefresh = () => {
+        const now = Date.now();
+        if (now - lastUpdate > throttle) {
+          lastUpdate = now;
+          this.refreshJobs();
+          this.loadCoverage();
+        }
+      };
+      es.onmessage = (e) => {
         try {
-          resp.body?.cancel();
-        } catch (_) {}
-      } catch (_) {
-        return;
-      }
-      try {
-        const es = new EventSource("/api/jobs/events");
-        let lastUpdate = 0;
-        const throttle = 400;
-        const doRefresh = () => {
-          const now = Date.now();
-          if (now - lastUpdate > throttle) {
-            lastUpdate = now;
-            this.refreshJobs();
-            this.loadCoverage();
-          }
-        };
-        es.onmessage = (e) => {
-          try {
-            const payload = JSON.parse(e.data);
-            const evt = payload.event;
-            if (
-              evt &&
-              [
-                "created",
-                "queued",
-                "started",
-                "progress",
-                "current",
-                "finished",
-                "result",
-              ].includes(evt)
-            )
-              doRefresh();
-          } catch {}
-        };
-        [
-          "created",
-          "queued",
-          "started",
-          "progress",
-          "current",
-          "finished",
-          "result",
-          "cancel",
-        ].forEach((type) => es.addEventListener(type, () => doRefresh()));
-        es.onerror = () => {
-          try {
-            es.close();
-          } catch (_) {}
-        };
-        this._jobEventSource = es;
-      } catch (_) {
-        /* polling continues */
-      }
-    })();
+          const payload = JSON.parse(e.data);
+          if (payload.event) doRefresh();
+        } catch (_) {
+          /* ignore */
+        }
+      };
+      [
+        "created",
+        "queued",
+        "started",
+        "progress",
+        "current",
+        "finished",
+        "result",
+        "cancel",
+      ].forEach((type) => es.addEventListener(type, () => doRefresh()));
+      es.onopen = () => {
+        if (typeof this._onJobEventsConnected === "function") {
+          this._onJobEventsConnected();
+        }
+      };
+      let triedFallback = false;
+      es.onerror = () => {
+        // If primary fails very early, attempt fallback exactly once.
+        if (!isFallback && !triedFallback && es.readyState === EventSource.CLOSED) {
+          triedFallback = true;
+          try { es.close(); } catch (_) {}
+          attach(fallback, true);
+          return;
+        }
+        try { es.close(); } catch (_) {}
+        window.__JOBS_SSE_UNAVAILABLE = true;
+        try { localStorage.setItem("jobs:sse", "off"); } catch (_) {}
+      };
+      this._jobEventSource = es;
+      return true;
+    };
+    // Try primary; if it throws synchronously, attempt fallback.
+    if (!attach(primary, false)) {
+      attach(fallback, true);
+    }
   }
 
   initEventListeners() {
@@ -4452,6 +4445,7 @@ class TasksManager {
       }
       refreshCardStates();
       this.renderJobsTable();
+      this.ensureJobTableShowsSomeRows();
     };
     if (filterActive)
       filterActive.addEventListener("click", () => toggle("running"));
@@ -4862,9 +4856,7 @@ class TasksManager {
           document.getElementById("previewDuration")?.value || 1.0;
         break;
       case "heatmaps":
-        params.interval = parseFloat(
-          document.getElementById("heatmapInterval")?.value || "5.0"
-        );
+        params.interval = parseFloat( document.getElementById("heatmapInterval")?.value || "5.0" );
         params.mode = document.getElementById("heatmapMode")?.value || "both";
         // default to true PNG generation for better visual feedback
         params.png = true;
@@ -4882,48 +4874,25 @@ class TasksManager {
         params.translate = false;
         break;
       case "scenes":
-        params.threshold = parseFloat(
-          document.getElementById("sceneThreshold")?.value || "0.4"
-        );
-        params.limit = parseInt(
-          document.getElementById("sceneLimit")?.value || "0",
-          10
-        );
+        params.threshold = parseFloat( document.getElementById("sceneThreshold")?.value || "0.4" );
+        params.limit = parseInt( document.getElementById("sceneLimit")?.value || "0", 10 );
         break;
       case "faces":
-        params.interval = parseFloat(
-          document.getElementById("faceInterval")?.value || "1.0"
-        );
-        params.min_size_frac = parseFloat(
-          document.getElementById("faceMinSize")?.value || "0.10"
-        );
+        params.interval = parseFloat( document.getElementById("faceInterval")?.value || "1.0" );
+        params.min_size_frac = parseFloat( document.getElementById("faceMinSize")?.value || "0.10" );
         // Advanced tunables (parity with legacy FaceLab)
         params.backend =
           document.getElementById("faceBackend")?.value || "auto";
         // Only some backends use these; harmless to pass through
-        params.scale_factor = parseFloat(
-          document.getElementById("faceScale")?.value || "1.1"
-        );
-        params.min_neighbors = parseInt(
-          document.getElementById("faceMinNeighbors")?.value || "5",
-          10
-        );
-        params.sim_thresh = parseFloat(
-          document.getElementById("faceSimThresh")?.value || "0.9"
-        );
+        params.scale_factor = parseFloat( document.getElementById("faceScale")?.value || "1.1" );
+        params.min_neighbors = parseInt( document.getElementById("faceMinNeighbors")?.value || "5", 10 );
+        params.sim_thresh = parseFloat( document.getElementById("faceSimThresh")?.value || "0.9" );
         break;
       case "embed":
-        params.interval = parseFloat(
-          document.getElementById("embedInterval")?.value || "1.0"
-        );
-        params.min_size_frac = parseFloat(
-          document.getElementById("embedMinSize")?.value || "0.10"
-        );
-        params.backend =
-          document.getElementById("embedBackend")?.value || "auto";
-        params.sim_thresh = parseFloat(
-          document.getElementById("embedSimThresh")?.value || "0.9"
-        );
+        params.interval = parseFloat( document.getElementById("embedInterval")?.value || "1.0" );
+        params.min_size_frac = parseFloat( document.getElementById("embedMinSize")?.value || "0.10" );
+        params.backend = document.getElementById("embedBackend")?.value || "auto";
+        params.sim_thresh = parseFloat( document.getElementById("embedSimThresh")?.value || "0.9" );
         break;
     }
 
@@ -5147,12 +5116,10 @@ class TasksManager {
     const tbody = document.getElementById("jobTableBody");
     if (!tbody) return;
     const all = Array.from(this.jobs.values());
-    // Filtering
-    let visible = all;
+    // Filtering: when no filters are active, show no rows (user explicitly hid all)
+    let visible = [];
     if (this.activeFilters && this.activeFilters.size > 0) {
-      visible = all.filter((j) =>
-        this.activeFilters.has(this.normalizeStatus(j))
-      );
+      visible = all.filter((j) => this.activeFilters.has(this.normalizeStatus(j)));
     }
     // Sort with explicit priority: running > queued > others, then by time desc
     const prio = (j) => {
@@ -5242,6 +5209,19 @@ class TasksManager {
           this.showNotification("Failed to cancel all jobs", "error");
         }
       };
+    }
+
+    // Clamp container height to content so it never grows beyond the table needs
+    const container = document.getElementById('jobTableContainer');
+    if (container) {
+      const table = container.querySelector('table');
+      if (table) {
+        const maxContent = table.scrollHeight + 8; // small padding
+        const current = container.getBoundingClientRect().height;
+        if (current > maxContent) {
+          container.style.height = maxContent + 'px';
+        }
+      }
     }
   }
 
@@ -5393,35 +5373,87 @@ class TasksManager {
     const container = document.getElementById("jobTableContainer");
     const handle = document.getElementById("jobResizeHandle");
     if (!container || !handle) return;
-    // Restore prior height
-    const saved = localStorage.getItem("jobQueueHeight");
-    if (saved) container.style.maxHeight = saved;
-    let down = false,
-      startY = 0,
-      startH = 0;
-    const onDown = (e) => {
-      down = true;
-      startY = e.clientY;
-      startH = container.getBoundingClientRect().height;
-      document.body.style.userSelect = "none";
+    // Avoid double wiring
+    if (handle._wired) return;
+    handle._wired = true;
+
+    // Clear any lingering max-height from older logic
+    container.style.maxHeight = "";
+
+    let startY = 0;
+    let startHeight = 0;
+    const MIN = 120; // minimum usable height
+    const contentMax = () => {
+      const table = container.querySelector('table');
+      if (!table) return window.innerHeight - 160;
+      // scrollHeight of table (plus small padding)
+      return Math.min(table.scrollHeight + 8, window.innerHeight - 160);
+    };
+    const clamp = (h) => {
+      const max = contentMax();
+      return Math.min(Math.max(h, MIN), max);
     };
     const onMove = (e) => {
-      if (!down) return;
-      const h = Math.max(140, Math.min(720, startH + (e.clientY - startY)));
-      container.style.maxHeight = h + "px";
+      const dy = e.clientY - startY;
+      const newH = clamp(startHeight + dy);
+      container.style.height = newH + "px";
+      container.style.overflow = 'auto';
     };
     const onUp = () => {
-      if (!down) return;
-      down = false;
-      localStorage.setItem(
-        "jobQueueHeight",
-        container.style.maxHeight || "240px"
-      );
-      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.classList.remove("resizing-job-table");
     };
-    handle.addEventListener("mousedown", onDown);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    handle.addEventListener("mousedown", (e) => {
+      // Only left button
+      if (e.button !== 0) return;
+      startY = e.clientY;
+      startHeight = container.getBoundingClientRect().height;
+      container._userResized = true; // mark explicit user intent
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.body.classList.add("resizing-job-table");
+      e.preventDefault();
+    });
+    // Responsive safety: if window shrinks below chosen height, clamp down
+    window.addEventListener("resize", () => {
+      const rect = container.getBoundingClientRect();
+      container.style.height = clamp(rect.height) + 'px';
+    });
+
+    // Auto adjust after initial job render (allow full content if small)
+    setTimeout(() => {
+      const table = container.querySelector('table');
+      if (!table) return;
+      const desired = clamp(table.scrollHeight + 8);
+      container.style.height = desired + 'px';
+    }, 50);
+  }
+
+  // Ensure that after changing filters (or initial render) the job table is tall enough to show a few rows
+  ensureJobTableShowsSomeRows() {
+    const container = document.getElementById('jobTableContainer');
+    if (!container) return;
+    // Respect explicit user resizing unless container is extremely small (<100px)
+    if (container._userResized && container.getBoundingClientRect().height > 100) return;
+    const rows = Array.from(document.querySelectorAll('#jobTableBody tr'))
+      .filter(r => r.style.display !== 'none');
+    if (!rows.length) return; // nothing to show
+    const sample = rows.find(r => r.offsetParent !== null) || rows[0];
+    const rh = sample.getBoundingClientRect().height || 28;
+    const wantRows = Math.min(rows.length, 4); // show up to 4 rows if available
+    // Extra for header + padding
+    const baseExtra = 42;
+    const desired = (rh * wantRows) + baseExtra;
+    const current = container.getBoundingClientRect().height;
+    // Compute max allowed similar to resizer logic
+    const table = container.querySelector('table');
+    const contentHeight = table ? table.scrollHeight + 8 : desired;
+    const viewportCap = window.innerHeight - 160;
+    const cap = Math.min(contentHeight, viewportCap);
+    if (current + 6 < desired) {
+      container.style.height = Math.min(desired, cap) + 'px';
+    }
   }
 
   // Normalize backend status to UI status names
@@ -5466,15 +5498,25 @@ class TasksManager {
   }
 
   updateJobStats(stats) {
+    // Recompute ALL counters locally based on the jobs currently loaded.
+    // Requirement: counts reflect everything that "shows up in the list" (i.e., jobs payload),
+    // not a time-windowed subset like completedToday.
+    const jobs = Array.from(this.jobs.values());
+    const norm = (j) => this.normalizeStatus(j);
+    const activeCount = jobs.filter((j) => norm(j) === "running").length;
+    const queuedCount = jobs.filter((j) => norm(j) === "queued").length;
+    const completedCount = jobs.filter((j) => norm(j) === "completed").length;
+    const failedCount = jobs.filter((j) => norm(j) === "failed").length;
+
     const activeEl = document.getElementById("activeJobsCount");
     const queuedEl = document.getElementById("queuedJobsCount");
     const completedEl = document.getElementById("completedJobsCount");
     const failedEl = document.getElementById("failedJobsCount");
 
-    if (activeEl) activeEl.textContent = stats.active || 0;
-    if (queuedEl) queuedEl.textContent = stats.queued || 0;
-    if (completedEl) completedEl.textContent = stats.completedToday || 0;
-    if (failedEl) failedEl.textContent = stats.failed || 0;
+    if (activeEl) activeEl.textContent = activeCount;
+    if (queuedEl) queuedEl.textContent = queuedCount;
+    if (completedEl) completedEl.textContent = completedCount;
+    if (failedEl) failedEl.textContent = failedCount;
   }
 
   async cancelJob(jobId) {
@@ -5515,13 +5557,24 @@ class TasksManager {
   }
 
   startJobPolling() {
-    // Poll for job and coverage updates every 1 second when on tasks tab for more responsive updates
-    setInterval(() => {
-      if (tabSystem && tabSystem.getActiveTab() === "tasks") {
+    // Adaptive polling: fast (1s) until SSE (if any) attaches; then slow (15s) fallback.
+    const FAST = 1000;
+    const SLOW = 15000;
+    if (this._jobPollTimer) clearInterval(this._jobPollTimer);
+    let interval = FAST;
+    const tick = () => {
+      if (tabSystem && tabSystem.getActiveTab && tabSystem.getActiveTab() === "tasks") {
         this.refreshJobs();
         this.loadCoverage();
       }
-    }, 1000);
+    };
+    this._jobPollTimer = setInterval(tick, interval);
+    // If SSE later connects, we expose a hook to downgrade polling frequency
+    this._onJobEventsConnected = () => {
+      if (!this._jobPollTimer) return;
+      clearInterval(this._jobPollTimer);
+      this._jobPollTimer = setInterval(tick, SLOW); // keep a light safety net
+    };
   }
 
   showNotification(message, type = "info") {
@@ -5576,6 +5629,8 @@ class TasksManager {
     const orphanCountEl = document.getElementById("orphanCount");
     const cleanupBtn = document.getElementById("cleanupOrphansBtn");
     const previewBtn = document.getElementById("previewOrphansBtn");
+    const orphanDetails = document.getElementById("orphanDetails");
+    const orphanList = document.getElementById("orphanList");
 
     if (orphanCountEl) {
       orphanCountEl.textContent = orphanCount;
@@ -5591,23 +5646,41 @@ class TasksManager {
 
     // Store orphan data for preview
     this.orphanFiles = orphanData.orphaned_files || [];
+
+    // If preview currently visible, refresh its contents
+    if (
+      orphanDetails &&
+      !orphanDetails.classList.contains("d-none") &&
+      orphanList
+    ) {
+      orphanList.innerHTML = this.orphanFiles.length
+        ? this.orphanFiles
+            .map((file) => `<div class="orphan-file">${file}</div>`)
+            .join("")
+        : '<div class="orphan-file empty">No orphaned files</div>';
+    }
   }
 
   async previewOrphans() {
     const orphanDetails = document.getElementById("orphanDetails");
     const orphanList = document.getElementById("orphanList");
-
-    if (orphanDetails.style.display === "none") {
-      // Show preview
-      orphanList.innerHTML = this.orphanFiles
-        .map((file) => `<div class="orphan-file">${file}</div>`)
-        .join("");
-      orphanDetails.style.display = "block";
-      document.getElementById("previewOrphansBtn").textContent = "Hide";
+    if (!orphanDetails || !orphanList) return;
+    const btn = document.getElementById("previewOrphansBtn");
+    const isHidden = orphanDetails.classList.contains("d-none");
+    if (isHidden) {
+      // Show
+      orphanList.innerHTML = this.orphanFiles.length
+        ? this.orphanFiles
+            .map((file) => `<div class="orphan-file">${file}</div>`)
+            .join("")
+        : '<div class="orphan-file empty">No orphaned files</div>';
+      orphanDetails.classList.remove("d-none");
+      orphanDetails.removeAttribute("hidden");
+      if (btn) btn.textContent = "Hide";
     } else {
-      // Hide preview
-      orphanDetails.style.display = "none";
-      document.getElementById("previewOrphansBtn").textContent = "Preview";
+      // Hide
+      orphanDetails.classList.add("d-none");
+      if (btn) btn.textContent = "Preview";
     }
   }
 

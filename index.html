@@ -6,11 +6,32 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Media Library</title>
   <link rel="stylesheet" href="index.css" />
-  <link rel="preload" href="icons.svg" as="image" type="image/svg+xml" />
+  <script>window.__JOBS_SSE_ENABLED = true; /* enable push job events */</script>
   <script src="index.js" defer></script>
 </head>
 
 <body>
+  <!-- Inline SVG sprite (moved from external icons.svg for reliable <use> rendering across browsers / file protocols) -->
+  <svg aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden">
+    <!-- Options / settings decorative icon -->
+    <symbol id="icon-options" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </symbol>
+    <symbol id="icon-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20 6 4"/></symbol>
+    <symbol id="icon-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></symbol>
+    <symbol id="icon-volume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15 9a4 4 0 0 1 0 6"/></symbol>
+    <symbol id="icon-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="17" y1="9" x2="23" y2="15"/><line x1="23" y1="9" x2="17" y2="15"/></symbol>
+    <symbol id="icon-cc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2" ry="2"/><path d="M10 14a2 2 0 0 1-2 0 2 2 0 0 1 0-4 2 2 0 0 1 2 0"/><path d="M18 14a2 2 0 0 1-2 0 2 2 0 0 1 0-4 2 2 0 0 1 2 0"/></symbol>
+    <symbol id="icon-pip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><rect x="13" y="9" width="7" height="5"/></symbol>
+    <symbol id="icon-full" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 0 0-2 2v4"/><path d="M15 3h4a2 2 0 0 1 2 2v4"/><path d="M9 21H5a2 2 0 0 1-2-2v-4"/><path d="M15 21h4a2 2 0 0 0 2-2v-4"/></symbol>
+    <symbol id="icon-thumb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 10V4a2 2 0 0 0-2-2l-4 8v12h10.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2H14z"/><path d="M7 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h3"/></symbol>
+    <symbol id="icon-marker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.686-6-11A6 6 0 0 1 18 10c0 5.314-6 11-6 11z"/><circle cx="12" cy="10" r="2"/></symbol>
+    <symbol id="icon-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </symbol>
+  </svg>
   <header>
     <!-- Tab Navigation only (top bar removed) -->
     <nav class="tab-nav" role="tablist" aria-label="Main navigation">
@@ -37,74 +58,6 @@
     <div class="tab-panels">
       <!-- Player Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="player-tab" id="player-panel" hidden>
-        <div class="player-shell no-sidebar">
-          <div class="player-main">
-            <div class="player-header-simple">
-              <h2 id="playerTitle" class="player-title">No file</h2>
-            </div>
-            <div class="player-stage-simple">
-              <div id="videoStage" class="video-stage-simple">
-                <video id="playerVideo" playsinline class="video-el"></video>
-                <div class="timeline-overlay-shell">
-                  <div class="timeline-wrapper">
-                    <div id="timeline" class="timeline-flat">
-                      <div id="timelineHeatmap" class="timeline-heatmap"></div>
-                      <canvas id="timelineHeatmapCanvas" class="timeline-heatmap-canvas"></canvas>
-                      <div id="timelineProgress" class="timeline-progress"></div>
-                      <div id="timelineMarkers" class="timeline-markers"></div>
-                    </div>
-                  </div>
-                  <div id="playerBar" class="player-bar-overlay">
-                    <button id="btnPlayPause" class="btn-sm icon-btn" aria-label="Play/Pause" data-icon-state="play">
-                      <svg class="icon icon-play">
-                        <use href="icons.svg#icon-play" />
-                      </svg>
-                      <svg class="icon icon-pause" hidden>
-                        <use href="icons.svg#icon-pause" />
-                      </svg>
-                    </button>
-                    <div class="time-display"><span id="curTime">00:00</span><span class="sep">/</span><span id="totalTime">00:00</span></div>
-                    <div class="spacer"></div>
-                    <button id="btnMute" class="btn-sm icon-btn" aria-label="Mute / Unmute">
-                      <svg class="icon icon-vol">
-                        <use href="icons.svg#icon-volume" />
-                      </svg>
-                      <svg class="icon icon-muted" hidden>
-                        <use href="icons.svg#icon-muted" />
-                      </svg>
-                    </button>
-                    <input id="volSlider" class="vol-slider" type="range" min="0" max="1" step="0.01" value="1" title="Volume" aria-label="Volume" />
-                    <button id="btnCC" class="btn-sm icon-btn" aria-label="Captions"><svg class="icon">
-                        <use href="icons.svg#icon-cc" />
-                      </svg></button>
-                    <select id="rateSelect" class="control-select rate-select-inline" aria-label="Speed">
-                      <option value="0.5">0.5×</option>
-                      <option value="0.75">0.75×</option>
-                      <option value="1" selected>1×</option>
-                      <option value="1.25">1.25×</option>
-                      <option value="1.5">1.5×</option>
-                      <option value="1.75">1.75×</option>
-                      <option value="2">2×</option>
-                    </select>
-                    <button id="btnPip" class="btn-sm icon-btn" aria-label="Picture in Picture"><svg class="icon">
-                        <use href="icons.svg#icon-pip" />
-                      </svg></button>
-                    <button id="btnFullscreen" class="btn-sm icon-btn" aria-label="Fullscreen"><svg class="icon">
-                        <use href="icons.svg#icon-full" />
-                      </svg></button>
-                    <button id="btnAddMarker" class="btn-sm icon-btn util-btn" title="Add marker" aria-label="Add marker"><svg class="icon">
-                        <use href="icons.svg#icon-marker" />
-                      </svg></button>
-                    <button id="btnSetThumb" class="btn-sm icon-btn util-btn" title="Set cover image" aria-label="Set cover"><svg class="icon">
-                        <use href="icons.svg#icon-thumb" />
-                      </svg></button>
-                  </div>
-                </div>
-              </div>
-              <div id="spritePreview" class="sprite-preview"></div>
-            </div>
-          </div>
-        </div>
       </div>
 
       <!-- Hidden SVG filters for video color matrix -->
@@ -241,9 +194,9 @@
             <div class="section-header">
               <h2>Job Monitor</h2>
               <div class="section-actions">
-                <button id="cancelAllBtn" class="btn-sm d-none" title="Cancel all queued and running jobs">Cancel All</button>
-                <button id="cancelQueuedBtn" class="btn-sm d-none" title="Cancel all queued jobs">Cancel Queued</button>
-                <button id="clearCompletedBtn" class="btn-sm d-none" title="Remove completed jobs from the list">Clear Completed</button>
+                <button id="cancelAllBtn" class="btn-sm" style="display:none;" title="Cancel all queued and running jobs">Cancel All</button>
+                <button id="cancelQueuedBtn" class="btn-sm" style="display:none;" title="Cancel all queued jobs">Cancel Queued</button>
+                <button id="clearCompletedBtn" class="btn-sm" style="display:none;" title="Remove completed jobs from the list">Clear Completed</button>
               </div>
             </div>
 
@@ -282,7 +235,7 @@
                   <!-- Jobs will be populated here -->
                 </tbody>
               </table>
-              <div class="resize-handle" id="jobResizeHandle" title="Drag to resize"></div>
+              <div class="resize-handle" id="jobResizeHandle" title="Drag to resize job list"></div>
             </div>
           </div>
 
@@ -345,7 +298,7 @@
                     <button class="btn-generate d-none hidden" data-operation="thumbnails-clear" title="Delete all generated thumbnails without regenerating">Clear</button>
                     <button class="btn-options" data-artifact="thumbnails" title="Options" aria-label="Thumbnail options">
                       <svg width="14" height="14" aria-hidden="true">
-                        <use href="icons.svg#icon-options" />
+                        <use href="#icon-options" />
                       </svg>
                     </button>
                   </div>
@@ -372,7 +325,7 @@
                     <button class="btn-generate d-none hidden" data-operation="sprites-clear" title="Delete all sprite sheets">Clear</button>
                     <button class="btn-options" data-artifact="sprites" aria-label="Sprite options">
                       <svg width="14" height="14" aria-hidden="true">
-                        <use href="icons.svg#icon-options" />
+                        <use href="#icon-options" />
                       </svg>
                     </button>
                   </div>
@@ -401,7 +354,7 @@
                     <button class="btn-generate d-none hidden" data-operation="previews-clear" title="Delete all hover preview videos">Clear</button>
                     <button class="btn-options" data-artifact="previews" aria-label="Hover preview options">
                       <svg width="14" height="14" aria-hidden="true">
-                        <use href="icons.svg#icon-options" />
+                        <use href="#icon-options" />
                       </svg>
                     </button>
                   </div>
@@ -428,9 +381,8 @@
                     <button class="btn-generate d-none hidden" data-operation="phash-all">Recompute All</button>
                     <button class="btn-generate d-none hidden" data-operation="phash-clear" title="Delete all perceptual hash artifacts">Clear</button>
                     <button class="btn-options" data-artifact="phash">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3" />
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                      <svg width="14" height="14" aria-hidden="true">
+                        <use href="#icon-gear" />
                       </svg>
                     </button>
                   </div>
@@ -466,9 +418,8 @@
                     <button class="btn-generate d-none hidden" data-operation="scenes-all">Recompute All</button>
                     <button class="btn-generate d-none hidden" data-operation="scenes-clear" title="Delete all scene detection JSON">Clear</button>
                     <button class="btn-options" data-artifact="scenes">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3" />
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                      <svg width="14" height="14" aria-hidden="true">
+                        <use href="#icon-gear" />
                       </svg>
                     </button>
                   </div>
@@ -495,9 +446,8 @@
                     <button class="btn-generate d-none hidden" data-operation="heatmaps-all">Recompute All</button>
                     <button class="btn-generate d-none hidden" data-operation="heatmaps-clear" title="Delete all heatmap PNGs">Clear</button>
                     <button class="btn-options" data-artifact="heatmaps">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3" />
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                      <svg width="14" height="14" aria-hidden="true">
+                        <use href="#icon-gear" />
                       </svg>
                     </button>
                   </div>
@@ -533,9 +483,8 @@
                     <button class="btn-generate d-none hidden" data-operation="subtitles-all">Recompute All</button>
                     <button class="btn-generate d-none hidden" data-operation="subtitles-clear" title="Delete all subtitle files">Clear</button>
                     <button class="btn-options" data-artifact="subtitles">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3" />
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                      <svg width="14" height="14" aria-hidden="true">
+                        <use href="#icon-gear" />
                       </svg>
                     </button>
                   </div>
@@ -573,9 +522,8 @@
                     <button class="btn-generate d-none hidden" data-operation="faces-all">Recompute All</button>
                     <button class="btn-generate d-none hidden" data-operation="faces-clear" title="Delete face detection JSON & embeddings">Clear</button>
                     <button class="btn-options" data-artifact="faces">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3" />
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                      <svg width="14" height="14" aria-hidden="true">
+                        <use href="#icon-gear" />
                       </svg>
                     </button>
                   </div>
@@ -624,9 +572,8 @@
                     <button class="btn-generate d-none hidden" data-operation="embed-all">Recompute All</button>
                     <button class="btn-generate d-none hidden" data-operation="embed-clear" title="Delete all embedding vectors">Clear</button>
                     <button class="btn-options" data-artifact="embed" title="Options">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3" />
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                      <svg width="14" height="14" aria-hidden="true">
+                        <use href="#icon-gear" />
                       </svg>
                     </button>
                   </div>
@@ -779,4 +726,5 @@
     </div>
   </main>
 </body>
+
 </html>

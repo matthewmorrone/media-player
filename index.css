@@ -1817,16 +1817,19 @@ button.btn-danger {
 .job-table-container {
   background: rgba(255, 255, 255, 0.02);
   border-radius: 8px;
-  overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  max-height: 240px;
+  /* Allow natural height growth; only scroll if container ancestor constrains height */
   overflow: auto;
-  /* Make scrollbars overlay without consuming width */
   scrollbar-gutter: stable both-edges;
   overscroll-behavior: contain;
-  resize: vertical;
   position: relative;
 }
+
+/* Hide scrollbar but preserve scrolling */
+.job-table-container::-webkit-scrollbar { width: 0; height: 0; }
+.job-table-container { scrollbar-width: none; }
+.job-table-container { -ms-overflow-style: none; }
+
 
 .resize-handle {
   position: sticky;
@@ -1836,6 +1839,11 @@ button.btn-danger {
   height: 10px;
   cursor: ns-resize;
   background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.06));
+}
+
+body.resizing-job-table {
+  cursor: ns-resize !important;
+  user-select: none;
 }
 
 /* WebKit overlay scrollbar styling */
@@ -1982,9 +1990,7 @@ button.btn-danger {
     font-size: 16px;
   }
 
-  .job-table-container {
-    max-height: 160px;
-  }
+  /* Removed mobile max-height constraint for job table container */
 
   .job-table {
     font-size: 11px;

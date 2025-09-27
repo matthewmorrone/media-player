@@ -3985,6 +3985,11 @@ def config_info():
     effective = {
         "sprites": {**defaults["sprites"], **(raw_cfg.get("sprites") or {})},
     }
+    # Detect SSE jobs events route presence for frontend (avoid 404 probing)
+    try:
+        jobs_sse = any(getattr(r, "path", None) == "/jobs/events" for r in app.routes)
+    except Exception:
+        jobs_sse = False
     return {
         "root": str(STATE.get("root")),
         "env": {k: os.environ.get(k) for k in ["MEDIA_ROOT", "FFPROBE_DISABLE", "MEDIA_EXTS"]},
@@ -3996,6 +4001,7 @@ def config_info():
             "faces": True,
             "subtitles": True,
             "phash": True,
+            "jobs_sse": jobs_sse,
         },
         "deps": {
             "ffmpeg": ffmpeg_available(),
@@ -4220,7 +4226,6 @@ def _load_meta_summary(root: Path, recursive: bool) -> dict[str, dict]:
         else:
             out[rel] = {}
     return out
-
 
 # -----------------------------
 # Artifact cleanup helpers

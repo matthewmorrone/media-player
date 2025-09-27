@@ -50,22 +50,5 @@ If something goes wrong, revert or reset to tag and cherry-pick good commits.
 - Lightweight smoke test script (`scripts/smoke.sh`) to validate API health.
 - JSON manifest of last N agent runs with timestamps.
 
-## Agent Style Guardrails (CSS / Frontend)
-These are constraints the AI agent must self-enforce (not reminders for human contributors):
-
-1. No single-line multi-property rule blocks (one declaration per line) except intentionally minified icon path data.
-2. Never reintroduce duplicate base sections (`:root`, resets, button primitives). Check with a quick grep before adding.
-3. Do not change property ordering inside an untouched rule just to “normalize” (avoid noisy diffs) unless a rule is already being edited.
-4. Media queries must remain adjacent to the component they refine; do not move them to a global bucket.
-5. Adding animations: verify uniqueness of keyframe name; no duplicate semantic variants.
-6. If removing nested (invalid) CSS, ensure brace balance and replace with flat selectors in a single dedicated patch.
-7. Always run a brace count sanity (open vs close) after structural edits. (Automation note: `grep -o '{' index.css | wc -l` vs `grep -o '}' ...`).
-8. Avoid `transition: all`; limit to specific properties unless editing legacy code already using it.
-9. Use existing custom properties; do not inline new hard-coded theme colors when a semantically equivalent var exists.
-10. If a large reorganization is required, generate a parallel `index.refactor.css` and request human review before replacing the primary file.
-
-Deviation Handling: If a constraint must be violated (e.g., urgent hotfix), the agent must annotate the diff with a brief justification comment directly above the exception.
-
-
 ---
 Last updated: 2025-09-26
