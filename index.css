@@ -1,33 +1,395 @@
+/* =============================================================
+   Media Player Stylesheet (refactored ordering)
+   -------------------------------------------------------------
+   Table of Contents
+   1. Root Variables
+   2. Base / Resets
+   3. Utilities
+   4. Layout Primitives (grid, cards, generic components)
+   5. Buttons & Controls
+   6. Performers Panel
+   7. Modals / Overlays
+   8. Tabs & Sections (Tasks, Artifacts, Jobs)
+   9. Selection & Badges
+   10. Artifact Cards & Options Tooltip
+   11. Job Monitor (stats, tables)
+   12. Orphaned Artifacts
+   13. Accordion
+   14. Player (Simplified + Full Tab)
+   15. Viewport Fit Player Adjustments
+   16. Toast / Notifications
+   17. Animations & Keyframes
+   -------------------------------------------------------------
+   Notes:
+   * Nested selectors previously inside #folderInput were flattened.
+   * Duplicate .btn-sm size variant inside controls panel is now scoped.
+   * Duplicate @keyframes spin removed (single canonical definition).
+   * Second slideIn variant renamed slideInRight for clarity.
+   ============================================================= */
+
+/* 1. Root Variables */
+:root {
+  --bg: #0f1115;
+  --panel: #151923;
+  --text: #e6e6e6;
+  --muted: #a0a0a0;
+  --accent: #4f8cff;
+  --card: #1b2130;
+  --card-hover: #232b3d;
+  --grid-gap: 14px;
+  --header-h: 54px;
+  --player-chrome-h: 120px; /* reserved vertical space for controls + paddings */
+  /* merged from later root */
+}
+
+/* 2. Base / Resets */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 10px 18px 6px;
+  background: rgba(15, 17, 21, 0.75);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid #242938;
+}
+
+main {
+  padding: 24px 64px;
+}
+
+/* 3. Utilities */
+.d-none,
+.hidden {
+  display: none !important;
+}
+
+.ml-auto {
+  margin-left: auto !important;
+}
+
+.fw-600 {
+  font-weight: 600;
+}
+
+.hint-sm {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mt-12 {
+  margin-top: 12px;
+}
+
+.gap-10 {
+  gap: 10px;
+}
+
+.gap-16 {
+  gap: 16px;
+}
+
+.flex-row {
+  display: flex;
+  align-items: center;
+}
+
+.w-120 {
+  width: 120px;
+}
+
+.w-100 {
+  width: 100%;
+}
+
+/* Core inputs */
+#folderInput {
+  background: var(--panel);
+  color: var(--text);
+  border: 2px solid #2a3144;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  outline: none;
+  width: 100%;
+  transition: all 0.2s ease;
+}
+
+#folderInput:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+#folderInput::placeholder {
+  color: var(--muted);
+}
+
+/* 4. Layout Primitives */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(var(--columns, 6), 1fr);
+  gap: var(--grid-gap);
+  margin: 0 64px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid #2a3144;
+  border-radius: 10px;
+  overflow: hidden;
+  transition: background .15s ease, transform .06s ease;
+  position: relative;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+.card:hover {
+  background: var(--card-hover);
+  transform: translateY(-1px);
+}
+
+/* 5. Buttons & Controls (core) */
+.btn {
+  background: var(--panel);
+  color: var(--text);
+  border: 2px solid #2a3144;
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 16px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.btn:hover {
+  background: #1a2030;
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+/* Base small button */
+.btn-sm {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid #2a3144;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.2s ease;
+}
+
+.btn-sm:hover {
+  background: #1e2634;
+  border-color: #364258;
+}
+
+.btn-sm:active {
+  background: #16202d;
+}
+
+.btn-sm.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* Scoped larger variant previously overriding global .btn-sm */
+.controls-panel .btn-sm {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid #2a3144;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.controls-panel .btn-sm:hover {
+  background: var(--card);
+  border-color: var(--accent);
+  box-shadow: 0 2px 4px rgba(79, 140, 255, 0.2);
+}
+
+.controls-panel .btn-sm.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* Busy state */
+.btn-busy,
+.btn.btn-busy,
+.btn-sm.btn-busy {
+  position: relative;
+  pointer-events: none;
+  opacity: .9;
+}
+
+.btn-busy::before {
+  content: "";
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  vertical-align: -2px;
+}
+
+/* Destructive */
+.btn-danger,
+.btn.btn-danger,
+button.btn-danger {
+  background: linear-gradient(135deg, #b91c1c, #dc2626);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 4px -2px rgba(0, 0, 0, 0.5);
+}
+
+.btn-danger:hover {
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+}
+
+.btn-danger:active {
+  background: #991b1b;
+}
+
+.btn-danger:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+/* 6. Performers Panel (moved & consolidated) */
 #performers-panel {
   overflow-x: hidden;
 }
 
 #performers-panel .perf-grid {
   overflow-x: hidden;
-}
-
-.perf-grid {
-  box-sizing: border-box;
-}
-
-.perf-card {
-  min-width: 0;
-}
-
-/* Force wrapping / prevent horizontal overflow in performers panel */
-#performers-panel .perf-grid {
   width: 100%;
   max-width: 100%;
 }
 
+.perf-grid {
+  box-sizing: border-box;
+  --card-bg: #141b28;
+}
+
+.perf-grid.loading {
+  opacity: .55;
+  pointer-events: none;
+}
+
+.perf-card {
+  min-width: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 12px 10px;
+  background: var(--card-bg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  box-shadow: 0 2px 6px -2px rgba(0, 0, 0, 0.5);
+  min-height: 96px;
+  max-width: 100%;
+}
+
+.perf-card[data-selected="1"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.perf-card h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.perf-card .count {
+  font-size: 11px;
+  opacity: .65;
+}
+
+.perf-card .actions {
+  display: flex;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.perf-card button.btn-xs {
+  font-size: 11px;
+  padding: 3px 6px;
+  line-height: 1.1;
+}
+
+.perf-card .tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.perf-card .tag {
+  font-size: 10px;
+  padding: 2px 5px;
+  background: #1f2b3b;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+@media (max-width: 640px) {
+  .perf-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 10px;
+  }
+
+  .perf-card {
+    padding: 10px 10px 8px;
+  }
+}
+
+/* Preserve existing (rest of file below remains in original relative order, minus removed nested block & duplicates) */
 #performers-panel .perf-card h3 {
   word-break: break-word;
   overflow-wrap: break-word;
 }
 
-#performers-panel .perf-card {
-  max-width: 100%;
-}
+/* ORIGINAL CONTENT CONTINUES (unreordered beyond critical fixes) */
 
 #playerControls .btn-sm {
   height: 20px;
@@ -45,30 +407,7 @@
   height: 3px;
 }
 
-:root {
-  --bg: #0f1115;
-  --panel: #151923;
-  --text: #e6e6e6;
-  --muted: #a0a0a0;
-  --accent: #4f8cff;
-  --card: #1b2130;
-  --card-hover: #232b3d;
-  --grid-gap: 14px;
-}
-
-/* Utility classes */
-.d-none {
-  display: none !important;
-}
-
-/* Simpler semantic hide class (JS should prefer this instead of inline style) */
-.hidden {
-  display: none !important;
-}
-
-.ml-auto {
-  margin-left: auto !important;
-}
+/* (Duplicate :root and utility class definitions removed; see top of file) */
 
 /* Extracted from former inline styles */
 .embed-extra {
@@ -262,280 +601,7 @@
   display: none !important;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-html,
-body {
-  height: 100%;
-}
-
-body {
-  margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
-  background: var(--bg);
-  color: var(--text);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  padding: 10px 18px 6px;
-  background: rgba(15, 17, 21, 0.75);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid #242938;
-}
-
-/* Root input relocated to Settings – retain input styling generically */
-#folderInput {
-  background: var(--panel);
-  color: var(--text);
-  border: 2px solid #2a3144;
-  border-radius: 10px;
-
-  /* Performers */
-  .perf-grid {
-    --card-bg: #141b28;
-  }
-
-  .perf-grid.loading {
-    opacity: 0.55;
-    pointer-events: none;
-  }
-
-  .perf-card {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 12px 12px 10px;
-    background: var(--card-bg);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 10px;
-    box-shadow: 0 2px 6px -2px rgba(0, 0, 0, 0.5);
-    min-height: 96px;
-  }
-
-  .perf-card[data-selected="1"] {
-    outline: 2px solid var(--accent, #4f8cff);
-    outline-offset: 2px;
-  }
-
-  .perf-card h3 {
-    margin: 0;
-    font-size: 14px;
-    font-weight: 600;
-    line-height: 1.2;
-    word-break: break-word;
-  }
-
-  .perf-card .count {
-    font-size: 11px;
-    opacity: 0.65;
-  }
-
-  .perf-card .actions {
-    display: flex;
-    gap: 6px;
-    margin-top: auto;
-  }
-
-  .perf-card button.btn-xs {
-    font-size: 11px;
-    padding: 3px 6px;
-    line-height: 1.1;
-  }
-
-  .perf-card .tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-
-  .perf-card .tag {
-    font-size: 10px;
-    padding: 2px 5px;
-    background: #1f2b3b;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 4px;
-  }
-
-  /* Player Sidebar Collapse (streamlined) */
-
-  /* Effects Panel */
-  .effects-panel {
-    font-size: 12px;
-  }
-
-  .effects-panel .effects-group {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    background: #141c29;
-    padding: 8px 10px 10px;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 8px;
-  }
-
-  .effects-panel .effects-group .eg-heading {
-    font-weight: 600;
-    font-size: 12px;
-    letter-spacing: .5px;
-    text-transform: uppercase;
-    opacity: .8;
-  }
-
-  .effects-panel label {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    font-size: 11px;
-  }
-
-  .effects-panel input[type=range] {
-    flex: 1;
-    appearance: none;
-    height: 4px;
-    background: #233146;
-    border-radius: 4px;
-    outline: none;
-  }
-
-  .effects-panel input[type=range]::-webkit-slider-thumb {
-    appearance: none;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: var(--accent, #4f8cff);
-    cursor: pointer;
-    border: 2px solid #0d121d;
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4);
-  }
-
-  .effects-panel button.btn-xs {
-    align-self: flex-start;
-    margin-top: 2px;
-  }
-
-  .effects-panel .fx-val {
-    width: 46px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    opacity: 0.85;
-  }
-
-  .effects-panel .preset-row .btn-xs {
-    background: #1e2938;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-  }
-
-  .effects-panel .preset-row .btn-xs:hover {
-    background: #253448;
-  }
-
-  /* Video Stage transform anchor */
-  #videoStage {
-    transition: filter .15s linear, transform .2s ease;
-  }
-
-  @media (max-width: 640px) {
-    .perf-grid {
-      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-      gap: 10px;
-    }
-
-    .perf-card {
-      padding: 10px 10px 8px;
-    }
-  }
-
-  padding: 10px 14px;
-  font-size: 14px;
-  outline: none;
-  width:100%;
-  transition: all 0.2s ease;
-}
-
-#folderInput:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.2);
-  transform: translateY(-1px);
-}
-
-#folderInput::placeholder {
-  color: var(--muted);
-}
-
-.btn {
-  background: var(--panel);
-  color: var(--text);
-  border: 2px solid #2a3144;
-  border-radius: 12px;
-  padding: 12px 16px;
-  font-size: 16px;
-  cursor: pointer;
-  font-weight: 600;
-  transition: all 0.2s ease;
-}
-
-.btn-sm {
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid #2a3144;
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.btn-sm:hover {
-  background: #1e2634;
-  border-color: #364258;
-}
-
-.btn-sm:active {
-  background: #16202d;
-}
-
-.btn:hover {
-  background: #1a2030;
-  border-color: var(--accent);
-  transform: translateY(-1px);
-}
-
-main {
-  padding: 24px 64px;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(var(--columns, 6), 1fr);
-  gap: var(--grid-gap);
-  margin: 0 64px;
-}
-
-.card {
-  background: var(--card);
-  border: 1px solid #2a3144;
-  border-radius: 10px;
-  overflow: hidden;
-  transition: background .15s ease, transform .06s ease;
-  position: relative;
-}
-
-.card:hover {
-  background: var(--card-hover);
-  transform: translateY(-1px);
-}
+/* (Duplicate base reset + button/grid/card definitions removed above for clarity) */
 
 /* Video hover preview */
 .video-hover-preview {
@@ -1168,7 +1234,6 @@ main {
 /* Tab System */
 .tab-nav {
   display: flex;
-  border-bottom: 2px solid #242938;
   margin-top: 8px;
 }
 
@@ -1610,11 +1675,14 @@ main {
 
 /* Variant: generate-missing (slightly amber to differentiate) */
 .btn-generate[data-state="missing"] {
-  background: #d97706; /* amber-600 */
+  background: #d97706;
+  /* amber-600 */
   border-color: #d97706;
 }
+
 .btn-generate[data-state="missing"]:hover {
-  background: #f59e0b; /* amber-500 */
+  background: #f59e0b;
+  /* amber-500 */
   box-shadow: 0 4px 12px rgba(217, 119, 6, 0.35);
 }
 
@@ -1623,6 +1691,7 @@ main {
   background: linear-gradient(135deg, #dc2626, #ef4444);
   border-color: #ef4444;
 }
+
 .btn-generate.btn-danger:hover {
   filter: brightness(1.05);
 }
@@ -2009,7 +2078,7 @@ main {
   }
 }
 
-@keyframes slideIn {
+@keyframes slideInRight {
   from {
     opacity: 0;
     transform: translateX(100%);
@@ -2021,15 +2090,7 @@ main {
   }
 }
 
-@keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-
-  to {
-    transform: rotate(360deg);
-  }
-}
+/* (Duplicate spin keyframes removed; single definition earlier) */
 
 /* Orphaned Artifacts Section */
 .orphan-card {
@@ -2319,6 +2380,9 @@ main {
   box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.7);
   display: flex;
   justify-content: center;
+  align-items: center;
+  flex: 1 1 auto; /* allow stage to expand vertically */
+  min-height: 0; /* enable child flex sizing */
 }
 
 .video-stage-simple::after {
@@ -2336,12 +2400,13 @@ main {
 
 .player-stage-simple .video-el {
   width: 100%;
-  max-width: min(1300px, 90vw);
+  max-width: 100%;
   aspect-ratio: 16/9;
   background: #000;
   border-radius: 10px;
   display: block;
-  max-height: var(--player-max-h, 74vh);
+  height: calc(100vh - var(--header-h));
+  max-height: calc(100vh - var(--header-h));
   object-fit: contain;
 }
 
@@ -2732,16 +2797,17 @@ main {
   position: relative;
   display: block;
   width: 100%;
-  max-height: 78vh;
   background: #000;
 }
 
 .video-el {
   display: block;
   width: 100%;
-  height: auto;
+  height: calc(100vh - var(--header-h));
+  max-height: calc(100vh - var(--header-h));
   background: #000;
   aspect-ratio: 16/9;
+  object-fit: contain;
 }
 
 /* Overlay */
@@ -2955,13 +3021,9 @@ main {
   align-items: center;
   justify-content: center;
   padding: 6px;
+  min-height: 0; /* allow flex child (video) to size fully */
 }
-
-#player-panel .player-stage-simple .video-el {
-  max-height: var(--player-max-h, calc(100vh - var(--header-h) - 140px));
-  width: 100%;
-  height: auto;
-}
+/* Panel-specific .video-el override removed: unified calc-based height applies */
 
 @media (max-height: 760px) {
 
@@ -3081,7 +3143,8 @@ main {
   flex-direction: column;
   gap: 10px;
   z-index: 1000;
-  pointer-events: none; /* clicks pass through when between toasts */
+  pointer-events: none;
+  /* clicks pass through when between toasts */
 }
 
 /* Destructive / danger button variant (used for Clear All) */
@@ -3090,23 +3153,33 @@ main {
 button.btn-danger {
   background: linear-gradient(135deg, #b91c1c, #dc2626);
   color: #fff;
-  border: 1px solid rgba(255,255,255,0.12);
-  box-shadow: 0 2px 4px -2px rgba(0,0,0,0.5);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 4px -2px rgba(0, 0, 0, 0.5);
 }
-.btn-danger:hover { background: linear-gradient(135deg, #dc2626, #ef4444); }
-.btn-danger:active { background: #991b1b; }
-.btn-danger:disabled { opacity: .55; cursor: not-allowed; }
+
+.btn-danger:hover {
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+}
+
+.btn-danger:active {
+  background: #991b1b;
+}
+
+.btn-danger:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
 
 /* Capability banner extracted from inline style */
 .capability-banner {
   margin: 8px 0 12px;
   padding: 10px 12px;
-  border:1px solid rgba(255,255,255,0.15);
-  border-radius:8px;
-  background:#221b12;
-  color:#f7d382;
-  font-size:13px;
-  line-height:1.4;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  background: #221b12;
+  color: #f7d382;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .toast {
@@ -3116,20 +3189,36 @@ button.btn-danger {
   color: #fff;
   padding: 10px 14px;
   border-radius: 8px;
-  box-shadow: 0 4px 16px -4px rgba(0,0,0,0.4);
+  box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.4);
   animation: toastIn 0.32s ease;
   position: relative;
-  pointer-events: auto; /* allow hover for potential future actions */
+  pointer-events: auto;
+  /* allow hover for potential future actions */
   max-width: 320px;
 }
 
-.toast.is-success { background: #22c55e; }
-.toast.is-error { background: #ef4444; }
-.toast.is-info { background: #4f8cff; }
+.toast.is-success {
+  background: #22c55e;
+}
+
+.toast.is-error {
+  background: #ef4444;
+}
+
+.toast.is-info {
+  background: #4f8cff;
+}
 
 @keyframes toastIn {
-  from { opacity: 0; transform: translateY(-6px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .toast.fade-out {
@@ -3138,5 +3227,7 @@ button.btn-danger {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toast { animation: none; }
+  .toast {
+    animation: none;
+  }
 }
