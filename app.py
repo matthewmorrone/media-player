@@ -434,6 +434,7 @@ JOB_CTX = _JobContext()
 
 # Track live subprocesses per job so we can terminate on cancel
 JOB_PROCS: dict[str, set[subprocess.Popen]] = {}
+JOB_HEARTBEATS: dict[str, float] = {}
 
 
 def _register_job_proc(jid: str, proc: subprocess.Popen) -> None:
@@ -1649,6 +1650,7 @@ def generate_scene_artifacts(
     clip_duration: float,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    fast_mode: bool = True,
 ) -> None:
     """
     Detect scene changes using ffmpeg showinfo and optionally export thumbs/clips.
@@ -1659,7 +1661,8 @@ def generate_scene_artifacts(
     """
     j = scenes_json_path(video)
     out_dir = scenes_dir(video)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Create directory lazily only if we actually emit thumbs/clips
+    created_dir = False
 
     scenes: list[dict] = []
     if not ffmpeg_available():
@@ -1671,11 +1674,25 @@ def generate_scene_artifacts(
     with _PerFileLock(video, key="scenes"):
         # Use ffmpeg showinfo to find pts_time for frames exceeding scene threshold
         thr = max(0.0, min(1.0, float(threshold)))
+        # Base ffmpeg invocation; use -an to skip audio decode; optionally downscale before detection for speed
+        scale_clause = None
+        if fast_mode:
+            # Heuristic downscale target (avoid needlessly processing 4K frames for scene detection)
+            target_w = 640 if thumbs_width > 0 else 640
+            scale_clause = f"scale=min({target_w},iw):-1:flags=fast_bilinear"
+        vf_chain = []
+        if scale_clause:
+            vf_chain.append(scale_clause)
+        # Detection + showinfo (on selected frames only)
+        vf_chain.append(f"select=gt(scene,{thr})")
+        vf_chain.append("showinfo")
+        vf_expr = ",".join(vf_chain)
         cmd = [
             "ffmpeg", "-hide_banner",
             *(_ffmpeg_hwaccel_flags()),
             "-i", str(video),
-            "-filter_complex", f"select='gt(scene,{thr})',showinfo",
+            "-an",  # skip audio decode for speed
+            "-vf", vf_expr,
             "-f", "null", "-",
         ]
         # Stream stderr/stdout to incrementally parse showinfo and emit progress
@@ -1712,22 +1729,52 @@ def generate_scene_artifacts(
                     if not line:
                         continue
                     try:
-                        m = re.search(r"pts_time:(?P<t>[0-9]+\.[0-9]+)", line)
-                        if m:
-                            t = float(m.group("t"))
-                            # dedupe close times
+                        # Capture selected frame timestamps (pts_time lines from showinfo on selected frames)
+                        m_pts = re.search(r"pts_time:(?P<t>[0-9]+(?:\.[0-9]+)?)", line)
+                        if m_pts:
+                            t = float(m_pts.group("t"))
                             if (not times) or abs(times[-1] - t) > 0.25:
                                 times.append(t)
                             last_ts = t
-                        # update approximate pass progress based on last seen timestamp
+                        # Generic ffmpeg progress fallback (time=HH:MM:SS.xx)
+                        if duration and duration > 0:
+                            m_time = re.search(r"time=(?P<h>\d+):(\d+):(\d+\.?\d*)", line)
+                            if m_time:
+                                try:
+                                    h, rest = int(m_time.group("h")), line[line.find(":")+1:]
+                                except Exception:
+                                    h = 0
+                                # Simpler: parse full time= with regex capturing hours mins secs
+                                m_full = re.search(r"time=(?P<H>\d+):(?P<M>\d+):(?P<S>\d+\.?\d*)", line)
+                                if m_full:
+                                    try:
+                                        ct = (int(m_full.group("H"))*3600)+(int(m_full.group("M"))*60)+float(m_full.group("S"))
+                                        last_ts = max(last_ts, ct)
+                                    except Exception:
+                                        pass
+                        # External job progress via job id OR provided progress_cb
                         if duration and duration > 0:
                             frac = max(0.0, min(1.0, float(last_ts) / float(duration)))
-                            jid = getattr(JOB_CTX, "jid", None)
-                            if jid:
+                            # Prefer provided progress_cb if available for unified semantics
+                            if progress_cb:
                                 try:
-                                    _set_job_progress(jid, total=100, processed_set=int(frac * 100))
+                                    progress_cb(int(frac * 50), 100)  # reserve second half for generation phase
                                 except Exception:
                                     pass
+                            else:
+                                jid = getattr(JOB_CTX, "jid", None)
+                                if jid:
+                                    try:
+                                        _set_job_progress(jid, total=100, processed_set=int(frac * 50))
+                                    except Exception:
+                                        pass
+                        # Early exit if we have reached requested limit of scenes
+                        if limit and limit > 0 and len(times) >= limit:
+                            try:
+                                os.killpg(proc.pid, signal.SIGTERM)
+                            except Exception:
+                                proc.terminate()
+                            break
                     except Exception:
                         pass
                     # cancel check
@@ -1753,8 +1800,18 @@ def generate_scene_artifacts(
     if int(proc_rc or 0) != 0 and not times:
         times = []
 
-    if limit and limit > 0:
+    if limit and limit > 0 and len(times) > limit:
         times = times[: int(limit)]
+
+    # Fallback: if no scene cuts detected but we have a duration, synthesize a start + end marker
+    if not times and duration and duration > 1.0:
+        # Provide at least one mid-point so UI can display a tick (heuristic: every 5 minutes up to 10 markers)
+        approx_count = max(1, min(10, int(duration // 300)))
+        if approx_count == 1:
+            times = [duration / 2.0]
+        else:
+            step_size = duration / (approx_count + 1)
+            times = [step_size * i for i in range(1, approx_count + 1)]
 
     total_steps = len(times)
     step = 0
@@ -1764,6 +1821,12 @@ def generate_scene_artifacts(
         entry: dict[str, Any] = {"time": float(t)}
         if gen_thumbs:
             thumb = out_dir / f"{video.stem}.scene_{i:03d}.jpg"
+            if not created_dir:
+                try:
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    created_dir = True
+                except Exception:
+                    pass
             cmd_t = [
                 "ffmpeg", "-y",
                 *(_ffmpeg_hwaccel_flags()),
@@ -1781,11 +1844,18 @@ def generate_scene_artifacts(
             step += 1
             if progress_cb and total_steps:
                 try:
-                    progress_cb(min(step, total_steps), total_steps)
+                    # Map generation phase to second half of 100-scale if earlier detection used progress_cb
+                    progress_cb(50 + int((step / max(1, total_steps)) * 50), 100)
                 except Exception:
                     pass
         if gen_clips:
             clip = out_dir / f"{video.stem}.scene_{i:03d}.mp4"
+            if not created_dir:
+                try:
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    created_dir = True
+                except Exception:
+                    pass
             cmd_c = [
                 "ffmpeg", "-y",
                 *(_ffmpeg_hwaccel_flags()),
@@ -1806,14 +1876,21 @@ def generate_scene_artifacts(
             step += 1
             if progress_cb and total_steps:
                 try:
-                    progress_cb(min(step, total_steps), total_steps)
+                    progress_cb(50 + int((step / max(1, total_steps)) * 50), 100)
                 except Exception:
                     pass
 
     j.write_text(json.dumps({"scenes": scenes}, indent=2))
-    if progress_cb and total_steps:
+    # Remove scenes directory if it exists but ended up empty (avoid clutter)
+    if created_dir:
         try:
-            progress_cb(total_steps, total_steps)
+            if out_dir.exists() and not any(out_dir.iterdir()):
+                out_dir.rmdir()
+        except Exception:
+            pass
+    if progress_cb:
+        try:
+            progress_cb(100, 100)
         except Exception:
             pass
 
@@ -3306,6 +3383,10 @@ def _persist_job(jid: str) -> None:
         "result": j.get("result"),
     }
     _json_dump_atomic(_job_file_path(str(j.get("id") or "")), payload)  # type: ignore[arg-type]
+    try:
+        JOB_HEARTBEATS[str(j.get("id") or "")] = time.time()
+    except Exception:
+        pass
 
 def _delete_persisted_job(jid: str) -> None:
     try:
@@ -3464,6 +3545,10 @@ def _start_job(jid: str):
     except Exception:
         pass
     _persist_job(jid)
+    try:
+        JOB_HEARTBEATS[jid] = time.time()
+    except Exception:
+        pass
     with JOB_LOCK:
         j = JOBS.get(jid) or {}
         jtype = j.get("type")
@@ -3498,6 +3583,10 @@ def _finish_job(jid: str, error: Optional[str] = None):
             j["ended_at"] = time.time()
             j["error"] = error
     _persist_job(jid)
+    try:
+        JOB_HEARTBEATS[jid] = time.time()
+    except Exception:
+        pass
     with JOB_LOCK:
         j = JOBS.get(jid) or {}
         jtype = j.get("type")
@@ -3560,6 +3649,42 @@ def _set_job_progress(jid: str, *, total: Optional[int] = None, processed_inc: i
         "total": total_v,
         "processed": processed_v,
     })
+    try:
+        JOB_HEARTBEATS[jid] = time.time()
+    except Exception:
+        pass
+
+
+def _cleanup_orphan_jobs(max_idle: float = 300.0, min_age: float = 5.0) -> dict:
+    """Mark running jobs as finished if their processes are gone and heartbeat stale."""
+    now = time.time()
+    marked: list[str] = []
+    with JOB_LOCK:
+        for jid, j in JOBS.items():
+            if j.get("state") != "running":
+                continue
+            hb = JOB_HEARTBEATS.get(jid, 0.0)
+            idle = now - float(hb or 0.0)
+            if idle < max(1.0, min_age):
+                continue
+            procs = list(JOB_PROCS.get(jid) or [])
+            if any(p.poll() is None for p in procs):
+                continue
+            # orphan
+            j["state"] = "failed" if not j.get("error") else j.get("state")
+            j.setdefault("error", "orphaned (no active process)")
+            j["ended_at"] = time.time()
+            marked.append(jid)
+            try:
+                _persist_job(jid)
+            except Exception:
+                pass
+    return {"marked": len(marked), "ids": marked}
+
+
+@api.post("/jobs/reap-orphans")
+def jobs_reap_orphans(max_idle: float = Query(default=300.0), min_age: float = Query(default=5.0)):
+    return api_success(_cleanup_orphan_jobs(max_idle=max_idle, min_age=min_age))
 
 
 
@@ -4033,6 +4158,37 @@ def config_info():
         "config_path": STATE.get("config_path"),
         "version": app.version,
     }
+
+
+# -----------------------------
+# Root path (GET current / POST update)
+# -----------------------------
+class RootUpdate(BaseModel):  # type: ignore
+    root: str
+
+
+@api.post("/root/set")
+def api_root_set(payload: RootUpdate):
+    """Update the library root directory (alternate setter endpoint to avoid function name clash)."""
+    try:
+        raw = (payload.root or "").strip()
+        if not raw:
+            raise_api_error("root path required", status_code=400)
+        p = Path(raw).expanduser().resolve()
+        if not p.exists() or not p.is_dir():
+            raise_api_error("directory not found", status_code=404)
+        try:
+            next(p.iterdir())  # type: ignore[call-overload]
+        except StopIteration:
+            pass
+        except Exception:
+            raise_api_error("directory not readable", status_code=403)
+        STATE["root"] = p
+        return api_success({"root": str(p)})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_api_error(f"failed to set root: {e}")
 
 
 def _find_mp4s(root: Path, recursive: bool) -> list[Path]:
@@ -6101,7 +6257,7 @@ def scenes_head(path: str = Query(...)):
 
 
 @api.post("/scenes/create")
-def scenes_create(path: str = Query(...), threshold: float = Query(default=0.4), limit: int = Query(default=0), thumbs: bool = Query(default=False), clips: bool = Query(default=False), thumbs_width: int = Query(default=320), clip_duration: float = Query(default=2.0)):
+def scenes_create(path: str = Query(...), threshold: float = Query(default=0.4), limit: int = Query(default=0), thumbs: bool = Query(default=False), clips: bool = Query(default=False), thumbs_width: int = Query(default=320), clip_duration: float = Query(default=2.0), fast: bool = Query(default=True)):
     fp = safe_join(STATE["root"], path)
     # Scene detection and outputs require ffmpeg present
     _require_ffmpeg_or_error("scene detection")
@@ -6114,7 +6270,17 @@ def scenes_create(path: str = Query(...), threshold: float = Query(default=0.4),
                     _set_job_progress(jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
                 except Exception:
                     pass
-        generate_scene_artifacts(fp, threshold=float(threshold), limit=int(limit), gen_thumbs=bool(thumbs), gen_clips=bool(clips), thumbs_width=int(thumbs_width), clip_duration=float(clip_duration), progress_cb=_pcb)
+        generate_scene_artifacts(
+            fp,
+            threshold=float(threshold),
+            limit=int(limit),
+            gen_thumbs=bool(thumbs),
+            gen_clips=bool(clips),
+            thumbs_width=int(thumbs_width),
+            clip_duration=float(clip_duration),
+            progress_cb=_pcb,
+            fast_mode=bool(fast),
+        )
         return api_success({"created": True, "path": str(scenes_json_path(fp))})
     try:
         return _wrap_job("scenes", str(fp.relative_to(STATE["root"])), _do)
@@ -6175,6 +6341,7 @@ def scenes_create_batch(
     thumbs_width: int = Query(default=320),
     clip_duration: float = Query(default=2.0),
     only_missing: bool = Query(default=True),
+    fast: bool = Query(default=True),
 ):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
@@ -6216,6 +6383,7 @@ def scenes_create_batch(
                                     thumbs_width=int(thumbs_width),
                                     clip_duration=float(clip_duration),
                                     progress_cb=_pcb,
+                                    fast_mode=bool(fast),
                                 )
                         _finish_job(jid, None)
                     except Exception as e:

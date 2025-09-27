@@ -5,6 +5,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Media Library</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
   <link rel="stylesheet" href="index.css" />
   <script>window.__JOBS_SSE_ENABLED = true; /* enable push job events */</script>
   <script src="index.js" defer></script>
@@ -65,8 +66,20 @@
             <!-- TODO: insert playlist / file info / upcoming items -->
           </div>
           <div class="player-main">
-            <!-- Main (80%) content placeholder -->
-            <!-- TODO: insert video player / timeline / controls -->
+            <div id="playerOverlayBar" class="player-overlay-bar">
+              <span id="playerTitle" class="player-title"></span>
+            </div>
+            <video id="playerVideo" class="player-video" playsinline preload="metadata"></video>
+            <!-- Floating scrubber (timeline) overlay at bottom -->
+            <div id="playerScrubber" class="player-scrubber-bar" aria-hidden="true">
+              <div class="scrubber-track" id="playerScrubberTrack">
+                <div class="scrubber-buffer" id="playerScrubberBuffer"></div>
+                <div class="scrubber-progress" id="playerScrubberProgress"></div>
+              </div>
+              <div class="scrubber-time" id="playerScrubberTime">00:00 / 00:00</div>
+            </div>
+            <!-- Hover sprite preview (dynamically positioned) -->
+            <div id="spritePreview" style="position:absolute; display:none; background-repeat:no-repeat; background-color:rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.2); box-shadow:0 4px 14px -4px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.08) inset; border-radius:6px; overflow:hidden; backdrop-filter:blur(4px) saturate(140%);"></div>
           </div>
         </div>
       </div>
@@ -205,9 +218,10 @@
             <div class="section-header">
               <h2>Job Monitor</h2>
               <div class="section-actions">
-                <button id="cancelAllBtn" class="btn-sm d-none" title="Cancel all queued and running jobs">Cancel All</button>
-                <button id="cancelQueuedBtn" class="btn-sm d-none" title="Cancel all queued jobs">Cancel Queued</button>
-                <button id="clearCompletedBtn" class="btn-sm d-none" title="Remove completed jobs from the list">Clear Completed</button>
+                <!-- Removed d-none; JS controls visibility via inline style now -->
+                <button id="cancelAllBtn" class="btn-sm" style="display:none" title="Cancel all queued and running jobs">Cancel All</button>
+                <button id="cancelQueuedBtn" class="btn-sm" style="display:none" title="Cancel all queued jobs">Cancel Queued</button>
+                <button id="clearCompletedBtn" class="btn-sm" style="display:none" title="Remove completed jobs from the list">Clear Completed</button>
               </div>
             </div>
 

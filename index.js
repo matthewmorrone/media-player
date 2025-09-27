@@ -919,6 +919,12 @@ window.addEventListener("load", () => {
     })
     .finally(loadLibrary);
 
+  // Ensure job action buttons can be toggled by JS even if residual d-none class remains
+  ["cancelAllBtn", "cancelQueuedBtn", "clearCompletedBtn"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && el.classList.contains("d-none")) el.classList.remove("d-none");
+  });
+
   // Initialize per-artifact options menus
   initArtifactOptionsMenus();
 });
@@ -1002,6 +1008,11 @@ function handleCardClick(event, path) {
   } else {
     // No items selected and no modifiers: open in Player tab
     Player.open(path);
+    try {
+      if (window.tabSystem && typeof window.tabSystem.switchToTab === 'function') {
+        window.tabSystem.switchToTab('player');
+      }
+    } catch (_) {}
   }
 }
 
@@ -1638,7 +1649,8 @@ const Player = (() => {
     heatmapCanvasEl,
     progressEl,
     markersEl,
-    spriteTooltipEl;
+    spriteTooltipEl,
+    overlayBarEl; // floating translucent title bar
   // Custom controls
   let btnPlayPause,
     btnMute,
@@ -1686,6 +1698,20 @@ const Player = (() => {
   let hasHeatmap = false;
   let subtitlesUrl = null;
   let timelineMouseDown = false;
+  // Overlay auto-hide timer
+  let overlayHideTimer = null;
+  const OVERLAY_FADE_DELAY = 2500; // ms before fading overlay bar
+  // Scrubber elements
+  let scrubberEl = null,
+    scrubberTrackEl = null,
+    scrubberProgressEl = null,
+    scrubberBufferEl = null,
+    scrubberTimeEl = null;
+  let scrubberRAF = null;
+  let scrubberDragging = false;
+  let scrubberWasPaused = null;
+  let scrubberHandleEl = null;
+  let scrubberScenesLayer = null;
 
   // ---- Progress persistence (localStorage) ----
   const LS_PREFIX = "mediaPlayer";
@@ -1769,6 +1795,26 @@ const Player = (() => {
     if (videoEl) return; // already
     videoEl = qs("playerVideo");
     titleEl = qs("playerTitle");
+    overlayBarEl = qs("playerOverlayBar");
+    if (overlayBarEl && (!titleEl || !titleEl.textContent.trim())) {
+      overlayBarEl.dataset.empty = '1';
+    }
+    // Scrubber
+    scrubberEl = qs("playerScrubber");
+    scrubberTrackEl = qs("playerScrubberTrack");
+    scrubberProgressEl = qs("playerScrubberProgress");
+    scrubberBufferEl = qs("playerScrubberBuffer");
+    scrubberTimeEl = qs("playerScrubberTime");
+    if (scrubberTrackEl && !scrubberHandleEl) {
+      scrubberHandleEl = document.createElement('div');
+      scrubberHandleEl.className = 'scrubber-handle';
+      scrubberTrackEl.appendChild(scrubberHandleEl);
+    }
+    if (scrubberTrackEl && !scrubberScenesLayer) {
+      scrubberScenesLayer = document.createElement('div');
+      scrubberScenesLayer.className = 'scrubber-scenes';
+      scrubberTrackEl.appendChild(scrubberScenesLayer);
+    }
     curEl = qs("curTime");
     totalEl = qs("totalTime");
     timelineEl = qs("timeline");
@@ -1777,6 +1823,14 @@ const Player = (() => {
     progressEl = qs("timelineProgress");
     markersEl = qs("timelineMarkers");
     spriteTooltipEl = qs("spritePreview");
+    if (!spriteTooltipEl) {
+      // Fallback in case markup changed; create ephemeral element
+      spriteTooltipEl = document.createElement('div');
+      spriteTooltipEl.id = 'spritePreview';
+      spriteTooltipEl.style.position = 'absolute';
+      spriteTooltipEl.style.display = 'none';
+      (videoEl && videoEl.parentElement ? videoEl.parentElement : document.body).appendChild(spriteTooltipEl);
+    }
     badgeHeatmap = qs("badgeHeatmap");
     badgeScenes = qs("badgeScenes");
     badgeSubtitles = qs("badgeSubtitles");
@@ -2318,8 +2372,158 @@ const Player = (() => {
     } catch (_) {}
   }
 
+  // -----------------------------
+  // Floating overlay title bar logic
+  // -----------------------------
+  function showOverlayBar() {
+    try {
+      if (!overlayBarEl) overlayBarEl = document.getElementById("playerOverlayBar");
+      if (!overlayBarEl) return;
+      overlayBarEl.classList.remove("fading");
+      if (scrubberEl) scrubberEl.classList.remove("fading");
+      if (overlayHideTimer) {
+        clearTimeout(overlayHideTimer);
+        overlayHideTimer = null;
+      }
+      const defer = (overlayBarEl.matches(':hover') || (scrubberEl && scrubberEl.matches(':hover')) || scrubberDragging);
+      if (defer) return;
+      overlayHideTimer = setTimeout(() => {
+        try {
+          if (overlayBarEl) overlayBarEl.classList.add('fading');
+          if (scrubberEl) scrubberEl.classList.add('fading');
+        } catch(_){}
+      }, OVERLAY_FADE_DELAY);
+    } catch (_) {}
+  }
+
+  function wireOverlayInteractions() {
+    try {
+      if (!videoEl) return;
+      const main = videoEl.parentElement; // .player-main
+      if (!main || main._overlayWired) return;
+      main._overlayWired = true;
+      ["mousemove", "touchstart"].forEach((ev) => {
+        main.addEventListener(ev, () => showOverlayBar(), { passive: true });
+      });
+      ;[overlayBarEl, scrubberEl].forEach(el => {
+        if (!el) return;
+        el.addEventListener('mouseenter', () => {
+          if (overlayHideTimer) { clearTimeout(overlayHideTimer); overlayHideTimer = null; }
+          overlayBarEl && overlayBarEl.classList.remove('fading');
+          scrubberEl && scrubberEl.classList.remove('fading');
+        });
+        el.addEventListener('mouseleave', () => {
+          if (!scrubberDragging) showOverlayBar();
+        });
+      });
+      // Initial show on first wire
+      showOverlayBar();
+    } catch (_) {}
+  }
+
+  // -----------------------------
+  // Scrubber (progress + buffered) rendering
+  // -----------------------------
+  function fmtShortTime(sec) {
+    if (!Number.isFinite(sec) || sec < 0) return "00:00";
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    if (h) return `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+    return `${m}:${String(s).padStart(2,"0")}`;
+  }
+
+  function updateScrubber() {
+    if (!videoEl || !scrubberEl) return;
+    if (scrubberProgressEl) {
+      const pct = videoEl.duration ? (videoEl.currentTime / videoEl.duration) * 100 : 0;
+      scrubberProgressEl.style.width = pct + "%";
+      if (scrubberHandleEl) scrubberHandleEl.style.left = pct + '%';
+    }
+    if (scrubberBufferEl) {
+      try {
+        const buf = videoEl.buffered;
+        if (buf && buf.length) {
+          const end = buf.end(buf.length - 1);
+          const pctB = videoEl.duration ? (end / videoEl.duration) * 100 : 0;
+          scrubberBufferEl.style.width = pctB + "%";
+        }
+      } catch(_){}
+    }
+    if (scrubberTimeEl) {
+      scrubberTimeEl.textContent = `${fmtShortTime(videoEl.currentTime||0)} / ${fmtShortTime(videoEl.duration||0)}`;
+    }
+    scrubberRAF = requestAnimationFrame(updateScrubber);
+  }
+
+  function startScrubberLoop() {
+    if (!scrubberEl || scrubberRAF) return;
+    scrubberRAF = requestAnimationFrame(updateScrubber);
+  }
+  function stopScrubberLoop() {
+    if (scrubberRAF) cancelAnimationFrame(scrubberRAF);
+    scrubberRAF = null;
+  }
+
+  // Scrubber interactions (drag seek)
+  function pctToTime(pct) {
+    pct = Math.min(1, Math.max(0, pct));
+    return (videoEl && Number.isFinite(videoEl.duration) ? videoEl.duration : 0) * pct;
+  }
+  function seekToClientX(clientX) {
+    if (!videoEl || !scrubberTrackEl) return;
+    const rect = scrubberTrackEl.getBoundingClientRect();
+    const pct = (clientX - rect.left) / rect.width;
+    const t = pctToTime(pct);
+    if (Number.isFinite(t)) { try { videoEl.currentTime = t; } catch(_){} }
+  }
+  function wireScrubberInteractions() {
+    if (!scrubberTrackEl || scrubberTrackEl._wired) return;
+    scrubberTrackEl._wired = true;
+    const onDown = (e) => {
+      if (!videoEl) return;
+      showOverlayBar();
+      scrubberDragging = true;
+      scrubberWasPaused = videoEl.paused;
+      if (!scrubberWasPaused) { try { videoEl.pause(); } catch(_){} }
+      seekToClientX(e.touches ? e.touches[0].clientX : e.clientX);
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('touchmove', onMove, { passive: true });
+      window.addEventListener('mouseup', onUp, { once: true });
+      window.addEventListener('touchend', onUp, { once: true });
+      e.preventDefault();
+    };
+    const onMove = (e) => { if (!scrubberDragging) return; seekToClientX(e.touches ? e.touches[0].clientX : e.clientX); };
+    const onUp = () => {
+      scrubberDragging = false;
+      if (videoEl && scrubberWasPaused === false) { try { videoEl.play(); } catch(_){} }
+      scrubberWasPaused = null;
+      showOverlayBar();
+    };
+    scrubberTrackEl.addEventListener('mousedown', onDown);
+    scrubberTrackEl.addEventListener('touchstart', onDown, { passive: true });
+    // Hover sprite previews via existing logic
+    scrubberTrackEl.addEventListener('mouseenter', () => { spriteHoverEnabled = true; });
+    scrubberTrackEl.addEventListener('mouseleave', () => { spriteHoverEnabled = false; hideSprite(); });
+    scrubberTrackEl.addEventListener('mousemove', (e) => handleSpriteHover(e));
+  }
+
+  function renderSceneTicks() {
+    if (!scrubberScenesLayer || !Array.isArray(scenes) || !videoEl || !Number.isFinite(videoEl.duration) || videoEl.duration <= 0) return;
+    scrubberScenesLayer.innerHTML = '';
+    const dur = videoEl.duration;
+    scenes.forEach(sc => {
+      const time = Number(sc?.time ?? sc?.t ?? sc?.start ?? sc?.s);
+      if (!Number.isFinite(time) || time <= 0 || time >= dur) return;
+      const span = document.createElement('span');
+      span.style.left = (time / dur * 100) + '%';
+      scrubberScenesLayer.appendChild(span);
+    });
+  }
+
   function open(path) {
     initDom();
+    wireOverlayInteractions();
     currentPath = path;
     // Switch to Player tab only when user explicitly opens a video via a card click (handled upstream).
     // Avoid forcing tab switch here to respect persisted tab preference.
@@ -2335,7 +2539,25 @@ const Player = (() => {
       // Defer autoplay decision to loadedmetadata restore
       // Attempt to keep lastVideo reference for convenience
       saveProgress(path, { t: 0, d: 0, paused: true, rate: 1 });
+      startScrubberLoop();
+      videoEl.addEventListener("ended", () => stopScrubberLoop(), { once: true });
+      wireScrubberInteractions();
+      // When metadata arrives, we can now safely render scene ticks if scenes already loaded
+      videoEl.addEventListener('loadedmetadata', () => {
+        try { renderSceneTicks(); } catch(_){}
+      }, { once: true });
     }
+    // Update floating title bar if present
+    try {
+      const titleTarget = document.getElementById('playerTitle');
+      if (titleTarget) {
+        const rawName = path.split('/').pop() || path;
+        const baseName = rawName.replace(/\.[^.]+$/, '') || rawName;
+        titleTarget.textContent = baseName;
+        if (overlayBarEl && baseName) { delete overlayBarEl.dataset.empty; }
+        if (typeof showOverlayBar === 'function') showOverlayBar();
+      }
+    } catch(_){}
     // Metadata and title
     (async () => {
       try {
@@ -2347,6 +2569,7 @@ const Player = (() => {
         const rawName = path.split("/").pop() || path;
         const baseName = rawName.replace(/\.[^.]+$/, "") || rawName;
         if (titleEl) titleEl.textContent = baseName;
+  if (overlayBarEl && baseName) { delete overlayBarEl.dataset.empty; }
         // sidebar title removed
         // Populate file info table
         try {
@@ -2394,6 +2617,7 @@ const Player = (() => {
         const rawName = path.split("/").pop() || path;
         const baseName = rawName.replace(/\.[^.]+$/, "") || rawName;
         if (titleEl) titleEl.textContent = baseName;
+  if (overlayBarEl && baseName) { delete overlayBarEl.dataset.empty; }
         // sidebar title removed
         try {
           if (fiDurationEl) fiDurationEl.textContent = "—";
@@ -2786,6 +3010,8 @@ const Player = (() => {
         badgeScenesStatus.textContent = scenes.length ? "✓" : "✗";
       if (badgeScenes) badgeScenes.dataset.present = scenes.length ? "1" : "0";
       applyTimelineDisplayToggles();
+      // Scene ticks may depend on duration; schedule retries until duration known
+      if (scenes.length) scheduleSceneTicksRetry();
     } catch (_) {
       scenes = [];
       renderMarkers();
@@ -2793,6 +3019,16 @@ const Player = (() => {
       if (badgeScenes) badgeScenes.dataset.present = "0";
     }
     applyTimelineDisplayToggles();
+  }
+
+  let sceneTickRetryTimer = null;
+  function scheduleSceneTicksRetry(attempt=0) {
+    if (sceneTickRetryTimer) { clearTimeout(sceneTickRetryTimer); sceneTickRetryTimer = null; }
+    if (!videoEl || !Array.isArray(scenes) || !scenes.length) return;
+    const ready = Number.isFinite(videoEl.duration) && videoEl.duration > 0;
+    if (ready) { try { renderSceneTicks(); } catch(_){} return; }
+    if (attempt > 12) return; // ~3s max (12 * 250ms)
+    sceneTickRetryTimer = setTimeout(() => scheduleSceneTicksRetry(attempt+1), 250);
   }
 
   async function loadSubtitles() {
@@ -3034,15 +3270,11 @@ const Player = (() => {
   }
 
   function handleSpriteHover(evt) {
-    if (!sprites || !sprites.index || !sprites.sheet) {
-      hideSprite();
-      return;
-    }
-    if (!spriteHoverEnabled) {
-      hideSprite();
-      return;
-    }
-    const rect = timelineEl.getBoundingClientRect();
+    if (!sprites || !sprites.index || !sprites.sheet) { hideSprite(); return; }
+    if (!spriteHoverEnabled) { hideSprite(); return; }
+    const targetTrack = scrubberTrackEl || timelineEl;
+    if (!targetTrack) { hideSprite(); return; }
+    const rect = targetTrack.getBoundingClientRect();
     // Tooltip now lives under the controls container below the video
     const container =
       spriteTooltipEl && spriteTooltipEl.parentElement
@@ -3051,13 +3283,15 @@ const Player = (() => {
         ? videoEl.parentElement
         : document.body;
     const containerRect = container.getBoundingClientRect();
-    const x = evt.clientX - rect.left;
+  const x = evt.clientX - rect.left;
     if (x < 0 || x > rect.width) {
       hideSprite();
       return;
     }
-    const pct = x / rect.width;
-    const t = pct * (duration || 0);
+  const pct = x / rect.width;
+  const vidDur = (Number.isFinite(duration) && duration > 0) ? duration : (videoEl && Number.isFinite(videoEl.duration) ? videoEl.duration : 0);
+  if (!vidDur) { hideSprite(); return; }
+  const t = pct * vidDur;
     // Position tooltip
     // Determine tile width/height for placement
     let tw = 240,
@@ -3073,21 +3307,16 @@ const Player = (() => {
     const thS = Math.max(1, Math.round(th * scale));
     const halfW = Math.max(1, Math.floor(twS / 2));
     const baseLeft = rect.left - containerRect.left + x - halfW; // center on cursor
-    const clampedLeft = Math.max(
-      8,
-      Math.min(containerRect.width - (twS + 8), baseLeft)
-    );
-    spriteTooltipEl.style.left = clampedLeft + "px";
-    // Place the preview directly above the entire controls container
-    // Bottom of the tooltip sits 'gap' px above the top edge of #playerControlsContainer
-    const gap = 12; // px
-    const anchorTop = -gap;
-    spriteTooltipEl.style.top = anchorTop + "px";
-    spriteTooltipEl.style.bottom = "auto";
-    spriteTooltipEl.style.transform = "translateY(-100%)";
-    // Ensure tooltip stays above any overlay bars
-    spriteTooltipEl.style.zIndex = "9999";
-    spriteTooltipEl.style.display = "block";
+    const clampedLeft = Math.max(8, Math.min(containerRect.width - (twS + 8), baseLeft));
+    // Compute vertical placement so the preview sits just above the scrubber track
+    const gap = 8; // px gap between preview bottom and scrubber top
+    const previewTop = (rect.top - containerRect.top) - gap - thS; // rect.top relative to container
+    spriteTooltipEl.style.left = clampedLeft + 'px';
+    spriteTooltipEl.style.top = Math.max(0, previewTop) + 'px';
+    spriteTooltipEl.style.bottom = 'auto';
+    spriteTooltipEl.style.transform = 'none';
+    spriteTooltipEl.style.zIndex = '9999';
+    spriteTooltipEl.style.display = 'block';
     // Compute background position based on sprite metadata
     try {
       const idx = sprites.index;
@@ -3096,10 +3325,8 @@ const Player = (() => {
       const interval = Number(idx.interval || 10);
       // tw/th already computed above for placement
       const totalFrames = Math.max(1, Number(idx.frames || cols * rows));
-      const frame = Math.min(
-        totalFrames - 1,
-        Math.floor(t / Math.max(0.1, interval))
-      );
+      // Choose the nearest frame rather than always floor for a tighter temporal match
+      const frame = Math.min(totalFrames - 1, Math.round(t / Math.max(0.1, interval)));
       const col = frame % cols;
       const row = Math.floor(frame / cols);
       const xOff = -(col * tw) * scale;
@@ -3162,14 +3389,50 @@ const Player = (() => {
       if (markersEl)
         markersEl.style.display =
           showScenes && scenes && scenes.length > 0 ? "" : "none";
+      renderSceneTicks();
     } catch (_) {}
   }
 
   // Public API
-  return { open, detectAndUploadFacesBrowser };
+  return { open, showOverlayBar, detectAndUploadFacesBrowser };
 })();
 
 window.Player = Player;
+
+// -----------------------------
+// Global: Pause video when leaving Player tab
+// -----------------------------
+(function setupTabPause(){
+  function pauseIfNotActive(activeId){
+    try {
+      if (!window.Player) return;
+      const v = document.getElementById('playerVideo');
+      if (!v) return;
+      const active = activeId || (window.tabSystem && window.tabSystem.getActiveTab && window.tabSystem.getActiveTab());
+      if (active !== 'player' && !v.paused && !v.ended) { try { v.pause(); } catch(_){} }
+    } catch(_){}
+  }
+  // Hook custom tabSystem event style if it exposes on/subscribe
+  try {
+    const ts = window.tabSystem;
+    if (ts && typeof ts.on === 'function') {
+      ts.on('switch', (id) => pauseIfNotActive(id));
+    } else if (ts && typeof ts.addEventListener === 'function') {
+      ts.addEventListener('switch', (e) => pauseIfNotActive(e.detail));
+    }
+  } catch(_){}
+  // MutationObserver fallback watching player panel visibility/class changes
+  try {
+    const panel = document.getElementById('player-panel');
+    if (panel && !panel._pauseObserver) {
+      const obs = new MutationObserver(() => pauseIfNotActive());
+      obs.observe(panel, { attributes:true, attributeFilter:['hidden','class'] });
+      panel._pauseObserver = obs;
+    }
+  } catch(_){}
+  // Also pause on document hidden (tab/background)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) pauseIfNotActive('not-player'); });
+})();
 
 // -----------------------------
 // Player Enhancements: Sidebar collapse + Effects (filters/transforms)
@@ -5166,10 +5429,13 @@ class TasksManager {
     const cancelQueuedBtn = document.getElementById("cancelQueuedBtn");
     const cancelAllBtn = document.getElementById("cancelAllBtn");
     if (clearBtn) {
-      const hasCompleted = Array.from(this.jobs.values()).some(
-        (j) => this.normalizeStatus(j) === "completed"
+      const hasCompletedOrFailed = Array.from(this.jobs.values()).some(
+        (j) => {
+          const s = this.normalizeStatus(j);
+          return s === "completed" || s === "failed";
+        }
       );
-      clearBtn.style.display = hasCompleted ? "inline-block" : "none";
+      clearBtn.style.display = hasCompletedOrFailed ? "inline-block" : "none";
     }
     if (cancelQueuedBtn) {
       const hasQueued = Array.from(this.jobs.values()).some(
