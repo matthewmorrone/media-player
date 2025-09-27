@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Callable
 import json
+import copy
 import mimetypes
 import os
 import shutil
@@ -16,25 +17,23 @@ import uuid
 import shlex
 import logging
 import asyncio
-# from pydantic import BaseModel
 try:
-    from pydantic import BaseModel  # type: ignore # prefer normal import (v1/v2)
-except Exception:
+    from pydantic import BaseModel, Field  # type: ignore
+except Exception:  # pragma: no cover
     try:
-        from pydantic.v1 import BaseModel  # type: ignore # pydantic v2 compatibility layer
-    except Exception:
-        class BaseModel:
-            """
-    Minimal fallback to avoid hard import errors when pydantic isn't installed.
-            Note: FastAPI requires pydantic at runtime; this is mainly for tooling/tests.
-            """
+        from pydantic.v1 import BaseModel  # type: ignore
+        from pydantic.v1 import Field  # type: ignore
+    except Exception:  # pragma: no cover
+        class BaseModel:  # fallback minimal stub
             def __init__(self, **data):
                 for k, v in data.items():
                     setattr(self, k, v)
-            def dict(self, *args, **kwargs):
+            def dict(self, *args, **kwargs):  # type: ignore
                 return dict(getattr(self, "__dict__", {}))
-            def model_dump(self, *args, **kwargs):  # pydantic v2-like
+            def model_dump(self, *args, **kwargs):  # type: ignore
                 return dict(getattr(self, "__dict__", {}))
+        def Field(default=None, **kwargs):  # type: ignore
+            return default
 from difflib import SequenceMatcher
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response # type: ignore
@@ -98,6 +97,8 @@ def _load_server_config() -> dict:
 
 
 STATE["config"] = _load_server_config()
+STATE["config_path"] = os.environ.get("MEDIA_PLAYER_CONFIG") or str((Path.cwd() / "config.json").resolve())
+_CONFIG_LOCK = threading.Lock()
 
 
 def _sprite_defaults() -> dict[str, int | float]:
@@ -397,6 +398,20 @@ SUFFIX_HEATMAPS_JSON = ".heatmaps.json"
 SUFFIX_HEATMAPS_PNG = ".heatmaps.png"
 SUFFIX_FACES_JSON = ".faces.json"
 SUFFIX_PREVIEW_WEBM = ".preview.webm"
+SUFFIX_PREVIEW_JSON = ".preview.json"
+SUFFIX_WAVEFORM_PNG = ".waveform.png"
+SUFFIX_MOTION_JSON = ".motion.json"
+
+def preview_json_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}"
+
+def preview_webm_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_WEBM}"
+
+def waveform_png_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}{SUFFIX_WAVEFORM_PNG}"
+def motion_json_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}{SUFFIX_MOTION_JSON}"
 SUFFIX_SUBTITLES_SRT = ".subtitles.srt"
 HIDDEN_DIR_SUFFIX_PREVIEWS = ".previews"
 
@@ -484,10 +499,32 @@ def _terminate_job_processes(jid: str, grace_seconds: float = 2.0) -> int:
 # Global ffmpeg concurrency gate
 # -----------------------------
 try:
-    _FFMPEG_CONCURRENCY = max(1, min(8, int(os.environ.get("FFMPEG_CONCURRENCY", "2"))))
+    _FFMPEG_CONCURRENCY = max(1, min(16, int(os.environ.get("FFMPEG_CONCURRENCY", "2"))))
 except Exception:
     _FFMPEG_CONCURRENCY = 2
 _FFMPEG_SEM = threading.BoundedSemaphore(_FFMPEG_CONCURRENCY)
+_FFMPEG_SEM_GUARD = threading.Lock()
+
+def _set_ffmpeg_concurrency(new_val: int) -> int:
+    """Adjust the FFmpeg concurrency gate at runtime.
+    We swap the global semaphore safely; callers capture a local reference before acquire/release.
+    Returns the effective concurrency.
+    """
+    global _FFMPEG_CONCURRENCY, _FFMPEG_SEM
+    try:
+        target = max(1, min(16, int(new_val)))
+    except Exception:
+        target = 1
+    with _FFMPEG_SEM_GUARD:
+        # Swap semaphore; callers use local captured ref for release safety
+        _FFMPEG_SEM = threading.BoundedSemaphore(target)
+        _FFMPEG_CONCURRENCY = target
+    # Also mirror into environment for visibility
+    try:
+        os.environ["FFMPEG_CONCURRENCY"] = str(target)
+    except Exception:
+        pass
+    return _FFMPEG_CONCURRENCY
 
 # (removed: legacy global job concurrency gate; see Jobs subsystem for active JOB_RUN_SEM)
 
@@ -554,11 +591,79 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     if not is_ffmpeg:
         return _run_inner(cmd)
 
-    _FFMPEG_SEM.acquire()
+    # Capture local reference to tolerate runtime swaps
+    local_sem = _FFMPEG_SEM
+    local_sem.acquire()
     try:
         return _run_inner(cmd)
     finally:
-        _FFMPEG_SEM.release()
+        try:
+            local_sem.release()
+        except Exception:
+            # In case of unexpected swap or other error, avoid crashing
+            pass
+
+# -----------------------------
+# Per-file locks (in-proc + cross-proc)
+# -----------------------------
+try:
+    import fcntl as _fcntl  # type: ignore
+except Exception:
+    _fcntl = None  # type: ignore
+
+_FILE_LOCKS: dict[str, threading.Lock] = {}
+_FILE_LOCKS_MTX = threading.Lock()
+
+class _PerFileLock:
+    def __init__(self, video: Path, key: str):
+        self.video = video
+        self.key = key
+        self._lock: Optional[threading.Lock] = None
+        self._fd: Optional[int] = None
+
+    def __enter__(self):
+        k = f"{self.key}::{str(self.video.resolve())}"
+        with _FILE_LOCKS_MTX:
+            lock = _FILE_LOCKS.get(k)
+            if lock is None:
+                lock = threading.Lock()
+                _FILE_LOCKS[k] = lock
+        lock.acquire()
+        self._lock = lock
+        # Cross-process lock: place under artifact_dir/.locks/<key>.lock
+        try:
+            d = artifact_dir(self.video) / ".locks"
+            d.mkdir(parents=True, exist_ok=True)
+            lp = d / f"{self.key}.lock"
+            fd = os.open(lp, os.O_CREAT | os.O_RDWR, 0o644)
+            self._fd = fd
+            if _fcntl is not None:
+                try:
+                    _fcntl.flock(fd, _fcntl.LOCK_EX)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._fd is not None and _fcntl is not None:
+                try:
+                    _fcntl.flock(self._fd, _fcntl.LOCK_UN)
+                except Exception:
+                    pass
+        finally:
+            try:
+                if self._fd is not None:
+                    os.close(self._fd)
+            except Exception:
+                pass
+            try:
+                if self._lock is not None:
+                    self._lock.release()
+            except Exception:
+                pass
 
 def metadata_single(video: Path, *, force: bool = False) -> None:
     out = metadata_path(video)
@@ -718,7 +823,7 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
             except Exception:
                 pass
             return
-    
+
     duration = None
     try:
         if metadata_path(video).exists():
@@ -741,6 +846,8 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
         "-ss", f"{t:.3f}",
         "-i", str(video),
         "-frames:v", "1",
+        # Ensure even dimensions for broad encoder/player compatibility
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-q:v", str(max(2, min(31, int(quality)))),
         *(_ffmpeg_threads_flags()),
         str(out),
@@ -765,6 +872,19 @@ def generate_hover_preview(
 ) -> Path:
     out = out or (artifact_dir(video) / f"{video.stem}.preview.{fmt}")
     out.parent.mkdir(parents=True, exist_ok=True)
+    # Collect debug/inspection info to persist next to the preview
+    hover_info: dict[str, Any] = {
+        "status": "started",
+        "strategy": None,
+        "video": str(video),
+        "output": str(out),
+        "fmt": (fmt or "webm").lower(),
+        "width": int(width),
+        "seg_dur": float(seg_dur),
+        "segments_planned": int(segments),
+        "segments_used": 0,
+        "points": [],
+    }
     # Allow operation without ffprobe: we'll skip duration probing and use uniform spacing
     # If explicitly disabled, or ffmpeg missing, write a lightweight stub to keep pipelines moving.
     if os.environ.get("FFPROBE_DISABLE") and not ffmpeg_available():
@@ -792,95 +912,141 @@ def generate_hover_preview(
     except Exception:
         dur = None
     segs = max(1, int(segments))
-    points = [((i + 1) / (segs + 1)) * (dur or (segs * seg_dur)) for i in range(segs)]
+    # Choose start times robustly; if we know duration, keep segments within [0, dur-seg_dur]
+    if dur and dur > 0:
+        max_start = max(0.0, float(dur) - float(seg_dur) * 1.05)
+        if max_start <= 0:
+            points = [0.0]
+            segs = 1
+        else:
+            points = [min(max_start, ((i + 1) / (segs + 1)) * max_start) for i in range(segs)]
+    else:
+        # Without duration, space samples conservatively starting at 0
+        points = [max(0.0, i * float(seg_dur)) for i in range(segs)]
+    try:
+        hover_info["points"] = [float(f"{p:.3f}") for p in points]
+    except Exception:
+        pass
 
-    # Always prefer the robust single-pass filter graph; avoid segmented concat entirely
-    try_single_pass = True
-    # Runtime tunables for verbosity
+    # Prefer single-pass when no progress callback; otherwise multi-step to report progress
+    try:
+        _psp = os.environ.get("PREVIEW_SINGLE_PASS", "1")
+        try_single_pass = str(_psp).strip().lower() not in ("0", "false", "no")
+    except Exception:
+        try_single_pass = True
+    if progress_cb is not None:
+        try_single_pass = False
     ff_loglevel = os.environ.get("FFMPEG_LOGLEVEL", "error")
     ff_debug = os.environ.get("FFMPEG_DEBUG") is not None
-    if try_single_pass:
-        # Try a single-pass ffmpeg using filter_complex (split/trim/concat); fallback to multi-step on failure
-        try:
-            trim_chains = []
-            split_labels = "".join([f"[v{i}]" for i in range(segs)])
-            parts = [f"[0:v]split={segs}{split_labels}"]
-            for i, start in enumerate(points):
-                parts.append(f"[v{i}]trim=start={start:.3f}:end={(start + seg_dur):.3f},setpts=PTS-STARTPTS[s{i}]")
-                trim_chains.append(f"[s{i}]")
-            concat_inputs = "".join(trim_chains)
-            parts.append(f"{concat_inputs}concat=n={segs}:v=1:a=0,scale={int(width)}:-1:force_original_aspect_ratio=decrease[outv]")
-            filter_complex = ";".join(parts)
-            base_cmd = [
-                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                *(_ffmpeg_hwaccel_flags()),
-                "-i", str(video),
-                "-filter_complex", filter_complex,
-                "-map", "[outv]",
-                "-an",
-            ]
-            # Try vp9 first, then fall back to libvpx if not available
-            if fmt == "mp4":
-                cmd = base_cmd + [
-                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
-                    "-movflags", "+faststart",
-                    *(_ffmpeg_threads_flags()),
-                    str(out),
-                ]
-                if ff_debug:
-                    try:
-                        print("[hover] ffmpeg:", " ".join(cmd))
-                    except Exception:
-                        pass
-                proc = _run(cmd)
-            else:
-                cmd = base_cmd + [
-                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                    *_vp9_realtime_flags(),
-                    *(_ffmpeg_threads_flags()),
-                    str(out),
-                ]
-                if ff_debug:
-                    try:
-                        print("[hover] ffmpeg:", " ".join(cmd))
-                    except Exception:
-                        pass
-                proc = _run(cmd)
-                if (proc.returncode != 0 or not out.exists()):
-                    # Fallback to libvpx
-                    cmd = base_cmd + [
-                        "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                        *_vp9_realtime_flags(),
-                        *(_ffmpeg_threads_flags()),
-                        str(out),
-                    ]
-                    if ff_debug:
-                        try:
-                            print("[hover] ffmpeg (fallback):", " ".join(cmd))
-                        except Exception:
-                            pass
-                    proc = _run(cmd)
-            if proc.returncode == 0 and out.exists():
-                return out
-            # else fall through to legacy path
-        except Exception:
-            pass
 
-    # Fallback: multi-step segments then concat (disabled by default since single-pass is preferred)
-    # Note: We keep this path for legacy/debug, but it's no longer selected by default.
+    # Per-file lock to avoid concurrent hover generation on same file
+    try:
+        with _PerFileLock(video, key="hover"):
+            if try_single_pass:
+                try:
+                    trim_chains: list[str] = []
+                    split_labels = "".join([f"[v{i}]" for i in range(segs)])
+                    parts = [f"[0:v]split={segs}{split_labels}"]
+                    for i, start in enumerate(points):
+                        parts.append(f"[v{i}]trim=start={start:.3f}:end={(start + seg_dur):.3f},setpts=PTS-STARTPTS[s{i}]")
+                        trim_chains.append(f"[s{i}]")
+                    concat_inputs = "".join(trim_chains)
+                    parts.append(
+                        f"{concat_inputs}concat=n={segs}:v=1:a=0,"
+                        f"scale={int(width)}:-2:force_original_aspect_ratio=decrease,"
+                        f"pad=ceil(iw/2)*2:ceil(ih/2)*2[outv]"
+                    )
+                    filter_complex = ";".join(parts)
+                    base_cmd = [
+                        "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+                        *(_ffmpeg_hwaccel_flags()),
+                        "-i", str(video),
+                        "-filter_complex", filter_complex,
+                        "-map", "[outv]",
+                        "-an",
+                    ]
+                    if fmt == "mp4":
+                        cmd = base_cmd + [
+                            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                            "-pix_fmt", "yuv420p",
+                            "-movflags", "+faststart",
+                            *(_ffmpeg_threads_flags()),
+                            str(out),
+                        ]
+                        if ff_debug:
+                            try:
+                                print("[hover] ffmpeg:", " ".join(cmd))
+                            except Exception:
+                                pass
+                        proc = _run(cmd)
+                        if proc.returncode == 0 and _file_nonempty(out):
+                            if ff_debug:
+                                try:
+                                    print(f"[hover] success (single-pass mp4): {out} size={out.stat().st_size}")
+                                except Exception:
+                                    pass
+                            try:
+                                hover_info.update({"status": "ok", "strategy": "single-pass-mp4", "segments_used": int(segs)})
+                                _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
+                            except Exception:
+                                pass
+                            return out
+                    else:
+                        cmd = base_cmd + [
+                            "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                            *_vp9_realtime_flags(),
+                            "-pix_fmt", "yuv420p",
+                            *(_ffmpeg_threads_flags()),
+                            str(out),
+                        ]
+                        if ff_debug:
+                            try:
+                                print("[hover] ffmpeg:", " ".join(cmd))
+                            except Exception:
+                                pass
+                        proc = _run(cmd)
+                        if (proc.returncode != 0 or not _file_nonempty(out)):
+                            cmd = base_cmd + [
+                                "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                                *_vp9_realtime_flags(),
+                                *(_ffmpeg_threads_flags()),
+                                str(out),
+                            ]
+                            if ff_debug:
+                                try:
+                                    print("[hover] ffmpeg (fallback):", " ".join(cmd))
+                                except Exception:
+                                    pass
+                            proc = _run(cmd)
+                        if proc.returncode == 0 and _file_nonempty(out):
+                            if ff_debug:
+                                try:
+                                    print(f"[hover] success (single-pass webm): {out} size={out.stat().st_size}")
+                                except Exception:
+                                    pass
+                            try:
+                                hover_info.update({"status": "ok", "strategy": "single-pass-webm", "segments_used": int(segs)})
+                                _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
+                            except Exception:
+                                pass
+                            return out
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Multi-step fallback: segments then concat via filter
     with tempfile.TemporaryDirectory() as td:
         td = str(td)
         list_path = Path(td) / "list.txt"
         clip_paths: list[Path] = []
-        # Strategy: if final fmt is webm, produce MP4 segments to avoid Matroska/EBML issues,
-        # concat to an MP4, then transcode the concatenated result to WebM.
         final_fmt = (fmt or "webm").lower()
         seg_fmt = "mp4" if final_fmt == "webm" else final_fmt
         for i, start in enumerate(points, start=1):
             if cancel_check and cancel_check():
                 raise RuntimeError("canceled")
             clip = Path(td) / f"seg_{i:02d}.{seg_fmt}"
-            vfilter = f"scale={width}:-1:force_original_aspect_ratio=decrease"
+            vfilter = f"scale={width}:-2:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2"
             cmd = [
                 "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                 *(_ffmpeg_hwaccel_flags()),
@@ -892,6 +1058,7 @@ def generate_hover_preview(
             if seg_fmt == "mp4":
                 cmd += [
                     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                    "-pix_fmt", "yuv420p",
                     "-movflags", "+faststart",
                     *(_ffmpeg_threads_flags()),
                     str(clip),
@@ -906,6 +1073,7 @@ def generate_hover_preview(
                 cmd += [
                     "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                     *_vp9_realtime_flags(),
+                    "-pix_fmt", "yuv420p",
                     *(_ffmpeg_threads_flags()),
                     str(clip),
                 ]
@@ -916,7 +1084,6 @@ def generate_hover_preview(
                         pass
                 proc = _run(cmd)
                 if proc.returncode != 0 or not clip.exists():
-                    # Fallback to libvpx
                     cmd = [
                         "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                         *(_ffmpeg_hwaccel_flags()),
@@ -926,6 +1093,7 @@ def generate_hover_preview(
                         "-an",
                         "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                         *_vp9_realtime_flags(),
+                        "-pix_fmt", "yuv420p",
                         *(_ffmpeg_threads_flags()),
                         str(clip)
                     ]
@@ -936,6 +1104,12 @@ def generate_hover_preview(
                             pass
                     proc = _run(cmd)
             if proc.returncode != 0:
+                try:
+                    err = (proc.stderr or '').strip()
+                    if err:
+                        print('[hover] segment error:', err)
+                except Exception:
+                    pass
                 raise RuntimeError(proc.stderr.strip() or "ffmpeg segment failed")
             clip_paths.append(clip)
             if progress_cb:
@@ -943,103 +1117,317 @@ def generate_hover_preview(
                     progress_cb(i, segs)
                 except Exception:
                     pass
-        with list_path.open("w") as f:
-            for cp in clip_paths:
-                f.write(f"file '{cp.as_posix()}'\n")
-        # Concat into an intermediate when segment fmt != final fmt; else write directly to 'out'
-        concat_out = (Path(td) / f"concat.{seg_fmt}") if seg_fmt != final_fmt else out
+        # Validate segments have video streams; skip bad ones to avoid filtergraph ':v' errors
+        def _has_video_stream(p: Path) -> bool:
+            if not p.exists() or p.stat().st_size == 0:
+                return False
+            if not ffprobe_available():
+                return True
+            pr = _run([
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                str(p),
+            ])
+            return pr.returncode == 0 and bool((pr.stdout or '').strip())
+
+        valid_clip_paths: list[Path] = []
+        for cp in clip_paths:
+            if _has_video_stream(cp):
+                valid_clip_paths.append(cp)
+            else:
+                if ff_debug:
+                    try:
+                        print(f"[hover] skipping segment without video: {cp}")
+                    except Exception:
+                        pass
+        clip_paths = valid_clip_paths
+
+        if not clip_paths:
+            # Final fallback: try encoding a short preview directly from the source
+            # Attempt from 0s, then from 10% into the file if duration known
+            def _try_direct(start_time: float) -> bool:
+                base_cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+                    *(_ffmpeg_hwaccel_flags()),
+                    "-ss", f"{max(0.0, start_time):.3f}", "-i", str(video), "-t", f"{float(seg_dur):.3f}",
+                    "-vf", f"scale={int(width)}:-2:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                    "-an",
+                ]
+                if final_fmt == "webm":
+                    cmdx = base_cmd + [
+                        "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                        *_vp9_realtime_flags(),
+                        "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
+                    ]
+                else:
+                    cmdx = base_cmd + [
+                        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                        "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
+                    ]
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg direct-fallback:", " ".join(cmdx))
+                    except Exception:
+                        pass
+                pr = _run(cmdx)
+                return pr.returncode == 0 and _file_nonempty(out)
+
+            tried = _try_direct(0.0)
+            if not tried and (dur and dur > 0):
+                _ = _try_direct(max(0.0, float(dur) * 0.1))
+                tried = _file_nonempty(out)
+            if not tried:
+                raise RuntimeError("no hover segments with video; aborting concat")
+            # Direct fallback succeeded; return final output
+            try:
+                hover_info.update({
+                    "status": "ok",
+                    "strategy": "direct-fallback",
+                    "segments_used": 1,
+                })
+                _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
+            except Exception:
+                pass
+            return out
+
+        # If only a single valid segment, transcode straight to final output
+        if len(clip_paths) == 1:
+            single = clip_paths[0]
+            base_cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y", *(_ffmpeg_hwaccel_flags()), "-i", str(single), "-an",
+            ]
+            if final_fmt == "webm":
+                cmd1 = base_cmd + [
+                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()), *_vp9_realtime_flags(), "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
+                ]
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg single->webm:", " ".join(cmd1))
+                    except Exception:
+                        pass
+                pr = _run(cmd1)
+                if pr.returncode != 0:
+                    # Retry without hwaccel in case decoder selection is the issue
+                    cmd1 = [
+                        "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y", "-i", str(single), "-an", "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()), *_vp9_realtime_flags(), "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
+                    ]
+                    pr = _run(cmd1)
+            else:
+                cmd1 = base_cmd + [
+                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()), "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
+                ]
+                if ff_debug:
+                    try:
+                        print("[hover] ffmpeg single->mp4:", " ".join(cmd1))
+                    except Exception:
+                        pass
+                pr = _run(cmd1)
+                if pr.returncode != 0:
+                    cmd1 = [
+                        "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+                        "-i", str(single), "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()), "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
+                    ]
+                    pr = _run(cmd1)
+            if pr.returncode != 0 or not out.exists():
+                try:
+                    err = (pr.stderr or '').strip()
+                    if err:
+                        print('[hover] single segment transcode error:', err)
+                except Exception:
+                    pass
+                raise RuntimeError(pr.stderr.strip() or "ffmpeg single segment transcode failed")
+            return out
+
+        # Concat via filter_complex with multiple inputs; encode directly to final output
+        try:
+            hover_info["segments_used"] = int(len(clip_paths))
+            hover_info["strategy"] = "segments-concat"
+        except Exception:
+            pass
         cmd2 = [
             "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
             *(_ffmpeg_hwaccel_flags()),
-            "-f", "concat", "-safe", "0",
-            "-i", str(list_path),
+        ]
+        for cp in clip_paths:
+            cmd2 += ["-i", str(cp)]
+        n = len(clip_paths)
+        inputs_chain = "".join([f"[{i}:v]" for i in range(n)])
+        filter_concat = (
+            f"{inputs_chain}concat=n={n}:v=1:a=0,"
+            f"pad=ceil(iw/2)*2:ceil(ih/2)*2[outv]"
+        )
+        cmd2 += [
+            "-filter_complex", filter_concat,
+            "-map", "[outv]",
             "-an",
         ]
-        if seg_fmt == "mp4":
-            cmd2 += [
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
-                "-movflags", "+faststart",
-                *(_ffmpeg_threads_flags()),
-                str(concat_out),
-            ]
-            if ff_debug:
-                try:
-                    print("[hover] ffmpeg concat:", " ".join(cmd2))
-                except Exception:
-                    pass
-            proc2 = _run(cmd2)
-        else:
+        if final_fmt == "webm":
             cmd2 += [
                 "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                 *_vp9_realtime_flags(),
-                *(_ffmpeg_threads_flags()),
-                str(concat_out),
-            ]
-            if ff_debug:
-                try:
-                    print("[hover] ffmpeg concat:", " ".join(cmd2))
-                except Exception:
-                    pass
-            proc2 = _run(cmd2)
-            if proc2.returncode != 0 or not out.exists():
-                # Fallback to libvpx
-                cmd2 = [
-                    "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                    *(_ffmpeg_hwaccel_flags()),
-                    "-f", "concat", "-safe", "0",
-                    "-i", str(list_path),
-                    "-an",
-                    "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                    *_vp9_realtime_flags(),
-                    *(_ffmpeg_threads_flags()),
-                    str(concat_out)
-                ]
-                if ff_debug:
-                    try:
-                        print("[hover] ffmpeg concat (fallback):", " ".join(cmd2))
-                    except Exception:
-                        pass
-                proc2 = _run(cmd2)
-        if proc2.returncode != 0:
-            raise RuntimeError(proc2.stderr.strip() or "ffmpeg concat failed")
-        # If the final format is different from the segment/concat format (webm requested), transcode once more
-        if seg_fmt != final_fmt:
-            # Transcode MP4 -> WebM (VP9). Fallback to libvpx if needed.
-            cmd3 = [
-                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                *(_ffmpeg_hwaccel_flags()),
-                "-i", str(concat_out),
-                "-an",
-                "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                *_vp9_realtime_flags(),
+                "-pix_fmt", "yuv420p",
                 *(_ffmpeg_threads_flags()),
                 str(out),
             ]
-            if ff_debug:
-                try:
-                    print("[hover] ffmpeg transcode (mp4->webm):", " ".join(cmd3))
-                except Exception:
+        else:
+            cmd2 += [
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                *(_ffmpeg_threads_flags()),
+                str(out),
+            ]
+        if ff_debug:
+            try:
+                print("[hover] ffmpeg concat-filter:", " ".join(cmd2))
+            except Exception:
+                pass
+        proc2 = _run(cmd2)
+        if proc2.returncode != 0:
+            # Retry without hwaccel flags once; sometimes decoder selection causes ':v' matching issues
+            cmd2_no_hw = []
+            for t in cmd2:
+                if isinstance(t, str):
+                    # simply rebuild without calling _ffmpeg_hwaccel_flags; easiest: reconstruct
                     pass
-            proc3 = _run(cmd3)
-            if (proc3.returncode != 0 or not out.exists()):
-                cmd3 = [
-                    "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                    *(_ffmpeg_hwaccel_flags()),
-                    "-i", str(concat_out),
-                    "-an",
-                    "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+            cmd2_no_hw = [
+                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+            ]
+            for cp in clip_paths:
+                cmd2_no_hw += ["-i", str(cp)]
+            cmd2_no_hw += [
+                "-filter_complex", filter_concat,
+                "-map", "[outv]",
+                "-an",
+            ]
+            if final_fmt == "webm":
+                cmd2_no_hw += [
+                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
                     *_vp9_realtime_flags(),
+                    "-pix_fmt", "yuv420p",
                     *(_ffmpeg_threads_flags()),
                     str(out),
                 ]
-                if ff_debug:
-                    try:
-                        print("[hover] ffmpeg transcode fallback (mp4->webm):", " ".join(cmd3))
-                    except Exception:
-                        pass
-                proc3 = _run(cmd3)
-            if proc3.returncode != 0:
-                raise RuntimeError(proc3.stderr.strip() or "ffmpeg transcode failed")
+            else:
+                cmd2_no_hw += [
+                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                    *(_ffmpeg_threads_flags()),
+                    str(out),
+                ]
+            if ff_debug:
+                try:
+                    print("[hover] ffmpeg concat-filter (no hwaccel):", " ".join(cmd2_no_hw))
+                except Exception:
+                    pass
+            proc2 = _run(cmd2_no_hw)
+        if proc2.returncode != 0:
+            try:
+                err = (proc2.stderr or '').strip()
+                if err:
+                    print('[hover] concat-filter error:', err)
+            except Exception:
+                pass
+            raise RuntimeError(proc2.stderr.strip() or "ffmpeg concat filter failed")
+    # Final guard: only succeed with a non-empty output file
+    if not _file_nonempty(out):
+        raise RuntimeError("hover output missing or too small after processing")
+    if ff_debug:
+        try:
+            print(f"[hover] success: {out} size={out.stat().st_size}")
+        except Exception:
+            pass
+    try:
+        hover_info.update({"status": "ok"})
+        _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
+    except Exception:
+        pass
+    return out
+
+# -----------------------------
+# Waveform generator (audio amplitude over time)
+# -----------------------------
+def generate_waveform(video: Path, *, force: bool = False, width: int = 800, height: int = 160, color: str = "#4fa0ff") -> Path:
+    out = waveform_png_path(video)
+    if out.exists() and not force:
+        return out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not ffmpeg_available():
+        out.write_bytes(b"WF")
+        return out
+    # Use ffmpeg showwavespic for fast waveform (mono mix)
+    cmd = [
+        "ffmpeg", "-y", "-i", str(video),
+        "-filter_complex", f"aformat=channel_layouts=stereo,showwavespic=s={width}x{height}:colors={color}",
+        "-frames:v", "1",
+        str(out)
+    ]
+    try:
+        _run(cmd)
+    except Exception:
+        try:
+            out.write_bytes(b"WFERR")
+        except Exception:
+            pass
+    return out
+
+# -----------------------------
+# Motion activity generator (frame differencing)
+# -----------------------------
+def generate_motion_activity(video: Path, *, force: bool = False, interval: float = 1.0) -> Path:
+    out = motion_json_path(video)
+    if out.exists() and not force:
+        return out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not ffmpeg_available():
+        out.write_text(json.dumps({"interval": interval, "samples": []}, indent=2))
+        return out
+    # Sample frames at fps=1/interval, compute simple L2 diff versus previous frame
+    with tempfile.TemporaryDirectory() as td:
+        pattern = Path(td) / "frame_%05d.jpg"
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(video),
+            "-vf", f"fps=1/{max(0.1, float(interval))},scale=160:-1:force_original_aspect_ratio=decrease", str(pattern)
+        ]
+        try:
+            _run(cmd)
+        except Exception:
+            out.write_text(json.dumps({"interval": interval, "samples": []}, indent=2))
+            return out
+        frames = sorted(Path(td).glob("frame_*.jpg"))
+        vals: list[dict[str, float]] = []
+        prev_pixels: list[int] | None = None
+        try:
+            from PIL import Image  # type: ignore
+        except Exception:
+            out.write_text(json.dumps({"interval": interval, "samples": []}, indent=2))
+            return out
+        for idx, fp in enumerate(frames):
+            try:
+                im = Image.open(fp).convert("L")
+                px = list(im.getdata())
+                im.close()
+            except Exception:
+                continue
+            if prev_pixels is None:
+                prev_pixels = px
+                vals.append({"t": idx * interval, "v": 0.0})
+                continue
+            # Compute normalized average absolute difference
+            try:
+                diff_sum = 0
+                L = min(len(px), len(prev_pixels))
+                for i in range(L):
+                    diff_sum += abs(px[i] - prev_pixels[i])
+                ndiff = (diff_sum / (L * 255.0)) if L else 0.0
+                vals.append({"t": idx * interval, "v": round(float(ndiff), 5)})
+            except Exception:
+                vals.append({"t": idx * interval, "v": 0.0})
+            prev_pixels = px
+    out.write_text(json.dumps({"interval": interval, "samples": vals}, indent=2))
     return out
 
 # ---------
@@ -1279,28 +1667,91 @@ def generate_scene_artifacts(
         j.write_text(json.dumps({"scenes": scenes}, indent=2))
         return
 
-    # Use ffmpeg showinfo to find pts_time for frames exceeding scene threshold
-    thr = max(0.0, min(1.0, float(threshold)))
-    cmd = [
-        "ffmpeg", "-hide_banner",
-        *(_ffmpeg_hwaccel_flags()),
-        "-i", str(video),
-        "-filter_complex", f"select='gt(scene,{thr})',showinfo",
-        "-f", "null", "-",
-    ]
-    proc = _run(cmd)
-    times: list[float] = []
-    if proc.returncode == 0:
-        for line in (proc.stderr or "").splitlines():
-            # showinfo lines contain "pts_time:<float>"
-            m = re.search(r"pts_time:(?P<t>[0-9]+\.[0-9]+)", line)
-            if m:
-                try:
-                    t = float(m.group("t"))
-                    if not times or abs(times[-1] - t) > 0.25:  # avoid duplicates
-                        times.append(t)
-                except Exception:
-                    pass
+    # Per-file lock to prevent concurrent analyzers for the same video (server+CLI safe)
+    with _PerFileLock(video, key="scenes"):
+        # Use ffmpeg showinfo to find pts_time for frames exceeding scene threshold
+        thr = max(0.0, min(1.0, float(threshold)))
+        cmd = [
+            "ffmpeg", "-hide_banner",
+            *(_ffmpeg_hwaccel_flags()),
+            "-i", str(video),
+            "-filter_complex", f"select='gt(scene,{thr})',showinfo",
+            "-f", "null", "-",
+        ]
+        # Stream stderr/stdout to incrementally parse showinfo and emit progress
+        times: list[float] = []
+        # Estimate duration for progress (best-effort)
+        duration: Optional[float] = None
+        try:
+            if metadata_path(video).exists():
+                duration = extract_duration(json.loads(metadata_path(video).read_text()))
+            else:
+                metadata_single(video, force=False)
+                duration = extract_duration(json.loads(metadata_path(video).read_text()))
+        except Exception:
+            duration = None
+        _local_sem = _FFMPEG_SEM
+        _local_sem.acquire()
+        proc_rc: Optional[int] = None
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+            try:
+                _register_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+            except Exception:
+                pass
+            # Incremental parse
+            last_ts: float = 0.0
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    if not line:
+                        continue
+                    try:
+                        m = re.search(r"pts_time:(?P<t>[0-9]+\.[0-9]+)", line)
+                        if m:
+                            t = float(m.group("t"))
+                            # dedupe close times
+                            if (not times) or abs(times[-1] - t) > 0.25:
+                                times.append(t)
+                            last_ts = t
+                        # update approximate pass progress based on last seen timestamp
+                        if duration and duration > 0:
+                            frac = max(0.0, min(1.0, float(last_ts) / float(duration)))
+                            jid = getattr(JOB_CTX, "jid", None)
+                            if jid:
+                                try:
+                                    _set_job_progress(jid, total=100, processed_set=int(frac * 100))
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    # cancel check
+                    ev = JOB_CANCEL_EVENTS.get(getattr(JOB_CTX, "jid", ""))
+                    if ev is not None and ev.is_set():
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except Exception:
+                            proc.terminate()
+                        raise RuntimeError("canceled")
+            proc_rc = proc.wait()
+        finally:
+            try:
+                _local_sem.release()
+            except Exception:
+                pass
+            try:
+                _unregister_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+            except Exception:
+                pass
+    # Outside lock scope: continue processing
+    times = times if 'times' in locals() else []
+    if int(proc_rc or 0) != 0 and not times:
+        times = []
 
     if limit and limit > 0:
         times = times[: int(limit)]
@@ -1398,129 +1849,302 @@ def generate_sprite_sheet(
         pass
     # Preferred path: use ffmpeg tile filter to build mosaic in one pass
     if ffmpeg_available():
-        # Build filter: fps (one frame per interval), scale to desired width, tile to mosaic
-        vf = f"fps=1/{max(0.001, float(interval))},scale={int(width)}:-1:flags=lanczos,tile={int(cols)}x{int(rows)}"
-        # Cap input read duration to roughly the amount needed to fill the grid
-        cap_secs = max(0.5, float(interval) * float(cols) * float(rows) + min(float(interval), 2.0))
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
-            *(_ffmpeg_hwaccel_flags()),
-            "-t", f"{cap_secs:.3f}",
-            "-i", str(video),
-            "-an",  # no audio processing
-            "-vf", vf,
-            "-vsync", "vfr",
-            "-frames:v", "1",
-            *(_ffmpeg_threads_flags()),
-            str(sheet),
-        ]
-        try:
-            # Helpful logging so users can see long-running sprite jobs
+        # Lock per file to prevent concurrent sprite jobs for same video
+        with _PerFileLock(video, key="sprites"):
+            # Build filter:
+            # - Normalize timestamps to frame count to avoid hwaccel/decoder PTS oddities (prevents duplicate selection)
+            # - fps to sample one frame per interval with a slight start offset to avoid the very first frame
+            # - scale to desired width and tile to mosaic
+            start_time = max(0.0, float(interval) * 0.5)
+            vf = (
+                f"setpts=N/FRAME_RATE/TB,"
+                f"fps=1/{max(0.001, float(interval))}:start_time={start_time},"
+                f"scale={int(width)}:-2:flags=lanczos,"
+                f"tile={int(cols)}x{int(rows)}"
+            )
+            # Estimate an input cap to provide enough samples to fill the grid without over-reading
+            # Prefer real duration when available to prevent overrun on short clips.
             try:
-                print("[sprites] ffmpeg:", " ".join(shlex.quote(x) for x in cmd))  # type: ignore[name-defined]
+                dur = None
+                if metadata_path(video).exists():
+                    dur = extract_duration(json.loads(metadata_path(video).read_text()))
+                else:
+                    metadata_single(video, force=False)
+                    dur = extract_duration(json.loads(metadata_path(video).read_text()))
             except Exception:
-                pass
-            if progress_cb or cancel_check:
-                # Use Popen to allow polling for approximate progress and cancellation
-                # Enforce global ffmpeg concurrency even in this Popen path
-                _FFMPEG_SEM.acquire()
+                dur = None
+            target_frames = int(max(1, int(cols) * int(rows)))
+            base_secs = float(interval) * float(target_frames)
+            if isinstance(dur, (int, float)) and dur and float(dur) > 0:
+                cap_secs = min(float(dur), base_secs + max(float(interval) * 2.0, 2.0))
+            else:
+                cap_secs = max(0.5, base_secs + max(float(interval) * 2.0, 2.0))
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
+                *(_ffmpeg_hwaccel_flags()),
+                "-t", f"{cap_secs:.3f}",
+                "-i", str(video),
+                "-an",  # no audio processing
+                "-vf", vf,
+                "-frames:v", "1",
+                *(_ffmpeg_threads_flags()),
+                str(sheet),
+            ]
+            try:
+                # Helpful logging so users can see long-running sprite jobs
                 try:
-                    proc = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        start_new_session=True,
-                    )
-                except Exception:
-                    # If spawn fails, release the slot and re-raise
-                    _FFMPEG_SEM.release()
-                    raise
-                try:
-                    _register_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+                    print("[sprites] ffmpeg:", " ".join(shlex.quote(x) for x in cmd))  # type: ignore[name-defined]
                 except Exception:
                     pass
-                start_time = time.time()
-                steps = 100
-                while True:
-                    rc = proc.poll()
-                    now = time.time()
-                    # update approx progress
-                    if progress_cb:
+                proc_rc: Optional[int] = None
+                proc_err_text: str = ""
+                if progress_cb or cancel_check:
+                    # Use Popen to allow polling for approximate progress and cancellation
+                    # Enforce global ffmpeg concurrency even in this Popen path
+                    _local_sem = _FFMPEG_SEM
+                    _local_sem.acquire()
+                    try:
+                        proc = subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            start_new_session=True,
+                        )
+                    except Exception:
+                        # If spawn fails, release the slot and re-raise
                         try:
-                            frac = 0.0
+                            _local_sem.release()
+                        except Exception:
+                            pass
+                        raise
+                    try:
+                        _register_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+                    except Exception:
+                        pass
+                    start_time = time.time()
+                    steps = 100
+                    while True:
+                        rc = proc.poll()
+                        now = time.time()
+                        # update approx progress
+                        if progress_cb:
                             try:
-                                frac = min(1.0, max(0.0, (now - start_time) / cap_secs))
-                            except Exception:
                                 frac = 0.0
-                            progress = int(frac * steps)
-                            progress_cb(progress, steps)
-                        except Exception:
-                            pass
-                    # handle cancel
-                    if cancel_check and cancel_check():
-                        try:
-                            proc.terminate()
-                            try:
-                                proc.wait(timeout=2)
-                            except Exception:
-                                proc.kill()
-                        except Exception:
-                            pass
-                        # Release ffmpeg slot on cancel
-                        try:
-                            _FFMPEG_SEM.release()
-                        except Exception:
-                            pass
-                        raise RuntimeError("canceled")
-                    if rc is not None:
-                        # ensure 100% on success
-                        if rc == 0 and progress_cb:
-                            try:
-                                progress_cb(steps, steps)
+                                try:
+                                    frac = min(1.0, max(0.0, (now - start_time) / cap_secs))
+                                except Exception:
+                                    frac = 0.0
+                                progress = int(frac * steps)
+                                progress_cb(progress, steps)
                             except Exception:
                                 pass
-                        # Release ffmpeg slot when the process ends
+                        # handle cancel
+                        if cancel_check and cancel_check():
+                            try:
+                                proc.terminate()
+                                try:
+                                    proc.wait(timeout=2)
+                                except Exception:
+                                    proc.kill()
+                            except Exception:
+                                pass
+                            # Release ffmpeg slot on cancel
+                            try:
+                                _local_sem.release()
+                            except Exception:
+                                pass
+                            try:
+                                _unregister_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+                            except Exception:
+                                pass
+                            raise RuntimeError("canceled")
+                        if rc is not None:
+                            # ensure 100% on success
+                            if rc == 0 and progress_cb:
+                                try:
+                                    progress_cb(steps, steps)
+                                except Exception:
+                                    pass
+                            # Release ffmpeg slot when the process ends
+                            try:
+                                _local_sem.release()
+                            except Exception:
+                                pass
+                            # Capture stderr for diagnostics and unregister tracked process
+                            try:
+                                _out_text, _err_text = proc.communicate()
+                                proc_err_text = str(_err_text or "")
+                            except Exception:
+                                proc_err_text = ""
+                            try:
+                                _unregister_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+                            except Exception:
+                                pass
+                            proc_rc = int(rc)
+                            break
+                        time.sleep(0.2)
+                else:
+                    proc = _run(cmd)
+                    proc_rc = int(proc.returncode)
+                    try:
+                        proc_err_text = str(proc.stderr or "")
+                    except Exception:
+                        proc_err_text = ""
+                if int(proc_rc or 0) != 0:
+                    try:
+                        err = (proc_err_text or '').strip()
+                        if err:
+                            print('[sprites] ffmpeg error:', err)
+                    except Exception:
+                        pass
+                    raise RuntimeError(proc_err_text or "ffmpeg sprite generation failed")
+            except Exception:
+                # Fall back to replicated thumbnail flow below
+                pass
+            else:
+                # Compute tile dimensions from output image
+                try:
+                    from PIL import Image  # type: ignore
+                    with Image.open(sheet) as im:
+                        sheet_w, sheet_h = im.size
+                except Exception:
+                    # If PIL not available at runtime, approximate tile_h by 9:16 aspect
+                    sheet_w = int(width * cols)
+                    sheet_h = int((width * 9 // 16) * rows)
+                tile_w = int(max(1, sheet_w // max(1, cols)))
+                tile_h = int(max(1, sheet_h // max(1, rows)))
+                # Optional: sanity check for duplicate tiles; progressively try to improve uniqueness.
+                try:
+                    from PIL import Image  # type: ignore
+                    import hashlib
+
+                    def _unique_tiles_count(path: Path, tw: int, th: int, c: int, r: int) -> int:
                         try:
-                            _FFMPEG_SEM.release()
+                            with Image.open(path) as _im:
+                                _im = _im.convert('RGB')
+                                _hashes: list[str] = []
+                                for _rr in range(r):
+                                    for _cc in range(c):
+                                        _box = (_cc * tw, _rr * th, (_cc + 1) * tw, (_rr + 1) * th)
+                                        _tile = _im.crop(_box)
+                                        _h = hashlib.md5(_tile.tobytes()).hexdigest()
+                                        _hashes.append(_h)
+                                return len(set(_hashes))
+                        except Exception:
+                            return 0
+
+                    total_tiles = int(cols * rows)
+                    # Start with conservative threshold: require at least 25% unique tiles
+                    min_unique = max(1, total_tiles // 4)
+                    unique = _unique_tiles_count(sheet, tile_w, tile_h, int(cols), int(rows))
+
+                    # Fallback 1: slight jitter to sampling start to avoid boundary/keyframe bias
+                    if unique < min_unique:
+                        try:
+                            jitter = max(0.01, float(interval) * 0.15)
+                            start_time2 = max(0.0, float(interval) * 0.5 + jitter)
+                            vf2 = (
+                                f"setpts=N/FRAME_RATE/TB,"
+                                f"fps=1/{max(0.001, float(interval))}:start_time={start_time2},"
+                                f"scale={int(width)}:-2:flags=lanczos,"
+                                f"tile={int(cols)}x{int(rows)}"
+                            )
+                            cmd2 = [
+                                "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
+                                *(_ffmpeg_hwaccel_flags()),
+                                "-t", f"{cap_secs:.3f}",
+                                "-i", str(video),
+                                "-an",
+                                "-vf", vf2,
+                                "-frames:v", "1",
+                                *(_ffmpeg_threads_flags()),
+                                str(sheet),
+                            ]
+                            _run(cmd2)
+                            unique = _unique_tiles_count(sheet, tile_w, tile_h, int(cols), int(rows))
                         except Exception:
                             pass
-                        break
-                    time.sleep(0.2)
-            else:
-                proc = _run(cmd)
-            if proc.returncode != 0:
-                raise RuntimeError(proc.stderr or "ffmpeg sprite generation failed")
-        except Exception:
-            # Fall back to replicated thumbnail flow below
-            pass
-        else:
-            # Compute tile dimensions from output image
-            try:
-                from PIL import Image  # type: ignore
-                with Image.open(sheet) as im:
-                    sheet_w, sheet_h = im.size
-            except Exception:
-                # If PIL not available at runtime, approximate tile_h by 9:16 aspect
-                sheet_w = int(width * cols)
-                sheet_h = int((width * 9 // 16) * rows)
-            tile_w = int(max(1, sheet_w // max(1, cols)))
-            tile_h = int(max(1, sheet_h // max(1, rows)))
-            frames = int(cols * rows)
-            meta = {
-                "cols": int(cols),
-                "rows": int(rows),
-                "interval": float(interval),
-                "width": int(width),
-                "tile_width": int(tile_w),
-                "tile_height": int(tile_h),
-                "frames": int(frames),
-                # legacy keys for compatibility
-                "grid": [int(cols), int(rows)],
-                "tile": [int(tile_w), int(tile_h)],
-            }
-            j.write_text(json.dumps(meta, indent=2))
-            return
+
+                    # Fallback 2: drop near-identical frames before sampling (mpdecimate), then fps
+                    if unique < min_unique:
+                        try:
+                            vf3 = (
+                                f"setpts=N/FRAME_RATE/TB,"
+                                f"mpdecimate,"
+                                f"fps=1/{max(0.001, float(interval))}:start_time={max(0.0, float(interval) * 0.5)},"
+                                f"scale={int(width)}:-2:flags=lanczos,"
+                                f"tile={int(cols)}x{int(rows)}"
+                            )
+                            cmd3 = [
+                                "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
+                                *(_ffmpeg_hwaccel_flags()),
+                                # For decimation, scan more broadly (omit -t cap)
+                                "-i", str(video),
+                                "-an",
+                                "-vf", vf3,
+                                "-frames:v", "1",
+                                *(_ffmpeg_threads_flags()),
+                                str(sheet),
+                            ]
+                            _run(cmd3)
+                            unique = _unique_tiles_count(sheet, tile_w, tile_h, int(cols), int(rows))
+                        except Exception:
+                            pass
+
+                    # Fallback 3: scene-change-driven sampling as a last resort
+                    if unique < min_unique:
+                        try:
+                            try:
+                                thr_env = os.environ.get("SPRITES_SCENE_THRESHOLD")
+                                scene_thr = float(thr_env) if thr_env not in (None, "") else 0.03
+                            except Exception:
+                                scene_thr = 0.03
+                            vf4 = (
+                                f"select='gt(scene,{scene_thr})',"
+                                f"setpts=PTS-STARTPTS,"
+                                f"scale={int(width)}:-2:flags=lanczos,"
+                                f"tile={int(cols)}x{int(rows)}"
+                            )
+                            cmd4 = [
+                                "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
+                                *(_ffmpeg_hwaccel_flags()),
+                                "-i", str(video),
+                                "-an",
+                                "-vf", vf4,
+                                "-frames:v", "1",
+                                *(_ffmpeg_threads_flags()),
+                                str(sheet),
+                            ]
+                            _run(cmd4)
+                            unique = _unique_tiles_count(sheet, tile_w, tile_h, int(cols), int(rows))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Final guard: ensure we actually wrote a non-empty sheet
+                if not _file_nonempty(sheet, min_size=64):
+                    raise RuntimeError("sprite sheet output missing or too small after processing")
+                frames = int(cols * rows)
+                meta = {
+                    "cols": int(cols),
+                    "rows": int(rows),
+                    "interval": float(interval),
+                    "width": int(width),
+                    "tile_width": int(tile_w),
+                    "tile_height": int(tile_h),
+                    "frames": int(frames),
+                    # legacy keys for compatibility
+                    "grid": [int(cols), int(rows)],
+                    "tile": [int(tile_w), int(tile_h)],
+                }
+                j.write_text(json.dumps(meta, indent=2))
+                try:
+                    print(f"[sprites] wrote {sheet.name} and {j.name}")
+                except Exception:
+                    pass
+                return
 
     # Fallback: use a repeated thumbnail (last-resort)
     try:
@@ -1626,41 +2250,82 @@ def compute_heatmaps(
             "-vf", vf,
             "-f", "null", "-",
         ]
-        # Run and parse YAVG (average luma) from metadata print lines
-        proc = _run(cmd)
-        if proc.returncode == 0:
-            # Parse lines like: frame: pts:... pts_time:... lavfi.signalstats.YAVG:XX.X ...
-            for line in (proc.stderr or proc.stdout or "").splitlines():
-                if "signalstats" in line and "YAVG" in line:
+        # Stream combined output to parse YAVG incrementally and update progress
+        _local_sem = _FFMPEG_SEM
+        _local_sem.acquire()
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+            try:
+                _register_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+            except Exception:
+                pass
+            last_idx = 0
+            last_ts = 0.0
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    if not line:
+                        continue
                     try:
                         # Extract pts_time if available for timestamp
                         m_ts = re.search(r"pts_time:([0-9]+\.[0-9]+)", line)
                         t_val = float(m_ts.group(1)) if m_ts else None
                         m = re.search(r"YAVG:([0-9]+\.?[0-9]*)", line)
                         if not m:
-                            # alt format via metadata=print: lavfi.signalstats.YAVG=XX.X
                             m = re.search(r"lavfi\.signalstats\.YAVG[=:]([0-9]+\.?[0-9]*)", line)
                         if m:
                             yavg = float(m.group(1))
                             v = max(0.0, min(1.0, yavg / 255.0))
                             samples.append({"t": round(t_val, 3) if t_val is not None else None, "v": v})
+                            last_idx += 1
+                            if isinstance(t_val, float):
+                                last_ts = t_val
                             if progress_cb and total_steps:
                                 try:
-                                    progress_cb(min(len(samples), total_steps), total_steps)
+                                    progress_cb(min(last_idx, total_steps), total_steps)
                                 except Exception:
                                     pass
+                        # Approximate progress by timestamp if frame count lags
+                        elif duration and duration > 0 and progress_cb and ("signalstats" in line):
+                            try:
+                                frac = max(0.0, min(1.0, float(last_ts) / float(duration)))
+                                progress_cb(int(frac * total_steps), total_steps)
+                            except Exception:
+                                pass
                     except Exception:
-                        # Skip malformed line
                         continue
-            # Backfill timestamps if not provided
-            if samples and samples[0].get("t") is None:
-                t = 0.0
-                step = max(0.1, float(interval))
-                for i in range(len(samples)):
-                    samples[i]["t"] = round(t, 3)
-                    t += step
-        else:
-            samples = []  # force fallback
+                    # cancellation
+                    ev = JOB_CANCEL_EVENTS.get(getattr(JOB_CTX, "jid", ""))
+                    if ev is not None and ev.is_set():
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except Exception:
+                            proc.terminate()
+                        raise RuntimeError("canceled")
+            rc = proc.wait()
+            if rc != 0 and not samples:
+                samples = []  # force fallback
+        finally:
+            try:
+                _local_sem.release()
+            except Exception:
+                pass
+            try:
+                _unregister_job_proc(getattr(JOB_CTX, "jid", "") or "", proc)  # type: ignore[name-defined]
+            except Exception:
+                pass
+        # Backfill timestamps if not provided
+        if samples and samples[0].get("t") is None:
+            t = 0.0
+            step = max(0.1, float(interval))
+            for i in range(len(samples)):
+                samples[i]["t"] = round(t, 3)
+                t += step
     except Exception:
         samples = []
 
@@ -1709,7 +2374,10 @@ def compute_heatmaps(
                     except Exception:
                         pass
 
-    data = {"interval": float(interval), "samples": samples}
+    data = {
+        "interval": float(interval), 
+        "samples": samples
+    }
     heatmaps_json_path(video).write_text(json.dumps(data, indent=2))
     if png and samples:
         # Simple bar chart visualization
@@ -1788,7 +2456,11 @@ def run_whisper_backend(
 ) -> List[Dict[str, Any]]:
     # Returns list of segments: {start,end,text}
     if os.environ.get("FFPROBE_DISABLE"):
-        segs = [{"start": i * 2.0, "end": i * 2.0 + 1.5, "text": f"Stub segment {i+1}"} for i in range(3)]
+        segs = [{
+            "start": i * 2.0, 
+            "end": i * 2.0 + 1.5, 
+            "text": f"Stub segment {i+1}"
+        } for i in range(3)]
         if progress_cb:
             try:
                 for i, s in enumerate(segs, start=1):
@@ -1847,7 +2519,11 @@ def run_whisper_backend(
         segs: List[Dict[str, Any]] = []
         for s in result.get("segments", []):
             if isinstance(s, dict):
-                segs.append({"start": s.get("start"), "end": s.get("end"), "text": s.get("text")})
+                segs.append({
+                    "start": s.get("start"), 
+                    "end": s.get("end"), 
+                    "text": s.get("text")
+                })
                 if progress_cb:
                     try:
                         # Best-effort fractional progress based on segment index
@@ -2179,7 +2855,12 @@ def _detect_faces(
     except Exception:
         # As a last resort, return a clearly marked sentinel that our exists_check will treat as stub.
         # The caller (compute_face_embeddings) will convert this into a hard error so we don't write stubs.
-        return [{"time": 0.0, "box": [0, 0, 100, 100], "score": 1.0, "embedding": []}]
+        return [{
+            "time": 0.0, 
+            "box": [0, 0, 100, 100], 
+            "score": 1.0, 
+            "embedding": []
+        }]
 
 
 def compute_face_embeddings(
@@ -2463,42 +3144,6 @@ app = FastAPI(title="Media Player", version="3.0")
 api = APIRouter(prefix="/api")
 
 # -----------------------------
-# Root directory API (from stash salvage)
-# -----------------------------
-class RootUpdate(BaseModel):  # simple pydantic model for updating root
-    root: str
-
-@api.get("/root")
-def get_root_api():
-    """Return the currently configured library root directory.
-
-    Response: { root: <str or null> }
-    """
-    try:
-        r = STATE.get("root")
-        return api_success({"root": str(r) if r else None})
-    except Exception as e:  # noqa: BLE001
-        return api_error(f"failed to get root: {e}")
-
-
-@api.post("/root")
-def set_root_api(update: RootUpdate):
-    """Set a new library root. Path must exist and be a directory.
-
-    This mutates in-memory STATE only; restart will re-evaluate MEDIA_ROOT env.
-    """
-    try:
-        p = Path(update.root).expanduser().resolve()
-        if not p.exists() or not p.is_dir():
-            raise_api_error("root not found", status_code=404)
-        STATE["root"] = p
-        return api_success({"root": str(p)})
-    except HTTPException:
-        raise
-    except Exception as e:  # noqa: BLE001
-        raise_api_error(f"failed to set root: {e}", status_code=500)
-
-# -----------------------------
 # CORS: allow UI from file:// or other hosts to call the API
 # Configure via CORS_ALLOW_ORIGINS (comma-separated). Defaults to * for dev.
 # -----------------------------
@@ -2534,9 +3179,44 @@ JOB_EVENT_SUBS: list[tuple[asyncio.Queue[str], asyncio.AbstractEventLoop]] = []
 JOB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 
 # Global concurrency control for running jobs
-# Built-in conservative default: 1 concurrent job unless overridden by env
-JOB_MAX_CONCURRENCY = int(os.environ.get("JOB_MAX_CONCURRENCY", "1"))
+# Default to 4 unless overridden by env JOB_MAX_CONCURRENCY
+JOB_MAX_CONCURRENCY = int(os.environ.get("JOB_MAX_CONCURRENCY", "4"))
 JOB_RUN_SEM = threading.Semaphore(JOB_MAX_CONCURRENCY)
+
+def _set_job_concurrency(new_val: int) -> int:
+    """
+    Adjust the existing JOB_RUN_SEM to match new concurrency immediately.
+    - If increasing, release additional tokens so more jobs can start now.
+    - If decreasing, acquire tokens (non-blocking) to reduce available permits;
+      any remainder takes effect as running jobs complete and release.
+    Returns the effective concurrency stored in JOB_MAX_CONCURRENCY.
+    """
+    global JOB_MAX_CONCURRENCY
+    try:
+        target = max(1, min(128, int(new_val)))
+    except Exception:
+        target = 1
+    cur = int(JOB_MAX_CONCURRENCY)
+    delta = target - cur
+    if delta > 0:
+        # Increase: release delta tokens
+        for _ in range(delta):
+            try:
+                JOB_RUN_SEM.release()
+            except ValueError:
+                # Not bounded; ignore
+                pass
+    elif delta < 0:
+        # Decrease: acquire up to -delta tokens non-blocking to immediately shrink availability
+        need = -delta
+        for _ in range(need):
+            try:
+                if not JOB_RUN_SEM.acquire(blocking=False):
+                    break
+            except Exception:
+                break
+    JOB_MAX_CONCURRENCY = target
+    return JOB_MAX_CONCURRENCY
 
 # Per-file/task locks to avoid duplicate heavy work on the same target
 FILE_TASK_LOCKS: dict[tuple[str, str], threading.Lock] = {}
@@ -2648,13 +3328,22 @@ def _restore_jobs_on_start() -> None:
             data = json.loads(fp.read_text())
             jid = str(data.get("id") or fp.stem)
             base_type = _normalize_job_type(str(data.get("type") or ""))
-            # Restore job state
+            # Decide target state based on previous state and auto-restore setting
+            prev = str(data.get("state") or "").lower()
+            auto_restore = not bool(os.environ.get("JOB_AUTORESTORE_DISABLE"))
+            if prev in ("done", "failed", "canceled"):
+                target_state = prev
+            elif prev in ("queued", "running"):
+                target_state = "queued" if auto_restore else "restored"
+            else:
+                # Unknown or missing state: treat as restored (paused) unless auto-resume is enabled
+                target_state = "queued" if auto_restore else "restored"
             with JOB_LOCK:
                 JOBS[jid] = {
                     "id": jid,
                     "type": base_type,
                     "path": data.get("path"),
-                    "state": data.get("state") or "queued",
+                    "state": target_state,
                     "created_at": data.get("created_at"),
                     "started_at": data.get("started_at"),
                     "ended_at": data.get("ended_at"),
@@ -2666,11 +3355,8 @@ def _restore_jobs_on_start() -> None:
                     "request": data.get("request"),
                 }
                 JOB_CANCEL_EVENTS[jid] = threading.Event()
-            # If the previous state was running, treat it as queued for resume
-            prev = str(data.get("state") or "").lower()
-            if prev == "running":
-                with JOB_LOCK:
-                    JOBS[jid]["state"] = "queued"
+            # Persist any state normalization (e.g., running->queued, or queued->restored)
+            if prev != target_state:
                 _persist_job(jid)
         except Exception:
             continue
@@ -2880,7 +3566,9 @@ def _set_job_progress(jid: str, *, total: Optional[int] = None, processed_inc: i
 def _wrap_job(job_type: str, path: str, fn):
     jid = _new_job(job_type, path)
     try:
-        # FIFO gate: wait until this job is the earliest queued before starting
+        # FIFO gate: wait until this job is the earliest queued before starting.
+        # Jobs marked 'restored' (from persisted state with auto-restore disabled)
+        # are ignored by the turn calculation and won't block new work.
         _wait_for_turn(jid)
         # Enforce global job concurrency even for synchronous (request-thread) jobs
         fp = Path(path)
@@ -2970,6 +3658,7 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
                 for qq in JOBS.values()
                 if str(qq.get("state") or "") == "queued"
             ]
+            # Note: jobs in state 'restored' are paused and intentionally ignored here
             queued.sort(key=lambda x: (x[0], x[1]))
             if queued and queued[0][1] == jid:
                 # It's our turn
@@ -3006,8 +3695,8 @@ async def no_cache_middleware(request, call_next):
     resp = await call_next(request)
     path = request.url.path
     # Apply no-cache headers to all static files served from root directory and /static
-    if (path in {"/", "/index.css", "/index.js", "/old-index.html"} or 
-        path.startswith("/static") or 
+    if (path in {"/", "/index.css", "/index.js", "/old-index.html", "/icons.svg", "/favicon.ico"} or
+        path.startswith("/static") or
         (not path.startswith("/api") and "." in path.split("/")[-1])):
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         resp.headers["Pragma"] = "no-cache"
@@ -3037,6 +3726,22 @@ def index_js():
     if js.exists():
         return Response(js.read_text(encoding="utf-8"), media_type="text/javascript")
     return Response("// JS not found", media_type="text/javascript")
+
+
+@app.get("/icons.svg", include_in_schema=False)
+def icons_svg():
+    svg = _STATIC / "icons.svg"
+    if svg.exists():
+        return Response(svg.read_text(encoding="utf-8"), media_type="image/svg+xml")
+    return Response("<!-- icons not found -->", media_type="image/svg+xml")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon_ico():
+    ico = _STATIC / "favicon.ico"
+    if ico.exists():
+        return FileResponse(str(ico), media_type="image/x-icon")
+    return Response(status_code=404)
 
 
 @app.get("/old-index.html", include_in_schema=False)
@@ -3265,6 +3970,21 @@ def health():
 
 @app.get("/config")
 def config_info():
+    """Unified configuration endpoint.
+
+    Combines legacy environment/dependency info with dynamic runtime config
+    (previously available at /api/config). Provides three sections:
+      - raw: raw persisted config file contents
+      - defaults: derived default values (e.g., sprites)
+      - effective: defaults overlaid with raw overrides
+    Retains legacy keys (features, deps, versions) for backward compatibility.
+    """
+    with _CONFIG_LOCK:
+        raw_cfg = copy.deepcopy(STATE.get("config") or {})
+    defaults = {"sprites": _sprite_defaults()}
+    effective = {
+        "sprites": {**defaults["sprites"], **(raw_cfg.get("sprites") or {})},
+    }
     return {
         "root": str(STATE.get("root")),
         "env": {k: os.environ.get(k) for k in ["MEDIA_ROOT", "FFPROBE_DISABLE", "MEDIA_EXTS"]},
@@ -3302,16 +4022,15 @@ def config_info():
             "pillow": _module_version("PIL"),
         },
         "capabilities": {
-            # What backend would be selected right now in auto mode
             "subtitles_backend": detect_backend("auto"),
             "faces_backend": detect_face_backend("auto"),
-            # Simple booleans the UI or users can read at a glance
             "subtitles_enabled": detect_backend("auto") != "stub",
             "faces_enabled": (detect_face_backend("auto") in ("opencv", "insightface")) and (_has_module("cv2") or _has_module("insightface")),
         },
-        "defaults": {
-            "sprites": _sprite_defaults(),
-        },
+        "raw": raw_cfg,
+        "defaults": defaults,
+        "effective": effective,
+        "config_path": STATE.get("config_path"),
         "version": app.version,
     }
 
@@ -3368,11 +4087,11 @@ def tags_export(directory: str = Query("."), recursive: bool = Query(False)):
     for v in vids:
         tf = _tags_file(v)
         data = {
-            "path": str(v), 
-            "name": v.name, 
-            "tags": [], 
+            "path": str(v),
+            "name": v.name,
+            "tags": [],
             "performers": [],
-            "description": "", 
+            "description": "",
             "rating": 0
         }
         if tf.exists():
@@ -4083,6 +4802,500 @@ def api_duplicates_list(
         "pairs": page_items,
     })
 
+# Legacy parity alias for prior path; delegates to unified duplicates logic
+@api.get("/phash/duplicates")
+def api_phash_duplicates(
+    directory: str = Query("."),
+    recursive: bool = Query(False),
+    phash_threshold: float = Query(0.90, ge=0.0, le=1.0),
+    min_similarity: Optional[float] = Query(None, ge=0.0, le=1.0),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=1000),
+):
+    """Return grouped near-duplicate clusters based on pHash similarity.
+
+    Output shape aligns with branch spec:
+      { status: 'success', data: [ { representative, group:[...], distance_mode:'xor', frame_count:? } ] }
+    Internally reuses pairwise duplicate logic, then unions overlapping pairs into clusters.
+    """
+    # First get full (unpaginated) pair list via existing helper
+    try:
+        base = api_duplicates_list(
+            directory=directory,
+            recursive=recursive,
+            phash_threshold=phash_threshold,
+            min_similarity=min_similarity,
+            page=1,
+            page_size=1000000,  # effectively all; clustering done in-memory
+        )
+        if isinstance(base, Response):  # already Response
+            payload = base.body  # type: ignore[attr-defined]
+        data = base.get("data") if isinstance(base, dict) else None  # type: ignore[index]
+    except Exception:
+        data = None
+    if not data or "pairs" not in data:
+        return api_success({ "data": [] })
+    pairs = data["pairs"]
+    # Build adjacency graph
+    adj: dict[str, set[str]] = {}
+    for p in pairs:
+        a = str(p.get("a"))
+        b = str(p.get("b"))
+        if not a or not b:
+            continue
+        adj.setdefault(a, set()).add(b)
+        adj.setdefault(b, set()).add(a)
+    visited: set[str] = set()
+    clusters: list[list[str]] = []
+    for node in adj:
+        if node in visited:
+            continue
+        stack = [node]
+        comp = []
+        visited.add(node)
+        while stack:
+            cur = stack.pop()
+            comp.append(cur)
+            for nxt in adj.get(cur, set()):
+                if nxt not in visited:
+                    visited.add(nxt)
+                    stack.append(nxt)
+        if len(comp) > 1:
+            clusters.append(sorted(comp))
+    # Representative: choose smallest path (could be replaced with earliest mtime later)
+    result = [
+        {
+            "representative": c[0],
+            "group": c,
+            "distance_mode": "xor",
+            "frame_count": None,  # not available without deeper sidecar parse; left nullable
+        }
+        for c in clusters
+    ]
+    # Pagination over clusters
+    total = len(result)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    end = start + page_size
+    return api_success({
+        "directory": directory,
+        "recursive": recursive,
+        "phash_threshold": phash_threshold,
+        "min_similarity": min_similarity,
+        "page": page,
+        "page_size": page_size,
+        "total_groups": total,
+        "total_pages": total_pages,
+        "data": result[start:end],
+    })
+
+
+# -----------------
+# Lightweight Compare (metadata + pHash distance)
+# -----------------
+@api.get("/compare/meta")
+def api_compare_meta(
+    path_a: str = Query(..., description="First video path (relative to root)"),
+    path_b: str = Query(..., description="Second video path (relative to root)"),
+):
+    if STATE.get("root") is None:
+        raise_api_error("Root not set", status_code=400)
+    pa = safe_join(STATE["root"], path_a)
+    pb = safe_join(STATE["root"], path_b)
+    if not pa.exists() or not pb.exists():
+        raise_api_error("One or both files not found", status_code=404)
+
+    def basic_meta(p: Path) -> dict:
+        meta_path = metadata_path(p)
+        meta = None
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+            except Exception:
+                meta = None
+        dur = None
+        width = height = None
+        try:
+            if meta:
+                dur = extract_duration(meta)
+                for st in meta.get("streams", []) or []:
+                    if (st or {}).get("codec_type") == "video":
+                        try:
+                            width = int(st.get("width") or 0) or None
+                            height = int(st.get("height") or 0) or None
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        size = None
+        try:
+            size = p.stat().st_size
+        except Exception:
+            size = None
+        return {
+            "path": str(p.relative_to(STATE["root"])),
+            "duration": dur,
+            "width": width,
+            "height": height,
+            "size": size,
+        }
+
+    a_meta = basic_meta(pa)
+    b_meta = basic_meta(pb)
+
+    # pHash distance
+    def read_hex(p: Path) -> Optional[str]:
+        fp = phash_path(p)
+        if fp.exists():
+            try:
+                j = json.loads(fp.read_text())
+                h = j.get("phash")
+                if isinstance(h, str):
+                    return h
+            except Exception:
+                return None
+        return None
+
+    ha = read_hex(pa)
+    hb = read_hex(pb)
+    phash_distance = None
+    if ha and hb:
+        try:
+            ia = int(ha, 16)
+            ib = int(hb, 16)
+            phash_distance = bin(ia ^ ib).count("1")
+        except Exception:
+            phash_distance = None
+
+    # Metrics
+    duration_diff_sec = None
+    try:
+        if a_meta.get("duration") is not None and b_meta.get("duration") is not None:
+            duration_diff_sec = abs(float(a_meta["duration"]) - float(b_meta["duration"]))
+    except Exception:
+        pass
+
+    size_diff_bytes = None
+    try:
+        if a_meta.get("size") is not None and b_meta.get("size") is not None:
+            size_diff_bytes = abs(int(a_meta["size"]) - int(b_meta["size"]))
+    except Exception:
+        pass
+
+    same_resolution = None
+    try:
+        if a_meta.get("width") and b_meta.get("width") and a_meta.get("height") and b_meta.get("height"):
+            same_resolution = (a_meta["width"], a_meta["height"]) == (b_meta["width"], b_meta["height"])
+    except Exception:
+        pass
+
+    return api_success({
+        "a": a_meta,
+        "b": b_meta,
+        "metrics": {
+            "duration_diff_sec": duration_diff_sec,
+            "size_diff_bytes": size_diff_bytes,
+            "same_resolution": same_resolution,
+            "phash_distance": phash_distance,
+        }
+    })
+
+
+# -----------------
+# Previews / Artifact Presence Report
+# -----------------
+@api.get("/report/previews")
+def api_report_previews(
+    directory: str = Query(".", description="Directory under root to scan ('.' for root)"),
+    recursive: bool = Query(False, description="Recurse into subdirectories"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(200, ge=1, le=2000),
+):
+    if STATE.get("root") is None:
+        raise_api_error("Root not set", status_code=400)
+    # Resolve directory
+    if directory in (".", ""):
+        base = Path(STATE["root"]).resolve()
+    else:
+        base = safe_join(STATE["root"], directory).resolve()
+    if not base.exists() or not base.is_dir():
+        raise_api_error("directory not found", status_code=404)
+    # Collect candidates (mp4 only to align with other artifact systems)
+    vids = _find_mp4s(base, recursive)
+    # Local inline helper (redeclared if earlier private versions exist); single canonical implementation
+    def _artifact_flags(v: Path) -> dict[str, bool]:
+        s_sheet, s_json = sprite_sheet_paths(v)
+        return {
+            "cover": thumbs_path(v).exists(),
+            "hovers": _file_nonempty(_hover_concat_path(v)),
+            "sprites": s_sheet.exists() and s_json.exists(),
+            "scenes": scenes_json_exists(v),
+            "heatmaps": heatmaps_json_exists(v),
+            "phash": phash_path(v).exists(),
+        }
+    records: list[dict] = []
+    for v in vids:
+        try:
+            rel = str(v.relative_to(STATE["root"]))
+        except Exception:
+            rel = str(v)
+        f = _artifact_flags(v)
+        records.append({
+            "path": rel,
+            "thumb": bool(f.get("cover")),
+            "hover": bool(f.get("hovers")),
+            "sprites": bool(f.get("sprites")),
+            "scenes": bool(f.get("scenes")),
+            "heatmaps": bool(f.get("heatmaps")),
+            "phash": bool(f.get("phash")),
+        })
+    total = len(records)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    end = start + page_size
+    return api_success({
+        "directory": directory,
+        "recursive": recursive,
+        "page": page,
+        "page_size": page_size,
+        "total_files": total,
+        "total_pages": total_pages,
+        "data": records[start:end],
+    })
+
+
+# -----------------
+# Performers System (lightweight in-file store & counters)
+# -----------------
+_PERFORMERS_CACHE: dict[str, dict] = {}
+_PERFORMERS_CACHE_TS: float | None = None
+_PERFORMERS_INDEX: dict[str, set[str]] = {}  # name -> set(paths)
+
+def _normalize_performer(name: str) -> str:
+    return re.sub(r"\s+", " ", name.strip()).lower()
+
+def _load_performers_sidecars() -> None:
+    """Scan metadata sidecars to build performer usage index.
+    This is a simplified heuristic: looks for 'performers' array in metadata JSON tags.
+    Caches results to avoid repeated full scans; invalidated when cache older than 5 minutes.
+    """
+    global _PERFORMERS_CACHE_TS, _PERFORMERS_INDEX, _PERFORMERS_CACHE
+    if STATE.get("root") is None:
+        return
+    now = time.time()
+    if _PERFORMERS_CACHE_TS and (now - _PERFORMERS_CACHE_TS) < 300:
+        return
+    _PERFORMERS_INDEX = {}
+    root = Path(STATE["root"]).resolve()
+    vids = _find_mp4s(root, recursive=True)
+    for v in vids:
+        m = metadata_path(v)
+        if not m.exists():
+            continue
+        try:
+            j = json.loads(m.read_text())
+        except Exception:
+            continue
+        names = []
+        # Heuristic paths: format.tags.performers OR top-level performers OR tags.cast
+        try:
+            fmt = j.get("format", {}) or {}
+            tags = fmt.get("tags", {}) or {}
+            raw_perf = tags.get("performers")
+            if isinstance(raw_perf, str):
+                names.extend([t.strip() for t in re.split(r"[;,]", raw_perf) if t.strip()])
+            raw_cast = tags.get("cast")
+            if isinstance(raw_cast, str):
+                names.extend([t.strip() for t in re.split(r"[;,]", raw_cast) if t.strip()])
+        except Exception:
+            pass
+        # Optional explicit field
+        try:
+            if isinstance(j.get("performers"), list):
+                for n in j["performers"]:
+                    if isinstance(n, str) and n.strip():
+                        names.append(n.strip())
+        except Exception:
+            pass
+        if not names:
+            continue
+        rel: str
+        try:
+            rel = str(v.relative_to(root))
+        except Exception:
+            rel = str(v)
+        for n in names:
+            norm = _normalize_performer(n)
+            if not norm:
+                continue
+            _PERFORMERS_INDEX.setdefault(norm, set()).add(rel)
+            _PERFORMERS_CACHE.setdefault(norm, {"name": n, "tags": []})
+    _PERFORMERS_CACHE_TS = now
+
+def _list_performers(search: str | None = None) -> list[dict]:
+    _load_performers_sidecars()
+    out = []
+    for norm, paths in _PERFORMERS_INDEX.items():
+        rec = _PERFORMERS_CACHE.get(norm, {"name": norm, "tags": []})
+        if search and search.lower() not in rec["name"].lower():
+            continue
+        out.append({
+            "name": rec["name"],
+            "norm": norm,
+            "count": len(paths),
+            "tags": rec.get("tags", []),
+        })
+    # Sort by usage desc then alpha
+    out.sort(key=lambda r: (-int(r.get("count") or 0), r.get("name", "" ).lower()))
+    return out
+
+@api.get("/performers")
+def api_performers(search: Optional[str] = Query(None)):
+    return api_success({"performers": _list_performers(search)})
+
+@api.post("/performers/add")
+def api_performers_add(body: dict = Body(...)):
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise_api_error("name required", status_code=400)
+    norm = _normalize_performer(name)
+    if norm not in _PERFORMERS_CACHE:
+        _PERFORMERS_CACHE[norm] = {"name": name, "tags": []}
+        _PERFORMERS_INDEX.setdefault(norm, set())
+    return api_success({"added": name})
+
+@api.post("/performers/import")
+def api_performers_import(body: str = Body(..., media_type="text/plain")):
+    # Accept either JSON list or plaintext newline list
+    names: list[str] = []
+    txt = body.strip()
+    if not txt:
+        return api_success({"imported": 0})
+    try:
+        if txt.lstrip().startswith("["):
+            arr = json.loads(txt)
+            if isinstance(arr, list):
+                for n in arr:
+                    if isinstance(n, str) and n.strip():
+                        names.append(n.strip())
+        else:
+            for line in txt.splitlines():
+                line = line.strip()
+                if line:
+                    names.append(line)
+    except Exception:
+        raise_api_error("invalid import payload", status_code=400)
+    added = 0
+    for n in names:
+        norm = _normalize_performer(n)
+        if norm and norm not in _PERFORMERS_CACHE:
+            _PERFORMERS_CACHE[norm] = {"name": n, "tags": []}
+            _PERFORMERS_INDEX.setdefault(norm, set())
+            added += 1
+    return api_success({"imported": added})
+
+@api.post("/performers/rename")
+def api_performers_rename(body: dict = Body(...)):
+    old = _normalize_performer((body.get("old") or ""))
+    new = (body.get("new") or "").strip()
+    if not old or not new:
+        raise_api_error("old and new required", status_code=400)
+    new_norm = _normalize_performer(new)
+    if old not in _PERFORMERS_CACHE:
+        raise_api_error("old performer not found", status_code=404)
+    rec = _PERFORMERS_CACHE.pop(old)
+    paths = _PERFORMERS_INDEX.pop(old, set())
+    rec["name"] = new
+    _PERFORMERS_CACHE[new_norm] = rec
+    _PERFORMERS_INDEX[new_norm] = _PERFORMERS_INDEX.get(new_norm, set()).union(paths)
+    return api_success({"renamed": {"old": old, "new": new}})
+
+@api.post("/performers/merge")
+def api_performers_merge(body: dict = Body(...)):
+    from_list = body.get("from") or []
+    target = (body.get("to") or "").strip()
+    if not isinstance(from_list, list) or not target:
+        raise_api_error("from (list) and to (string) required", status_code=400)
+    target_norm = _normalize_performer(target)
+    _PERFORMERS_CACHE.setdefault(target_norm, {"name": target, "tags": []})
+    _PERFORMERS_INDEX.setdefault(target_norm, set())
+    merged = []
+    for n in from_list:
+        norm = _normalize_performer(str(n))
+        if norm in _PERFORMERS_INDEX and norm != target_norm:
+            _PERFORMERS_INDEX[target_norm].update(_PERFORMERS_INDEX.pop(norm))
+            _PERFORMERS_CACHE.pop(norm, None)
+            merged.append(norm)
+    return api_success({"merged_into": target, "sources": merged})
+
+@api.delete("/performers")
+def api_performers_delete(name: str = Query(...)):
+    norm = _normalize_performer(name)
+    if norm not in _PERFORMERS_CACHE:
+        raise_api_error("performer not found", status_code=404)
+    _PERFORMERS_CACHE.pop(norm, None)
+    _PERFORMERS_INDEX.pop(norm, None)
+    return api_success({"deleted": name})
+
+@api.post("/performers/tags/update")
+def api_performers_tags_update(body: dict = Body(...)):
+    """Replace full tag list for a performer.
+    Body: { name: str, tags: list[str] }
+    """
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise_api_error("name required", status_code=400)
+    norm = _normalize_performer(name)
+    if norm not in _PERFORMERS_CACHE:
+        raise_api_error("performer not found", status_code=404)
+    raw_tags = body.get("tags") or []
+    if not isinstance(raw_tags, list):
+        raise_api_error("tags must be list", status_code=400)
+    tags: list[str] = []
+    seen: set[str] = set()
+    for t in raw_tags:
+        if isinstance(t, str):
+            tt = t.strip()
+            if tt and tt.lower() not in seen:
+                seen.add(tt.lower())
+                tags.append(tt)
+    _PERFORMERS_CACHE[norm]["tags"] = tags
+    return api_success({"updated": name, "tags": tags})
+
+@api.post("/performers/tags/add")
+def api_performers_tags_add(body: dict = Body(...)):
+    name = (body.get("name") or "").strip()
+    tag = (body.get("tag") or "").strip()
+    if not name or not tag:
+        raise_api_error("name and tag required", status_code=400)
+    norm = _normalize_performer(name)
+    if norm not in _PERFORMERS_CACHE:
+        raise_api_error("performer not found", status_code=404)
+    rec = _PERFORMERS_CACHE[norm]
+    tags = rec.setdefault("tags", [])
+    if tag.lower() not in {t.lower() for t in tags}:
+        tags.append(tag)
+    return api_success({"added": tag, "tags": tags})
+
+@api.post("/performers/tags/remove")
+def api_performers_tags_remove(body: dict = Body(...)):
+    name = (body.get("name") or "").strip()
+    tag = (body.get("tag") or "").strip()
+    if not name or not tag:
+        raise_api_error("name and tag required", status_code=400)
+    norm = _normalize_performer(name)
+    if norm not in _PERFORMERS_CACHE:
+        raise_api_error("performer not found", status_code=404)
+    rec = _PERFORMERS_CACHE[norm]
+    tags = rec.setdefault("tags", [])
+    new_tags = [t for t in tags if t.lower() != tag.lower()]
+    rec["tags"] = new_tags
+    return api_success({"removed": tag, "tags": new_tags})
+
 
 # -----------------
 # Report
@@ -4136,7 +5349,127 @@ def report(directory: str = Query("."), recursive: bool = Query(False)):
         for k, present in flags.items():
             if present:
                 counts[k] += 1
+    # Parity alias: expose 'previews' mirroring 'hovers' for legacy clients
+    try:
+        counts["previews"] = counts.get("hovers", 0)
+    except Exception:
+        pass
     return {"counts": counts, "total": len(vids)}
+
+
+# -----------------
+# Compare (SSIM / PSNR)
+# -----------------
+@api.get("/compare")
+def api_compare(
+    a: str = Query(..., description="First video path (relative to root)"),
+    b: str = Query(..., description="Second video path (relative to root)"),
+    normalize: bool = Query(True, description="Scale both videos to the smaller resolution before comparing"),
+    timeout: int = Query(60, ge=1, le=600),
+):
+    """Compute perceptual similarity metrics between two videos.
+
+    Returns SSIM (Y/U/V/All) and PSNR (Y/U/V/Avg/Max) along with a qualitative rating.
+    """
+    if STATE.get("root") is None:
+        raise_api_error("Root not set", status_code=400)
+    va = safe_join(STATE["root"], a)
+    vb = safe_join(STATE["root"], b)
+    if not va.exists() or not vb.exists():
+        raise_api_error("One or both files not found", status_code=404)
+    if not ffprobe_available():
+        raise_api_error("ffprobe not available", status_code=500)
+    if shutil.which("ffmpeg") is None:
+        raise_api_error("ffmpeg not available", status_code=500)
+
+    def _probe_dim(p: Path) -> tuple[Optional[int], Optional[int]]:
+        meta = _ffprobe_streams_safe(p)
+        try:
+            for st in meta.get("streams", []) or []:
+                if (st or {}).get("codec_type") == "video":
+                    w = st.get("width")
+                    h = st.get("height")
+                    return int(w) if w else None, int(h) if h else None
+        except Exception:
+            pass
+        return None, None
+
+    wa, ha = _probe_dim(va)
+    wb, hb = _probe_dim(vb)
+    target_w = target_h = None
+    if normalize and wa and ha and wb and hb:
+        # choose the smaller area (or min dims) to preserve detail where both overlap
+        if (wa * ha) <= (wb * hb):
+            target_w, target_h = wa, ha
+        else:
+            target_w, target_h = wb, hb
+        # Ensure even dimensions for codecs/filters
+        if target_w:
+            target_w -= target_w % 2
+        if target_h:
+            target_h -= target_h % 2
+
+    # Build filter graph
+    if target_w and target_h:
+        filt = f"[0:v]scale={target_w}:{target_h}:flags=bicubic[va];[1:v]scale={target_w}:{target_h}:flags=bicubic[vb];[va][vb]ssim;[va][vb]psnr"
+    else:
+        filt = "[0:v][1:v]ssim;[0:v][1:v]psnr"
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "info", "-nostdin",
+        "-i", str(va),
+        "-i", str(vb),
+        "-lavfi", filt,
+        "-an", "-f", "null", "-",
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise_api_error("Comparison timed out", status_code=504)
+    out = (proc.stdout.decode("utf-8", "ignore") + "\n" + proc.stderr.decode("utf-8", "ignore"))
+    import re as _re
+    ssim_match = None
+    psnr_match = None
+    for line in out.splitlines():
+        if "SSIM Y:" in line:
+            ssim_match = line
+        if "PSNR y:" in line:
+            psnr_match = line
+    ssim_vals = {}
+    psnr_vals = {}
+    if ssim_match:
+        m = _re.search(r"SSIM Y:([0-9.]+).*?U:([0-9.]+).*?V:([0-9.]+).*?All:([0-9.]+)", ssim_match)
+        if m:
+            ssim_vals = {"y": float(m.group(1)), "u": float(m.group(2)), "v": float(m.group(3)), "all": float(m.group(4))}
+    if psnr_match:
+        m = _re.search(r"PSNR y:([0-9.]+) u:([0-9.]+) v:([0-9.]+) t:([0-9.]+) max:([0-9.]+)", psnr_match)
+        if m:
+            psnr_vals = {"y": float(m.group(1)), "u": float(m.group(2)), "v": float(m.group(3)), "avg": float(m.group(4)), "max": float(m.group(5))}
+    if not ssim_vals and not psnr_vals:
+        raise_api_error("Failed to parse comparison metrics", status_code=500)
+    # Qualitative rating
+    all_ssim = ssim_vals.get("all") or 0.0
+    avg_psnr = psnr_vals.get("avg") or 0.0
+    if all_ssim >= 0.995 or avg_psnr >= 45:
+        rating = "identical"
+    elif all_ssim >= 0.99 or avg_psnr >= 40:
+        rating = "excellent"
+    elif all_ssim >= 0.97 or avg_psnr >= 35:
+        rating = "good"
+    elif all_ssim >= 0.94 or avg_psnr >= 32:
+        rating = "fair"
+    else:
+        rating = "poor"
+    return api_success({
+        "a": a,
+        "b": b,
+        "normalized": bool(target_w and target_h),
+        "width": target_w,
+        "height": target_h,
+        "ssim": ssim_vals,
+        "psnr": psnr_vals,
+        "rating": rating,
+    })
 
 
 def _serve_range(request: Request, file_path: Path, media_type: str):
@@ -4227,11 +5560,25 @@ def cover_get(path: str = Query(...)):
         raise_api_error("cover not found", status_code=404)
     return FileResponse(str(thumb))
 
+@api.head("/cover/get")
+def cover_head(path: str = Query(...)):
+    """Lightweight existence probe for cover thumbnails.
+    Returns 200 if present, 404 if missing. Avoids 405 noise when frontend uses HEAD.
+    """
+    name, directory = _name_and_dir(path)
+    root = Path(directory)
+    target = root / name
+    thumb = thumbs_path(target)
+    if not thumb.exists():
+        raise_api_error("cover not found", status_code=404)
+    return Response(status_code=200, media_type="image/jpeg")
+
 
 @api.post("/cover/create")
 def cover_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
+
     def _do():
         time_spec = str(t) if t is not None else "middle"
         try:
@@ -4291,12 +5638,12 @@ def cover_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     # Skip if exists and not overwriting
                     if thumbs_path(p).exists() and not force:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     try:
                         lk = _file_task_lock(p, "cover")
                         with JOB_RUN_SEM:
@@ -4317,6 +5664,12 @@ def cover_create_batch(
                                 pass
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"cover-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -4365,12 +5718,25 @@ def hover_head(path: str = Query(...)):
     # Do not stream content for HEAD; just signal OK
     return Response(status_code=200, media_type="video/webm")
 
+# Compatibility preview route expected by frontend ensureHover helper
+@app.get("/api/preview")
+def api_preview_get(request: Request, path: str = Query(...)):
+    return hover_get(request, path=path)  # type: ignore
+
+@app.post("/api/preview")
+def api_preview_create(path: str = Query(...)):
+    # Delegate to hover_create with defaults; no overwrite on implicit request
+    return hover_create(path=path, segments=9, seg_dur=0.8, width=240, overwrite=False)  # type: ignore
+
 
 def _hover_concat_path(video: Path) -> Path:
     # Store concatenated preview at artifact root (consistent location)
     return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_WEBM}"
 
-    
+def _hover_info_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}"
+
+
 
 @api.post("/hover/create")
 def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False)):
@@ -4384,7 +5750,24 @@ def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_d
         # Treat tiny/stub files as missing; only short-circuit when file is non-empty
         if _file_nonempty(out) and not overwrite:
             return api_success({"created": False, "path": str(out), "reason": "exists"})
-        # Force robust single-pass path by not passing progress_cb
+        # Initialize job progress so UI doesn't sit at 0% without totals
+        try:
+            jid = getattr(JOB_CTX, "jid", None)
+            if jid:
+                _set_job_progress(jid, total=int(segments), processed_set=0)
+        except Exception:
+            pass
+        # Provide a progress callback; it's used by the multi-step fallback path
+        def _pcb(i: int, n: int):
+            try:
+                jx = getattr(JOB_CTX, "jid", None)
+                if not jx:
+                    return
+                n = max(1, int(n))
+                i = max(0, min(int(i), n))
+                _set_job_progress(jx, total=n, processed_set=i)
+            except Exception:
+                pass
         out = generate_hover_preview(
             video,
             segments=int(segments),
@@ -4392,16 +5775,44 @@ def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_d
             width=int(width),
             fmt="webm",
             out=out,
-            progress_cb=None,
+            progress_cb=_pcb,
         )
         # Verify output is non-empty; if not, treat as failure so UI reflects reality
         if not _file_nonempty(out):
             raise RuntimeError("hover result too small or missing")
+        # Snap progress to completion and record result metadata for debugging
+        try:
+            jid2 = getattr(JOB_CTX, "jid", None)
+            if jid2:
+                _set_job_progress(jid2, processed_set=int(segments))
+                try:
+                    size = out.stat().st_size if out.exists() else 0
+                except Exception:
+                    size = 0
+                with JOB_LOCK:
+                    if jid2 in JOBS:
+                        JOBS[jid2]["result"] = {"path": str(out), "size": int(size)}
+        except Exception:
+            pass
         return api_success({"created": True, "path": str(out)})
     try:
         return _wrap_job("hover", str(video.relative_to(STATE["root"])), _do)
     except Exception as e:
         raise_api_error(f"hover create failed: {e}", status_code=500)
+
+
+@api.get("/hover/info")
+def hover_info(path: str = Query(...)):
+    name, directory = _name_and_dir(path)
+    video = Path(directory) / name
+    info = _hover_info_path(video)
+    if not info.exists():
+        raise_api_error("hover info not found", status_code=404)
+    try:
+        data = json.loads(info.read_text())
+    except Exception:
+        raise_api_error("invalid hover info", status_code=500)
+    return api_success({"data": data})
 
 
 @api.post("/hover/create/batch")
@@ -4435,12 +5846,12 @@ def hover_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     # Skip already-good previews when only_missing=True
                     if only_missing and _file_nonempty(_hover_concat_path(p)):
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     jid = _new_job("hover", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
@@ -4457,7 +5868,7 @@ def hover_create_batch(
                                     except Exception:
                                         pass
                                 out_path = _hover_concat_path(p)
-                                out_ret = generate_hover_preview(
+                                _ = generate_hover_preview(
                                     p,
                                     segments=int(segments),
                                     seg_dur=float(seg_dur),
@@ -4481,10 +5892,15 @@ def hover_create_batch(
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"hover-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            # Wait for all items to complete
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -4544,6 +5960,61 @@ def phash_get(path: str = Query(...)):
     except Exception:
         data = {"raw": ph.read_text(errors="ignore")}
     return api_success(data)
+
+@api.head("/phash/get")
+def phash_head(path: str = Query(...)):
+    fp = safe_join(STATE["root"], path)
+    ph = phash_path(fp)
+    if not ph.exists():
+        raise_api_error("pHash not found", status_code=404)
+    return Response(status_code=200, media_type="application/json")
+
+# --- Unified artifact status (to reduce many individual 404 probes) ---
+@api.get("/artifacts/status")
+def artifacts_status(path: str = Query(...)):
+    name, directory = _name_and_dir(path)
+    video = Path(directory) / name
+    if not video.exists():
+        # Suppress 404 noise for missing videos; return all-false status with marker
+        return api_success({
+            "cover": False,
+            "hover": False,
+            "sprites": False,
+            "scenes": False,
+            "subtitles": False,
+            "faces": False,
+            "phash": False,
+            "heatmap": False,
+            "metadata": False,
+            "missing": True,
+        })
+    def _safe(f):
+        try:
+            return bool(f())
+        except Exception:
+            return False
+    cover = _safe(lambda: thumbs_path(video).exists())
+    hover = _safe(lambda: _file_nonempty(_hover_concat_path(video)))
+    sprites = _safe(lambda: all(p.exists() for p in sprite_sheet_paths(video)))
+    scenes_flag = _safe(lambda: scenes_json_path(video).exists() or (artifact_dir(video) / f"{video.stem}.markers.json").exists())
+    subtitles = _safe(lambda: bool(find_subtitles(video)))
+    faces_flag = _safe(lambda: faces_path(video).exists())
+    phash_flag = _safe(lambda: phash_path(video).exists())
+    heatmap_json = _safe(lambda: heatmaps_json_path(video).exists())
+    heatmap_png = _safe(lambda: heatmaps_png_path(video).exists())
+    heatmap_flag = heatmap_json or heatmap_png
+    metadata_flag = _safe(lambda: metadata_path(video).exists())
+    return api_success({
+        "cover": cover,
+        "hover": hover,
+        "sprites": sprites,
+        "scenes": scenes_flag,
+        "subtitles": subtitles,
+        "faces": faces_flag,
+        "phash": phash_flag,
+        "heatmap": heatmap_flag,
+        "metadata": metadata_flag,
+    })
 
 
 @api.post("/phash/create")
@@ -4618,6 +6089,17 @@ def scenes_get(path: str = Query(...)):
         raise_api_error("Scenes not found", status_code=404)
     return api_success(data)
 
+@api.head("/scenes/get")
+def scenes_head(path: str = Query(...)):
+    fp = safe_join(STATE["root"], path)
+    j = scenes_json_path(fp)
+    if j.exists():
+        return Response(status_code=200, media_type="application/json")
+    legacy = artifact_dir(fp) / f"{fp.stem}.markers.json"
+    if legacy.exists():
+        return Response(status_code=200, media_type="application/json")
+    raise_api_error("Scenes not found", status_code=404)
+
 
 @api.post("/scenes/create")
 def scenes_create(path: str = Query(...), threshold: float = Query(default=0.4), limit: int = Query(default=0), thumbs: bool = Query(default=False), clips: bool = Query(default=False), thumbs_width: int = Query(default=320), clip_duration: float = Query(default=2.0)):
@@ -4625,7 +6107,15 @@ def scenes_create(path: str = Query(...), threshold: float = Query(default=0.4),
     # Scene detection and outputs require ffmpeg present
     _require_ffmpeg_or_error("scene detection")
     def _do():
-        generate_scene_artifacts(fp, threshold=float(threshold), limit=int(limit), gen_thumbs=bool(thumbs), gen_clips=bool(clips), thumbs_width=int(thumbs_width), clip_duration=float(clip_duration))
+        # Wire a progress callback that maps internal steps to the job
+        jid = getattr(JOB_CTX, "jid", None)
+        def _pcb(i: int, n: int):
+            if jid:
+                try:
+                    _set_job_progress(jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                except Exception:
+                    pass
+        generate_scene_artifacts(fp, threshold=float(threshold), limit=int(limit), gen_thumbs=bool(thumbs), gen_clips=bool(clips), thumbs_width=int(thumbs_width), clip_duration=float(clip_duration), progress_cb=_pcb)
         return api_success({"created": True, "path": str(scenes_json_path(fp))})
     try:
         return _wrap_job("scenes", str(fp.relative_to(STATE["root"])), _do)
@@ -4675,6 +6165,77 @@ def scenes_list(path: str = Query(default=""), recursive: bool = Query(default=T
     return api_success({"total": total, "have": have, "missing": max(0, total - have)})
 
 
+@api.post("/scenes/create/batch")
+def scenes_create_batch(
+    path: str = Query(default=""),
+    recursive: bool = Query(default=True),
+    threshold: float = Query(default=0.4),
+    limit: int = Query(default=0),
+    thumbs: bool = Query(default=False),
+    clips: bool = Query(default=False),
+    thumbs_width: int = Query(default=320),
+    clip_duration: float = Query(default=2.0),
+    only_missing: bool = Query(default=True),
+):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    if not base.exists() or not base.is_dir():
+        raise_api_error("Not found", status_code=404)
+    # Scenes generation requires ffmpeg for thumbs/clips; enforce upfront
+    _require_ffmpeg_or_error("scene detection")
+    sup_jid = _new_job("scenes-batch", str(base))
+    _start_job(sup_jid)
+    def _worker():
+        try:
+            vids: list[Path] = []
+            it = base.rglob("*") if recursive else base.iterdir()
+            for p in it:
+                if _is_original_media_file(p, base):
+                    vids.append(p)
+            _set_job_progress(sup_jid, total=len(vids), processed_set=0)
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
+                try:
+                    if only_missing and scenes_json_exists(p):
+                        return
+                    jid = _new_job("scenes", str(p.relative_to(STATE["root"])) )
+                    _start_job(jid)
+                    try:
+                        lk = _file_task_lock(p, "scenes")
+                        with JOB_RUN_SEM:
+                            with lk:
+                                def _pcb(i: int, n: int, _jid=jid):
+                                    try:
+                                        _set_job_progress(_jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                                    except Exception:
+                                        pass
+                                generate_scene_artifacts(
+                                    p,
+                                    threshold=float(threshold),
+                                    limit=int(limit),
+                                    gen_thumbs=bool(thumbs),
+                                    gen_clips=bool(clips),
+                                    thumbs_width=int(thumbs_width),
+                                    clip_duration=float(clip_duration),
+                                    progress_cb=_pcb,
+                                )
+                        _finish_job(jid, None)
+                    except Exception as e:
+                        _finish_job(jid, str(e))
+                finally:
+                    _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"scenes-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
+            _finish_job(sup_jid, None)
+        except Exception as e:
+            _finish_job(sup_jid, str(e))
+    threading.Thread(target=_worker, daemon=True).start()
+    return api_success({"started": True, "job": sup_jid})
+
+
 # --- Sprites (Scrubbing Thumbnails) ---
 @api.get("/sprites/json")
 def sprites_json(path: str = Query(...)):
@@ -4687,6 +6248,14 @@ def sprites_json(path: str = Query(...)):
     except Exception:
         data = {"raw": j.read_text(errors="ignore")}
     return api_success({"index": data, "sheet": f"/api/sprites/sheet?path={path}"})
+
+@api.head("/sprites/json")
+def sprites_json_head(path: str = Query(...)):
+    fp = safe_join(STATE["root"], path)
+    sheet, j = sprite_sheet_paths(fp)
+    if not j.exists():
+        raise_api_error("Sprites not found", status_code=404)
+    return Response(status_code=200, media_type="application/json")
 
 
 @api.get("/sprites/sheet")
@@ -4704,7 +6273,14 @@ def sprites_create(path: str = Query(...), interval: float = Query(default=12.0)
     # Sprites need ffmpeg for high-quality real output; block if unavailable
     _require_ffmpeg_or_error("sprites generation")
     def _do():
-        generate_sprite_sheet(fp, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality))
+        jid = getattr(JOB_CTX, "jid", None)
+        def _pcb(i: int, n: int):
+            if jid:
+                try:
+                    _set_job_progress(jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                except Exception:
+                    pass
+        generate_sprite_sheet(fp, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality), progress_cb=_pcb)
         return api_success({"created": True})
     try:
         return _wrap_job("sprites", str(fp.relative_to(STATE["root"])), _do)
@@ -4728,22 +6304,32 @@ def sprites_create_batch(path: str = Query(default=""), recursive: bool = Query(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     jid = _new_job("sprites", str(p.relative_to(STATE["root"])) )
-                    _start_job(jid)
                     try:
                         lk = _file_task_lock(p, "sprites")
                         with JOB_RUN_SEM:
                             with lk:
-                                generate_sprite_sheet(p, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality))
+                                _start_job(jid)
+                                def _pcb(i: int, n: int, _jid=jid):
+                                    try:
+                                        _set_job_progress(_jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                                    except Exception:
+                                        pass
+                                generate_sprite_sheet(p, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality), progress_cb=_pcb)
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"sprites-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -4826,7 +6412,14 @@ def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0)
     # Heatmap sampling uses ffmpeg signalstats; block if missing
     _require_ffmpeg_or_error("heatmaps generation")
     def _do():
-        d = compute_heatmaps(fp, float(interval), str(mode), bool(png))
+        jid = getattr(JOB_CTX, "jid", None)
+        def _pcb(i: int, n: int):
+            if jid:
+                try:
+                    _set_job_progress(jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                except Exception:
+                    pass
+        d = compute_heatmaps(fp, float(interval), str(mode), bool(png), progress_cb=_pcb)
         return api_success({"created": True, "path": str(heatmaps_json_path(fp)), "samples": len(d.get("samples", []))})
     try:
         return _wrap_job("heatmaps", str(fp.relative_to(STATE["root"])), _do)
@@ -4850,26 +6443,34 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     if only_missing and heatmaps_json_exists(p):
-                        # Skip already-generated heatmaps when only_missing=True
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     jid = _new_job("heatmaps", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
                         lk = _file_task_lock(p, "heatmaps")
                         with JOB_RUN_SEM:
                             with lk:
-                                compute_heatmaps(p, float(interval), str(mode), bool(png))
+                                def _pcb(i: int, n: int, _jid=jid):
+                                    try:
+                                        _set_job_progress(_jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                                    except Exception:
+                                        pass
+                                compute_heatmaps(p, float(interval), str(mode), bool(png), progress_cb=_pcb)
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"heatmaps-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -4983,8 +6584,33 @@ def metadata_get(path: str = Query(...), force: bool = Query(default=False), vie
             "abitrate": 0,
         }
     if view:
+        # Augment with file stats (size / modified) for view output
+        try:
+            st = video.stat()
+            summary["size"] = int(st.st_size)
+            summary["modified"] = int(st.st_mtime)
+        except Exception:
+            summary.setdefault("size", None)
+            summary.setdefault("modified", None)
         return api_success({"path": path, **summary, "raw": raw})
+    # Attach basic file stats (size / modified) for table display
+    try:
+        st = video.stat()
+        summary["size"] = int(st.st_size)
+        summary["modified"] = int(st.st_mtime)
+    except Exception:
+        summary.setdefault("size", None)
+        summary.setdefault("modified", None)
     return api_success(summary)
+
+@api.head("/metadata/get")
+def metadata_head(path: str = Query(...)):
+    name, directory = _name_and_dir(path)
+    video = Path(directory) / name
+    mpath = metadata_path(video)
+    if not mpath.exists():
+        raise_api_error("Metadata not found", status_code=404)
+    return Response(status_code=200, media_type="application/json")
 
 
 @api.get("/metadata/list")
@@ -5110,7 +6736,21 @@ def subtitles_create(
         force = True
         compute_type = None
     def _do():
-        generate_subtitles(fp, out_file, model=_Ns.subtitles_model, language=_Ns.subtitles_language, translate=_Ns.subtitles_translate)
+        # Map fractional progress from backend to integer steps [0..100]
+        jid = getattr(JOB_CTX, "jid", None)
+        if jid:
+            try:
+                _set_job_progress(jid, total=100, processed_set=0)
+            except Exception:
+                pass
+        def _pcb(frac: float):
+            if jid:
+                try:
+                    p = int(max(0.0, min(1.0, float(frac))) * 100)
+                    _set_job_progress(jid, total=100, processed_set=p)
+                except Exception:
+                    pass
+        generate_subtitles(fp, out_file, model=_Ns.subtitles_model, language=_Ns.subtitles_language, translate=_Ns.subtitles_translate, progress_cb=_pcb)
         return api_success({"created": True, "path": str(out_file)})
     try:
         return _wrap_job("subtitles", str(fp.relative_to(STATE["root"])), _do)
@@ -5153,26 +6793,36 @@ def subtitles_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     out_file = artifact_dir(p) / f"{p.stem}{SUFFIX_SUBTITLES_SRT}"
                     if out_file.exists() and not overwrite:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     jid = _new_job("subtitles", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
                         lk = _file_task_lock(p, "subtitles")
                         with JOB_RUN_SEM:
                             with lk:
-                                generate_subtitles(p, out_file, model=model, language=(language or "en"), translate=bool(translate))
+                                def _pcb(frac: float, _jid=jid):
+                                    try:
+                                        p = int(max(0.0, min(1.0, float(frac))) * 100)
+                                        _set_job_progress(_jid, total=100, processed_set=p)
+                                    except Exception:
+                                        pass
+                                generate_subtitles(p, out_file, model=model, language=(language or "en"), translate=bool(translate), progress_cb=_pcb)
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"subtitles-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -5203,6 +6853,223 @@ def subtitles_delete_batch(path: str = Query(default=""), recursive: bool = Quer
 @api.get("/root")
 def get_root():
     return api_success({"root": str(STATE["root"])})
+
+
+# --- Media management ---
+@api.post("/media/rename")
+def media_rename(
+    path: str = Query(..., description="Relative path of the existing media file under root"),
+    new_name: Optional[str] = Query(None, description="New filename (basename with extension). If not provided, 'to' must be given."),
+    to: Optional[str] = Query(None, description="Optional new relative path under root (directory and filename). Overrides new_name when provided."),
+    overwrite: bool = Query(default=False, description="Allow overwriting an existing destination file (rarely recommended)"),
+):
+    """
+    Rename a media file and move associated artifact files to match the new stem.
+
+    Accepts either:
+    - path + new_name (rename within same directory), or
+    - path + to (full destination relative path under root, may include subdirs)
+
+    Moves/renames known artifact sidecars in the source .artifacts directory to the
+    destination .artifacts directory, updating stems accordingly. Fails if destination
+    already exists unless overwrite=true.
+    """
+    if STATE.get("root") is None:
+        raise_api_error("Root not set", status_code=400)
+    # Resolve source
+    src = safe_join(STATE["root"], path)
+    if (not src.exists()) or (not src.is_file()):
+        raise_api_error("Source not found", status_code=404)
+    # Only allow renaming original media files (not artifacts)
+    try:
+        if src.name.startswith('.') or src.parent.name == '.artifacts':
+            raise_api_error("Cannot rename artifacts directly", status_code=400)
+    except Exception:
+        pass
+    # Determine destination path (relative under root)
+    if to is not None and str(to).strip() != "":
+        dst_rel = str(to).strip()
+    else:
+        if not new_name or str(new_name).strip() == "":
+            raise_api_error("Provide new_name or to", status_code=400)
+        dst_rel = str(src.parent.relative_to(STATE["root"])) + "/" + str(new_name).strip()
+    # Normalize and guard
+    dst = safe_join(STATE["root"], dst_rel)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if dst.exists():
+        if not overwrite:
+            raise_api_error("Destination already exists", status_code=409, data={"dest": str(dst.relative_to(STATE["root"]))})
+        if dst.is_dir():
+            raise_api_error("Destination is a directory", status_code=400)
+    # Validate filename safety
+    bn = dst.name
+    if bn in ("", ".", ".."):
+        raise_api_error("Invalid destination name", status_code=400)
+    # Require same extension type (prevent accidental extension change)
+    try:
+        if src.suffix.lower() != dst.suffix.lower():
+            raise_api_error("Changing file extension is not allowed", status_code=400)
+    except Exception:
+        pass
+
+    # Compute artifact moves
+    src_stem = src.stem
+    dst_stem = dst.stem
+    src_art = artifact_dir(src)
+    dst_art = artifact_dir(dst)
+    # Map of suffix constants to include in rename
+    suffixes = [
+        SUFFIX_METADATA_JSON,
+        SUFFIX_THUMBNAIL_JPG,
+        SUFFIX_PHASH_JSON,
+        SUFFIX_SCENES_JSON,
+        SUFFIX_SPRITES_JPG,
+        SUFFIX_SPRITES_JSON,
+        SUFFIX_HEATMAPS_JSON,
+        SUFFIX_HEATMAPS_PNG,
+        SUFFIX_FACES_JSON,
+        SUFFIX_PREVIEW_WEBM,
+        SUFFIX_SUBTITLES_SRT,
+    ]
+    # Also include scenes directory if present
+    scenes_dirname_old = f"{src_stem}.scenes"
+    scenes_dirname_new = f"{dst_stem}.scenes"
+
+    # Perform rename/moves atomically best-effort
+    try:
+        # Move main media first
+        os.rename(src, dst)
+    except Exception as e:
+        raise_api_error(f"Failed to move source: {e}", status_code=500)
+
+    moved: list[dict] = []
+    failed: list[str] = []
+    # Ensure artifact directory exists at destination
+    try:
+        dst_art.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    # Move sidecar files
+    for suf in suffixes:
+        try:
+            s = src_art / f"{src_stem}{suf}"
+            if s.exists():
+                d = dst_art / f"{dst_stem}{suf}"
+                # If destination exists and not overwriting, skip
+                if d.exists() and not overwrite:
+                    failed.append(str(s))
+                    continue
+                # Ensure parent
+                try: d.parent.mkdir(parents=True, exist_ok=True)
+                except Exception: pass
+                os.rename(s, d)
+                moved.append({"from": str(s.relative_to(STATE["root"])), "to": str(d.relative_to(STATE["root"]))})
+        except Exception:
+            try:
+                failed.append(str((src_art / f"{src_stem}{suf}").relative_to(STATE["root"])) )
+            except Exception:
+                failed.append(str(src_art / f"{src_stem}{suf}"))
+            continue
+    # Move scenes directory if present
+    try:
+        sdir = src_art / scenes_dirname_old
+        if sdir.exists() and sdir.is_dir():
+            ddir = dst_art / scenes_dirname_new
+            if ddir.exists() and (not overwrite):
+                # leave as-is to avoid clobbering
+                failed.append(str(sdir.relative_to(STATE["root"])) )
+            else:
+                try:
+                    # os.rename works across same volume; falls back to copy on other FS would fail
+                    os.rename(sdir, ddir)
+                    moved.append({"from": str(sdir.relative_to(STATE["root"])), "to": str(ddir.relative_to(STATE["root"]))})
+                except Exception:
+                    failed.append(str(sdir.relative_to(STATE["root"])) )
+    except Exception:
+        pass
+
+    return api_success({
+        "from": str(src.relative_to(STATE["root"])) if src.exists() else str(path),
+        "to": str(dst.relative_to(STATE["root"])) if dst.exists() else str(dst_rel),
+        "moved": moved,
+        "failed": failed,
+    })
+
+@api.delete("/media/delete")
+def media_delete(path: str = Query(..., description="Relative path of the media file under root")):
+    """
+    Delete a media file and its associated artifacts (sidecars and scenes directory).
+    This only affects files within the configured root and refuses to touch artifacts directly.
+    """
+    if STATE.get("root") is None:
+        raise_api_error("Root not set", status_code=400)
+    fp = safe_join(STATE["root"], path)
+    if (not fp.exists()) or (not fp.is_file()):
+        raise_api_error("Not found", status_code=404)
+    # Disallow deleting artifacts directly
+    try:
+        if fp.name.startswith('.') or fp.parent.name == '.artifacts':
+            raise_api_error("Not a media file", status_code=400)
+    except Exception:
+        pass
+    base = fp.parent
+    # Collect artifacts
+    src_stem = fp.stem
+    art = artifact_dir(fp)
+    suffixes = [
+        SUFFIX_METADATA_JSON,
+        SUFFIX_THUMBNAIL_JPG,
+        SUFFIX_PHASH_JSON,
+        SUFFIX_SCENES_JSON,
+        SUFFIX_SPRITES_JPG,
+        SUFFIX_SPRITES_JSON,
+        SUFFIX_HEATMAPS_JSON,
+        SUFFIX_HEATMAPS_PNG,
+        SUFFIX_FACES_JSON,
+        SUFFIX_PREVIEW_WEBM,
+        SUFFIX_SUBTITLES_SRT,
+    ]
+    scenes_dirname = f"{src_stem}.scenes"
+    deleted: list[str] = []
+    failed: list[str] = []
+    # Delete main file
+    try:
+        fp.unlink()
+        deleted.append(str(fp.relative_to(STATE["root"])) )
+    except Exception:
+        raise_api_error("Failed to delete file", status_code=500)
+    # Delete artifacts best-effort
+    for suf in suffixes:
+        try:
+            p = art / f"{src_stem}{suf}"
+            if p.exists():
+                p.unlink()
+                try:
+                    deleted.append(str(p.relative_to(STATE["root"])) )
+                except Exception:
+                    deleted.append(str(p))
+        except Exception:
+            try:
+                failed.append(str((art / f"{src_stem}{suf}").relative_to(STATE["root"])) )
+            except Exception:
+                failed.append(str(art / f"{src_stem}{suf}"))
+    try:
+        sdir = art / scenes_dirname
+        if sdir.exists() and sdir.is_dir():
+            shutil.rmtree(sdir, ignore_errors=False)
+            try:
+                deleted.append(str(sdir.relative_to(STATE["root"])) )
+            except Exception:
+                deleted.append(str(sdir))
+    except Exception:
+        try:
+            failed.append(str((art / scenes_dirname).relative_to(STATE["root"])) )
+        except Exception:
+            failed.append(str(art / scenes_dirname))
+    return api_success({"deleted": deleted, "failed": failed})
 
 @api.post("/setroot")
 def set_root(root: str = Query(...)):
@@ -5638,12 +7505,11 @@ def faces_create_batch(
                 if _is_original_media_file(p, base):
                     vids.append(p)
             _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            for p in vids:
+            threads: list[threading.Thread] = []
+            def _process(p: Path):
                 try:
                     if (only_missing and not force) and faces_exists_check(p):
-                        # Skip already-generated faces when only_missing=True
-                        _set_job_progress(sup_jid, processed_inc=1)
-                        continue
+                        return
                     jid = _new_job("faces", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
@@ -5660,10 +7526,14 @@ def faces_create_batch(
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
-                    finally:
-                        _set_job_progress(sup_jid, processed_inc=1)
-                except Exception:
+                finally:
                     _set_job_progress(sup_jid, processed_inc=1)
+            for p in vids:
+                t = threading.Thread(target=_process, args=(p,), name=f"faces-batch-item-{p.name}", daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
@@ -6088,7 +7958,7 @@ def set_marker(path: str = Query(...), time: float = Query(...)):
         pass
     return api_success({"saved": True, "count": len(data.get("scenes", []))})
 
- 
+
 
 
 # Wire router (moved to end after all routes are defined)
@@ -6130,7 +8000,7 @@ def artifacts_orphans_status(
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
-    
+
     # Gather all artifacts under .artifacts directories
     artifacts: list[Path] = []
     for p in base.rglob(".artifacts"):
@@ -6139,19 +8009,19 @@ def artifacts_orphans_status(
         for f in p.iterdir():
             if f.is_file() and _parse_artifact_name(f.name):
                 artifacts.append(f)
-    
+
     media_by_stem, _ = _collect_media_and_meta(base)
-    
+
     orphaned: list[str] = []
     matched: list[str] = []
-    
+
     for art in artifacts:
         try:
             parsed = _parse_artifact_name(art.name)
             if not parsed:
                 continue
             a_stem, kind = parsed
-            
+
             # Check if corresponding media exists
             cand_media = media_by_stem.get(a_stem)
             if cand_media and cand_media.exists():
@@ -6160,7 +8030,7 @@ def artifacts_orphans_status(
                 orphaned.append(str(art.relative_to(base)))
         except Exception:
             continue
-    
+
     return api_success({
         "total_artifacts": len(artifacts),
         "matched": len(matched),
@@ -6196,20 +8066,19 @@ def artifacts_cleanup(
 
 @api.get("/tasks/coverage")
 def tasks_coverage(path: str = Query(default="")):
-    """
-    Get artifact coverage statistics for the given path."""
+    """Get artifact coverage statistics for the given path."""
     try:
         base = safe_join(STATE["root"], path) if path else STATE["root"]
         if not base.exists() or not base.is_dir():
             raise_api_error("Path not found", status_code=404)
-        
+
         # Find all video files
         videos = _find_mp4s(base, recursive=True)
         total_count = len(videos)
-        
+
         # Count artifacts for each type
         coverage = {}
-        
+
         # Metadata artifacts
         metadata_count = sum(1 for v in videos if metadata_path(v).exists())
         coverage["metadata"] = {
@@ -6217,7 +8086,7 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - metadata_count,
             "total": total_count
         }
-        
+
         # Thumbnail artifacts
         thumbs_count = sum(1 for v in videos if thumbs_path(v).exists())
         coverage["thumbnails"] = {
@@ -6225,7 +8094,7 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - thumbs_count,
             "total": total_count
         }
-        
+
         # Sprite artifacts (require both sheet and index json)
         def _sprites_ok(v: Path) -> bool:
             s, jj = sprite_sheet_paths(v)
@@ -6236,7 +8105,7 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - sprite_count,
             "total": total_count
         }
-        
+
         # Preview artifacts (concatenated hover preview files)
         preview_count = 0
         for v in videos:
@@ -6249,7 +8118,7 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - preview_count,
             "total": total_count
         }
-        
+
         # Phash artifacts
         phash_count = sum(1 for v in videos if phash_path(v).exists())
         coverage["phash"] = {
@@ -6257,7 +8126,7 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - phash_count,
             "total": total_count
         }
-        
+
         # Scene artifacts
         scenes_count = sum(1 for v in videos if scenes_json_exists(v))
         coverage["scenes"] = {
@@ -6307,11 +8176,20 @@ def tasks_coverage(path: str = Query(default="")):
             "missing": total_count - faces_count,
             "total": total_count,
         }
-        
+
         return api_success({"coverage": coverage})
-        
+
     except Exception as e:
         raise_api_error(f"Failed to get coverage: {str(e)}")
+
+# Compatibility shim routes (frontend expects /api/artifacts/orphans and /api/tasks/coverage)
+@app.get("/api/artifacts/orphans", include_in_schema=False)
+def artifacts_orphans_status_api(path: str = Query(default="")):
+    return artifacts_orphans_status(path=path)  # type: ignore
+
+@app.get("/api/tasks/coverage", include_in_schema=False)
+def tasks_coverage_api(path: str = Query(default="")):
+    return tasks_coverage(path=path)  # type: ignore
 
 
 @api.post("/tasks/batch")
@@ -6324,20 +8202,20 @@ def tasks_batch_operation(request: Request):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         body = loop.run_until_complete(request.json())
-        
+
         operation = body.get("operation")
         mode = body.get("mode")  # 'missing' or 'all'
         fileSelection = body.get("fileSelection")  # 'all' or 'selected'
         params = body.get("params", {})
         path = body.get("path", "")
-        
+
         base = safe_join(STATE["root"], path) if path else STATE["root"]
         if not base.exists() or not base.is_dir():
             raise_api_error("Path not found", status_code=404)
-        
+
         # Get list of videos to process
         all_videos = _find_mp4s(base, recursive=True)
-        
+
         # Filter based on file selection
         if fileSelection == "selected":
             # For now, process all files since we don't have selection context
@@ -6345,13 +8223,13 @@ def tasks_batch_operation(request: Request):
             videos_to_process = all_videos
         else:
             videos_to_process = all_videos
-        
+
         # Filter based on mode (missing vs all)
         if mode == "missing":
             filtered_videos = []
             for video in videos_to_process:
                 needs_processing = False
-                
+
                 if operation == "metadata" and not metadata_path(video).exists():
                     needs_processing = True
                 elif operation == "thumbnails" and not thumbs_path(video).exists():
@@ -6377,19 +8255,19 @@ def tasks_batch_operation(request: Request):
                     needs_processing = True
                 elif operation == "faces" and not faces_exists_check(video):
                     needs_processing = True
-                
+
                 if needs_processing:
                     filtered_videos.append(video)
-            
+
             videos_to_process = filtered_videos
-        
+
         if not videos_to_process:
             return api_success({
                 "message": "No files need processing",
                 "fileCount": 0,
                 "job": None
             })
-        
+
         # Create job request
         task_name = operation
         if operation == "thumbnails":
@@ -6398,7 +8276,7 @@ def tasks_batch_operation(request: Request):
             task_name = "hover"  # Backend uses 'hover' for previews
 
         job_params = {}
-        
+
         # Map frontend params to backend params
         if operation == "thumbnails":
             job_params["time"] = params.get("offset", 10)
@@ -6454,7 +8332,7 @@ def tasks_batch_operation(request: Request):
             if bool(params.get("force", False)):
                 # Force recompute even if outputs exist
                 job_params["overwrite"] = True
-        
+
         # When running only missing, pass explicit targets so job progress reflects the actual work set
         targets: list[str] = []
         if mode == "missing" and videos_to_process:
@@ -6619,7 +8497,7 @@ def tasks_batch_operation(request: Request):
             "fileCount": len(videos_to_process),
             "message": f"Queued {len(created_jobs)} {operation} jobs for {len(videos_to_process)} files"
         })
-        
+
     except Exception as e:
         raise_api_error(f"Failed to start batch operation: {str(e)}")
 
@@ -6631,7 +8509,7 @@ def tasks_jobs():
     try:
         with JOB_LOCK:
             all_jobs = list(JOBS.values())
-        
+
         # Format jobs for frontend
         formatted_jobs = []
         root = STATE["root"].resolve()
@@ -6698,7 +8576,7 @@ def tasks_jobs():
                     formatted_job["target"] = target_path_str
             except Exception:
                 pass
-            
+
             # Calculate progress percentage
             total = job.get("total")
             processed = job.get("processed")
@@ -6717,16 +8595,16 @@ def tasks_jobs():
                 formatted_job["progress"] = 100
             else:
                 formatted_job["progress"] = pct_val if pct_val is not None else 0
-            
+
             formatted_jobs.append(formatted_job)
-        
+
         # Calculate stats
         now = time.time()
         # Active = actually running jobs (not queued)
         active_jobs = [j for j in all_jobs if j.get("state") == "running"]
         queued_jobs = [j for j in all_jobs if j.get("state") == "queued"]
         failed_jobs = [j for j in all_jobs if j.get("state") == "failed"]
-        
+
         # Count completed jobs from today
         completed_today = 0
         for job in all_jobs:
@@ -6734,14 +8612,14 @@ def tasks_jobs():
                 # Simple check for jobs completed in last 24 hours
                 if now - job.get("ended_at", 0) < 86400:
                     completed_today += 1
-        
+
         stats = {
             "active": len(active_jobs),
             "queued": len(queued_jobs),
             "failed": len(failed_jobs),
             "completedToday": completed_today
         }
-        
+
         # Prioritize live jobs (running first, then queued), then recent others.
         live = [j for j in formatted_jobs if j.get("status") in ("running", "queued")]
         rest = [j for j in formatted_jobs if j.get("status") not in ("running", "queued")]
@@ -6780,7 +8658,7 @@ def tasks_cancel_job(job_id: str):
         if ev is None:
             raise_api_error("Job not found", status_code=404)
             return  # This line will never execute but helps type checker
-        
+
         ev.set()
         # Immediately terminate any active subprocesses for this job (e.g., ffmpeg)
         try:
@@ -6791,11 +8669,11 @@ def tasks_cancel_job(job_id: str):
             j = JOBS.get(job_id)
             if j and j.get("state") in ("queued", "running"):
                 j["state"] = "cancel_requested"
-        
+
         _publish_job_event({"event": "cancel", "id": job_id})
-        
+
         return api_success({"message": "Job cancelled", "job": job_id})
-        
+
     except Exception as e:
         raise_api_error(f"Failed to cancel job: {str(e)}")
 
@@ -6856,6 +8734,69 @@ def tasks_cancel_all():
         raise_api_error(f"Failed to cancel all jobs: {str(e)}")
 
 
+@api.post("/tasks/jobs/resume-restored")
+def tasks_resume_restored():
+    """
+    Resume all jobs in 'restored' state that have a saved request payload by queuing
+    worker threads. This is a manual alternative to auto-restore on startup.
+    """
+    try:
+        to_resume: list[tuple[str, dict]] = []
+        with JOB_LOCK:
+            for jid, j in JOBS.items():
+                if str(j.get("state") or "").lower() == "restored" and isinstance(j.get("request"), dict):
+                    to_resume.append((jid, dict(j["request"])))
+        count = 0
+        for jid, req_data in to_resume:
+            try:
+                jr = JobRequest(
+                    task=str(req_data.get("task") or ""),
+                    directory=req_data.get("directory"),
+                    recursive=bool(req_data.get("recursive", False)),
+                    force=bool(req_data.get("force", False)),
+                    params=dict(req_data.get("params") or {}),
+                )
+                def _runner(jid=jid, jr=jr):
+                    with JOB_RUN_SEM:
+                        _run_job_worker(jid, jr)
+                with JOB_LOCK:
+                    j = JOBS.get(jid)
+                    if j:
+                        j["state"] = "queued"
+                        _persist_job(jid)
+                threading.Thread(target=_runner, name=f"job-resume-{jid}", daemon=True).start()
+                count += 1
+            except Exception:
+                continue
+        return api_success({"resumed": count})
+    except Exception as e:
+        raise_api_error(f"Failed to resume restored jobs: {str(e)}")
+
+
+@api.post("/tasks/jobs/clear-restored")
+def tasks_clear_restored():
+    """
+    Remove jobs in 'restored' state from memory and delete their persisted .jobs files.
+    Useful to declutter after a dev session with auto-restore disabled.
+    """
+    try:
+        removed = 0
+        with JOB_LOCK:
+            ids = [jid for jid, j in JOBS.items() if str(j.get("state") or "").lower() == "restored"]
+            for jid in ids:
+                JOBS.pop(jid, None)
+                JOB_CANCEL_EVENTS.pop(jid, None)
+                removed += 1
+                try:
+                    _delete_persisted_job(jid)
+                except Exception:
+                    pass
+        _publish_job_event({"event": "purge_restored", "removed": removed})
+        return api_success({"removed": removed})
+    except Exception as e:
+        raise_api_error(f"Failed to clear restored jobs: {str(e)}")
+
+
 @api.get("/tasks/concurrency")
 def tasks_get_concurrency():
     """
@@ -6871,19 +8812,82 @@ def tasks_set_concurrency(value: int = Query(..., ge=1, le=128)):
     """
     Update max concurrency (process-wide)."""
     try:
-        global JOB_MAX_CONCURRENCY, JOB_RUN_SEM
         new_val = int(value)
-        if new_val < 1:
-            new_val = 1
-        if new_val > 128:
-            new_val = 128
-        # Replace the semaphore to apply new limit going forward
-        JOB_MAX_CONCURRENCY = new_val
-        JOB_RUN_SEM = threading.Semaphore(JOB_MAX_CONCURRENCY)
-        _publish_job_event({"event": "concurrency", "value": JOB_MAX_CONCURRENCY})
-        return api_success({"maxConcurrency": JOB_MAX_CONCURRENCY})
+        eff = _set_job_concurrency(new_val)
+        _publish_job_event({"event": "concurrency", "value": eff})
+        return api_success({"maxConcurrency": eff})
     except Exception as e:
         raise_api_error(f"Failed to set concurrency: {str(e)}")
+
+# -----------------------------
+# FFmpeg runtime settings API
+# -----------------------------
+@api.get("/settings/ffmpeg")
+def ffmpeg_get_settings():
+    """Return current FFmpeg settings: concurrency, threads, timelimit."""
+    try:
+        try:
+            threads = int(os.environ.get("FFMPEG_THREADS", "1") or 1)
+        except Exception:
+            threads = 1
+        try:
+            timelimit = int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600)
+        except Exception:
+            timelimit = 600
+        return api_success({
+            "concurrency": int(_FFMPEG_CONCURRENCY),
+            "threads": max(1, threads),
+            "timelimit": max(0, timelimit),
+        })
+    except Exception as e:
+        raise_api_error(f"Failed to get ffmpeg settings: {str(e)}")
+
+@api.post("/settings/ffmpeg")
+def ffmpeg_set_settings(
+    concurrency: Optional[int] = Query(None, ge=1, le=16),
+    threads: Optional[int] = Query(None, ge=1, le=32),
+    timelimit: Optional[int] = Query(None, ge=0, le=86400),
+):
+    """Update FFmpeg settings at runtime. Any omitted field is left unchanged.
+    - concurrency: number of parallel ffmpeg processes allowed
+    - threads: passed to ffmpeg as -threads N for encoders/filters
+    - timelimit: passed as -timelimit seconds to cap each run (0 to disable)
+    """
+    try:
+        applied = {}
+        if concurrency is not None:
+            eff = _set_ffmpeg_concurrency(int(concurrency))
+            applied["concurrency"] = int(eff)
+        if threads is not None:
+            try:
+                os.environ["FFMPEG_THREADS"] = str(int(threads))
+            except Exception:
+                pass
+            applied["threads"] = int(os.environ.get("FFMPEG_THREADS", threads))
+        if timelimit is not None:
+            try:
+                os.environ["FFMPEG_TIMELIMIT"] = str(int(timelimit))
+            except Exception:
+                pass
+            applied["timelimit"] = int(os.environ.get("FFMPEG_TIMELIMIT", timelimit))
+        # Return current values (fully populated)
+        try:
+            threads_cur = int(os.environ.get("FFMPEG_THREADS", "1") or 1)
+        except Exception:
+            threads_cur = 1
+        try:
+            timelimit_cur = int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600)
+        except Exception:
+            timelimit_cur = 600
+        current = {
+            "concurrency": int(_FFMPEG_CONCURRENCY),
+            "threads": max(1, threads_cur),
+            "timelimit": max(0, timelimit_cur),
+        }
+        _publish_job_event({"event": "ffmpeg_settings", "value": current})
+        return api_success(current)
+    except Exception as e:
+        raise_api_error(f"Failed to set ffmpeg settings: {str(e)}")
 
 
 @api.post("/tasks/jobs/clear-completed")
@@ -7398,7 +9402,7 @@ app.include_router(api)
 def serve_static_file(filepath: str):
     """
     Serve static files from root directory and subdirectories like components/tabs.html"""
-    
+
     file_path = _STATIC / filepath
     # Security check: ensure the resolved path is still within _STATIC
     try:
@@ -7406,7 +9410,7 @@ def serve_static_file(filepath: str):
         static_root = _STATIC.resolve()
         # Check if file_path is within static_root
         file_path.relative_to(static_root)
-        
+
         if file_path.exists() and file_path.is_file():
             # Determine MIME type
             mime_type, _ = mimetypes.guess_type(str(file_path))
@@ -7484,808 +9488,1351 @@ def _job_set_result(jid: str, result: Any) -> None:
     _publish_job_event({"event": "result", "id": jid})
 
 
+def _handle_transcode_job(jid: str, jr: JobRequest, base: Path) -> None:
+    """Execute a transcode job (plan already resolved into JobRequest).
+
+    Parameters used from jr.params:
+      - profile: transcode profile key (h264_aac_mp4 | vp9_opus_webm)
+      - targets: optional list of relative paths; else iterate directory (respect recursive)
+      - replace: bool (replace originals / keep .orig)
+    Honors job cancellation and updates progress.
+    """
+    prm = jr.params or {}
+    profile = str(prm.get("profile", "h264_aac_mp4"))
+    replace = bool(prm.get("replace", False))
+    force = bool(jr.force)
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    done = 0
+    results: list[dict[str, Any]] = []
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        rel = str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)
+        out_path = v
+        tmp_out: Optional[Path] = None
+        try:
+            vc = "libx264"; ac = "aac"; container = ".mp4"
+            if profile == "vp9_opus_webm":
+                vc = "libvpx-vp9"; ac = "libopus"; container = ".webm"
+            target_path = v.with_suffix(container)
+            if not force and target_path.exists() and not replace:
+                results.append({"file": rel, "status": "skip_exists", "target": str(target_path.name)})
+                done += 1
+                _set_job_progress(jid, processed_set=done)
+                continue
+            tmp_out = v.parent / f".{v.stem}.transcode.{uuid.uuid4().hex}{container}"
+            cmd = [
+                "ffmpeg", "-y", "-i", str(v),
+                "-c:v", vc, "-c:a", ac,
+            ]
+            if container == ".mp4":
+                cmd += ["-movflags", "+faststart"]
+            cmd += [str(tmp_out)]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if proc.returncode != 0:
+                results.append({"file": rel, "status": "error", "code": proc.returncode})
+            else:
+                if replace:
+                    backup = None
+                    if v != target_path:
+                        backup = v
+                    if target_path.exists() and target_path != v:
+                        target_path.unlink()
+                    shutil.move(str(tmp_out), str(target_path))
+                    if backup and backup.exists():
+                        try:
+                            backup.rename(backup.with_suffix(backup.suffix + ".orig"))
+                        except Exception:
+                            pass
+                    out_path = target_path
+                else:
+                    if target_path.exists() and not force:
+                        target_path = v.parent / f"{v.stem}.transcoded{container}"
+                    shutil.move(str(tmp_out), str(target_path))
+                    out_path = target_path
+                results.append({"file": rel, "status": "ok", "target": str(out_path.name)})
+        except Exception as e:
+            results.append({"file": rel, "status": "error", "error": str(e)})
+        finally:
+            try:
+                if tmp_out and tmp_out.exists():
+                    tmp_out.unlink()
+            except Exception:
+                pass
+            done += 1
+            _set_job_progress(jid, processed_set=done)
+    _job_set_result(jid, {"profile": profile, "results": results})
+    _finish_job(jid)
+
+
+def _handle_autotag_job(jid: str, jr: JobRequest, base: Path) -> None:
+    vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    prm = jr.params or {}
+    perf_list = [str(x).strip() for x in (prm.get("performers") or []) if str(x).strip()]
+    tag_list = [str(x).strip() for x in (prm.get("tags") or []) if str(x).strip()]
+    def _mk_patterns(items: list[str]):
+        pats: list[re.Pattern] = []
+        for it in items:
+            s = re.escape(it.lower())
+            s = s.replace(r"\ ", r"[\s._-]+")
+            pats.append(re.compile(rf"(?<![A-Za-z0-9]){s}(?![A-Za-z0-9])"))
+        return pats
+    perf_pats = _mk_patterns(perf_list)
+    tag_pats = _mk_patterns(tag_list)
+    changed = 0
+    matched_count = 0
+    for i, v in enumerate(vids, start=1):
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            name = v.name.rsplit(".", 1)[0].lower()
+            hay = re.sub(r"[\s._-]+", " ", name)
+            found_perfs: list[str] = []
+            for pat, raw in zip(perf_pats, perf_list):
+                if pat.search(hay):
+                    found_perfs.append(raw)
+            found_tags: list[str] = []
+            for pat, raw in zip(tag_pats, tag_list):
+                if pat.search(hay):
+                    found_tags.append(raw)
+            if not found_perfs and not found_tags:
+                _set_job_progress(jid, processed_set=i)
+                continue
+            matched_count += 1
+            tfile = _tags_file(v)
+            if tfile.exists():
+                try:
+                    data = json.loads(tfile.read_text())
+                except Exception:
+                    data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
+            else:
+                data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
+            data.setdefault("tags", [])
+            data.setdefault("performers", [])
+            before_t = set(data["tags"])
+            before_p = set(data["performers"])
+            for t in found_tags:
+                if t not in data["tags"]:
+                    data["tags"].append(t)
+            for p in found_perfs:
+                if p not in data["performers"]:
+                    data["performers"].append(p)
+            if set(data["tags"]) != before_t or set(data["performers"]) != before_p:
+                try:
+                    tfile.write_text(json.dumps(data, indent=2))
+                    changed += 1
+                except Exception:
+                    pass
+        finally:
+            _set_job_progress(jid, processed_set=i)
+    _job_set_result(jid, {"matched_files": matched_count, "updated_files": changed, "total": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_cover_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    time_spec = str(prm.get("t", prm.get("time", 10))) if prm.get("t", prm.get("time")) is not None else "middle"
+    q = int(prm.get("quality", 2))
+    force = bool(jr.force) or bool(prm.get("overwrite", False))
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        _set_job_current(jid, str(v))
+        lk = _file_task_lock(v, "cover")
+        with lk:
+            try:
+                generate_thumbnail(v, force=force, time_spec=time_spec, quality=q)
+            except Exception:
+                pass
+        cur = JOBS.get(jid, {}).get("processed", 0)
+        _set_job_progress(jid, processed_set=int(cur) + 1)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_embed_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    prm2 = jr.params or {}
+    overwrite = bool(prm2.get("overwrite", False))
+    sim_thresh = float(prm2.get("sim_thresh", 0.9))
+    interval = float(prm2.get("interval", 1.0))
+    scale_factor = float(prm2.get("scale_factor", 1.2))
+    min_neighbors = int(prm2.get("min_neighbors", 7))
+    min_size_frac = float(prm2.get("min_size_frac", 0.10))
+    backend = str(prm2.get("backend", "auto"))
+    done_files = 0
+    skipped = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "faces")
+            with lk:
+                if faces_exists_check(v) and not (bool(jr.force) or overwrite):
+                    done_files += 1
+                    skipped += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_embed(i: int, n: int):
+                        try:
+                            n = max(1, int(n))
+                            i = max(0, min(int(i), n))
+                            overall = (done_files * 100) + int((i / n) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    compute_face_embeddings(
+                        v,
+                        sim_thresh=sim_thresh,
+                        interval=interval,
+                        scale_factor=scale_factor,
+                        min_neighbors=min_neighbors,
+                        min_size_frac=min_size_frac,
+                        backend=backend,
+                        progress_cb=_pcb_embed,
+                    )
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids), "skipped": skipped})
+    _finish_job(jid)
+
+
+def _handle_clip_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    _src_val = prm.get("file")
+    src = Path(str(_src_val)).expanduser().resolve() if _src_val else None
+    ranges = prm.get("ranges") or []
+    _dest_val = prm.get("dest")
+    dest = Path(str(_dest_val)).expanduser().resolve() if _dest_val else None
+    if not src or not src.exists() or not dest:
+        _finish_job(jid, error="invalid clip params")
+        return
+    try:
+        src.relative_to(STATE["root"])  # type: ignore[arg-type]
+        dest.relative_to(STATE["root"])  # type: ignore[arg-type]
+    except Exception:
+        _finish_job(jid, error="paths outside root")
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    files_out: list[str] = []
+    _set_job_progress(jid, total=len(ranges), processed_set=0)
+    for i, r in enumerate(ranges):
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        start = float(r.get("start", 0.0))
+        end = float(r.get("end", start))
+        outp = dest / f"clip_{i+1:02d}.mp4"
+        if ffmpeg_available():
+            cmd = [
+                "ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(src),
+                "-c", "copy", str(outp),
+            ]
+            try:
+                _run(cmd)
+            except Exception:
+                outp.write_bytes(b"")
+        else:
+            outp.write_bytes(b"CLIP")
+        files_out.append(str(outp))
+        _set_job_progress(jid, processed_inc=1)
+    _job_set_result(jid, {"files": files_out})
+    _finish_job(jid)
+
+
+def _handle_cleanup_artifacts_job(jid: str, jr: JobRequest, base: Path) -> None:
+    base_dir = Path(jr.directory or str(STATE["root"]))
+    base_dir = base_dir.expanduser().resolve()
+    prm = jr.params or {}
+    dry_run = bool(prm.get("dry_run", False))
+    keep_orphans = bool(prm.get("keep_orphans", False))
+    artifacts: list[Path] = []
+    for p in base_dir.rglob(".artifacts"):
+        if not p.is_dir():
+            continue
+        for f in p.iterdir():
+            if f.is_file() and _parse_artifact_name(f.name):
+                artifacts.append(f)
+    _set_job_progress(jid, total=len(artifacts), processed_set=0)
+    media_by_stem, meta_by_stem = _collect_media_and_meta(base_dir)
+    media_durations: dict[str, float] = {}
+    for stem, v in media_by_stem.items():
+        try:
+            m = meta_by_stem.get(stem) or {}
+            d = m.get("duration")
+            if isinstance(d, (int, float)):
+                media_durations[stem] = float(d)
+        except Exception:
+            pass
+    renamed: list[dict] = []
+    deleted: list[str] = []
+    kept: list[str] = []
+    for art in artifacts:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            parsed = _parse_artifact_name(art.name)
+            if not parsed:
+                continue
+            a_stem, kind = parsed
+            parent_dir = art.parent
+            cand_media = media_by_stem.get(a_stem)
+            if cand_media and cand_media.exists():
+                kept.append(str(art))
+                continue
+            a_duration: float | None = None
+            try:
+                if kind == SUFFIX_METADATA_JSON:
+                    raw = json.loads(art.read_text())
+                    a_duration = extract_duration(raw)
+                else:
+                    meta_file = parent_dir / f"{a_stem}{SUFFIX_METADATA_JSON}"
+                    if meta_file.exists():
+                        raw = json.loads(meta_file.read_text())
+                        a_duration = extract_duration(raw)
+            except Exception:
+                a_duration = None
+            best: tuple[float, Path] | None = None
+            for stem, v in media_by_stem.items():
+                try:
+                    same_parent_boost = 0.05 if v.parent == parent_dir.parent else 0.0
+                except Exception:
+                    same_parent_boost = 0.0
+                name_sim = SequenceMatcher(a=a_stem.lower(), b=stem.lower()).ratio()
+                dur_sim = 0.0
+                if a_duration is not None:
+                    d = media_durations.get(stem)
+                    if isinstance(d, (int, float)) and d > 0:
+                        diff = abs(float(d) - float(a_duration))
+                        dur_sim = max(0.0, 1.0 - (diff / max(d, 1.0)))
+                score = (0.65 * name_sim) + (0.35 * dur_sim) + same_parent_boost
+                if best is None or score > best[0]:
+                    best = (score, v)
+            matched: Optional[Path] = None
+            if best and best[0] >= 0.80:
+                matched = best[1]
+            if matched is not None:
+                dst_dir = artifact_dir(matched)
+                new_name = f"{matched.stem}{kind}"
+                dst_path = dst_dir / new_name
+                if dry_run:
+                    renamed.append({"from": str(art), "to": str(dst_path)})
+                else:
+                    try:
+                        dst_dir.mkdir(parents=True, exist_ok=True)
+                        os.rename(art, dst_path)
+                        renamed.append({"from": str(art), "to": str(dst_path)})
+                    except Exception:
+                        kept.append(str(art))
+            else:
+                if keep_orphans or dry_run:
+                    kept.append(str(art))
+                else:
+                    try:
+                        art.unlink()
+                        deleted.append(str(art))
+                    except Exception:
+                        kept.append(str(art))
+        except Exception:
+            kept.append(str(art))
+        finally:
+            _set_job_progress(jid, processed_inc=1)
+    _job_set_result(jid, {"renamed": renamed, "deleted": deleted, "kept": kept, "dry_run": dry_run})
+    _finish_job(jid)
+
+
+def _handle_sprites_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    sd = _sprite_defaults()
+    interval = float(prm.get("interval", sd["interval"]))  # type: ignore[index]
+    width = int(prm.get("width", sd["width"]))  # type: ignore[index]
+    cols = int(prm.get("cols", sd["cols"]))  # type: ignore[index]
+    rows = int(prm.get("rows", sd["rows"]))  # type: ignore[index]
+    quality = int(prm.get("quality", sd["quality"]))  # type: ignore[index]
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "sprites")
+            with lk:
+                s, jj = sprite_sheet_paths(v)
+                if s.exists() and jj.exists() and not bool(jr.force):
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_sprites(step: int, steps: int):
+                        try:
+                            steps = max(1, int(steps))
+                            step = max(0, min(int(step), steps))
+                            overall = (done_files * 100) + int((step / steps) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    generate_sprite_sheet(
+                        v,
+                        interval=interval,
+                        width=width,
+                        cols=cols,
+                        rows=rows,
+                        quality=quality,
+                        progress_cb=_pcb_sprites,
+                        cancel_check=_cc,
+                    )
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_heatmaps_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    interval = float(prm.get("interval", 5.0))
+    mode = str(prm.get("mode", "both"))
+    png = bool(prm.get("png", True))
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "heatmaps")
+            with lk:
+                if heatmaps_json_exists(v) and not bool(jr.force):
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_heat(i: int, n: int):
+                        try:
+                            n = max(1, int(n))
+                            i = max(0, min(int(i), n))
+                            overall = (done_files * 100) + int((i / n) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    compute_heatmaps(v, interval=interval, mode=mode, png=png, progress_cb=_pcb_heat, cancel_check=_cc)
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_faces_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    overwrite = bool(prm.get("overwrite", False))
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    sim_thresh = float(prm.get("sim_thresh", 0.9))
+    interval = float(prm.get("interval", 1.0))
+    scale_factor = float(prm.get("scale_factor", 1.2))
+    min_neighbors = int(prm.get("min_neighbors", 7))
+    min_size_frac = float(prm.get("min_size_frac", 0.10))
+    backend = str(prm.get("backend", "auto"))
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "faces")
+            with lk:
+                if faces_exists_check(v) and not (bool(jr.force) or overwrite):
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_faces(i: int, n: int):
+                        try:
+                            n = max(1, int(n))
+                            i = max(0, min(int(i), n))
+                            overall = (done_files * 100) + int((i / n) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    compute_face_embeddings(
+                        v,
+                        sim_thresh=sim_thresh,
+                        interval=interval,
+                        scale_factor=scale_factor,
+                        min_neighbors=min_neighbors,
+                        min_size_frac=min_size_frac,
+                        backend=backend,
+                        progress_cb=_pcb_faces,
+                    )
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_hover_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    segments = int(prm.get("segments", 9))
+    duration = float(prm.get("duration", 1.0))
+    width = int(prm.get("width", 320))
+    single_file = len(vids) == 1
+    if single_file:
+        _set_job_progress(jid, total=max(1, segments), processed_set=0)
+    else:
+        _set_job_progress(jid, total=max(0, len(vids)), processed_set=0)
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            out_path = _hover_concat_path(v)
+            lk = _file_task_lock(v, "hover")
+            with lk:
+                if _file_nonempty(out_path) and not bool(jr.force):
+                    done_files += 1
+                    if single_file:
+                        _set_job_progress(jid, processed_set=segments)
+                    else:
+                        _set_job_progress(jid, processed_set=done_files)
+                else:
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    def _pcb(i: int, n: int):
+                        if not single_file:
+                            return
+                        try:
+                            ni = max(1, int(n))
+                            ii = max(0, min(int(i), ni))
+                            _set_job_progress(jid, total=ni, processed_set=ii)
+                        except Exception:
+                            pass
+                    generate_hover_preview(
+                        v,
+                        segments=segments,
+                        seg_dur=duration,
+                        width=width,
+                        fmt="webm",
+                        out=out_path,
+                        progress_cb=_pcb if single_file else None,
+                        cancel_check=_cc,
+                    )
+                    done_files += 1
+                    if single_file:
+                        _set_job_progress(jid, processed_set=segments)
+                    else:
+                        _set_job_progress(jid, processed_set=done_files)
+        except Exception:
+            done_files += 1
+            if single_file:
+                _set_job_progress(jid, processed_set=segments)
+            else:
+                _set_job_progress(jid, processed_set=done_files)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_subtitles_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    model = str(prm.get("model", "small"))
+    language = prm.get("language")
+    translate = bool(prm.get("translate", False))
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            out_file = artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}"
+            lk = _file_task_lock(v, "subtitles")
+            with lk:
+                if out_file.exists() and not bool(jr.force):
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_sub(frac: float):
+                        try:
+                            frac = max(0.0, min(1.0, float(frac)))
+                            overall = (done_files * 100) + int(frac * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    generate_subtitles(
+                        v, out_file, model=model, language=(language or None), translate=translate,
+                        progress_cb=_pcb_sub, cancel_check=_cc,
+                    )
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_scenes_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    threshold = float(prm.get("threshold", 0.4))
+    limit = int(prm.get("limit", 0))
+    gen_thumbs = bool(prm.get("thumbs", False))
+    gen_clips = bool(prm.get("clips", False))
+    thumbs_width = int(prm.get("thumbs_width", 320))
+    clip_duration = float(prm.get("clip_duration", 2.0))
+    done_files = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "scenes")
+            with lk:
+                if scenes_json_exists(v) and not bool(jr.force):
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb_scenes(i: int, n: int):
+                        try:
+                            n = max(1, int(n))
+                            i = max(0, min(int(i), n))
+                            overall = (done_files * 100) + int((i / n) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    generate_scene_artifacts(
+                        v,
+                        threshold=threshold,
+                        limit=limit,
+                        gen_thumbs=gen_thumbs,
+                        gen_clips=gen_clips,
+                        thumbs_width=thumbs_width,
+                        clip_duration=clip_duration,
+                        progress_cb=_pcb_scenes,
+                        cancel_check=_cc,
+                    )
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception:
+            done_files += 1
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_sample_job(jid: str, jr: JobRequest, base: Path) -> None:
+    """Generate synthetic sample media files for testing pipeline.
+
+    jr.params fields:
+      count: number of files to generate (default 3)
+      pattern: filename pattern with {i} placeholder (default "sample_{i:02d}.mp4")
+      duration: seconds per clip (default 4)
+      size: resolution WxH (default "640x360")
+      silence: if true, omit audio track
+      color: optional ffmpeg color source (e.g. "red") cycling if list provided
+    """
+    prm = jr.params or {}
+    count = int(prm.get("count", 3))
+    pattern = str(prm.get("pattern", "sample_{i:02d}.mp4"))
+    duration = float(prm.get("duration", 4.0))
+    size = str(prm.get("size", "640x360"))
+    silence = bool(prm.get("silence", False))
+    color_param = prm.get("color")
+    # Colors: allow single string or list
+    colors: list[str]
+    if isinstance(color_param, list):
+        colors = [str(c) for c in color_param if str(c).strip()]
+    elif isinstance(color_param, str) and color_param.strip():
+        colors = [color_param.strip()]
+    else:
+        colors = ["black", "gray", "navy", "maroon"]
+    target_dir = base
+    target_dir.mkdir(parents=True, exist_ok=True)
+    _set_job_progress(jid, total=count, processed_set=0)
+    generated: list[str] = []
+    for i in range(1, count + 1):
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        fname = pattern.format(i=i)
+        # ensure .mp4 suffix
+        if not fname.lower().endswith(".mp4"):
+            fname += ".mp4"
+        outp = target_dir / fname
+        col = colors[(i - 1) % len(colors)]
+        if ffmpeg_available():
+            # Use color + testsrc overlay for variation; add tone if not silence
+            vf = f"color=c={col}:s={size}:d={duration}" if silence else f"testsrc=size={size}:rate=30:duration={duration}"
+            cmd = ["ffmpeg", "-hide_banner", "-y",
+                   "-f", "lavfi", "-i", vf]
+            if not silence:
+                cmd += ["-f", "lavfi", "-i", f"sine=frequency={440 + (i*20)%200}:duration={duration}",
+                        "-shortest",
+                        "-c:v", "libx264", "-t", f"{duration}", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", str(outp)]
+            else:
+                cmd += ["-c:v", "libx264", "-t", f"{duration}", "-pix_fmt", "yuv420p", str(outp)]
+            try:
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            except Exception:
+                outp.write_bytes(b"")
+        else:
+            # Fallback: small placeholder file
+            outp.write_bytes(b"SAMPLE")
+        generated.append(str(outp))
+        _set_job_progress(jid, processed_inc=1)
+    _job_set_result(jid, {"generated": generated, "count": len(generated)})
+    _finish_job(jid)
+
+def _handle_waveform_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    width = int(prm.get("width", 800))
+    height = int(prm.get("height", 160))
+    color = str(prm.get("color", "#4fa0ff"))
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    done = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid); return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "waveform")
+            with lk:
+                if waveform_png_path(v).exists() and not bool(jr.force):
+                    pass
+                else:
+                    generate_waveform(v, force=bool(jr.force), width=width, height=height, color=color)
+        finally:
+            done += 1
+            _set_job_progress(jid, processed_set=done)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+def _handle_motion_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    interval = float(prm.get("interval", 1.0))
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    done = 0
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid); return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "motion")
+            with lk:
+                if motion_json_path(v).exists() and not bool(jr.force):
+                    pass
+                else:
+                    generate_motion_activity(v, force=bool(jr.force), interval=interval)
+        finally:
+            done += 1
+            _set_job_progress(jid, processed_set=done)
+    _set_job_current(jid, None)
+    _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+def _handle_chain_job(jid: str, jr: JobRequest, base: Path) -> None:
+    """Execute a sequence of child jobs sequentially.
+
+    jr.params fields:
+      steps: list[ { task: str, params?: dict, directory?, recursive?, force? } ]
+      continue_on_error: bool (default False) – if False abort chain on first error.
+      propagate_force: bool (default False) – if True, apply parent jr.force to each step unless step overrides force.
+    Progress model: total = steps * 100. Each completed child increments processed by 100.
+    While a child runs, we map its fractional progress into current step's 0..100 slice.
+    Result contains per-step summary with child job id and outcome.
+    """
+    prm = jr.params or {}
+    steps = prm.get("steps") or []
+    if not isinstance(steps, list) or not steps:
+        _finish_job(jid, error="no steps provided")
+        return
+    continue_on_error = bool(prm.get("continue_on_error", False))
+    propagate_force = bool(prm.get("propagate_force", False))
+    # Determine allowed tasks (reuse handlers registry excluding chain itself)
+    allowed_tasks = {
+        "transcode", "autotag", "cover", "embed", "clip", "cleanup-artifacts",
+        "sprites", "heatmaps", "faces", "hover", "subtitles", "scenes", "sample",
+        "waveform", "motion", "index-embeddings", "integrity-scan"
+    }
+    # Validate steps
+    norm_steps: list[dict[str, Any]] = []
+    for idx, st in enumerate(steps):
+        if not isinstance(st, dict):
+            _finish_job(jid, error=f"invalid step {idx}")
+            return
+        task = str(st.get("task", "")).lower()
+        if task not in allowed_tasks:
+            _finish_job(jid, error=f"unsupported task: {task}")
+            return
+        norm_steps.append(st)
+    total_slices = len(norm_steps) * 100
+    _set_job_progress(jid, total=total_slices, processed_set=0)
+    results: list[dict[str, Any]] = []
+    for i, st in enumerate(norm_steps):
+        if _job_check_canceled(jid):
+            results.append({"step": i, "task": st.get("task"), "status": "canceled"})
+            break
+        task = str(st.get("task"))
+        step_dir = st.get("directory") or jr.directory
+        step_recursive = st.get("recursive") if st.get("recursive") is not None else jr.recursive
+        step_force = bool(st.get("force")) if st.get("force") is not None else (jr.force if propagate_force else False)
+        step_params = st.get("params") or {}
+        child_req = JobRequest(
+            task=task,
+            directory=step_dir,
+            params=step_params,
+            recursive=bool(step_recursive),
+            force=bool(step_force),
+        )
+        # Submit child job
+        try:
+            resp = jobs_submit(child_req)
+            child_jid_any = resp.get("id")  # type: ignore
+            child_jid = str(child_jid_any) if child_jid_any else ""
+        except Exception as e:
+            results.append({"step": i, "task": task, "status": "submit_error", "error": str(e)})
+            if not continue_on_error:
+                _job_set_result(jid, {"steps": results})
+                _finish_job(jid)
+                return
+            continue
+        if not child_jid:
+            results.append({"step": i, "task": task, "status": "submit_error", "error": "no child id"})
+            if not continue_on_error:
+                _job_set_result(jid, {"steps": results})
+                _finish_job(jid)
+                return
+            continue
+        # Monitor child job
+        slice_base = i * 100
+        while True:
+            if _job_check_canceled(jid):
+                ev = JOB_CANCEL_EVENTS.get(child_jid) if child_jid else None
+                if ev:
+                    ev.set()  # attempt to cancel child
+                results.append({"step": i, "task": task, "status": "canceled", "child": child_jid})
+                break
+            job_info = JOBS.get(child_jid) or {}
+            state = job_info.get("state")
+            total = max(1, int(job_info.get("total", 100)))
+            processed = int(job_info.get("processed", 0))
+            # Map to chain progress
+            frac = min(1.0, max(0.0, processed / total))
+            _set_job_progress(jid, processed_set=slice_base + int(frac * 100))
+            if state in ("finished", "error", "canceled"):
+                # capture result
+                res_entry = {
+                    "step": i,
+                    "task": task,
+                    "child": child_jid,
+                    "state": state,
+                }
+                if job_info.get("error"):
+                    res_entry["error"] = job_info.get("error")
+                if job_info.get("result") is not None:
+                    res_entry["result"] = job_info.get("result")
+                results.append(res_entry)
+                if state == "error" and not continue_on_error:
+                    _job_set_result(jid, {"steps": results})
+                    _finish_job(jid)
+                    return
+                # Advance processed to end of slice
+                _set_job_progress(jid, processed_set=slice_base + 100)
+                break
+            time.sleep(0.25)
+    _job_set_result(jid, {"steps": results})
+    _finish_job(jid)
+
+
+def _handle_integrity_scan_job(jid: str, jr: JobRequest, base: Path) -> None:
+    """Scan library for artifact integrity.
+
+    For each video:
+      - missing: artifact kinds not present
+      - stale: artifact older than source video (mtime comparison)
+    Globally:
+      - orphaned: artifact files whose base media file is missing (de-duplicated)
+
+    jr.params options:
+      kinds: optional list of artifact kinds to restrict (defaults FINISH_ARTIFACT_ORDER)
+      include_ok: if true include entries even when no issues
+    """
+    prm = jr.params or {}
+    include_ok = bool(prm.get("include_ok", False))
+    limit_kinds = prm.get("kinds") or FINISH_ARTIFACT_ORDER
+    if isinstance(limit_kinds, str):  # allow comma list
+        limit_kinds = [k.strip() for k in limit_kinds.split(',') if k.strip()]
+    kinds: list[str] = [k for k in FINISH_ARTIFACT_ORDER if k in set(limit_kinds)] or FINISH_ARTIFACT_ORDER
+    # Gather videos
+    vids = _iter_videos(base, bool(jr.recursive))
+    # Pre-compute artifact file path resolvers
+    def _artifact_paths(v: Path) -> dict[str, list[Path]]:
+        mp: dict[str, list[Path]] = {
+            "metadata": [metadata_path(v)],
+            "thumbnail": [thumbs_path(v)],
+            "preview": [preview_webm_path(v), preview_json_path(v)],
+            "sprites": list(sprite_sheet_paths(v)),
+            "scenes": [scenes_json_path(v)],
+            "heatmaps": [heatmaps_json_path(v), heatmaps_png_path(v)],
+            "phash": [phash_path(v)],
+            "faces": [faces_path(v)],
+            "subtitles": [artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}", v.with_suffix(SUFFIX_SUBTITLES_SRT)],
+        }
+        return mp
+    base_root = STATE["root"]
+    rel = lambda p: str(p.relative_to(base_root)) if str(p).startswith(str(base_root)) else str(p)
+    results: list[dict[str, Any]] = []
+    # We'll also collect all artifact files to later detect orphans
+    all_artifact_files: list[Path] = []
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        _set_job_current(jid, str(v))
+        try:
+            art_map = _artifact_paths(v)
+            missing: list[str] = []
+            stale: list[str] = []
+            try:
+                v_mtime = v.stat().st_mtime
+            except Exception:
+                v_mtime = 0.0
+            for k in kinds:
+                paths = art_map.get(k, [])
+                exists_any = False
+                stale_any = False
+                for ap in paths:
+                    if ap.exists():
+                        exists_any = True
+                        all_artifact_files.append(ap)
+                        try:
+                            if v_mtime and ap.stat().st_mtime < v_mtime:
+                                stale_any = True
+                        except Exception:
+                            pass
+                if not exists_any:
+                    missing.append(k)
+                elif stale_any:
+                    stale.append(k)
+            if include_ok or missing or stale:
+                results.append({
+                    "file": rel(v),
+                    **({"missing": missing} if missing else {}),
+                    **({"stale": stale} if stale else {}),
+                })
+        finally:
+            _set_job_progress(jid, processed_inc=1)
+    # Orphans: search artifact dirs for files not linked to a known video stem
+    video_stems = {v.stem for v in vids}
+    orphaned: list[str] = []
+    for v in vids:
+        pass  # placeholder to keep local variable used - vids used already
+    # Instead of iterating only videos, enumerate all .artifacts subdirs under base
+    for p in base.rglob(".artifacts"):
+        if not p.is_dir():
+            continue
+        for f in p.iterdir():
+            if not f.is_file():
+                continue
+            parsed = _parse_artifact_name(f.name)
+            if not parsed:
+                continue
+            stem, _kind = parsed
+            if stem not in video_stems:
+                try:
+                    orphaned.append(rel(f))
+                except Exception:
+                    orphaned.append(str(f))
+    summary = {
+        "videos_scanned": len(vids),
+        "entries": len(results),
+        "missing_total": sum(len(r.get("missing", [])) for r in results),
+        "stale_total": sum(len(r.get("stale", [])) for r in results),
+        "orphaned_total": len(orphaned),
+    }
+    _job_set_result(jid, {"results": results, "orphaned": orphaned[:500], "summary": summary, "kinds": kinds})
+    _finish_job(jid)
+
+# -----------------------------
+# Embeddings & Search (Batch 2)
+# -----------------------------
+
+EMB_INDEX_LOCK = threading.Lock()
+STATE.setdefault("embedding_index", None)  # will hold {built_at, entries:[...]}
+
+def _hex_to_bits(h: str) -> list[int]:
+    bits: list[int] = []
+    try:
+        for c in h.strip():
+            v = int(c, 16)
+            for i in range(3, -1, -1):
+                bits.append(1 if (v >> i) & 1 else 0)
+    except Exception:
+        return []
+    return bits
+
+def _vec_norm(v: list[float]) -> list[float]:
+    try:
+        import math
+        s = math.sqrt(sum(x*x for x in v))
+        if s <= 0:
+            return v
+        return [x / s for x in v]
+    except Exception:
+        return v
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b:
+        return 0.0
+    L = min(len(a), len(b))
+    num = 0.0
+    da = 0.0
+    db = 0.0
+    for i in range(L):
+        x = float(a[i]); y = float(b[i])
+        num += x * y
+        da += x * x
+        db += y * y
+    try:
+        import math
+        if da <= 0 or db <= 0:
+            return 0.0
+        return float(num) / float(math.sqrt(da) * math.sqrt(db))
+    except Exception:
+        return 0.0
+
+def _placeholder_clip_embedding(seed_text: str) -> list[float]:
+    """Deterministic pseudo embedding (size 128) using sha256 of seed."""
+    import hashlib
+    h = hashlib.sha256(seed_text.encode("utf-8", "ignore")).digest()
+    # Expand to 128 floats by hashing blocks
+    out: list[float] = []
+    cur = h
+    while len(out) < 128:
+        cur = hashlib.sha256(cur).digest()
+        for b in cur:
+            out.append((b / 255.0) * 2 - 1)  # [-1,1]
+            if len(out) >= 128:
+                break
+    return _vec_norm(out)
+
+def _average_face_embedding(faces_json: dict) -> list[float]:
+    faces = faces_json.get("faces") if isinstance(faces_json, dict) else None
+    if not isinstance(faces, list) or not faces:
+        return []
+    accum: list[float] = []
+    count = 0
+    for f in faces:
+        try:
+            emb = f.get("embedding") if isinstance(f, dict) else None
+            if not isinstance(emb, list) or not emb:
+                continue
+            if not accum:
+                accum = [0.0]*len(emb)
+            if len(emb) != len(accum):
+                continue
+            for i, val in enumerate(emb):
+                accum[i] += float(val)
+            count += 1
+        except Exception:
+            continue
+    if not accum or count == 0:
+        return []
+    return _vec_norm([x / count for x in accum])
+
+def _combined_vector(ent: dict[str, Any], mode: str) -> list[float]:
+    mode = mode.lower()
+    vec: list[float] = []
+    if mode in ("auto", "phash", "all"):
+        pv = ent.get("phash_vec")
+        if isinstance(pv, list) and pv:
+            vec.extend([1.0 if bool(b) else -1.0 for b in pv])
+    if mode in ("auto", "faces", "all"):
+        fv = ent.get("face_vec")
+        if isinstance(fv, list) and fv:
+            vec.extend([float(x) for x in fv])
+    if mode in ("auto", "clip", "all"):
+        cv = ent.get("clip_vec")
+        if isinstance(cv, list) and cv:
+            vec.extend([float(x) for x in cv])
+    return _vec_norm(vec)
+
+def _handle_index_embeddings_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    mode = str(prm.get("mode", "auto"))
+    vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    entries: list[dict[str, Any]] = []
+    for i, v in enumerate(vids, start=1):
+        if _job_check_canceled(jid):
+            _finish_job(jid); return
+        rel = str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)
+        phash_hex = None
+        phash_vec: list[int] = []
+        try:
+            pp = phash_path(v)
+            if not pp.exists():
+                try:
+                    phash_create_single(v)  # type: ignore[arg-type]
+                except Exception:
+                    pass
+            if pp.exists():
+                data = json.loads(pp.read_text())
+                phash_hex = data.get("phash")
+                if isinstance(phash_hex, str) and phash_hex:
+                    phash_vec = _hex_to_bits(phash_hex)
+        except Exception:
+            pass
+        face_vec: list[float] = []
+        try:
+            fp = faces_path(v)
+            if fp.exists():
+                fdata = json.loads(fp.read_text())
+                face_vec = _average_face_embedding(fdata)
+        except Exception:
+            pass
+        clip_vec: list[float] = []
+        try:
+            clip_vec = _placeholder_clip_embedding(rel)
+        except Exception:
+            pass
+        ent = {
+            "file": rel,
+            "phash_hex": phash_hex,
+            "phash_vec": phash_vec,
+            "face_vec": face_vec,
+            "clip_vec": clip_vec,
+        }
+        entries.append(ent)
+        _set_job_progress(jid, processed_set=i)
+    with EMB_INDEX_LOCK:
+        STATE["embedding_index"] = {
+            "built_at": time.time(),
+            "count": len(entries),
+            "mode": mode,
+            "entries": entries,
+        }
+    _job_set_result(jid, {"count": len(entries), "mode": mode})
+    _finish_job(jid)
+
+
 def _run_job_worker(jid: str, jr: JobRequest):
     try:
-        # set job context for this worker thread
         try:
             JOB_CTX.jid = jid  # type: ignore[name-defined]
         except Exception:
             pass
-        task = (jr.task or "").lower()
-        # If cancel was requested while queued, exit immediately before any work
         if _job_check_canceled(jid):
-            _finish_job(jid)
-            return
-        # Mark job as running as soon as the worker starts
+            _finish_job(jid); return
         _start_job(jid)
-        # Enforce job working directory within root
         if jr.directory:
             cand = Path(jr.directory).expanduser()
             if cand.is_absolute():
                 try:
                     cand.resolve().relative_to(STATE["root"])  # type: ignore[arg-type]
                 except Exception:
-                    _finish_job(jid, error="invalid directory")
-                    return
+                    _finish_job(jid, error="invalid directory"); return
                 base = cand.resolve()
             else:
                 base = safe_join(STATE["root"], jr.directory)
         else:
             base = STATE["root"].resolve()  # type: ignore[attr-defined]
-        if task == "autotag":
-            vids = _iter_videos(base, bool(jr.recursive))
-            _set_job_progress(jid, total=len(vids), processed_set=0)
-            prm = jr.params or {}
-            perf_list = [str(x).strip() for x in (prm.get("performers") or []) if str(x).strip()]
-            tag_list = [str(x).strip() for x in (prm.get("tags") or []) if str(x).strip()]
-            # Precompile simple word-boundary regex for each candidate
-            def _mk_patterns(items: list[str]):
-                pats = []
-                for it in items:
-                    s = re.escape(it.lower())
-                    # allow separators like ., _, -, space between words by replacing spaces with a character class
-                    s = s.replace(r"\ ", r"[\s._-]+")
-                    pats.append(re.compile(rf"(?<![A-Za-z0-9]){s}(?![A-Za-z0-9])"))
-                return pats
-            perf_pats = _mk_patterns(perf_list)
-            tag_pats = _mk_patterns(tag_list)
-            changed = 0
-            matched_count = 0
-            for i, v in enumerate(vids, start=1):
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    name = v.name.rsplit(".", 1)[0].lower()
-                    # normalize separators
-                    hay = re.sub(r"[\s._-]+", " ", name)
-                    found_perfs: list[str] = []
-                    for pat, raw in zip(perf_pats, perf_list):
-                        if pat.search(hay):
-                            found_perfs.append(raw)
-                    found_tags: list[str] = []
-                    for pat, raw in zip(tag_pats, tag_list):
-                        if pat.search(hay):
-                            found_tags.append(raw)
-                    if not found_perfs and not found_tags:
-                        _set_job_progress(jid, processed_set=i)
-                        continue
-                    matched_count += 1
-                    # Load current tags
-                    tfile = _tags_file(v)
-                    if tfile.exists():
-                        try:
-                            data = json.loads(tfile.read_text())
-                        except Exception:
-                            data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
-                    else:
-                        data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
-                    data.setdefault("tags", [])
-                    data.setdefault("performers", [])
-                    before_t = set(data["tags"])
-                    before_p = set(data["performers"])
-                    for t in found_tags:
-                        if t not in data["tags"]:
-                            data["tags"].append(t)
-                    for p in found_perfs:
-                        if p not in data["performers"]:
-                            data["performers"].append(p)
-                    if set(data["tags"]) != before_t or set(data["performers"]) != before_p:
-                        try:
-                            tfile.write_text(json.dumps(data, indent=2))
-                            changed += 1
-                        except Exception:
-                            pass
-                finally:
-                    _set_job_progress(jid, processed_set=i)
-            _job_set_result(jid, {"matched_files": matched_count, "updated_files": changed, "total": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "cover":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            _set_job_progress(jid, total=len(vids), processed_set=0)
-            time_spec = str(prm.get("t", prm.get("time", 10))) if prm.get("t", prm.get("time")) is not None else "middle"
-            q = int(prm.get("quality", 2))
-            force = bool(jr.force) or bool(prm.get("overwrite", False))
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "cover")
-                    with lk:
-                        if thumbs_path(v).exists() and not force:
-                            pass
-                        else:
-                            generate_thumbnail(v, force=force, time_spec=time_spec, quality=q)
-                except Exception:
-                    pass
-                _set_job_progress(jid, processed_inc=1)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "metadata":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            _set_job_progress(jid, total=len(vids), processed_set=0)
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "metadata")
-                    with lk:
-                        metadata_single(v, force=bool(jr.force))
-                except Exception:
-                    pass
-                _set_job_progress(jid, processed_inc=1)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "phash":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smooth progress across frames
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            frames = int(prm.get("frames", 5))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "phash")
-                    with lk:
-                        if phash_path(v).exists() and not bool(jr.force):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            phash_create_single(v, frames=frames, progress_cb=_pcb, cancel_check=_cc)
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "embed":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress and honor overwrite/force
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            overwrite = bool(prm.get("overwrite", False))
-            sim_thresh = float(prm.get("sim_thresh", 0.9))
-            interval = float(prm.get("interval", 1.0))
-            scale_factor = float(prm.get("scale_factor", 1.2))
-            min_neighbors = int(prm.get("min_neighbors", 7))
-            min_size_frac = float(prm.get("min_size_frac", 0.10))
-            backend = str(prm.get("backend", "auto"))
-            done_files = 0
-            skipped = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "faces")
-                    with lk:
-                        # Skip if faces JSON exists and is non-stub, unless forced
-                        if faces_exists_check(v) and not (bool(jr.force) or overwrite):
-                            done_files += 1
-                            skipped += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_embed(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            compute_face_embeddings(
-                                v,
-                                sim_thresh=sim_thresh,
-                                interval=interval,
-                                scale_factor=scale_factor,
-                                min_neighbors=min_neighbors,
-                                min_size_frac=min_size_frac,
-                                backend=backend,
-                                progress_cb=_pcb_embed,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids), "skipped": skipped})
-            _finish_job(jid)
-            return
-        if task == "clip":
-            prm = jr.params or {}
-            _src_val = prm.get("file")
-            src = Path(str(_src_val)).expanduser().resolve() if _src_val else None
-            ranges = prm.get("ranges") or []
-            _dest_val = prm.get("dest")
-            dest = Path(str(_dest_val)).expanduser().resolve() if _dest_val else None
-            if not src or not src.exists() or not dest:
-                _finish_job(jid, error="invalid clip params")
-                return
-            # Guard: src and dest must be within root
-            try:
-                src.relative_to(STATE["root"])  # type: ignore[arg-type]
-                dest.relative_to(STATE["root"])  # type: ignore[arg-type]
-            except Exception:
-                _finish_job(jid, error="paths outside root")
-                return
-            dest.mkdir(parents=True, exist_ok=True)
-            files_out: list[str] = []
-            _set_job_progress(jid, total=len(ranges), processed_set=0)
-            for i, r in enumerate(ranges):
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                start = float(r.get("start", 0.0))
-                end = float(r.get("end", start))
-                outp = dest / f"clip_{i+1:02d}.mp4"
-                if ffmpeg_available():
-                    # best-effort fast clip
-                    cmd = [
-                        "ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(src),
-                        "-c", "copy", str(outp),
-                    ]
-                    try:
-                        _run(cmd)
-                    except Exception:
-                        outp.write_bytes(b"")
-                else:
-                    # create a stub file
-                    outp.write_bytes(b"CLIP")
-                files_out.append(str(outp))
-                _set_job_progress(jid, processed_inc=1)
-            _job_set_result(jid, {"files": files_out})
-            _finish_job(jid)
-            return
-        if task == "cleanup-artifacts":
-            base = Path(jr.directory or str(STATE["root"]))
-            base = base.expanduser().resolve()
-            prm = jr.params or {}
-            dry_run = bool(prm.get("dry_run", False))
-            keep_orphans = bool(prm.get("keep_orphans", False))
-            # Gather all artifacts under .artifacts directories
-            artifacts: list[Path] = []
-            for p in base.rglob(".artifacts"):
-                if not p.is_dir():
-                    continue
-                for f in p.iterdir():
-                    if f.is_file() and _parse_artifact_name(f.name):
-                        artifacts.append(f)
-            _set_job_progress(jid, total=len(artifacts), processed_set=0)
-            media_by_stem, meta_by_stem = _collect_media_and_meta(base)
-            # Build duration lookup for media
-            media_durations: dict[str, float] = {}
-            for stem, v in media_by_stem.items():
-                try:
-                    m = meta_by_stem.get(stem) or {}
-                    d = m.get("duration")
-                    if isinstance(d, (int, float)):
-                        media_durations[stem] = float(d)
-                except Exception:
-                    pass
-            renamed: list[dict] = []
-            deleted: list[str] = []
-            kept: list[str] = []
-            for art in artifacts:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    parsed = _parse_artifact_name(art.name)
-                    if not parsed:
-                        continue
-                    a_stem, kind = parsed
-                    parent_dir = art.parent
-                    # Fast-path: if same-stem media exists in same parent
-                    cand_media = media_by_stem.get(a_stem)
-                    if cand_media and cand_media.exists():
-                        # Artifact already matches existing media; keep
-                        kept.append(str(art))
-                        continue
-                    # Try to find a best candidate among media by comparing duration and name similarity
-                    # Load artifact's associated metadata duration if available
-                    a_duration: float | None = None
-                    try:
-                        if kind == SUFFIX_METADATA_JSON:
-                            raw = json.loads(art.read_text())
-                            a_duration = extract_duration(raw)
-                        else:
-                            # If not a metadata sidecar, try reading sibling metadata file with same stem
-                            meta_file = parent_dir / f"{a_stem}{SUFFIX_METADATA_JSON}"
-                            if meta_file.exists():
-                                raw = json.loads(meta_file.read_text())
-                                a_duration = extract_duration(raw)
-                    except Exception:
-                        a_duration = None
-                    # Score candidates
-                    best: tuple[float, Path] | None = None
-                    for stem, v in media_by_stem.items():
-                        # Prefer files in the same grandparent directory
-                        try:
-                            same_parent_boost = 0.05 if v.parent == parent_dir.parent else 0.0
-                        except Exception:
-                            same_parent_boost = 0.0
-                        name_sim = SequenceMatcher(a=a_stem.lower(), b=stem.lower()).ratio()
-                        dur_sim = 0.0
-                        if a_duration is not None:
-                            d = media_durations.get(stem)
-                            if isinstance(d, (int, float)) and d > 0:
-                                diff = abs(float(d) - float(a_duration))
-                                # 0 diff -> 1.0, 5% diff -> ~0.0
-                                dur_sim = max(0.0, 1.0 - (diff / max(d, 1.0)))
-                        score = (0.65 * name_sim) + (0.35 * dur_sim) + same_parent_boost
-                        if best is None or score > best[0]:
-                            best = (score, v)
-                    matched: Optional[Path] = None
-                    if best and best[0] >= 0.80:  # threshold for confident match
-                        matched = best[1]
-                    if matched is not None:
-                        # Rename artifact to new stem in the matched media's .artifacts
-                        dst_dir = artifact_dir(matched)
-                        new_name = f"{matched.stem}{kind}"
-                        dst_path = dst_dir / new_name
-                        if dry_run:
-                            renamed.append({"from": str(art), "to": str(dst_path)})
-                        else:
-                            try:
-                                dst_dir.mkdir(parents=True, exist_ok=True)
-                                os.rename(art, dst_path)
-                                renamed.append({"from": str(art), "to": str(dst_path)})
-                            except Exception:
-                                # If rename fails, keep for manual inspection
-                                kept.append(str(art))
-                    else:
-                        # No match — delete unless keep_orphans
-                        if keep_orphans or dry_run:
-                            kept.append(str(art))
-                        else:
-                            try:
-                                art.unlink()
-                                deleted.append(str(art))
-                            except Exception:
-                                kept.append(str(art))
-                except Exception:
-                    # On any unexpected error, keep artifact
-                    kept.append(str(art))
-                finally:
-                    _set_job_progress(jid, processed_inc=1)
-            _job_set_result(jid, {"renamed": renamed, "deleted": deleted, "kept": kept, "dry_run": dry_run})
-            _finish_job(jid)
-            return
-        if task == "sprites":
-            # If explicit targets provided (relative to root), use them so progress reflects actual missing set
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale total by 100 to allow per-file fractional progress updates
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            sd = _sprite_defaults()
-            interval = float(prm.get("interval", sd["interval"]))  # type: ignore[index]
-            width = int(prm.get("width", sd["width"]))  # type: ignore[index]
-            cols = int(prm.get("cols", sd["cols"]))  # type: ignore[index]
-            rows = int(prm.get("rows", sd["rows"]))  # type: ignore[index]
-            quality = int(prm.get("quality", sd["quality"]))  # type: ignore[index]
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "sprites")
-                    with lk:
-                        # Skip if both sheet and json already exist, unless force=True
-                        s, jj = sprite_sheet_paths(v)
-                        if s.exists() and jj.exists() and not bool(jr.force):
-                            # Count as fully done for progress purposes
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_sprites(step: int, steps: int):
-                                try:
-                                    steps = max(1, int(steps))
-                                    step = max(0, min(int(step), steps))
-                                    overall = (done_files * 100) + int((step / steps) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            generate_sprite_sheet(
-                                v,
-                                interval=interval,
-                                width=width,
-                                cols=cols,
-                                rows=rows,
-                                quality=quality,
-                                progress_cb=_pcb_sprites,
-                                cancel_check=_cc,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    # On error, still advance to next file; mark this file as completed in progress scale
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "heatmaps":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress based on sample count
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            interval = float(prm.get("interval", 5.0))
-            mode = str(prm.get("mode", "both"))
-            png = bool(prm.get("png", True))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "heatmaps")
-                    with lk:
-                        if heatmaps_json_exists(v) and not bool(jr.force):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_heat(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            compute_heatmaps(v, interval=interval, mode=mode, png=png, progress_cb=_pcb_heat, cancel_check=_cc)
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "faces":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            overwrite = bool(prm.get("overwrite", False))
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            sim_thresh = float(prm.get("sim_thresh", 0.9))
-            interval = float(prm.get("interval", 1.0))
-            scale_factor = float(prm.get("scale_factor", 1.2))
-            min_neighbors = int(prm.get("min_neighbors", 7))
-            min_size_frac = float(prm.get("min_size_frac", 0.10))
-            backend = str(prm.get("backend", "auto"))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "faces")
-                    with lk:
-                        if faces_exists_check(v) and not (bool(jr.force) or overwrite):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_faces(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            compute_face_embeddings(
-                                v,
-                                sim_thresh=sim_thresh,
-                                interval=interval,
-                                scale_factor=scale_factor,
-                                min_neighbors=min_neighbors,
-                                min_size_frac=min_size_frac,
-                                backend=backend,
-                                progress_cb=_pcb_faces,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "hover":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Simple per-file progress; avoid per-segment to keep single-pass robust pipeline
-            _set_job_progress(jid, total=max(0, len(vids)), processed_set=0)
-            segments = int(prm.get("segments", 9))
-            duration = float(prm.get("duration", 1.0))
-            width = int(prm.get("width", 320))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    out_path = _hover_concat_path(v)
-                    lk = _file_task_lock(v, "hover")
-                    with lk:
-                        if _file_nonempty(out_path) and not bool(jr.force):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            generate_hover_preview(
-                                v,
-                                segments=segments,
-                                seg_dur=duration,
-                                width=width,
-                                fmt="webm",
-                                out=out_path,
-                                progress_cb=None,
-                                cancel_check=_cc,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "subtitles":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress via backend segment callbacks
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            model = str(prm.get("model", "small"))
-            language = prm.get("language")
-            translate = bool(prm.get("translate", False))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    out_file = artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}"
-                    lk = _file_task_lock(v, "subtitles")
-                    with lk:
-                        if out_file.exists() and not bool(jr.force):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_sub(frac: float):
-                                try:
-                                    frac = max(0.0, min(1.0, float(frac)))
-                                    overall = (done_files * 100) + int(frac * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            generate_subtitles(
-                                v, out_file, model=model, language=(language or None), translate=translate,
-                                progress_cb=_pcb_sub, cancel_check=_cc,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        if task == "scenes":
-            prm = jr.params or {}
-            targets = prm.get("targets") or []
-            if targets:
-                vids = []
-                for rel in targets:
-                    try:
-                        p = safe_join(STATE["root"], rel)
-                        if p.exists() and p.is_file():
-                            vids.append(p)
-                    except Exception:
-                        continue
-            else:
-                vids = _iter_videos(base, bool(jr.recursive))
-            # Scale to 100 per file for smoother progress based on scene items processed
-            _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-            threshold = float(prm.get("threshold", 0.4))
-            limit = int(prm.get("limit", 0))
-            gen_thumbs = bool(prm.get("thumbs", False))
-            gen_clips = bool(prm.get("clips", False))
-            thumbs_width = int(prm.get("thumbs_width", 320))
-            clip_duration = float(prm.get("clip_duration", 2.0))
-            done_files = 0
-            for v in vids:
-                if _job_check_canceled(jid):
-                    _finish_job(jid)
-                    return
-                try:
-                    _set_job_current(jid, str(v))
-                    lk = _file_task_lock(v, "scenes")
-                    with lk:
-                        # Skip if scenes already exist unless recomputing
-                        if scenes_json_exists(v) and not bool(jr.force):
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                        else:
-                            def _pcb_scenes(i: int, n: int):
-                                try:
-                                    n = max(1, int(n))
-                                    i = max(0, min(int(i), n))
-                                    overall = (done_files * 100) + int((i / n) * 100)
-                                    _set_job_progress(jid, processed_set=overall)
-                                except Exception:
-                                    pass
-                            def _cc() -> bool:
-                                return _job_check_canceled(jid)
-                            generate_scene_artifacts(
-                                v,
-                                threshold=threshold,
-                                limit=limit,
-                                gen_thumbs=gen_thumbs,
-                                gen_clips=gen_clips,
-                                thumbs_width=thumbs_width,
-                                clip_duration=clip_duration,
-                                progress_cb=_pcb_scenes,
-                                cancel_check=_cc,
-                            )
-                            done_files += 1
-                            _set_job_progress(jid, processed_set=done_files * 100)
-                except Exception:
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-            _set_job_current(jid, None)
-            _job_set_result(jid, {"processed": len(vids)})
-            _finish_job(jid)
-            return
-        # Unknown task
-        _finish_job(jid, error="unknown task")
+        task = (jr.task or "").lower()
+        handlers: dict[str, Callable[[str, JobRequest, Path], None]] = {
+            "transcode": _handle_transcode_job,
+            "autotag": _handle_autotag_job,
+            "cover": _handle_cover_job,
+            "embed": _handle_embed_job,
+            "clip": _handle_clip_job,
+            "cleanup-artifacts": _handle_cleanup_artifacts_job,
+            "sprites": _handle_sprites_job,
+            "heatmaps": _handle_heatmaps_job,
+            "faces": _handle_faces_job,
+            "hover": _handle_hover_job,
+            "subtitles": _handle_subtitles_job,
+            "scenes": _handle_scenes_job,
+                    "sample": _handle_sample_job,
+            "chain": _handle_chain_job,
+            "integrity-scan": _handle_integrity_scan_job,
+            "index-embeddings": _handle_index_embeddings_job,
+        "waveform": _handle_waveform_job,
+        "motion": _handle_motion_job,
+        }
+        h = handlers.get(task)
+        if not h:
+            _finish_job(jid, error="unknown task"); return
+        h(jid, jr, base)
     except Exception as e:
         _finish_job(jid, error=str(e))
 
@@ -8323,6 +10870,107 @@ def jobs_submit(req: JobRequest):
     t = threading.Thread(target=_runner, daemon=True)
     t.start()
     return {"id": jid, "status": "queued"}
+
+# -----------------------------
+# Waveform & Motion query endpoints (Batch 3)
+# -----------------------------
+@app.get("/waveform")
+def get_waveform(
+    file: str = Query(..., description="Video file path (relative to root or absolute)"),
+    force: bool = Query(False, description="Regenerate waveform even if it exists"),
+    width: int = Query(800, ge=32, le=4096),
+    height: int = Query(160, ge=32, le=2048),
+    color: str = Query("#4fa0ff", description="Waveform color (hex)"),
+):
+    base = STATE["root"]
+    # Support absolute path (must reside under root) or relative path
+    try:
+        if os.path.isabs(file):
+            video = Path(file).resolve()
+            # Enforce containment within media root
+            if not str(video).startswith(str(base)):
+                raise HTTPException(400, "absolute path is outside media root")
+        else:
+            video = safe_join(base, file)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"invalid path: {e}")
+    if not video.exists() or not video.is_file():
+        raise HTTPException(404, f"video not found: {file}")
+    lk = _file_task_lock(video, "waveform")
+    with lk:
+        try:
+            generate_waveform(video, force=force, width=width, height=height, color=color)
+        except Exception as e:
+            raise HTTPException(500, f"waveform generation failed: {e}")
+    wf = waveform_png_path(video)
+    if not wf.exists():
+        raise HTTPException(500, "waveform artifact missing after generation")
+    return FileResponse(str(wf), media_type="image/png")
+
+
+@app.get("/motion")
+def get_motion_activity(
+    file: str = Query(..., description="Video file path (relative to root or absolute)"),
+    force: bool = Query(False, description="Regenerate motion JSON even if it exists"),
+    interval: float = Query(1.0, ge=0.1, le=30.0, description="Frame sampling interval (seconds)"),
+    top: int = Query(5, ge=1, le=100, description="Return top-N highest motion samples"),
+):
+    base = STATE["root"]
+    try:
+        if os.path.isabs(file):
+            video = Path(file).resolve()
+            if not str(video).startswith(str(base)):
+                raise HTTPException(400, "absolute path is outside media root")
+        else:
+            video = safe_join(base, file)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"invalid path: {e}")
+    if not video.exists() or not video.is_file():
+        raise HTTPException(404, f"video not found: {file}")
+    lk = _file_task_lock(video, "motion")
+    with lk:
+        try:
+            generate_motion_activity(video, force=force, interval=interval)
+        except Exception as e:
+            raise HTTPException(500, f"motion generation failed: {e}")
+    mp = motion_json_path(video)
+    if not mp.exists():
+        raise HTTPException(500, "motion artifact missing after generation")
+    try:
+        data = json.loads(mp.read_text() or "{}")
+    except Exception as e:
+        raise HTTPException(500, f"failed to parse motion json: {e}")
+    samples = data.get("samples") or []
+    if samples:
+        vals = [float(s.get("value", 0.0)) for s in samples]
+        total = sum(vals)
+        avg = total / len(vals) if vals else 0.0
+        max_v = max(vals) if vals else 0.0
+        indexed = list(enumerate(vals))
+        indexed.sort(key=lambda x: x[1], reverse=True)
+        top_list = [
+            {
+                "rank": i + 1,
+                "index": idx,
+                "time": float(idx) * float(data.get("interval", interval)),
+                "value": v,
+            }
+            for i, (idx, v) in enumerate(indexed[:top])
+        ]
+        data["stats"] = {
+            "count": len(vals),
+            "avg": avg,
+            "max": max_v,
+            "sum": total,
+            "top": top_list,
+        }
+    else:
+        data["stats"] = {"count": 0, "avg": 0.0, "max": 0.0, "sum": 0.0, "top": []}
+    return JSONResponse(data)
 
 
 @app.get("/jobs/events")
@@ -8393,7 +11041,7 @@ def jobs_cancel(job_id: str):
     return {"id": job_id, "status": "cancel_requested"}
 
 
- 
+
 
 # Ensure the alias is registered even if defined after the router was included
 try:
@@ -8503,6 +11151,839 @@ def api_tags_summary(path: str = Query(default=""), recursive: bool = Query(defa
     return {"tags": tag_counts, "performers": perf_counts}
 
 
+# -----------------------------
+# Doctor / system diagnostics (transcode roadmap prerequisite)
+# -----------------------------
+
+def _which_version(cmd: str) -> tuple[bool, Optional[str]]:
+    exe = shutil.which(cmd)
+    if not exe:
+        return False, None
+    try:
+        out = subprocess.check_output([cmd, "-version"], stderr=subprocess.STDOUT, timeout=5)
+        first = out.decode("utf-8", "ignore").splitlines()[0].strip()
+        return True, first
+    except Exception:
+        return True, None
+
+
+def _model_available(name: str) -> bool:
+    # Placeholder heuristic until face/subtitle models formalized
+    if name == "whisper":
+        return _has_module("whisper") or _has_module("faster_whisper")
+    if name == "faces":
+        return _has_module("insightface") or _has_module("facenet_pytorch") or _has_module("dlib")
+    return False
+
+
+@api.get("/system/doctor")
+def api_system_doctor():
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: Optional[str] = None):
+        checks.append({"name": name, "status": "ok" if ok else "fail", **({"detail": detail} if detail else {})})
+
+    # ffmpeg / ffprobe
+    ff_ok, ff_ver = _which_version("ffmpeg")
+    add("ffmpeg", ff_ok, ff_ver)
+    fp_ok, fp_ver = _which_version("ffprobe")
+    add("ffprobe", fp_ok, fp_ver)
+
+    # concurrency env
+    add("env.FFMPEG_THREADS", True, os.environ.get("FFMPEG_THREADS", "(default)"))
+    add("env.FFMPEG_TIMELIMIT", True, os.environ.get("FFMPEG_TIMELIMIT", "(default)"))
+
+    # hwaccel
+    hw = os.environ.get("FFMPEG_HWACCEL")
+    add("hwaccel", bool(hw), hw or "(none)")
+
+    # root writable
+    try:
+        test_file = STATE["root"] / ".artifacts" / "__doctor_write.test"
+        test_file.parent.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("ok")
+        test_file.unlink(missing_ok=True)  # type: ignore[arg-type]
+        add("artifacts_writable", True)
+    except Exception as e:
+        add("artifacts_writable", False, str(e))
+
+    # optional models
+    add("model.whisper", _model_available("whisper"))
+    add("model.faces", _model_available("faces"))
+
+    # python deps snapshot (selected)
+    for mod in ["PIL", "numpy", "torch", "onnx", "opencv-python"]:
+        add(f"dep.{mod}", _has_module(mod.lower().replace("-", "_")))
+
+    # config echo (subset)
+    cfg = STATE.get("config") or {}
+    diagnostics = {
+        "root": str(STATE["root"]),
+        "config_keys": sorted(list(cfg.keys())),
+        "ffmpeg_threads_flags": _ffmpeg_threads_flags(),
+    }
+    summary = {
+        "ok": all(c["status"] == "ok" for c in checks if not c["name"].startswith("dep.")),
+        "failures": [c for c in checks if c["status"] != "ok"],
+    }
+    return {"checks": checks, "summary": summary, "diagnostics": diagnostics}
+
+
+# -----------------------------
+# Additional legacy vid feature ports: codecs scan & finish
+# -----------------------------
+
+class CodecsScanResult(BaseModel):  # minimal pydantic model for structured response
+    file: str
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    width: int | None = None
+    height: int | None = None
+    duration: float | None = None
+    size_bytes: int | None = None
+    bitrate: int | None = None
+    pix_fmt: str | None = None
+    r_frame_rate: str | None = None
+    errors: list[str] | None = None
+
+
+def _ffprobe_streams_safe(path: Path) -> dict[str, Any]:
+    if not ffprobe_available():
+        return {}
+    try:
+        cmd = [
+            "ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        return json.loads(out.decode("utf-8", "ignore"))
+    except Exception as e:  # pragma: no cover
+        return {"error": str(e)}
+
+
+def _codecs_reasoning(v: Path, rec: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    reasons: list[dict[str, Any]] = []
+    suggest: dict[str, Any] = {}
+    video = (rec.get("video_codec") or "").lower() if isinstance(rec.get("video_codec"), str) else None
+    audio = (rec.get("audio_codec") or "").lower() if isinstance(rec.get("audio_codec"), str) else None
+    pix_fmt = (rec.get("pix_fmt") or "").lower() if isinstance(rec.get("pix_fmt"), str) else None
+    width = rec.get("width") or 0
+    height = rec.get("height") or 0
+    bitrate = rec.get("bitrate") or 0
+    duration = rec.get("duration") or 0.0
+    ext = v.suffix.lower()
+    def add(code: str, level: str = "info", message: str | None = None, **extra):
+        reasons.append({"code": code, "level": level, **({"message": message} if message else {}), **extra})
+    # Video codec suitability
+    if video and video not in {"h264", "hevc", "vp9", "av1"}:
+        add("uncommon_video_codec", "warn", f"Video codec '{video}' may have limited playback support")
+    if not video:
+        add("missing_video_stream", "error", "No video stream detected")
+    # Audio
+    if not audio:
+        add("missing_audio", "warn", "File has no audio track")
+    elif audio not in {"aac", "opus", "mp3"}:
+        add("uncommon_audio_codec", "info", f"Audio codec '{audio}' is less common for web delivery")
+    # Pixel format
+    if pix_fmt and pix_fmt not in {"yuv420p", "yuvj420p"}:
+        add("non_standard_pix_fmt", "info", f"Pixel format {pix_fmt} may trigger transcode for compatibility")
+    # Resolution
+    area = width * height
+    if area >= 3840*2160:
+        add("ultra_hd", "info", "4K/UHD content may benefit from AV1/VP9 for efficiency")
+    elif area > 1920*1080:
+        add("above_full_hd", "info", "Resolution above 1080p")
+    # Bitrate heuristic thresholds
+    if bitrate and duration:
+        # rough per-second bytes
+        if area <= 1920*1080 and bitrate > 12_000_000:
+            add("high_bitrate", "warn", f"Bitrate {bitrate} > 12Mbps for <=1080p; consider re-encoding")
+        if area >= 3840*2160 and bitrate > 40_000_000:
+            add("very_high_bitrate", "warn", f"Bitrate {bitrate} > 40Mbps for 4K; consider more efficient codec")
+    # Container/codec mismatch
+    if ext == ".webm" and video and video not in {"vp8", "vp9", "av1"}:
+        add("container_codec_mismatch", "warn", f"{video} inside .webm (expect VP9/AV1)")
+    if ext == ".mp4" and video in {"vp9", "av1"}:
+        add("container_codec_mismatch", "info", f"{video} in mp4 may have limited support; consider .webm for {video}")
+    # Suggest simple profile
+    if video in {"h264", "hevc"} and (audio in {"aac", None}):
+        suggest["recommended_profile"] = "h264_aac_mp4"
+    elif video in {"vp9"} and audio in {"opus", None}:
+        suggest["recommended_profile"] = "vp9_opus_webm"
+    elif video in {"av1"}:
+        suggest["recommended_profile"] = "av1 (not yet defined profile)"
+    # If high bitrate + non standard pix fmt, strong transcode suggestion
+    if any(r["code"] in ("high_bitrate", "very_high_bitrate") for r in reasons):
+        suggest["action"] = "transcode"
+    return reasons, suggest
+
+@api.get("/codecs")
+def api_codecs_scan(path: str = Query(default=""), recursive: bool = Query(default=False), reasons: bool = Query(default=False)):
+    """Profile media files (lightweight ffprobe summary).
+
+    Query params:
+      path: base directory relative to root
+      recursive: recurse into subdirectories
+      reasons: if true, add heuristic quality/compatibility analysis & suggestions
+    """
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    vids = _iter_videos(base, recursive)
+    out: list[dict[str, Any]] = []
+    for v in vids:
+        info = _ffprobe_streams_safe(v)
+        rec: dict[str, Any] = {
+            "file": str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v),
+            "video_codec": None,
+            "audio_codec": None,
+        }
+        try:
+            if "error" in info:
+                rec["errors"] = [info["error"]]
+            fmt = (info.get("format") or {}) if isinstance(info, dict) else {}
+            if fmt:
+                try:
+                    dur_v = fmt.get("duration")
+                    rec["duration"] = float(dur_v) if dur_v not in (None, "") else None
+                except Exception:
+                    pass
+                try:
+                    size_v = fmt.get("size")
+                    rec["size_bytes"] = int(size_v) if size_v not in (None, "") else None
+                except Exception:
+                    pass
+                try:
+                    br_v = fmt.get("bit_rate")
+                    rec["bitrate"] = int(br_v) if br_v not in (None, "") else None
+                except Exception:
+                    pass
+            streams = info.get("streams") if isinstance(info, dict) else None
+            if isinstance(streams, list):
+                for s in streams:
+                    if not isinstance(s, dict):
+                        continue
+                    ct = s.get("codec_type")
+                    if ct == "video" and rec.get("video_codec") is None:
+                        rec["video_codec"] = s.get("codec_name")
+                        rec["width"] = s.get("width")
+                        rec["height"] = s.get("height")
+                        rec["pix_fmt"] = s.get("pix_fmt")
+                        rec["r_frame_rate"] = s.get("r_frame_rate")
+                    elif ct == "audio" and rec.get("audio_codec") is None:
+                        rec["audio_codec"] = s.get("codec_name")
+        except Exception:
+            rec.setdefault("errors", []).append("parse_error")
+        if reasons:
+            rlist, suggest = _codecs_reasoning(v, rec)
+            if rlist:
+                rec["reasons"] = rlist
+            if suggest:
+                rec["suggest"] = suggest
+        out.append(rec)
+    return {"items": out, "count": len(out)}
+
+
+# -----------------------------
+# Transcode plan endpoint
+# -----------------------------
+@api.get("/transcode/plan")
+def api_transcode_plan(
+    path: str = Query(default=""),
+    recursive: bool = Query(default=False),
+    target_profile: str = Query(default="auto"),
+    max_items: int = Query(default=0, description="If >0, limit number of plan entries"),
+):
+    """Analyze which files would benefit from transcode.
+
+    For each media file produce:
+      file, current_profile (heuristic), recommended_profile, action (keep|transcode),
+      est_size_reduction (bytes, heuristic), reasons (subset) and raw probe summary.
+    """
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    vids = _iter_videos(base, recursive)
+    out: list[dict[str, Any]] = []
+    for v in vids:
+        info = _ffprobe_streams_safe(v)
+        rec: dict[str, Any] = {"file": str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)}
+        try:
+            fmt = (info.get("format") or {}) if isinstance(info, dict) else {}
+            duration = None
+            size_bytes = None
+            bitrate = None
+            if isinstance(fmt, dict):
+                raw_duration = fmt.get("duration")
+                if raw_duration not in (None, ""):
+                    try:
+                        duration = float(raw_duration)  # type: ignore[arg-type]
+                    except Exception:
+                        duration = None
+                raw_size = fmt.get("size")
+                if raw_size not in (None, ""):
+                    try:
+                        size_bytes = int(raw_size)  # type: ignore[arg-type]
+                    except Exception:
+                        size_bytes = None
+                raw_br = fmt.get("bit_rate")
+                if raw_br not in (None, ""):
+                    try:
+                        bitrate = int(raw_br)  # type: ignore[arg-type]
+                    except Exception:
+                        bitrate = None
+            vcodec = None; acodec = None; width=None; height=None; pix_fmt=None
+            streams = info.get("streams") if isinstance(info, dict) else None
+            if isinstance(streams, list):
+                for s in streams:
+                    if not isinstance(s, dict):
+                        continue
+                    if s.get("codec_type") == "video" and vcodec is None:
+                        vcodec = s.get("codec_name"); width=s.get("width"); height=s.get("height"); pix_fmt=s.get("pix_fmt")
+                    elif s.get("codec_type") == "audio" and acodec is None:
+                        acodec = s.get("codec_name")
+            rec.update({
+                "video_codec": vcodec,
+                "audio_codec": acodec,
+                "width": width,
+                "height": height,
+                "duration": duration,
+                "bitrate": bitrate,
+                "size_bytes": size_bytes,
+                "pix_fmt": pix_fmt,
+            })
+        except Exception:
+            rec.setdefault("errors", []).append("probe_error")
+        reasons, suggest = _codecs_reasoning(v, rec)
+        # Derive current simple profile
+        cur_profile = None
+        if vcodec in {"h264", "hevc"} and (acodec in {"aac", None}):
+            cur_profile = "h264_aac_mp4"
+        elif vcodec == "vp9" and (acodec in {"opus", None}):
+            cur_profile = "vp9_opus_webm"
+        elif vcodec == "av1":
+            cur_profile = "av1"
+        # Decide recommended
+        if target_profile == "auto":
+            rec_profile = suggest.get("recommended_profile") if suggest else cur_profile
+        else:
+            rec_profile = target_profile
+        # Heuristic size reduction estimate
+        size_red = None
+        try:
+            if rec.get("size_bytes") and rec.get("bitrate"):
+                br = rec.get("bitrate") or 0
+                # crude rule: if high_bitrate reason present, assume 35% reduction, else 0
+                if any(r.get("code") in ("high_bitrate", "very_high_bitrate") for r in reasons):
+                    size_red = int(int(rec["size_bytes"]) * 0.35)
+        except Exception:
+            size_red = None
+        action = "keep"
+        if rec_profile and rec_profile != cur_profile:
+            action = "transcode"
+        if action == "keep" and any(r.get("code") in ("high_bitrate", "very_high_bitrate", "non_standard_pix_fmt") for r in reasons):
+            action = "transcode"
+        plan_ent = {
+            **rec,
+            "current_profile": cur_profile,
+            "recommended_profile": rec_profile,
+            "action": action,
+            **({"est_size_reduction": size_red} if size_red is not None else {}),
+            "reasons": reasons[:10],  # cap
+        }
+        if action == "transcode":
+            out.append(plan_ent)
+        else:
+            # include keeps only if explicitly desired? For now exclude to keep concise.
+            pass
+        if max_items and len(out) >= max_items:
+            break
+    return {"items": out, "count": len(out), "target_profile": target_profile}
+
+
+# -----------------------------
+# Embedding / Similarity Search API
+# -----------------------------
+@api.post("/embeddings/index")
+def api_embeddings_index(path: str = Query(default=""), recursive: bool = Query(default=True), mode: str = Query(default="auto")):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    req = JobRequest(task="index-embeddings", directory=str(base), recursive=bool(recursive), force=False, params={"mode": mode})
+    jid = _new_job(req.task, req.directory or str(STATE["root"]))
+    def _runner():
+        with JOB_RUN_SEM:
+            _run_job_worker(jid, req)
+    threading.Thread(target=_runner, daemon=True).start()
+    return api_success({"job": jid, "queued": True})
+
+@api.get("/embeddings/index")
+def api_embeddings_index_status():
+    with EMB_INDEX_LOCK:
+        idx = STATE.get("embedding_index")
+        if not idx:
+            return api_success({"indexed": False})
+        shallow = {k: v for k, v in idx.items() if k != "entries"}
+        shallow["entries"] = idx.get("count", 0)
+        return api_success({"indexed": True, **shallow})
+
+def _search_similar_vector(query_vec: list[float], top_k: int, mode: str) -> list[dict[str, Any]]:
+    with EMB_INDEX_LOCK:
+        idx = STATE.get("embedding_index")
+        entries = (idx or {}).get("entries") if isinstance(idx, dict) else None
+    if not isinstance(entries, list) or not entries:
+        return []
+    scored: list[tuple[float, dict]] = []
+    for ent in entries:
+        try:
+            vec = _combined_vector(ent, mode)
+            if not vec:
+                continue
+            score = _cosine(query_vec, vec)
+            if score <= 0:
+                continue
+            scored.append((score, ent))
+        except Exception:
+            continue
+    scored.sort(key=lambda x: x[0], reverse=True)
+    out: list[dict[str, Any]] = []
+    for s, e in scored[: max(1, min(top_k, 200))]:
+        out.append({"file": e.get("file"), "score": round(float(s), 6)})
+    return out
+
+@api.get("/search/by-file")
+def api_search_by_file(file: str = Query(...), mode: str = Query(default="auto"), top_k: int = Query(default=10)):
+    target = safe_join(STATE["root"], file)
+    if not target.exists():
+        raise_api_error("file not found", status_code=404)
+    with EMB_INDEX_LOCK:
+        idx = STATE.get("embedding_index")
+        entries = (idx or {}).get("entries") if isinstance(idx, dict) else None
+    if not isinstance(entries, list):
+        raise_api_error("index not built", status_code=400)
+    ent: Optional[dict[str, Any]] = None
+    if isinstance(entries, list):
+        for e in entries:
+            try:
+                if isinstance(e, dict) and e.get("file") == file:
+                    ent = e
+                    break
+            except Exception:
+                continue
+    if not ent:
+        raise_api_error("file not indexed", status_code=400)
+    qvec = _combined_vector(ent, mode)  # type: ignore[arg-type]
+    if not qvec:
+        raise_api_error("no vector for file (missing embeddings)", status_code=400)
+    res = _search_similar_vector(qvec, top_k, mode)
+    # remove self
+    res = [r for r in res if r.get("file") != file]
+    return {"items": res, "count": len(res), "mode": mode}
+
+@api.get("/search/by-text")
+def api_search_by_text(q: str = Query(..., min_length=1), mode: str = Query(default="auto"), top_k: int = Query(default=10)):
+    qvec = _placeholder_clip_embedding(q)
+    res = _search_similar_vector(qvec, top_k, mode)
+    return {"items": res, "count": len(res), "mode": mode}
+
+@api.post("/search/by-vector")
+def api_search_by_vector(payload: dict = Body(default_factory=dict)):
+    vec = payload.get("vector") or []
+    mode = str(payload.get("mode", "auto"))
+    top_k = int(payload.get("top_k", 10))
+    if not isinstance(vec, list) or not vec:
+        raise_api_error("vector required")
+    try:
+        qvec = [float(x) for x in vec]
+    except Exception:
+        raise_api_error("invalid vector values")
+    qvec = _vec_norm(qvec)
+    res = _search_similar_vector(qvec, top_k, mode)
+    return {"items": res, "count": len(res), "mode": mode}
+
+
+# -----------------------------
+# Rename undo ledger
+# -----------------------------
+RENAME_UNDO_LOG: list[dict[str, Any]] = []  # each entry: {plan_id, time, actions:[{from,to}]}
+RENAME_UNDO_LOCK = threading.Lock()
+
+@api.post("/rename/undo")
+def api_rename_undo(payload: dict = Body(default_factory=dict)):
+    plan_id = str(payload.get("plan_id") or "").strip()
+    steps = int(payload.get("steps", 1))
+    reverted: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+    if plan_id:
+        # Undo only that plan id
+        with RENAME_UNDO_LOCK:
+            entries = [e for e in RENAME_UNDO_LOG if e.get("plan_id") == plan_id]
+    else:
+        with RENAME_UNDO_LOCK:
+            entries = list(RENAME_UNDO_LOG)[-steps:][::-1]
+    for ent in entries:
+        acts = ent.get("actions") or []
+        base = Path(ent.get("base") or STATE["root"])  # original base recorded
+        for a in acts:
+            src = base / a.get("to", "")
+            dst = base / a.get("from", "")
+            if not src.exists():
+                errors.append({"to": a.get("to", ""), "error": "missing_current"})
+                continue
+            if dst.exists():
+                errors.append({"to": a.get("to", ""), "error": "original_exists"})
+                continue
+            try:
+                src.rename(dst)
+                reverted.append({"from": a.get("to", ""), "to": a.get("from", "")})
+            except Exception as e:
+                errors.append({"to": a.get("to", ""), "error": str(e)})
+    return {"reverted": reverted, "errors": errors, "entries": len(entries)}
+
+
+# Integrity scan job submit endpoint
+@api.post("/integrity/scan")
+def api_integrity_scan(path: str = Query(default=""), recursive: bool = Query(default=True), kinds: str = Query(default="")):
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    prm: dict[str, Any] = {}
+    if kinds:
+        prm["kinds"] = kinds
+    req = JobRequest(task="integrity-scan", directory=str(base), recursive=bool(recursive), params=prm, force=False)
+    jid = _new_job(req.task, req.directory or str(STATE["root"]))
+    def _runner():
+        with JOB_RUN_SEM:
+            _run_job_worker(jid, req)
+    threading.Thread(target=_runner, daemon=True).start()
+    return api_success({"job": jid, "queued": True})
+
+
+def _artifact_exists(video: Path, kind: str) -> bool:
+    if kind == "metadata":
+        return metadata_path(video).exists()
+    if kind == "thumbnail":
+        return thumbs_path(video).exists()
+    if kind == "preview":
+        return preview_webm_path(video).exists() or preview_json_path(video).exists()
+    if kind == "sprites":
+        s, j = sprite_sheet_paths(video)
+        return s.exists() and j.exists()
+    if kind == "scenes":
+        return scenes_json_exists(video)
+    if kind == "heatmaps":
+        return heatmaps_json_exists(video)
+    if kind == "phash":
+        return phash_path(video).exists()
+    if kind == "faces":
+        return faces_exists_check(video)
+    if kind == "subtitles":
+        return find_subtitles(video) is not None
+    if kind == "waveform":
+        return waveform_png_path(video).exists()
+    if kind == "motion":
+        return motion_json_path(video).exists()
+    return False
+
+
+FINISH_ARTIFACT_ORDER = [
+    "metadata", "thumbnail", "preview", "sprites", "scenes", "heatmaps", "phash", "faces", "subtitles", "waveform", "motion"
+]
+
+# -----------------------------
+# Batch rename (plan/apply)
+# -----------------------------
+RENAME_PLANS: dict[str, dict[str, Any]] = {}
+RENAME_PLANS_LOCK = threading.Lock()
+
+def _validate_rename_pattern(pattern: str) -> re.Pattern:
+    try:
+        return re.compile(pattern)
+    except Exception as e:  # pragma: no cover
+        # raise_api_error always raises; add explicit raise for type analyzers
+        raise_api_error(f"invalid regex: {e}")
+        raise
+
+def _mk_rename_plan(base: Path, recursive: bool, pattern: str, replacement: str, dry_run: bool, limit: int | None, include_ext: bool) -> dict[str, Any]:
+    rx = _validate_rename_pattern(pattern)
+    vids = _iter_videos(base, recursive)
+    mapping: list[dict[str, str]] = []
+    seen_targets: set[str] = set()
+    collisions: list[dict[str, str]] = []
+    count = 0
+    for v in vids:
+        stem = v.name if include_ext else v.stem
+        new_name_body = rx.sub(replacement, stem)
+        if new_name_body == stem:
+            continue
+        new_filename = new_name_body if include_ext else new_name_body + v.suffix
+        if new_filename in seen_targets:
+            collisions.append({"source": v.name, "target": new_filename, "reason": "duplicate_target_in_plan"})
+            continue
+        target_path = v.parent / new_filename
+        if target_path.exists():
+            collisions.append({"source": v.name, "target": new_filename, "reason": "target_exists"})
+            continue
+        mapping.append({"source": v.name, "target": new_filename})
+        seen_targets.add(new_filename)
+        count += 1
+        if limit and count >= limit:
+            break
+    plan_id = uuid.uuid4().hex
+    plan = {
+        "id": plan_id,
+        "base": str(base),
+        "recursive": recursive,
+        "pattern": pattern,
+        "replacement": replacement,
+        "dry_run": dry_run,
+        "include_ext": include_ext,
+        "created": time.time(),
+        "items": mapping,
+        "collisions": collisions,
+    }
+    with RENAME_PLANS_LOCK:
+        RENAME_PLANS[plan_id] = plan
+    return plan
+
+@api.post("/rename/plan")
+def api_rename_plan(payload: dict = Body(default_factory=dict)):
+    pattern = payload.get("pattern")
+    replacement = payload.get("replacement", "")
+    if not pattern:
+        raise_api_error("pattern required")
+    path = payload.get("path") or ""
+    recursive = bool(payload.get("recursive", False))
+    dry_run = bool(payload.get("dry_run", True))
+    limit = payload.get("limit")
+    include_ext = bool(payload.get("include_ext", False))
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    plan = _mk_rename_plan(base, recursive, str(pattern), replacement, dry_run, limit, include_ext)
+    return {"plan": {k: v for k, v in plan.items() if k != "_applied"}, "count": len(plan["items"]), "collisions": plan["collisions"]}
+
+@api.post("/rename/apply")
+def api_rename_apply(payload: dict = Body(default_factory=dict)):
+    plan_id_val = payload.get("plan_id")
+    plan_id = str(plan_id_val) if plan_id_val else ""
+    if not plan_id:
+        raise_api_error("plan_id required")
+    with RENAME_PLANS_LOCK:
+        plan_any = RENAME_PLANS.get(plan_id)
+    if plan_any is None:
+        raise_api_error("plan not found", status_code=404)
+    plan: dict[str, Any] = plan_any  # type: ignore[assignment]
+    if plan.get("_applied"):
+        raise_api_error("plan already applied")
+    applied: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+    base = Path(plan["base"]) if plan.get("base") else STATE["root"]
+    # Re-validate collisions still absent
+    for entry in plan["items"]:
+        src = base / entry["source"]
+        dst = base / entry["target"]
+        if not src.exists():
+            errors.append({"source": entry["source"], "error": "missing_source"})
+            continue
+        if dst.exists():
+            errors.append({"source": entry["source"], "error": "target_exists"})
+            continue
+        try:
+            src.rename(dst)
+            applied.append({"source": entry["source"], "target": entry["target"]})
+        except Exception as e:  # pragma: no cover
+            errors.append({"source": entry["source"], "error": str(e)})
+    # Mark plan applied
+    with RENAME_PLANS_LOCK:
+        plan["_applied"] = True
+        plan["applied_at"] = time.time()
+        plan["applied_count"] = len(applied)
+        plan["errors"] = errors
+    # Persist optional log
+    try:
+        log_dir = STATE["root"] / ".artifacts"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"rename.{plan_id}.json").write_text(json.dumps({"plan_id": plan_id, "applied": applied, "errors": errors}, indent=2))
+    except Exception:
+        pass
+    # Record undo entry if there are applied renames
+    if applied:
+        try:
+            entry = {
+                "plan_id": plan_id,
+                "time": time.time(),
+                "actions": [{"from": a["source"], "to": a["target"]} for a in applied],
+                "base": str(base),
+            }
+            with RENAME_UNDO_LOCK:
+                RENAME_UNDO_LOG.append(entry)
+                # Keep only last 50 entries to bound memory
+                if len(RENAME_UNDO_LOG) > 50:
+                    del RENAME_UNDO_LOG[:-50]
+        except Exception:
+            pass
+    return {"applied": applied, "errors": errors, "plan_id": plan_id, "count": len(applied)}
+
+# -----------------------------
+# Config ingestion (schema + GET/POST)
+# -----------------------------
+
+class SpritesConfig(BaseModel):  # type: ignore
+    interval: Optional[float] = Field(None, gt=0)
+    width: Optional[int] = Field(None, gt=0)
+    cols: Optional[int] = Field(None, gt=0)
+    rows: Optional[int] = Field(None, gt=0)
+    quality: Optional[int] = Field(None, ge=1, le=10)
+
+class ConfigUpdate(BaseModel):  # type: ignore
+    sprites: Optional[SpritesConfig] = None
+    # Future: add sections (transcode profiles, feature toggles, etc.)
+
+def _apply_config_update(update: ConfigUpdate) -> dict:
+    with _CONFIG_LOCK:
+        cfg = STATE.get("config") or {}
+        changed: dict[str, Any] = {}
+        if update.sprites is not None:
+            sprites_cur = cfg.get("sprites") or {}
+            sprites_new = sprites_cur.copy()
+            for k, v in update.sprites.model_dump(exclude_unset=True).items():  # type: ignore
+                if v is not None:
+                    sprites_new[k] = v
+            if sprites_new != sprites_cur:
+                cfg["sprites"] = sprites_new
+                changed["sprites"] = sprites_new
+        if changed:
+            STATE["config"] = cfg
+            # Persist to disk best-effort
+            try:
+                path = Path(str(STATE.get("config_path")))
+                path.write_text(json.dumps(cfg, indent=2, sort_keys=True))
+            except Exception:
+                pass
+        return {"changed": changed, "effective": STATE["config"]}
+
+@api.post("/config")
+def api_config_post(payload: dict = Body(default_factory=dict)):
+    try:
+        upd = ConfigUpdate(**payload)
+    except Exception as e:
+        raise_api_error(f"invalid payload: {e}")
+    result = _apply_config_update(upd)
+    return result
+
+
+@api.get("/finish/plan")
+def api_finish_plan(
+    path: str = Query(default=""),
+    recursive: bool = Query(default=True),
+    artifacts: Optional[str] = Query(default=None, description="Comma-separated subset of artifact kinds to consider"),
+    include_existing: bool = Query(default=False, description="If true, list all requested artifacts (marking existing vs missing).")
+):
+    """Return missing (or all) artifact status per video.
+
+    artifacts: optional comma list (e.g. metadata,thumbnail,preview) to restrict scope.
+    include_existing: when true, each record returns two arrays: missing & existing.
+    """
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    subset: list[str] | None = None
+    if artifacts:
+        subset = [a.strip() for a in artifacts.split(',') if a.strip()]
+    vids = _iter_videos(base, recursive)
+    plan: list[dict[str, Any]] = []
+    for v in vids:
+        kinds = subset or FINISH_ARTIFACT_ORDER
+        missing = [k for k in kinds if not _artifact_exists(v, k)]
+        existing: list[str] = []
+        if include_existing:
+            existing = [k for k in kinds if _artifact_exists(v, k)]
+        if missing or include_existing:
+            plan.append({
+                "file": str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v),
+                "missing": missing,
+                **({"existing": existing} if include_existing else {}),
+            })
+    return {"items": plan, "count": len(plan), "artifacts": subset or FINISH_ARTIFACT_ORDER}
+
+
+@api.post("/finish/run")
+def api_finish_run(payload: dict = Body(default_factory=dict)):
+    """Generate missing (or requested) artifacts.
+
+    Payload fields:
+      path: base directory (relative to root)
+      recursive: bool
+      artifacts: optional list or comma-separated string of artifact kinds
+      force: bool (regenerate even if present)
+      force_faces: bool (legacy toggle kept for compatibility)
+    Returns detailed per-file action results with timings.
+    """
+    path = payload.get("path") or ""
+    recursive = bool(payload.get("recursive", True))
+    force = bool(payload.get("force", False))
+    force_faces = bool(payload.get("force_faces", False))
+    arts = payload.get("artifacts")
+    if isinstance(arts, str):
+        artifacts_list = [a.strip() for a in arts.split(',') if a.strip()]
+    elif isinstance(arts, list):
+        artifacts_list = [str(a) for a in arts]
+    else:
+        artifacts_list = FINISH_ARTIFACT_ORDER
+    # Preserve ordering from FINISH_ARTIFACT_ORDER while filtering
+    order_filtered = [a for a in FINISH_ARTIFACT_ORDER if a in artifacts_list]
+    base = safe_join(STATE["root"], path) if path else STATE["root"]
+    vids = _iter_videos(base, recursive)
+    results: list[dict[str, Any]] = []
+    for v in vids:
+        rel = str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)
+        needed = [k for k in order_filtered if force or not _artifact_exists(v, k)]
+        if not needed:
+            continue
+        entry: dict[str, Any] = {"file": rel, "planned": needed, "actions": []}
+        # Job-backed artifacts first
+        job_map = {"sprites": "sprites", "scenes": "scenes", "subtitles": "subtitles"}
+        for kind in [k for k in needed if k in job_map]:
+            jobs_submit(JobRequest(task=job_map[kind], directory=str(v.parent), params={"targets": [rel]}, force=force, recursive=False))  # type: ignore[arg-type]
+            entry["actions"].append({"name": kind, "mode": "job", "status": "queued"})
+        # Inline artifacts
+        inline = [k for k in needed if k not in job_map]
+        lk = _file_task_lock(v, "finish-inline")
+        with lk:
+            for kind in inline:
+                start = time.time()
+                status = "ok"
+                err: Optional[str] = None
+                try:
+                    if kind == "metadata":
+                        try:
+                            _ = _probe_metadata(v, force=force)  # type: ignore[name-defined]
+                        except NameError:  # pragma: no cover
+                            _ = probe_metadata(v, force=force)  # type: ignore[name-defined]
+                    elif kind == "thumbnail":
+                        generate_thumbnail(v, force=force)
+                    elif kind == "preview":
+                        generate_hover_preview(v, segments=9, seg_dur=0.8, width=240, fmt="webm")
+                    elif kind == "heatmaps":
+                        _ = _generate_heatmap(v)  # type: ignore[name-defined]
+                    elif kind == "phash":
+                        _ = phash_create_single(v, overwrite=force)  # type: ignore[name-defined]
+                    elif kind == "faces":
+                        if force or force_faces or not faces_exists_check(v):
+                            _ = _detect_faces(v, stride=30)  # type: ignore[name-defined]
+                        else:
+                            status = "skipped"
+                    else:
+                        status = "unsupported"
+                except Exception as e:  # pragma: no cover
+                    status = "error"
+                    err = str(e)
+                elapsed = int((time.time() - start) * 1000)
+                entry["actions"].append({
+                    "name": kind,
+                    "mode": "inline",
+                    "status": status,
+                    "elapsed_ms": elapsed,
+                    **({"error": err} if err else {}),
+                })
+        results.append(entry)
+    summary = {
+        "files": len(results),
+        "actions": sum(len(r.get("actions", [])) for r in results),
+        "force": force,
+        "artifacts": order_filtered,
+    }
+    return {"results": results, "summary": summary}
+
+
 if __name__ == "__main__":  # pragma: no cover
     try:
         import uvicorn  # type: ignore
@@ -8522,4 +12003,50 @@ if __name__ == "__main__":  # pragma: no cover
             STATE["root"] = Path(root).expanduser().resolve()
         except Exception:
             pass
-    uvicorn.run("app:app", host="127.0.0.1", port=9999, reload=True)
+    # Mirror serve.sh behavior when running directly: honor HOST/PORT and exclude
+    # artifact/state paths from reload to avoid thrashing/crashes during development.
+    host = os.environ.get("HOST", "127.0.0.1")
+    try:
+        port = int(os.environ.get("PORT", "9999") or 9999)
+    except Exception:
+        port = 9999
+    # Default to disabling job auto-restore under reload in direct runs
+    os.environ.setdefault("JOB_AUTORESTORE_DISABLE", "1")
+    # Only apply reload_excludes if the watchfiles backend is available
+    have_watchfiles = False
+    try:
+        import importlib  # noqa: F401
+        import watchfiles  # type: ignore  # noqa: F401
+        have_watchfiles = True
+    except Exception:
+        have_watchfiles = False
+    reload_excludes = None
+    if have_watchfiles:
+        reload_excludes = [
+            ".jobs/*",
+            "**/.jobs/*",
+            "**/.artifacts/*",
+            "**/.previews/*",
+            "**/*.preview.webm",
+        ]
+    try:
+        if reload_excludes is not None:
+            cfg = uvicorn.Config(
+                "app:app",
+                host=host,
+                port=port,
+                reload=True,
+                reload_excludes=reload_excludes,
+            )
+        else:
+            cfg = uvicorn.Config(
+                "app:app",
+                host=host,
+                port=port,
+                reload=True,
+            )
+        server = uvicorn.Server(cfg)
+        server.run()
+    except Exception:
+        # Fallback to basic run if Config signature differs (older uvicorn)
+        uvicorn.run("app:app", host=host, port=port, reload=True)

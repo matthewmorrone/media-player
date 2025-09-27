@@ -138,73 +138,117 @@ function fmtSize(bytes) {
   return v.toFixed(v < 10 ? 1 : 0) + ' ' + units[i];
 }
 
+// Ensure a hover (preview) artifact exists for a video record; returns a blob URL or empty string.
+async function ensureHover(v){
+  // Goal: avoid generating any 404 network entries. We first consult unified
+  // artifact status (cheap, should never 404). Only if it reports hover=true
+  // do we attempt to fetch the blob. If hover is absent but on‑demand
+  // generation is enabled, we trigger creation and poll status (not the blob)
+  // until it reports present, then fetch. No HEAD probes.
+  const path = (v && (v.path || v.name)) || '';
+  if (!path) return '';
+  if (v && v.hover_url) return v.hover_url;
+  const qp = encodeURIComponent(path);
+  const getStatusForPath = async () => {
+    try {
+      window.__artifactStatus = window.__artifactStatus || {};
+      if (window.__artifactStatus[path]) return window.__artifactStatus[path];
+      const u = new URL('/api/artifacts/status', window.location.origin);
+      u.searchParams.set('path', path);
+      const r = await fetch(u.toString());
+      if (!r.ok) return null;
+      const j = await r.json();
+      const d = j && (j.data || j);
+      if (d) window.__artifactStatus[path] = d;
+      return d || null;
+    } catch(_) { return null; }
+  };
+  const refreshStatus = async () => {
+    try {
+      const u = new URL('/api/artifacts/status', window.location.origin);
+      u.searchParams.set('path', path);
+      const r = await fetch(u.toString());
+      if (!r.ok) return null;
+      const j = await r.json();
+      const d = j && (j.data || j);
+      if (d) window.__artifactStatus[path] = d;
+      return d || null;
+    } catch(_) { return null; }
+  };
+  let status = await getStatusForPath();
+  if (status && status.hover) {
+    // Fetch the blob directly (GET). If this 404s (race), we just abort silently.
+    try {
+      const r = await fetch(`/api/hover/get?path=${qp}`);
+      if (!r.ok) return '';
+      const blob = await r.blob();
+      if (!blob || !blob.size) return '';
+      const obj = URL.createObjectURL(blob);
+      v.hover_url = obj;
+      return obj;
+    } catch(_) { return ''; }
+  }
+  // Not present yet.
+  if (!status) {
+    // Status unknown (not cached); treat as absent for now.
+    status = { hover:false };
+  }
+  if (!status.hover && hoverOnDemandEnabled) {
+    // Trigger creation (POST). This should not 404.
+    try { await fetch(`/api/hover/create?path=${qp}`, { method: 'POST' }); } catch(_) {}
+    // Poll status a few times (bounded) without fetching blob until reported present.
+    for (let i=0;i<4;i++) { // ~4 * 350ms = 1.4s max wait
+      await new Promise(r=>setTimeout(r, 350));
+      const s2 = await refreshStatus();
+      if (s2 && s2.hover) {
+        try {
+          const r = await fetch(`/api/hover/get?path=${qp}`);
+          if (!r.ok) return '';
+          const blob = await r.blob();
+          if (!blob || !blob.size) return '';
+          const obj = URL.createObjectURL(blob);
+          v.hover_url = obj;
+          return obj;
+        } catch(_) { return ''; }
+      }
+    }
+  }
+  return '';
+}
+
+// Format seconds (can be float) into H:MM:SS or M:SS
 function fmtDuration(sec) {
-  if (!Number.isFinite(sec) || sec <= 0) return '';
+  if (!Number.isFinite(sec) || sec < 0) return '';
+  sec = Math.round(sec);
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  return (h ? h+':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  const s = sec % 60;
+  if (h > 0) return h + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  return m + ':' + String(s).padStart(2,'0');
 }
-
-// Hover preview utility functions
-async function ensureHover(file) {
-  // If a preview already exists, use it immediately
-  const ts = `&t=${Date.now()}`;
-  if (file.hoverPreview) return file.hoverPreview + ts;
-  // If UI knows there's no preview and on-demand is disabled, do nothing
-  if (!hoverOnDemandEnabled) return null;
-  const base = `/api/hover/get?path=${encodeURIComponent(file.path)}`;
+// Clean up any existing hover preview videos except an optional tile we want to keep active
+function stopAllTileHovers(exceptTile) {
   try {
-    const head = await fetch(base + ts, { method: 'HEAD', cache: 'no-store' });
-    if (head.ok) return base + ts;
-  } catch (_) {}
-  // At this point, on-demand generation is enabled; proceed to request creation
-  // Otherwise, request creation and briefly poll for readiness
-  try {
-    await fetch(`/api/hover/create?path=${encodeURIComponent(file.path)}`, { method: 'POST' });
-  } catch (_) {}
-  const maxTries = 12; // ~1.8s @ 150ms
-  for (let i = 0; i < maxTries; i++) {
-    try {
-      const h2 = await fetch(base + `&t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' });
-      if (h2.ok) return base + `&t=${Date.now()}`;
-    } catch (_) {}
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return null;
-}
-
-// Ensure no tiles are currently showing a hover video
-function stopAllTileHovers(exceptTile = null) {
-  try { 
-    const tiles = document.querySelectorAll(".card");
+    const tiles = document.querySelectorAll('.card');
     tiles.forEach((t) => {
       if (exceptTile && t === exceptTile) return;
-      
-      // Trigger manual cleanup
-      const video = t.querySelector("video.hover-video");
+      const video = t.querySelector('video.hover-video');
       if (video) {
-        try { 
+        try {
           video.pause();
-          video.src = "";
+          video.src = '';
           video.load();
           video.remove();
-        }
-        catch (_) { }
+        } catch (_) {}
       }
-      
-      // Reset hover state
       t._hovering = false;
       t._hoverToken = (t._hoverToken || 0) + 1;
-      
-      // Clear any timers
       if (t._hoverTimer) {
         clearTimeout(t._hoverTimer);
         t._hoverTimer = null;
       }
     });
-  }
-  catch (_) { }
+  } catch(_) {}
 }
 
 function videoCard(v) {
@@ -1105,6 +1149,12 @@ folderInput.addEventListener('keydown', async (e) => {
   }
 });
 
+// Optional pick root button (present only in Settings panel after header removal)
+const pickRootBtn = document.getElementById('pickRootBtn');
+if (pickRootBtn) {
+  pickRootBtn.addEventListener('click', () => openFolderPicker());
+}
+
 // Tab Router for URL-based navigation
 class TabRouter {
   constructor(tabSystem) {
@@ -1361,10 +1411,12 @@ if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     tabSystem = new TabSystem();
     wireSettings();
+    setupViewportFitPlayer();
   });
 } else {
   tabSystem = new TabSystem();
   wireSettings();
+  setupViewportFitPlayer();
 }
 
 // Export for potential external use
@@ -1372,16 +1424,46 @@ window.TabRouter = TabRouter;
 window.TabSystem = TabSystem;
 window.tabSystem = tabSystem;
 
+// Ensure video + controls fit in viewport without vertical scroll (YouTube-like behavior)
+function setupViewportFitPlayer() {
+  const playerPanel = document.getElementById('player-panel');
+  const playerBar = document.getElementById('playerBar');
+  const videoStage = document.getElementById('videoStage');
+  const vid = document.getElementById('playerVideo');
+  if (!playerPanel || !playerBar || !vid || !videoStage) return;
+
+  function recompute() {
+    // Panel height already excludes header (sticky header outside main scroll)
+    const panelH = playerPanel.getBoundingClientRect().height;
+  // Overlay bar sits over video; treat bar height negligible for layout
+  const spare = 20; // minimal gap/padding reserve
+  const maxH = panelH - spare;
+    // Maintain 16:9 aspect by width
+    const stageWidth = videoStage.getBoundingClientRect().width;
+    const ideal = stageWidth / (16/9);
+    const finalH = Math.min(ideal, maxH);
+    document.documentElement.style.setProperty('--player-max-h', finalH + 'px');
+  }
+  ['resize','orientationchange'].forEach(ev => window.addEventListener(ev, recompute));
+  vid.addEventListener('loadedmetadata', recompute);
+  // Slight delay to allow fonts/layout settle
+  setTimeout(recompute, 0);
+  setTimeout(recompute, 150);
+}
+
 // -----------------------------
 // Player Manager
 // -----------------------------
 const Player = (() => {
   // DOM refs
-  let videoEl, titleEl, metaEl, curEl, totalEl, timelineEl, heatmapEl, heatmapCanvasEl, progressEl, markersEl, spriteTooltipEl;
+  let videoEl, titleEl, curEl, totalEl, timelineEl, heatmapEl, heatmapCanvasEl, progressEl, markersEl, spriteTooltipEl;
   // Custom controls
   let btnPlayPause, btnMute, volSlider, rateSelect, btnCC, btnPip, btnFullscreen;
   // Sidebar refs
-  let sbFileNameEl, sbMetaEl;
+  // Sidebar title removed; retain variable for backward compatibility but unused
+  let sbFileNameEl;
+  // File info table fields
+  let fiDurationEl, fiResolutionEl, fiVideoCodecEl, fiAudioCodecEl, fiBitrateEl, fiVBitrateEl, fiABitrateEl, fiSizeEl, fiModifiedEl, fiPathEl;
   // Compact artifact badges
   let badgeHeatmap, badgeScenes, badgeSubtitles, badgeSprites, badgeFaces, badgeHover, badgePhash;
   let badgeHeatmapStatus, badgeScenesStatus, badgeSubtitlesStatus, badgeSpritesStatus, badgeFacesStatus, badgeHoverStatus, badgePhashStatus;
@@ -1398,8 +1480,11 @@ const Player = (() => {
 
   // ---- Progress persistence (localStorage) ----
   const LS_PREFIX = 'mediaPlayer';
+  // Pending override seek time (seconds) applied on next loadedmetadata
+  let resumeOverrideTime = null;
   const keyForVideo = (path) => `${LS_PREFIX}:video:${path}`;
-  const keyLastVideo = () => `${LS_PREFIX}:lastVideo`;
+  const keyLastVideoObj = () => `${LS_PREFIX}:last`;
+  const keyLastVideoPathLegacy = () => `${LS_PREFIX}:lastVideo`;
   function saveProgress(path, data) {
     try {
       if (!path) return;
@@ -1411,7 +1496,12 @@ const Player = (() => {
         ts: Date.now()
       });
       localStorage.setItem(keyForVideo(path), payload);
-      localStorage.setItem(keyLastVideo(), path);
+      // Store compact last object { path, time }
+      try {
+        localStorage.setItem(keyLastVideoObj(), JSON.stringify({ path, time: Math.max(0, Number(data?.t)||0), ts: Date.now() }));
+      } catch(_) {}
+      // Legacy key for backward compatibility
+      try { localStorage.setItem(keyLastVideoPathLegacy(), path); } catch(_) {}
     } catch(_) {}
   }
   function loadProgress(path) {
@@ -1423,8 +1513,20 @@ const Player = (() => {
       return j;
     } catch(_) { return null; }
   }
-  function getLastVideoPath() {
-    try { return localStorage.getItem(keyLastVideo()) || null; } catch(_) { return null; }
+  function getLastVideoEntry() {
+    // Prefer new object key; fallback to legacy path only
+    try {
+      const raw = localStorage.getItem(keyLastVideoObj());
+      if (raw) {
+        const j = JSON.parse(raw);
+        if (j && typeof j === 'object' && j.path) return j;
+      }
+    } catch(_) {}
+    try {
+      const legacy = localStorage.getItem(keyLastVideoPathLegacy());
+      if (legacy) return { path: legacy, time: 0 };
+    } catch(_) {}
+    return null;
   }
 
   function qs(id) { return document.getElementById(id); }
@@ -1440,7 +1542,6 @@ const Player = (() => {
     if (videoEl) return; // already
     videoEl = qs('playerVideo');
     titleEl = qs('playerTitle');
-    metaEl = qs('playerMeta');
     curEl = qs('curTime');
     totalEl = qs('totalTime');
     timelineEl = qs('timeline');
@@ -1475,8 +1576,121 @@ const Player = (() => {
   btnFullscreen = qs('btnFullscreen');
 
   // Sidebar
-  sbFileNameEl = qs('sbFileName');
-  sbMetaEl = qs('sbMeta');
+  sbFileNameEl = null; // removed from DOM
+  fiDurationEl = qs('fiDuration');
+  fiResolutionEl = qs('fiResolution');
+  fiVideoCodecEl = qs('fiVideoCodec');
+  fiAudioCodecEl = qs('fiAudioCodec');
+  fiBitrateEl = qs('fiBitrate');
+  fiVBitrateEl = qs('fiVBitrate');
+  fiABitrateEl = qs('fiABitrate');
+  fiSizeEl = qs('fiSize');
+  fiModifiedEl = qs('fiModified');
+  fiPathEl = qs('fiPath');
+
+    // Sidebar accordion wiring (id: sidebarAccordion)
+    try {
+      const accRoot = document.getElementById('sidebarAccordion');
+      if (accRoot && !accRoot._wired) {
+        accRoot._wired = true;
+        const LS_KEY = 'accordion.player.sidebar.state';
+        const loadState = () => {
+          try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}; } catch(_) { return {}; }
+        };
+        const saveState = (st) => { try { localStorage.setItem(LS_KEY, JSON.stringify(st)); } catch(_) {} };
+        let state = loadState();
+        const items = Array.from(accRoot.querySelectorAll('.acc-item'));
+        // Initialize panels with animated height
+        items.forEach(it => {
+          const hdr = it.querySelector('.acc-header');
+          const panel = it.querySelector('.acc-panel');
+          if (!hdr || !panel) return;
+          const key = it.getAttribute('data-key') || items.indexOf(it);
+          const open = state[key] !== undefined ? !!state[key] : hdr.getAttribute('aria-expanded') === 'true';
+          hdr.setAttribute('aria-expanded', open ? 'true' : 'false');
+          panel.style.display = 'block';
+          panel.classList.add('anim');
+          panel.style.height = 'auto';
+          const h = panel.scrollHeight;
+          panel.style.height = open ? h + 'px' : '0px';
+          if (!open) panel.style.paddingTop = panel.style.paddingBottom = '0';
+          else panel.style.removeProperty('padding-top');
+        });
+        function closeAll() {
+          items.forEach(it => toggleItem(it, false, true));
+          persist();
+        }
+        function persist(){
+          const out = {};
+            items.forEach(it => {
+              const key = it.getAttribute('data-key') || items.indexOf(it);
+              const hdr = it.querySelector('.acc-header');
+              if (hdr) out[key] = hdr.getAttribute('aria-expanded') === 'true';
+            });
+          state = out; saveState(state);
+        }
+        function toggleItem(it, toOpen, instant=false) {
+          const hdr = it.querySelector('.acc-header');
+          const panel = it.querySelector('.acc-panel');
+          if (!hdr || !panel) return;
+          const currentlyOpen = hdr.getAttribute('aria-expanded') === 'true';
+          const target = (typeof toOpen === 'boolean') ? toOpen : !currentlyOpen;
+          if (target === currentlyOpen) return;
+          hdr.setAttribute('aria-expanded', target ? 'true' : 'false');
+          panel.style.display = 'block';
+          panel.classList.add('transitioning');
+          const startH = panel.scrollHeight;
+          if (target) {
+            // Opening: from 0 -> auto height
+            panel.style.height = '0px';
+            panel.style.paddingTop = '';
+            panel.style.paddingBottom = '';
+            requestAnimationFrame(() => {
+              const fullH = panel.scrollHeight;
+              panel.style.height = fullH + 'px';
+            });
+          } else {
+            // Closing: from current height -> 0, then hide padding
+            panel.style.height = startH + 'px';
+            requestAnimationFrame(() => { panel.style.height = '0px'; panel.style.paddingTop = panel.style.paddingBottom = '0'; });
+          }
+          if (instant) {
+            panel.style.transition = 'none';
+            panel.style.height = target ? panel.scrollHeight + 'px' : '0px';
+            setTimeout(()=>{ panel.style.transition=''; if (!target) panel.style.display='block'; }, 0);
+          }
+          panel.addEventListener('transitionend', (ev) => {
+            if (ev.propertyName === 'height') {
+              panel.classList.remove('transitioning');
+              if (hdr.getAttribute('aria-expanded') === 'true') {
+                panel.style.height = panel.scrollHeight + 'px'; // lock
+              } else {
+                panel.style.display = 'block'; // keep for measurement
+              }
+            }
+          }, { once:true });
+        }
+        accRoot.addEventListener('click', (e) => {
+          const hdr = e.target.closest('.acc-header');
+          if (!hdr) return;
+          const item = hdr.parentElement;
+          // Modifier click (meta/ctrl) -> close all
+          if (e.metaKey || e.ctrlKey || e.altKey) {
+            closeAll();
+            return;
+          }
+          const alreadyOpen = hdr.getAttribute('aria-expanded') === 'true';
+          // True accordion: close others first if opening a new one
+          if (!alreadyOpen) {
+            items.forEach(it => { if (it !== item) toggleItem(it, false); });
+          }
+          toggleItem(item, !alreadyOpen);
+          persist();
+        });
+        // Double click background area to close all
+        accRoot.addEventListener('dblclick', (e) => { if (e.target === accRoot) { closeAll(); } });
+      }
+    } catch(_) {}
 
     // Wire basic events
     if (videoEl) {
@@ -1487,6 +1701,15 @@ const Player = (() => {
           const pct = Math.max(0, Math.min(100, (t / duration) * 100));
           progressEl.style.width = pct + '%';
         }
+        // Throttled periodic save of progress (every ~5s or on near-end)
+        try {
+          if (!currentPath) return;
+          const now = Date.now();
+          if (!videoEl._lastPersist || (now - videoEl._lastPersist) > 5000 || (duration && (duration - t) < 2)) {
+            saveProgress(currentPath, { t, d: duration, paused: videoEl.paused, rate: videoEl.playbackRate });
+            videoEl._lastPersist = now;
+          }
+        } catch(_) {}
       });
       videoEl.addEventListener('loadedmetadata', () => {
         duration = Number(videoEl.duration) || 0;
@@ -1495,6 +1718,7 @@ const Player = (() => {
         // Attempt restore if we have saved progress
         try {
           const saved = currentPath ? loadProgress(currentPath) : null;
+          const override = resumeOverrideTime;
           if (saved && Number.isFinite(saved.t)) {
             const target = Math.max(0, Math.min(duration || 0, Number(saved.t)));
             if (target && Math.abs(target - (videoEl.currentTime || 0)) > 0.5) {
@@ -1507,11 +1731,34 @@ const Player = (() => {
             if (!(saved.paused || !autoplayResume)) {
               videoEl.play().catch(()=>{});
             }
+          } else if (override && Number.isFinite(override)) {
+            const t = Math.max(0, Math.min(duration || 0, Number(override)));
+            if (t && Math.abs(t - (videoEl.currentTime || 0)) > 0.25) videoEl.currentTime = t;
+            const autoplayResume = (localStorage.getItem('setting.autoplayResume') === '1');
+            if (autoplayResume) videoEl.play().catch(()=>{});
           }
+          resumeOverrideTime = null;
         } catch(_) {}
       });
       videoEl.addEventListener('play', syncControls);
-      videoEl.addEventListener('pause', syncControls);
+      videoEl.addEventListener('pause', () => {
+        syncControls();
+        try {
+          if (currentPath) {
+            const t = Math.max(0, videoEl.currentTime || 0);
+            saveProgress(currentPath, { t, d: duration, paused: true, rate: videoEl.playbackRate });
+          }
+        } catch(_) {}
+      });
+      videoEl.addEventListener('ended', () => {
+        syncControls();
+        try {
+          if (currentPath) {
+            const t = Math.max(0, videoEl.currentTime || 0);
+            saveProgress(currentPath, { t, d: duration, paused: true, rate: videoEl.playbackRate });
+          }
+        } catch(_) {}
+      });
       videoEl.addEventListener('volumechange', syncControls);
       videoEl.addEventListener('ratechange', syncControls);
       videoEl.addEventListener('enterpictureinpicture', syncControls);
@@ -1634,18 +1881,95 @@ const Player = (() => {
     // Compact badges are wired in wireBadgeActions()
     // Apply initial display toggles now that elements are captured
     applyTimelineDisplayToggles();
+    // Ensure icon states reflect current video status immediately
+    syncControls();
   }
+
+  // Auto-restore last played video on initial load if:
+  // - No video currently open
+  // - Library tab is still active (user hasn't explicitly opened a file yet)
+  // - A valid last entry exists and file still appears in current listing fetch
+  async function tryAutoResumeLast() {
+    try {
+      if (currentPath) return; // something already playing/selected
+      const last = getLastVideoEntry();
+      if (!last || !last.path) return;
+      // Defer until at least one library load attempt has happened (totalFiles initialized)
+      if (typeof totalFiles === 'undefined') {
+        setTimeout(tryAutoResumeLast, 600);
+        return;
+      }
+      // Attempt a HEAD on metadata to validate existence
+      const p = last.path;
+  // Use existing metadata endpoint (was /api/videos/meta, which doesn't exist and triggered 404s)
+  const metaUrl = '/api/metadata/get?path=' + encodeURIComponent(p);
+      // Avoid generating 404s: consult unified artifact status instead of probing cover directly.
+      let exists = false;
+      try {
+        window.__artifactStatus = window.__artifactStatus || {};
+        if (window.__artifactStatus[p]) {
+          exists = true; // path known (even if cover missing) -> we still attempt open; player logic will guard loaders
+        } else {
+          const su = new URL('/api/artifacts/status', window.location.origin);
+          su.searchParams.set('path', p);
+          const sr = await fetch(su.toString());
+          if (sr.ok) {
+            const sj = await sr.json();
+            const sd = sj && (sj.data || sj);
+            if (sd) { window.__artifactStatus[p] = sd; exists = true; }
+          }
+        }
+      } catch(_) {}
+      if (!exists) return; // status endpoint failed entirely
+      // Switch to player tab and load via Player module
+      resumeOverrideTime = Number.isFinite(last.time) ? Number(last.time) : null;
+      if (window.Player && typeof window.Player.open === 'function') {
+        window.Player.open(p);
+      } else if (typeof Player !== 'undefined' && Player && typeof Player.open === 'function') {
+        Player.open(p);
+      }
+    } catch(_) {}
+  }
+
+  // Wrap existing initial load hook
+  const _origInit = window.addEventListener;
+  window.addEventListener('load', () => {
+    setTimeout(tryAutoResumeLast, 800); // slight delay to allow initial directory list
+  });
+  window.addEventListener('beforeunload', () => {
+    try {
+      if (currentPath && videoEl) {
+        const t = Math.max(0, videoEl.currentTime || 0);
+        saveProgress(currentPath, { t, d: duration, paused: videoEl.paused, rate: videoEl.playbackRate });
+      }
+    } catch(_) {}
+  });
 
   function syncControls() {
     try {
       if (!videoEl) return;
-      // Use icon labels
-      if (btnPlayPause) btnPlayPause.textContent = videoEl.paused ? '▶︎' : '⏸';
-      if (btnMute) btnMute.textContent = videoEl.muted ? '🔇' : '🔊';
+      // Play/Pause swap
+      if (btnPlayPause) {
+        const playIcon = btnPlayPause.querySelector('.icon-play');
+        const pauseIcon = btnPlayPause.querySelector('.icon-pause');
+        if (playIcon && pauseIcon) {
+          if (videoEl.paused) { playIcon.hidden = false; pauseIcon.hidden = true; }
+          else { playIcon.hidden = true; pauseIcon.hidden = false; }
+        }
+      }
+      // Volume swap
+      if (btnMute) {
+        const vol = btnMute.querySelector('.icon-vol');
+        const muted = btnMute.querySelector('.icon-muted');
+        if (vol && muted) {
+          if (videoEl.muted || videoEl.volume === 0) { vol.hidden = true; muted.hidden = false; }
+          else { vol.hidden = false; muted.hidden = true; }
+        }
+      }
       if (volSlider && typeof videoEl.volume === 'number') volSlider.value = String(videoEl.volume);
       if (rateSelect) rateSelect.value = String(videoEl.playbackRate || 1);
       if (btnCC) {
-        const tracks = Array.from(videoEl.querySelectorAll('track'));
+        const tracks = Array.from(videoEl.querySelectorAll('track')); 
         const anyShowing = tracks.some(t => t.mode === 'showing');
         btnCC.classList.toggle('active', anyShowing);
       }
@@ -1674,29 +1998,56 @@ const Player = (() => {
         const r = await fetch(url);
         const j = await r.json();
         const d = j?.data || {};
-        titleEl.textContent = path.split('/').pop() || path;
-        const wh = (d.width && d.height) ? `${d.width}x${d.height}` : '';
-        const vc = d.vcodec || '';
-        const ac = d.acodec || '';
-        metaEl.textContent = [fmtTime(Number(d.duration)||0), wh, vc, ac].filter(Boolean).join(' • ');
-        // Sidebar mirrors
-        if (sbFileNameEl) sbFileNameEl.textContent = titleEl.textContent;
-        if (sbMetaEl) sbMetaEl.textContent = metaEl.textContent;
+        const rawName = path.split('/').pop() || path;
+        const baseName = rawName.replace(/\.[^.]+$/, '') || rawName;
+        if (titleEl) titleEl.textContent = baseName;
+  // sidebar title removed
+        // Populate file info table
+        try {
+          if (fiDurationEl) fiDurationEl.textContent = fmtTime(Number(d.duration)||0) || '—';
+          if (fiResolutionEl) fiResolutionEl.textContent = (d.width && d.height) ? `${d.width}x${d.height}` : '—';
+          if (fiVideoCodecEl) fiVideoCodecEl.textContent = d.vcodec || '—';
+          if (fiAudioCodecEl) fiAudioCodecEl.textContent = d.acodec || '—';
+          if (fiBitrateEl) fiBitrateEl.textContent = d.bitrate ? (Number(d.bitrate) >= 1000 ? (Number(d.bitrate/1000).toFixed(0)+' kbps') : d.bitrate+' bps') : '—';
+          if (fiVBitrateEl) fiVBitrateEl.textContent = d.vbitrate ? (Number(d.vbitrate) >= 1000 ? (Number(d.vbitrate/1000).toFixed(0)+' kbps') : d.vbitrate+' bps') : '—';
+          if (fiABitrateEl) fiABitrateEl.textContent = d.abitrate ? (Number(d.abitrate) >= 1000 ? (Number(d.abitrate/1000).toFixed(0)+' kbps') : d.abitrate+' bps') : '—';
+          if (fiSizeEl) fiSizeEl.textContent = (d.size ? fmtSize(Number(d.size)) : '—');
+          if (fiModifiedEl) {
+            if (d.modified) {
+              try { fiModifiedEl.textContent = new Date(Number(d.modified)*1000).toLocaleString(); }
+              catch(_) { fiModifiedEl.textContent = '—'; }
+            } else fiModifiedEl.textContent = '—';
+          }
+          if (fiPathEl) fiPathEl.textContent = path || '—';
+        } catch(_) {}
       } catch (_) {
-        titleEl.textContent = path.split('/').pop() || path;
-        metaEl.textContent = '—';
-        if (sbFileNameEl) sbFileNameEl.textContent = titleEl.textContent;
-        if (sbMetaEl) sbMetaEl.textContent = metaEl.textContent;
+        const rawName = path.split('/').pop() || path;
+        const baseName = rawName.replace(/\.[^.]+$/, '') || rawName;
+        if (titleEl) titleEl.textContent = baseName;
+  // sidebar title removed
+        try {
+          if (fiDurationEl) fiDurationEl.textContent = '—';
+          if (fiResolutionEl) fiResolutionEl.textContent = '—';
+          if (fiVideoCodecEl) fiVideoCodecEl.textContent = '—';
+          if (fiAudioCodecEl) fiAudioCodecEl.textContent = '—';
+          if (fiBitrateEl) fiBitrateEl.textContent = '—';
+          if (fiVBitrateEl) fiVBitrateEl.textContent = '—';
+          if (fiABitrateEl) fiABitrateEl.textContent = '—';
+          if (fiSizeEl) fiSizeEl.textContent = '—';
+          if (fiModifiedEl) fiModifiedEl.textContent = '—';
+          if (fiPathEl) fiPathEl.textContent = path || '—';
+        } catch(_) {}
       }
     })();
-    // Artifacts
-    loadHeatmap();
-    loadSprites();
-    loadScenes();
-    loadSubtitles();
-    loadFacesStatus();
-    loadHoverStatus();
-    loadPhashStatus();
+    // Artifacts: load consolidated status first, then conditional loaders
+    (async () => {
+      try { await loadArtifactStatuses(); } catch(_) {}
+      // Now that cache is warm, only invoke loaders that might need full data
+      loadHeatmap();
+      loadSprites();
+      loadScenes();
+      loadSubtitles();
+    })();
     wireBadgeActions();
   }
 
@@ -1813,7 +2164,7 @@ const Player = (() => {
         notify(`Uploaded ${faces.length} face(s) from browser detection.`, 'success');
         // Refresh indicators
         try { if (window.tasksManager) window.tasksManager.loadCoverage(); } catch(_) {}
-        try { await loadFacesStatus(); } catch(_) {}
+  try { await loadArtifactStatuses(); } catch(_) {}
       } else {
         throw new Error(j?.message || 'Upload failed');
       }
@@ -1825,6 +2176,15 @@ const Player = (() => {
   async function loadHeatmap() {
     if (!currentPath) return;
     try {
+      try {
+        const st = window.__artifactStatus && window.__artifactStatus[currentPath];
+        if (st && st.heatmap === false) {
+          if (badgeHeatmapStatus) badgeHeatmapStatus.textContent = '✗';
+          if (badgeHeatmap) badgeHeatmap.dataset.present = '0';
+          applyTimelineDisplayToggles();
+          return;
+        }
+      } catch(_) {}
       // Prefer JSON + canvas rendering for higher fidelity
       let renderedViaJson = false;
       try {
@@ -1882,59 +2242,6 @@ const Player = (() => {
     }
   }
 
-  function clearHeatmapCanvas() {
-    try {
-      const ctx = heatmapCanvasEl.getContext('2d');
-      ctx.clearRect(0, 0, heatmapCanvasEl.width || 0, heatmapCanvasEl.height || 0);
-    } catch (_) {}
-  }
-
-  function drawHeatmapCanvas(samples) {
-    if (!heatmapCanvasEl) return;
-    const dpr = window.devicePixelRatio || 1;
-    const w = heatmapCanvasEl.clientWidth || 1;
-    const h = heatmapCanvasEl.clientHeight || 1;
-    if (heatmapCanvasEl.width !== Math.round(w * dpr) || heatmapCanvasEl.height !== Math.round(h * dpr)) {
-      heatmapCanvasEl.width = Math.round(w * dpr);
-      heatmapCanvasEl.height = Math.round(h * dpr);
-    }
-    const ctx = heatmapCanvasEl.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-
-    // Normalize and smooth values with a simple moving average
-    const vals = samples.map(s => Math.max(0, Math.min(1, Number(s.v) || 0)));
-    const win = Math.max(2, Math.round(vals.length / 100)); // adaptive window
-    const smoothed = new Array(vals.length);
-    let sum = 0;
-    for (let i = 0; i < vals.length; i++) {
-      sum += vals[i];
-      if (i >= win) sum -= vals[i - win];
-      smoothed[i] = (i >= win - 1) ? (sum / win) : (sum / Math.max(1, i + 1));
-    }
-
-    // Draw as vertical strips across the width
-    ctx.save();
-    for (let i = 0; i < smoothed.length; i++) {
-      const x0 = Math.floor((i / smoothed.length) * w);
-      const x1 = Math.floor(((i + 1) / smoothed.length) * w);
-      const ww = Math.max(1, x1 - x0);
-      const v = smoothed[i];
-      // Color map: dark -> blue -> magenta/orange
-      const color = heatColor(v);
-      ctx.fillStyle = color;
-      ctx.fillRect(x0, 0, ww, h);
-    }
-    ctx.restore();
-    // Subtle vignette for contrast
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, 'rgba(0,0,0,0.25)');
-    grad.addColorStop(0.5, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.35)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
-  }
-
   function heatColor(v) {
     // Map 0..1 to a pleasing gradient
     // 0 -> #0b1020 transparentish, 0.5 -> #4f8cff, 1 -> #ff7a59
@@ -1963,6 +2270,14 @@ const Player = (() => {
     sprites = null;
     if (!currentPath) return;
     try {
+      const st = window.__artifactStatus && window.__artifactStatus[currentPath];
+      if (st && st.sprites === false) {
+        if (badgeSpritesStatus) badgeSpritesStatus.textContent = '✗';
+        if (badgeSprites) badgeSprites.dataset.present = '0';
+        return;
+      }
+    } catch(_) {}
+    try {
       const u = new URL('/api/sprites/json', window.location.origin);
       u.searchParams.set('path', currentPath);
       const r = await fetch(u);
@@ -1986,6 +2301,15 @@ const Player = (() => {
     scenes = [];
     if (!currentPath) return;
     try {
+      const st = window.__artifactStatus && window.__artifactStatus[currentPath];
+      if (st && st.scenes === false) {
+        if (badgeScenesStatus) badgeScenesStatus.textContent='✗';
+        if (badgeScenes) badgeScenes.dataset.present='0';
+        applyTimelineDisplayToggles();
+        return;
+      }
+    } catch(_) {}
+    try {
       const u = new URL('/api/scenes/get', window.location.origin);
       u.searchParams.set('path', currentPath);
       const r = await fetch(u);
@@ -2005,6 +2329,14 @@ const Player = (() => {
   async function loadSubtitles() {
     subtitlesUrl = null;
     if (!currentPath || !videoEl) return;
+    try {
+      const st = window.__artifactStatus && window.__artifactStatus[currentPath];
+      if (st && st.subtitles === false) {
+        if (badgeSubtitlesStatus) badgeSubtitlesStatus.textContent = '✗';
+        if (badgeSubtitles) badgeSubtitles.dataset.present = '0';
+        return;
+      }
+    } catch(_) {}
     // Remove existing tracks
     Array.from(videoEl.querySelectorAll('track')).forEach(t => t.remove());
     try {
@@ -2054,40 +2386,59 @@ const Player = (() => {
 
   let spriteHoverEnabled = false;
 
-  async function loadFacesStatus() {
+  async function loadArtifactStatuses(){
+    if(!currentPath) return;
+    // Lazy acquire (in case of markup changes) without assuming globals exist
+    const badgeCover = window.badgeCover || document.getElementById('badge-cover');
+    const badgeCoverStatus = window.badgeCoverStatus || document.getElementById('badge-cover-status');
+    const badgeHover = window.badgeHover || document.getElementById('badge-hover');
+    const badgeHoverStatus = window.badgeHoverStatus || document.getElementById('badge-hover-status');
+    const badgeSprites = window.badgeSprites || document.getElementById('badge-sprites');
+    const badgeSpritesStatus = window.badgeSpritesStatus || document.getElementById('badge-sprites-status');
+    const badgeScenes = window.badgeScenes || document.getElementById('badge-scenes');
+    const badgeScenesStatus = window.badgeScenesStatus || document.getElementById('badge-scenes-status');
+    const badgeSubtitles = window.badgeSubtitles || document.getElementById('badge-subtitles');
+    const badgeSubtitlesStatus = window.badgeSubtitlesStatus || document.getElementById('badge-subtitles-status');
+    const badgeFaces = window.badgeFaces || document.getElementById('badge-faces');
+    const badgeFacesStatus = window.badgeFacesStatus || document.getElementById('badge-faces-status');
+    const badgePhash = window.badgePhash || document.getElementById('badge-phash');
+    const badgePhashStatus = window.badgePhashStatus || document.getElementById('badge-phash-status');
+    const badgeHeatmap = window.badgeHeatmap || document.getElementById('badge-heatmap');
+    const badgeHeatmapStatus = window.badgeHeatmapStatus || document.getElementById('badge-heatmap-status');
+    const badgeMeta = window.badgeMeta || document.getElementById('badge-metadata');
+    const badgeMetaStatus = window.badgeMetaStatus || document.getElementById('badge-metadata-status');
     try {
-      if (!currentPath) return;
-      const u = new URL('/api/faces/get', window.location.origin);
+      const u = new URL('/api/artifacts/status', window.location.origin);
       u.searchParams.set('path', currentPath);
       const r = await fetch(u.toString());
-      const ok = r.ok;
-      if (badgeFacesStatus) badgeFacesStatus.textContent = ok ? '✓' : '✗';
-      if (badgeFaces) badgeFaces.dataset.present = ok ? '1' : '0';
-    } catch (_) { if (badgeFacesStatus) badgeFacesStatus.textContent = '✗'; if (badgeFaces) badgeFaces.dataset.present = '0'; }
-  }
-
-  async function loadHoverStatus() {
-    try {
-      if (!currentPath) return;
-      const u = new URL('/api/hover/get', window.location.origin);
-      u.searchParams.set('path', currentPath);
-      const r = await fetch(u.toString());
-      const ok = r.ok;
-      if (badgeHoverStatus) badgeHoverStatus.textContent = ok ? '✓' : '✗';
-      if (badgeHover) badgeHover.dataset.present = ok ? '1' : '0';
-    } catch (_) { if (badgeHoverStatus) badgeHoverStatus.textContent = '✗'; if (badgeHover) badgeHover.dataset.present = '0'; }
-  }
-
-  async function loadPhashStatus() {
-    try {
-      if (!currentPath) return;
-      const u = new URL('/api/phash/get', window.location.origin);
-      u.searchParams.set('path', currentPath);
-      const r = await fetch(u.toString());
-      const ok = r.ok;
-      if (badgePhashStatus) badgePhashStatus.textContent = ok ? '✓' : '✗';
-      if (badgePhash) badgePhash.dataset.present = ok ? '1' : '0';
-    } catch (_) { if (badgePhashStatus) badgePhashStatus.textContent = '✗'; if (badgePhash) badgePhash.dataset.present = '0'; }
+      if(!r.ok){ throw new Error('artifact status '+r.status); }
+      const j = await r.json();
+      const d = j && (j.data || j);
+      // cache
+      window.__artifactStatus = window.__artifactStatus || {};
+      window.__artifactStatus[currentPath] = d;
+      const set = (present, badgeEl, statusEl) => {
+        if(statusEl) statusEl.textContent = present ? '✓' : '✗';
+        if(badgeEl) badgeEl.dataset.present = present ? '1' : '0';
+      };
+      set(!!d.cover, badgeCover, badgeCoverStatus);
+      set(!!d.hover, badgeHover, badgeHoverStatus);
+      set(!!d.sprites, badgeSprites, badgeSpritesStatus);
+      set(!!d.scenes, badgeScenes, badgeScenesStatus);
+      set(!!d.subtitles, badgeSubtitles, badgeSubtitlesStatus);
+      set(!!d.faces, badgeFaces, badgeFacesStatus);
+      set(!!d.phash, badgePhash, badgePhashStatus);
+      set(!!d.heatmap, badgeHeatmap, badgeHeatmapStatus);
+      set(!!d.metadata, badgeMeta, badgeMetaStatus);
+    } catch(_) {
+      // On failure, mark unknowns as missing (do not spam console)
+      const badges = [
+        [badgeCover, badgeCoverStatus], [badgeHover, badgeHoverStatus], [badgeSprites, badgeSpritesStatus],
+        [badgeScenes, badgeScenesStatus], [badgeSubtitles, badgeSubtitlesStatus], [badgeFaces, badgeFacesStatus],
+        [badgePhash, badgePhashStatus], [badgeHeatmap, badgeHeatmapStatus], [badgeMeta, badgeMetaStatus]
+      ];
+      for(const [b, s] of badges){ if(s) s.textContent='✗'; if(b) b.dataset.present='0'; }
+    }
   }
 
   function wireBadgeActions() {
@@ -2129,9 +2480,7 @@ const Player = (() => {
           else if (kind==='scenes') loadScenes();
           else if (kind==='subtitles') loadSubtitles();
           else if (kind==='sprites') loadSprites();
-          else if (kind==='faces') loadFacesStatus();
-          else if (kind==='hover') loadHoverStatus();
-          else if (kind==='phash') loadPhashStatus();
+          else if (kind==='faces' || kind==='hover' || kind==='phash') loadArtifactStatuses();
         }, 400);
       } catch (e) {
         notify('Failed to start ' + kind + ' job', 'error');
@@ -2259,6 +2608,399 @@ const Player = (() => {
 
 window.Player = Player;
 
+// -----------------------------
+// Player Enhancements: Sidebar collapse + Effects (filters/transforms)
+// -----------------------------
+// Sidebar + Effects Enhancements
+function initPlayerEnhancements(){
+  const sidebar = document.getElementById('playerSidebar');
+  const toggleBtn = document.getElementById('sidebarToggle');
+  const accordionRoot = document.getElementById('sidebarAccordion');
+  const stage = document.getElementById('videoStage') || document.querySelector('.player-stage-simple');
+  const playerLayout = document.getElementById('playerLayout');
+  const filterRanges = document.querySelectorAll('#effectsPanel input[type=range][data-fx]');
+  const resetFiltersBtn = document.getElementById('resetFiltersBtn');
+  // Removed transform controls
+  const presetButtons = document.querySelectorAll('#effectsPanel .fx-preset');
+  const valueSpans = document.querySelectorAll('#effectsPanel [data-fx-val]');
+  const COLOR_MATRIX_NODE = document.getElementById('playerColorMatrixValues');
+  // Sidebar collapse persistence
+  const LS_KEY_SIDEBAR = 'mediaPlayer:sidebarCollapsed';
+  function applySidebarCollapsed(fromLoad=false){
+    if(!sidebar || !toggleBtn) return;
+  const collapsed = localStorage.getItem(LS_KEY_SIDEBAR) === '1';
+  sidebar.setAttribute('data-collapsed', collapsed ? 'true':'false');
+  if (playerLayout) playerLayout.setAttribute('data-sidebar-collapsed', collapsed ? 'true':'false');
+  toggleBtn.setAttribute('aria-expanded', collapsed ? 'false':'true');
+  // Arrow glyph semantics: show chevron pointing toward where the sidebar will appear when expanded.
+  // Using single angle characters for compactness.
+  toggleBtn.textContent = collapsed ? '»' : '«';
+  if (accordionRoot) accordionRoot.style.removeProperty('display');
+    if(!fromLoad){ /* hook for future animation sync if needed */ }
+  }
+  // If simplified layout removed sidebar entirely, still allow effects + drawer to function
+  if(!sidebar || !toggleBtn){
+    // Initialize slim effects if present then exit early for collapse wiring
+    try { loadState(); renderValues(); } catch(_){ }
+    const infoToggle = document.getElementById('infoToggle');
+    const infoDrawer = document.getElementById('infoDrawer');
+    if(infoToggle && infoDrawer && !infoToggle._wired){
+      infoToggle._wired = true;
+      infoToggle.addEventListener('click', () => {
+        const open = infoDrawer.hasAttribute('hidden');
+        if(open){ infoDrawer.removeAttribute('hidden'); infoToggle.setAttribute('aria-expanded','true'); }
+        else { infoDrawer.setAttribute('hidden',''); infoToggle.setAttribute('aria-expanded','false'); }
+      });
+    }
+    return;
+  }
+  // Auto-collapse on first load for narrower viewports (no stored preference)
+  try {
+    if(!localStorage.getItem(LS_KEY_SIDEBAR) && window.innerWidth < 1500){
+      localStorage.setItem(LS_KEY_SIDEBAR,'1');
+    }
+  } catch(_){}
+  applySidebarCollapsed(true);
+  if(toggleBtn && !toggleBtn._wired){
+    toggleBtn._wired = true;
+    toggleBtn.addEventListener('click', () => toggleSidebar());
+  }
+
+  const LS_KEY_EFFECTS = 'mediaPlayer:effects';
+
+  const state = { r:1, g:1, b:1, blur:0 };
+
+  function loadState(){
+    try {
+      const saved = JSON.parse(localStorage.getItem(LS_KEY_EFFECTS)||'{}');
+      if (saved && typeof saved === 'object') {
+        // Only apply known keys; ignore corruption
+  ['r','g','b','blur'].forEach(k=>{
+          if (k in saved && typeof saved[k] === 'number') state[k] = saved[k];
+        });
+      }
+    } catch(_){ }
+    // apply to inputs
+    filterRanges.forEach(r => { const k = r.dataset.fx; if (k in state) r.value = state[k]; });
+    applyEffects();
+  }
+  function saveState(){
+    try { localStorage.setItem(LS_KEY_EFFECTS, JSON.stringify(state)); } catch(_){ }
+  }
+  function applyEffects(){
+    if (!stage) return;
+    if (COLOR_MATRIX_NODE){
+      const {r,g,b} = state;
+      const matrix = [r,0,0,0,0, 0,g,0,0,0, 0,0,b,0,0, 0,0,0,1,0].join(' ');
+      COLOR_MATRIX_NODE.setAttribute('values', matrix);
+    }
+    const blurStr = state.blur > 0 ? ` blur(${state.blur}px)` : '';
+    stage.style.filter = `url(#playerColorMatrix)${blurStr}`.trim();
+    stage.style.transform = '';
+  }
+  function onSlider(e){
+    const el = e.target; const k = el.dataset.fx; if (!k) return;
+    const v = parseFloat(el.value);
+    state[k] = isFinite(v)? v : state[k];
+    applyEffects();
+    saveState();
+    renderValues();
+  }
+  function resetFilters(){ state.r=1; state.g=1; state.b=1; state.blur=0; syncInputs(); applyEffects(); saveState(); }
+  function syncInputs(){ filterRanges.forEach(r=>{ const k=r.dataset.fx; if(k in state){ r.value = state[k]; }}); }
+  // On each save, if values are default set remove from storage to avoid stale persistence overriding reset on reload
+  function saveState(){
+  const defaults = {r:1,g:1,b:1,blur:0};
+    const isDefault = Object.keys(defaults).every(k => state[k] === defaults[k]);
+    try {
+      if (isDefault) localStorage.removeItem(LS_KEY_EFFECTS); else localStorage.setItem(LS_KEY_EFFECTS, JSON.stringify(state));
+    } catch(_) {}
+  }
+  function renderValues(){
+  valueSpans.forEach(sp => { const k = sp.getAttribute('data-fx-val'); if(!(k in state)) return; let val = state[k]; let txt; if(['r','g','b'].includes(k)) txt = val.toFixed(2); else txt = String(val); sp.textContent = txt; });
+  }
+  function applyPreset(name){
+    switch(name){
+      case 'cinematic': state.r=1.05; state.g=1.02; state.b=0.96; state.blur=0; break;
+      case 'warm': state.r=1.15; state.g=1.05; state.b=0.9; state.blur=0; break;
+      case 'cool': state.r=0.92; state.g=1.02; state.b=1.12; state.blur=0; break;
+      case 'dreamy': state.r=1.05; state.g=1.05; state.b=1.05; state.blur=4; break;
+      case 'flat': default: state.r=1; state.g=1; state.b=1; state.blur=0; break;
+    }
+    applyEffects(); syncInputs(); renderValues(); saveState();
+  }
+  function toggleSidebar(){
+    if(!sidebar || !toggleBtn) return;
+    const collapsed = sidebar.getAttribute('data-collapsed')==='true';
+    const next = !collapsed;
+    try { localStorage.setItem(LS_KEY_SIDEBAR, next? '1':'0'); } catch(_) {}
+    applySidebarCollapsed();
+  }
+
+  // Wire events
+  // Key shortcut: Shift+S toggles sidebar
+  document.addEventListener('keydown', (e)=>{ if(e.shiftKey && (e.key==='S' || e.key==='s')) toggleSidebar(); });
+  filterRanges.forEach(r => r.addEventListener('input', onSlider));
+  if (resetFiltersBtn) resetFiltersBtn.addEventListener('click', resetFilters);
+  // removed transform reset binding
+  presetButtons.forEach(pb => pb.addEventListener('click', ()=>applyPreset(pb.dataset.preset)));
+  // (Removed duplicate Shift+S listener)
+  loadState();
+  renderValues();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initPlayerEnhancements, { once:true });
+} else {
+  initPlayerEnhancements();
+}
+
+// Simplified player drawer wiring (independent of legacy sidebar)
+function wireSimplePlayerDrawer(){
+  const infoToggle = document.getElementById('infoToggle');
+  const infoDrawer = document.getElementById('infoDrawer');
+  if(!infoToggle || !infoDrawer || infoToggle._wired) return;
+  infoToggle._wired = true;
+  function toggle(){
+    const isHidden = infoDrawer.hasAttribute('hidden');
+    if(isHidden){
+      infoDrawer.removeAttribute('hidden');
+      infoToggle.setAttribute('aria-expanded','true');
+      infoToggle.classList.add('active');
+    } else {
+      infoDrawer.setAttribute('hidden','');
+      infoToggle.setAttribute('aria-expanded','false');
+      infoToggle.classList.remove('active');
+    }
+  }
+  infoToggle.addEventListener('click', toggle);
+  document.addEventListener('keydown', (e)=>{
+    if(e.key === 'i' && !e.metaKey && !e.ctrlKey && !e.altKey){
+      // Avoid interfering with inputs
+      const a = document.activeElement;
+      if(a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable)) return;
+      toggle();
+    }
+  });
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', wireSimplePlayerDrawer, { once:true });
+} else {
+  wireSimplePlayerDrawer();
+}
+
+// Sidepanel collapse (new simplified sidebar replacement)
+function wireSidepanel(){
+  // Sidebar removed; function retained as a no-op for backward compatibility.
+  return;
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', wireSidepanel, { once:true });
+} else { wireSidepanel(); }
+
+// -----------------------------
+// Performers Module
+// -----------------------------
+const Performers = (() => {
+  let gridEl, searchEl, addBtn, importBtn, mergeBtn, deleteBtn, dropZone, statusEl;
+  let performers = [];
+  let selected = new Set();
+  let searchTerm = '';
+  let searchTimer = null;
+  let lastFocusedIndex = -1; // for keyboard navigation
+  let shiftAnchor = null; // for shift range selection
+
+  function initDom() {
+    if (gridEl) return;
+    gridEl = document.getElementById('performersGrid');
+    searchEl = document.getElementById('performerSearch');
+    addBtn = document.getElementById('performerAddBtn');
+    importBtn = document.getElementById('performerImportBtn');
+    mergeBtn = document.getElementById('performerMergeBtn');
+    deleteBtn = document.getElementById('performerDeleteBtn');
+    dropZone = document.getElementById('performerDropZone');
+    statusEl = document.getElementById('performersStatus');
+    wireEvents();
+  }
+  function setStatus(msg, show=true) { if (!statusEl) return; statusEl.textContent = msg||''; statusEl.style.display = show ? 'block':'none'; }
+  function render() {
+    if (!gridEl) return; gridEl.innerHTML='';
+    const frag = document.createDocumentFragment();
+    const termLower = searchTerm.toLowerCase();
+    const filtered = performers.filter(p => !termLower || p.name.toLowerCase().includes(termLower));
+    if (addBtn) {
+      const exact = filtered.some(p => p.name.toLowerCase() === termLower);
+      addBtn.style.display = (searchTerm && !exact) ? 'inline-block' : 'none';
+      addBtn.textContent = `Add '${searchTerm}'`;
+      addBtn.disabled = !searchTerm;
+    }
+    filtered.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'perf-card';
+      card.dataset.norm = p.norm;
+      if (selected.has(p.norm)) card.dataset.selected='1';
+      const h = document.createElement('h3'); h.textContent = p.name;
+      const count = document.createElement('div'); count.className='count'; count.textContent = `${p.count} file${p.count===1?'':'s'}`;
+      const actions = document.createElement('div'); actions.className='actions';
+      const btnRename = document.createElement('button'); btnRename.className='btn-xs'; btnRename.textContent='Rename'; btnRename.onclick=()=>renamePrompt(p);
+      const tagsWrap = document.createElement('div'); tagsWrap.className='tags';
+      (p.tags||[]).forEach(tag=>{
+        const tEl = document.createElement('span'); tEl.className='tag'; tEl.textContent=tag; tEl.title='Click to remove';
+        tEl.onclick = (ev)=>{ ev.stopPropagation(); removeTag(p, tag); };
+        tagsWrap.appendChild(tEl);
+      });
+      const addTagBtn = document.createElement('button'); addTagBtn.className='btn-xs'; addTagBtn.textContent='+'; addTagBtn.title='Add tag'; addTagBtn.onclick=(ev)=>{ ev.stopPropagation(); addTagPrompt(p); };
+      actions.appendChild(btnRename);
+      actions.appendChild(addTagBtn);
+      card.appendChild(h); card.appendChild(count); card.appendChild(tagsWrap); card.appendChild(actions);
+      card.tabIndex = 0; // focusable
+      card.onclick = (e) => handleCardClick(e, p, filtered);
+      card.onkeydown = (e) => handleCardKey(e, p, filtered);
+      frag.appendChild(card);
+    });
+    gridEl.appendChild(frag);
+    updateSelectionUI();
+  }
+  function updateSelectionUI() {
+    document.querySelectorAll('.perf-card').forEach(c => { if (selected.has(c.dataset.norm)) c.dataset.selected='1'; else c.removeAttribute('data-selected'); });
+    const multi = selected.size >= 2; if (mergeBtn) mergeBtn.disabled = !multi; if (deleteBtn) deleteBtn.disabled = selected.size===0;
+  }
+  async function fetchPerformers() {
+    initDom();
+    try { setStatus('Loading…', true); const url = new URL('/api/performers', window.location.origin); if (searchTerm) url.searchParams.set('search', searchTerm); const r = await fetch(url); const j = await r.json(); performers = (j?.data?.performers)||[]; setStatus('', false); render(); } catch(e){ setStatus('Failed to load performers', true); }
+  }
+  function debounceSearch(){ if (searchTimer) clearTimeout(searchTimer); searchTimer = setTimeout(fetchPerformers, 400); }
+  function toggleSelect(norm, opts={range:false, anchor:false}){
+    if (opts.range && shiftAnchor){ // range selection
+      const filtered = currentFiltered();
+      const aIndex = filtered.findIndex(p=>p.norm===shiftAnchor);
+      const bIndex = filtered.findIndex(p=>p.norm===norm);
+      if (aIndex>-1 && bIndex>-1){
+        const [start,end] = aIndex<bIndex ? [aIndex,bIndex]:[bIndex,aIndex];
+        for (let i=start;i<=end;i++){ selected.add(filtered[i].norm); }
+        updateSelectionUI();
+        return;
+      }
+    }
+    if (selected.has(norm)) selected.delete(norm); else selected.add(norm);
+    if (opts.anchor) shiftAnchor = norm;
+    updateSelectionUI();
+  }
+  function currentFiltered(){ const termLower = searchTerm.toLowerCase(); return performers.filter(p => !termLower || p.name.toLowerCase().includes(termLower)); }
+  function handleCardClick(e, p, filtered){
+    const norm = p.norm;
+    if (e.shiftKey){ toggleSelect(norm,{range:true}); return; }
+    if (e.metaKey || e.ctrlKey){ toggleSelect(norm,{anchor:true}); return; }
+    if (selected.size<=1 && selected.has(norm)) { selected.delete(norm); shiftAnchor = norm; }
+    else { selected.clear(); selected.add(norm); shiftAnchor = norm; }
+    updateSelectionUI();
+    lastFocusedIndex = filtered.findIndex(x=>x.norm===norm);
+  }
+  function handleCardKey(e, p, filtered){
+    const norm = p.norm;
+    const index = filtered.findIndex(x=>x.norm===norm);
+    if (['ArrowDown','ArrowUp','ArrowLeft','ArrowRight','Home','End',' '].includes(e.key) || (e.key==='a' && (e.metaKey||e.ctrlKey))){ e.preventDefault(); }
+    const cols = calcColumns();
+    function focusAt(i){ if (i<0||i>=filtered.length) return; const card = gridEl.querySelector(`.perf-card[data-norm="${filtered[i].norm}"]`); if (card){ card.focus(); lastFocusedIndex = i; } }
+    switch(e.key){
+      case ' ': toggleSelect(norm,{anchor:true}); break;
+      case 'Enter': renamePrompt(p); break;
+      case 'Delete': case 'Backspace': deleteSelected(); break;
+      case 'a': if (e.metaKey||e.ctrlKey){ selected = new Set(filtered.map(x=>x.norm)); updateSelectionUI(); } break;
+      case 'ArrowRight': focusAt(index+1); break;
+      case 'ArrowLeft': focusAt(index-1); break;
+      case 'ArrowDown': focusAt(index+cols); break;
+      case 'ArrowUp': focusAt(index-cols); break;
+      case 'Home': focusAt(0); break;
+      case 'End': focusAt(filtered.length-1); break;
+      case 'Shift': break;
+      default: return;
+    }
+  }
+  function calcColumns(){ if (!gridEl) return 1; const style = getComputedStyle(gridEl); const template = style.gridTemplateColumns; if (!template) return 1; return template.split(' ').length; }
+  async function addCurrent(){ if(!searchTerm) return; try{ await fetch('/api/performers/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:searchTerm})}); await fetchPerformers(); }catch(_){}}
+  async function importPrompt(e){
+    // Default behavior: open file chooser. Hold Alt/Option to fall back to manual paste prompt.
+    if (e && e.altKey) {
+      const txt = prompt('Paste newline-separated names or JSON array:');
+      if(!txt) return;
+      try { await fetch('/api/performers/import',{method:'POST',headers:{'Content-Type':'text/plain'},body:txt}); await fetchPerformers(); } catch(_) {}
+      return;
+    }
+    if (fileInput) {
+      try { fileInput.click(); return; } catch(_) { /* fallback to prompt below */ }
+    }
+    const txt = prompt('Paste newline-separated names or JSON array:');
+    if(!txt) return;
+    try{ await fetch('/api/performers/import',{method:'POST',headers:{'Content-Type':'text/plain'},body:txt}); await fetchPerformers(); }catch(_){}
+  }
+  async function renamePrompt(p){ const val = prompt('Rename performer:', p.name); if(!val || val===p.name) return; try{ await fetch('/api/performers/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old:p.name,new:val})}); await fetchPerformers(); }catch(_){}}
+  async function addTagPrompt(p){ const tag = prompt('Add tag for '+p.name+':'); if(!tag) return; try{ await fetch('/api/performers/tags/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:p.name, tag})}); await fetchPerformers(); }catch(_){} }
+  async function removeTag(p, tag){ if(!confirm(`Remove tag '${tag}' from ${p.name}?`)) return; try{ await fetch('/api/performers/tags/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:p.name, tag})}); await fetchPerformers(); }catch(_){} }
+  async function mergeSelected(){ if(selected.size<2) return; const list=[...selected]; const target = prompt('Merge into (target name):', ''); if(!target) return; try{ await fetch('/api/performers/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from:list.map(n=>performers.find(p=>p.norm===n)?.name||n), to:target})}); selected.clear(); await fetchPerformers(); }catch(_){}}
+  async function deleteSelected(){ if(!selected.size) return; if(!confirm(`Delete ${selected.size} performer(s)?`)) return; for(const norm of [...selected]){ const rec = performers.find(p=>p.norm===norm); if(!rec) continue; try{ await fetch('/api/performers?name='+encodeURIComponent(rec.name), {method:'DELETE'});}catch(_){} } selected.clear(); await fetchPerformers(); }
+  function wireEvents(){ if(searchEl && !searchEl._wired){ searchEl._wired=true; searchEl.addEventListener('input', ()=>{ searchTerm=searchEl.value.trim(); debounceSearch(); }); searchEl.addEventListener('keydown', e=>{ if(e.key==='Escape'){ searchEl.value=''; searchTerm=''; fetchPerformers(); }}); } if(addBtn && !addBtn._wired){ addBtn._wired=true; addBtn.addEventListener('click', addCurrent);} if(importBtn && !importBtn._wired){ importBtn._wired=true; importBtn.addEventListener('click', importPrompt);} if(mergeBtn && !mergeBtn._wired){ mergeBtn._wired=true; mergeBtn.addEventListener('click', mergeSelected);} if(deleteBtn && !deleteBtn._wired){ deleteBtn._wired=true; deleteBtn.addEventListener('click', deleteSelected);} if(dropZone && !dropZone._wired){ dropZone._wired=true; wireDropZone(); } document.addEventListener('keydown', globalKeyHandler); }
+  // Wire hidden file input fallback
+  const fileInput = document.getElementById('performerFileInput');
+  if(fileInput && !fileInput._wired){
+    fileInput._wired = true;
+    fileInput.addEventListener('change', async (e)=>{
+      const files = [...fileInput.files||[]];
+      if(!files.length) return;
+      try {
+        let combined='';
+        for(const f of files){
+          try { combined += (await f.text()) + '\n'; } catch(_) {}
+        }
+        if(combined.trim()){
+          setStatus('Importing…', true);
+          await fetch('/api/performers/import',{method:'POST',headers:{'Content-Type':'text/plain'},body:combined});
+          await fetchPerformers();
+          setStatus('Imported performers', true);
+          setTimeout(()=>setStatus('',false),1200);
+        }
+      } catch(err){ console.warn('file input import failed', err); setStatus('Import failed', true); setTimeout(()=>setStatus('',false),1500); }
+      finally { fileInput.value=''; }
+    });
+  }
+  if(dropZone && !dropZone._clickWired){
+    dropZone._clickWired = true;
+    dropZone.addEventListener('click', ()=>{ if(fileInput) fileInput.click(); });
+    dropZone.addEventListener('dblclick', ()=>{ if(fileInput) fileInput.click(); });
+    dropZone.addEventListener('keydown', (e)=>{ if(e.key==='Enter'|| e.key===' '){ e.preventDefault(); if(fileInput) fileInput.click(); }});
+  }
+  function globalKeyHandler(e){ if(!isPanelActive()) return; if(e.key==='Escape' && selected.size){ selected.clear(); updateSelectionUI(); } }
+  function isPanelActive(){ const panel = document.getElementById('performers-panel'); return panel && !panel.hasAttribute('hidden'); }
+  function wireDropZone(){
+    if (document._perfDndAttached) return;
+    document._perfDndAttached = true;
+    let over = false; let hoverTimer = null;
+    function panelActive(){ return isPanelActive(); }
+    function showHover(){ if(!dropZone) return; dropZone.classList.add('drag-hover'); dropZone.style.background='rgba(79,140,255,0.18)'; dropZone.style.outline='2px dashed rgba(79,140,255,0.55)'; }
+    function clearHover(){ if(!dropZone) return; dropZone.classList.remove('drag-hover'); dropZone.style.background=''; dropZone.style.outline=''; }
+    async function readPayload(dt){ if(!dt) return ''; let out=''; const items = dt.items? [...dt.items]:[]; for(const it of items){ if(it.kind==='string'){ try{ out = await new Promise(r=>it.getAsString(r)); }catch(_){} if(out) return out; } }
+      if(dt.files && dt.files.length){ for(const f of dt.files){ try{ if(f.type.startsWith('text/') || /\.(txt|csv|json)$/i.test(f.name)){ out = await f.text(); if(out) return out; } }catch(_){} } try{ if(!out) out = await dt.files[0].text(); }catch(_){} }
+      return out; }
+    function wantsIntercept(dt){ if(!dt) return false; return dt.types && (dt.types.includes('Files') || dt.types.includes('text/plain') || dt.files?.length); }
+    document.addEventListener('dragover', e=>{ if(!panelActive()) return; if(!wantsIntercept(e.dataTransfer)) return; e.preventDefault(); e.stopPropagation(); if(!over){ over=true; showHover(); } if(e.dataTransfer) e.dataTransfer.dropEffect='copy'; }, true);
+    document.addEventListener('dragenter', e=>{ if(!panelActive()) return; if(!wantsIntercept(e.dataTransfer)) return; e.preventDefault(); e.stopPropagation(); over=true; showHover(); }, true);
+    document.addEventListener('dragleave', e=>{ if(!panelActive()) return; if(!over) return; if(hoverTimer) clearTimeout(hoverTimer); hoverTimer = setTimeout(()=>{ over=false; clearHover(); }, 60); }, true);
+    document.addEventListener('drop', async e=>{ if(!panelActive()) return; if(!wantsIntercept(e.dataTransfer)) return; e.preventDefault(); e.stopPropagation(); over=false; clearHover(); try { const text = await readPayload(e.dataTransfer); if(text){ setStatus('Importing…', true); await fetch('/api/performers/import',{method:'POST',headers:{'Content-Type':'text/plain'},body:text}); await fetchPerformers(); } } catch(err){ console.warn('performers drop failed', err); setStatus('Import failed', true); setTimeout(()=>setStatus('', false), 1500); } }, true);
+  }
+  function show(){ fetchPerformers(); }
+  return { show };
+})();
+window.Performers = Performers;
+
+// Hook tab switch to load performers when opened
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('[data-tab="performers"]');
+  if (btn) {
+    setTimeout(()=>{ if (window.Performers) window.Performers.show(); }, 50);
+  }
+});
+
 // Tasks System
 class TasksManager {
   constructor() {
@@ -2280,7 +3022,8 @@ class TasksManager {
 
   init() {
     this.initEventListeners();
-    this.initJobEvents();
+    // SSE job events are optional; enable only if page sets window.__JOBS_SSE_ENABLED = true before this script executes
+    if (window.__JOBS_SSE_ENABLED) this.initJobEvents();
     this.startJobPolling();
     // Load backend capabilities and apply UI gating
     this.loadConfigAndApplyGates();
@@ -2347,8 +3090,6 @@ class TasksManager {
       disableIf('[data-operation="scenes-missing"], [data-operation="scenes-all"]', true, 'Disabled: FFmpeg not detected');
       disableIf('[data-operation="heatmaps-missing"], [data-operation="heatmaps-all"]', true, 'Disabled: FFmpeg not detected');
       disableIf('[data-operation="phash-missing"], [data-operation="phash-all"]', true, 'Disabled: FFmpeg not detected');
-      const prev = document.getElementById('previewHeatmapsBtn');
-      if (prev) { prev.disabled = true; prev.title = 'Disabled: FFmpeg not detected'; }
       // Player badges
       ['badgeHeatmap','badgeScenes','badgeSprites','badgeHover','badgePhash'].forEach(id => {
         const el = document.getElementById(id);
@@ -2404,42 +3145,38 @@ class TasksManager {
   }
 
   initJobEvents() {
-    try {
-      // Live job updates via SSE; fallback to polling remains enabled
-      const es = new EventSource('/api/jobs/events');
-      let lastUpdate = 0;
-      const throttle = 400; // ms
-      const doRefresh = () => {
-        const now = Date.now();
-        if (now - lastUpdate > throttle) {
-          lastUpdate = now;
-          this.refreshJobs();
-          // Also refresh coverage so artifact tiles (e.g., metadata) advance in near-real-time
-          this.loadCoverage();
-        }
-      };
-      es.onmessage = (e) => {
-        try {
-          const payload = JSON.parse(e.data);
-          // Update only for job lifecycle/progress events
-          const evt = payload.event;
-          if (!evt) return;
-          if (["created","queued","started","progress","current","finished","result"].includes(evt)) {
-            doRefresh();
+    // Quiet mode: preflight the SSE endpoint once; only attach if available.
+    (async () => {
+      try {
+        const resp = await fetch('/api/jobs/events', { method: 'GET', headers: { 'Accept': 'text/event-stream' } });
+        if (!resp.ok) return; // do not attach SSE; rely on polling
+        // We cannot reuse the response body for EventSource; need a fresh EventSource if reachable.
+        try { resp.body?.cancel(); } catch(_) {}
+      } catch(_) { return; }
+      try {
+        const es = new EventSource('/api/jobs/events');
+        let lastUpdate = 0;
+        const throttle = 400;
+        const doRefresh = () => {
+          const now = Date.now();
+          if (now - lastUpdate > throttle) {
+            lastUpdate = now;
+            this.refreshJobs();
+            this.loadCoverage();
           }
-        } catch {}
-      };
-      // Some servers send named events; attach explicit listeners as well
-      ["created","queued","started","progress","current","finished","result","cancel"].forEach(type => {
-        es.addEventListener(type, () => doRefresh());
-      });
-      es.onerror = () => {
-        // Let polling handle updates if SSE drops
-      };
-      this._jobEventSource = es;
-    } catch (err) {
-      // Non-fatal: rely on polling only
-    }
+        };
+        es.onmessage = (e) => {
+          try {
+            const payload = JSON.parse(e.data);
+            const evt = payload.event;
+            if (evt && ["created","queued","started","progress","current","finished","result"].includes(evt)) doRefresh();
+          } catch {}
+        };
+        ["created","queued","started","progress","current","finished","result","cancel"].forEach(type => es.addEventListener(type, () => doRefresh()));
+        es.onerror = () => { try { es.close(); } catch(_) {}; };
+        this._jobEventSource = es;
+      } catch(_) { /* polling continues */ }
+    })();
   }
 
   initEventListeners() {
@@ -3405,7 +4142,6 @@ if (document.readyState === 'loading') {
   try { window.tasksManager = tasksManager; } catch(_) {}
   const previewBtn = document.getElementById('previewOrphansBtn');
   const cleanupBtn = document.getElementById('cleanupOrphansBtn');
-  const previewHeatmapsBtn = document.getElementById('previewHeatmapsBtn');
 
   if (previewBtn) {
     previewBtn.addEventListener('click', () => {
@@ -3422,9 +4158,5 @@ if (document.readyState === 'loading') {
       }
     });
   }
-  if (previewHeatmapsBtn) {
-    previewHeatmapsBtn.addEventListener('click', () => {
-      if (tasksManager) tasksManager.previewHeatmapSample();
-    });
-  }
+  // Heatmap preview button removed per redesign.
 }

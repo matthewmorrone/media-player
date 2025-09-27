@@ -1,25 +1,18 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Media Library</title>
   <link rel="stylesheet" href="index.css" />
+  <link rel="preload" href="icons.svg" as="image" type="image/svg+xml" />
   <script src="index.js" defer></script>
 </head>
+
 <body>
   <header>
-    <div class="header-top">
-      <h1>Media Library</h1>
-      <div id="folderBar">
-        <input id="folderInput" type="text" placeholder="Type a folder (relative) to browse, or an absolute path to set root — Enter. Double-click to pick." title="Enter a relative folder within the library (e.g., Shows/Season 1), or an absolute path (e.g., /Volumes/Media or ~/Movies) to set the library root. Press Enter. Double-click to open the picker." />
-      </div>
-      <div id="controls">
-        <button id="refresh" class="btn" title="Reload">Reload</button>
-      </div>
-    </div>
-    
-    <!-- Tab Navigation -->
+    <!-- Tab Navigation only (top bar removed) -->
     <nav class="tab-nav" role="tablist" aria-label="Main navigation">
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="player-panel" id="player-tab" data-tab="player">
         Player
@@ -30,77 +23,61 @@
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="tasks-panel" id="tasks-tab" data-tab="tasks">
         Tasks
       </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="performers-panel" id="performers-tab" data-tab="performers">
+        Performers
+      </button>
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="settings-panel" id="settings-tab" data-tab="settings">
         Settings
       </button>
     </nav>
   </header>
-  
+
   <main>
     <!-- Tab Panels -->
     <div class="tab-panels">
       <!-- Player Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="player-tab" id="player-panel" hidden>
-        <div id="playerLayout" style="display:flex; gap:12px; align-items:stretch; padding: 8px 0;">
-          <!-- Sidebar -->
-          <aside id="playerSidebar" style="width: 280px; min-width: 240px; max-width: 360px; background: #0f1320; border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 12px; display:flex; flex-direction:column; gap:12px;">
-            <div>
-              <div id="sbFileName" style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">No file</div>
-              <div id="sbMeta" style="color: var(--muted, #7a859f); font-size:12px;">—</div>
+        <div class="player-shell no-sidebar">
+          <div class="player-main">
+            <div class="player-header-simple">
+              <h2 id="playerTitle" class="player-title">No file</h2>
             </div>
-            <div style="height:1px; background: rgba(255,255,255,0.06);"></div>
-            <div style="display:flex; flex-direction:column; gap:10px;">
-              <div style="font-weight:600;">Artifacts</div>
-              <div id="artifactBadges" style="display:flex; flex-direction:column; gap:8px;">
-                <button id="badgeHeatmap" class="btn-sm" title="Heatmap status or generate" data-present="0">Heatmap <span id="badgeHeatmapStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgeScenes" class="btn-sm" title="Scenes status or generate" data-present="0">Scenes <span id="badgeScenesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgeSubtitles" class="btn-sm" title="Subtitles status or generate" data-present="0">Subtitles <span id="badgeSubtitlesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgeSprites" class="btn-sm" title="Sprites status or generate" data-present="0">Sprites <span id="badgeSpritesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgeFaces" class="btn-sm" title="Faces status or generate" data-present="0">Faces <span id="badgeFacesStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgeHover" class="btn-sm" title="Hover preview status or generate" data-present="0">Hover Preview <span id="badgeHoverStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-                <button id="badgePhash" class="btn-sm" title="pHash status or generate" data-present="0">pHash <span id="badgePhashStatus" style="opacity:0.8; margin-left:6px;">✗</span></button>
-              </div>
-            </div>
-          </aside>
-          
-          <!-- Main Player Area -->
-          <div id="playerContainer" style="display:flex; flex-direction:column; gap:10px; padding: 0; flex:1;">
-            <div class="player-header" style="display:flex; align-items:center; gap:12px; justify-content:space-between;">
-              <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
-                <div id="playerTitle" style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">No file</div>
-                <div id="playerMeta" style="color: var(--muted, #7a859f); font-size:12px;">—</div>
-              </div>
-              <div class="player-actions" style="display:flex; gap:8px;">
-                <button id="btnSetThumb" class="btn-sm" title="Set the cover thumbnail to current frame">Set Thumbnail</button>
-                <button id="btnAddMarker" class="btn-sm" title="Add a scene marker at current time">Add Marker</button>
-              </div>
-            </div>
-            <div class="player-video" style="position:relative; background:#000;">
-              <video id="playerVideo" playsinline style="display:block; width:100%; max-height:72vh; background:#000;"></video>
-            </div>
-            <!-- Controls and timeline below video -->
-            <div id="playerControlsContainer" style="position:relative; display:flex; flex-direction:column; gap:8px;">
-              <div id="timeline" style="position:relative; height:28px; border-radius:6px; background: #121624; overflow:hidden; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,0.35);">
-                <div id="timelineHeatmap" style="position:absolute; inset:0; background-position: left center; background-size: 100% 100%; opacity:0.85;"></div>
-                <canvas id="timelineHeatmapCanvas" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; opacity:0.95;"></canvas>
-                <div id="timelineProgress" style="position:absolute; inset:0; width:0%; background: linear-gradient(90deg, rgba(79,140,255,0.6), rgba(79,140,255,0.25)); mix-blend-mode: screen;"></div>
-                <div id="timelineMarkers" style="position:absolute; inset:0;"></div>
-              </div>
-              <!-- Sprite preview tooltip (bottom-aligned above controls) -->
-              <div id="spritePreview" style="position:absolute; left:8px; width:240px; height:135px; background:#111 center/cover no-repeat; border:1px solid rgba(255,255,255,0.15); border-radius:6px; display:none; pointer-events:none; box-shadow:0 4px 16px rgba(0,0,0,0.4); z-index:6; opacity:0.8;"></div>
-              <div id="controlsRow" style="display:flex; align-items:center; justify-content:space-between; gap:8px; background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 6px 10px;">
-                <div style="font-size:12px; color: var(--muted, #7a859f); display:flex; align-items:center; gap:4px;">
-                  <span id="curTime">00:00</span>
-                  <span style="opacity:0.5;">/</span>
-                  <span id="totalTime">00:00</span>
-                </div>
-                <div id="playerControls" class="player-controls" style="display:flex; align-items:center; gap:8px;">
-                  <button id="btnPlayPause" class="btn-sm" title="Play/Pause" aria-label="Play/Pause">▶︎</button>
-                  <button id="btnMute" class="btn-sm" title="Mute/Unmute" aria-label="Mute">🔊</button>
-                  <input id="volSlider" type="range" min="0" max="1" step="0.01" value="1" title="Volume" style="width:120px;">
-                  <button id="btnCC" class="btn-sm" title="Toggle captions" aria-label="Captions">CC</button>
-                  <div class="select">
-                    <select id="rateSelect" class="control-select" title="Playback speed" aria-label="Playback speed">
+            <div class="player-stage-simple">
+              <div id="videoStage" class="video-stage-simple">
+                <video id="playerVideo" playsinline class="video-el"></video>
+                <div class="timeline-overlay-shell">
+                  <div class="timeline-wrapper">
+                    <div id="timeline" class="timeline-flat">
+                      <div id="timelineHeatmap" class="timeline-heatmap"></div>
+                      <canvas id="timelineHeatmapCanvas" class="timeline-heatmap-canvas"></canvas>
+                      <div id="timelineProgress" class="timeline-progress"></div>
+                      <div id="timelineMarkers" class="timeline-markers"></div>
+                    </div>
+                  </div>
+                  <div id="playerBar" class="player-bar-overlay">
+                    <button id="btnPlayPause" class="btn-sm icon-btn" aria-label="Play/Pause" data-icon-state="play">
+                      <svg class="icon icon-play">
+                        <use href="icons.svg#icon-play" />
+                      </svg>
+                      <svg class="icon icon-pause" hidden>
+                        <use href="icons.svg#icon-pause" />
+                      </svg>
+                    </button>
+                    <div class="time-display"><span id="curTime">00:00</span><span class="sep">/</span><span id="totalTime">00:00</span></div>
+                    <div class="spacer"></div>
+                    <button id="btnMute" class="btn-sm icon-btn" aria-label="Mute / Unmute">
+                      <svg class="icon icon-vol">
+                        <use href="icons.svg#icon-volume" />
+                      </svg>
+                      <svg class="icon icon-muted" hidden>
+                        <use href="icons.svg#icon-muted" />
+                      </svg>
+                    </button>
+                    <input id="volSlider" class="vol-slider" type="range" min="0" max="1" step="0.01" value="1" title="Volume" aria-label="Volume" />
+                    <button id="btnCC" class="btn-sm icon-btn" aria-label="Captions"><svg class="icon">
+                        <use href="icons.svg#icon-cc" />
+                      </svg></button>
+                    <select id="rateSelect" class="control-select rate-select-inline" aria-label="Speed">
                       <option value="0.5">0.5×</option>
                       <option value="0.75">0.75×</option>
                       <option value="1" selected>1×</option>
@@ -109,18 +86,35 @@
                       <option value="1.75">1.75×</option>
                       <option value="2">2×</option>
                     </select>
-                    <span class="chevron">▾</span>
+                    <button id="btnPip" class="btn-sm icon-btn" aria-label="Picture in Picture"><svg class="icon">
+                        <use href="icons.svg#icon-pip" />
+                      </svg></button>
+                    <button id="btnFullscreen" class="btn-sm icon-btn" aria-label="Fullscreen"><svg class="icon">
+                        <use href="icons.svg#icon-full" />
+                      </svg></button>
+                    <button id="btnAddMarker" class="btn-sm icon-btn util-btn" title="Add marker" aria-label="Add marker"><svg class="icon">
+                        <use href="icons.svg#icon-marker" />
+                      </svg></button>
+                    <button id="btnSetThumb" class="btn-sm icon-btn util-btn" title="Set cover image" aria-label="Set cover"><svg class="icon">
+                        <use href="icons.svg#icon-thumb" />
+                      </svg></button>
                   </div>
-                  <button id="btnPip" class="btn-sm" title="Picture in Picture" aria-label="Picture in Picture">⧉</button>
-                  <button id="btnFullscreen" class="btn-sm" title="Fullscreen" aria-label="Fullscreen">⛶</button>
                 </div>
               </div>
+              <div id="spritePreview" class="sprite-preview"></div>
             </div>
-            <div class="player-timeline" style="display:none;"></div>
           </div>
         </div>
       </div>
-      
+
+      <!-- Hidden SVG filters for video color matrix -->
+      <!-- Removed inline icon sprite (now exclusively using external icons.svg). Retain only needed filter definitions inline. -->
+      <svg width="0" height="0" class="sprite-defs-hidden" aria-hidden="true" focusable="false">
+        <filter id="playerColorMatrix" color-interpolation-filters="sRGB">
+          <feColorMatrix id="playerColorMatrixValues" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0" />
+        </filter>
+      </svg>
+
       <!-- Library Tab Panel -->
       <div class="tab-panel active" role="tabpanel" aria-labelledby="library-tab" id="library-panel">
         <div class="controls-panel">
@@ -173,7 +167,7 @@
           <button id="selectAllBtn" class="btn-sm">Select All</button>
           <button id="selectNoneBtn" class="btn-sm">Select None</button>
         </div>
-        
+
         <div id="spinner" class="spinner"></div>
         <div id="status"></div>
 
@@ -198,7 +192,7 @@
             </div>
           </div>
         </template>
-        
+
         <!-- Directory card template (hidden) -->
         <template id="dirTemplate">
           <div class="card">
@@ -214,25 +208,45 @@
             </div>
           </div>
         </template>
-        
+
         <div id="grid" class="grid" hidden></div>
       </div>
-      
+
+      <!-- Performers Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="performers-tab" id="performers-panel" hidden>
+        <div class="perf-toolbar">
+          <input id="performerSearch" type="text" placeholder="Search performers…" class="perf-search" />
+          <button id="performerAddBtn" class="btn-sm d-none">Add</button>
+          <button id="performerImportBtn" class="btn-sm" title="Import newline or JSON list">Import</button>
+          <button id="performerMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
+          <button id="performerDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
+        </div>
+        <div id="performerDropZone" role="button" tabindex="0" aria-label="Import performers" class="performer-dropzone">
+          <strong class="pdz-title">Import Performers</strong>
+          <span class="pdz-sub">Click to choose files or drag & drop names / JSON / text list</span>
+        </div>
+        <input id="performerFileInput" type="file" accept=".txt,.csv,.json,text/plain,application/json" multiple class="d-none" />
+        <div id="performersStatus" class="performers-status d-none">Loading…</div>
+        <div id="performersGrid" class="perf-grid performers-grid">
+          <!-- Cards injected dynamically -->
+        </div>
+      </div>
+
       <!-- Tasks Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="tasks-tab" id="tasks-panel" hidden>
         <div class="tasks-container">
-          
+
           <!-- Job Monitor Section -->
           <div class="task-section">
             <div class="section-header">
-          <h2>Job Monitor</h2>
-          <div class="section-actions">
-            <button id="cancelAllBtn" class="btn-sm" title="Cancel all queued and running jobs" style="display:none;">Cancel All</button>
-            <button id="cancelQueuedBtn" class="btn-sm" title="Cancel all queued jobs" style="display:none;">Cancel Queued</button>
-            <button id="clearCompletedBtn" class="btn-sm" title="Remove completed jobs from the list" style="display:none;">Clear Completed</button>
-          </div>
+              <h2>Job Monitor</h2>
+              <div class="section-actions">
+                <button id="cancelAllBtn" class="btn-sm d-none" title="Cancel all queued and running jobs">Cancel All</button>
+                <button id="cancelQueuedBtn" class="btn-sm d-none" title="Cancel all queued jobs">Cancel Queued</button>
+                <button id="clearCompletedBtn" class="btn-sm d-none" title="Remove completed jobs from the list">Clear Completed</button>
+              </div>
             </div>
-            
+
             <div class="job-stats">
               <div class="stat-card" id="filterQueued" data-filter="queued" title="Show only queued jobs">
                 <span class="stat-label">Queued</span>
@@ -251,7 +265,7 @@
                 <span class="stat-value" id="failedJobsCount">0</span>
               </div>
             </div>
-            
+
             <div class="job-table-container" id="jobTableContainer">
               <table class="job-table">
                 <thead>
@@ -289,14 +303,14 @@
                   <input type="radio" name="fileSelection" value="selected">
                   Selected files (<span id="selectedFileCount">0</span>)
                 </label>
-                <button id="generateAllBtn" class="btn-sm" title="Queue all missing artifacts for the chosen scope" style="margin-left:auto;">Generate All</button>
+                <button id="generateAllBtn" class="btn-sm ml-auto" title="Queue all missing artifacts for the chosen scope">Generate All</button>
               </div>
             </div>
 
             <!-- Artifact Types -->
             <div class="artifact-grid">
-              
-              <div class="artifact-card" data-artifact="metadata">
+
+              <div class="artifact-card artifact-card-uniform" data-artifact="metadata">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Metadata</h3>
@@ -309,12 +323,12 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="metadata-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="metadata-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute d-none" data-operation="metadata-all">Recompute All</button>
                   </div>
                 </div>
               </div>
 
-              <div class="artifact-card" data-artifact="thumbnails">
+              <div class="artifact-card artifact-card-uniform" data-artifact="thumbnails">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Thumbnails</h3>
@@ -326,26 +340,22 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="thumbnails-missing" title="Generate missing thumbnails">
-                      Generate Missing
-                    </button>
-                    <button class="btn-recompute" data-operation="thumbnails-all" title="Recompute all thumbnails" style="display:none;">
-                      Recompute All
-                    </button>
-                    <button class="btn-options" data-artifact="thumbnails" title="Options">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    <button class="btn-generate" data-operation="thumbnails-missing" title="Generate missing thumbnails">Generate Missing</button>
+                    <button class="btn-recompute d-none" data-operation="thumbnails-all" title="Recompute all thumbnails">Recompute All</button>
+                    <button class="btn-sm btn-clear d-none" data-operation="thumbnails-clear" title="Delete all generated thumbnails without regenerating">Clear</button>
+                    <button class="btn-options" data-artifact="thumbnails" title="Options" aria-label="Thumbnail options">
+                      <svg width="14" height="14" aria-hidden="true">
+                        <use href="icons.svg#icon-options" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="thumbnailsOptions" style="display:none;">
+                <div class="options-tooltip d-none" id="thumbnailsOptions">
                   <label>Offset (seconds): <input type="number" id="thumbnailOffset" value="10" min="1" max="3600"></label>
                 </div>
               </div>
 
-              <div class="artifact-card" data-artifact="sprites">
+              <div class="artifact-card artifact-card-uniform" data-artifact="sprites">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Sprite Sheets</h3>
@@ -358,23 +368,23 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="sprites-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="sprites-all" style="display:none;">Recompute All</button>
-                    <button class="btn-options" data-artifact="sprites">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    <button class="btn-recompute d-none" data-operation="sprites-all">Recompute All</button>
+                    <button class="btn-sm btn-clear d-none" data-operation="sprites-clear" title="Delete all sprite sheets">Clear</button>
+                    <button class="btn-options" data-artifact="sprites" aria-label="Sprite options">
+                      <svg width="14" height="14" aria-hidden="true">
+                        <use href="icons.svg#icon-options" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="spritesOptions" style="display:none;">
+                <div class="options-tooltip d-none" id="spritesOptions">
                   <label>Interval (sec): <input type="number" id="spriteInterval" value="10" min="1" max="60"></label>
                   <label>Width (px): <input type="number" id="spriteWidth" value="320" min="160" max="1920"></label>
                   <label>Columns: <input type="number" id="spriteCols" value="10" min="5" max="20"></label>
                 </div>
               </div>
 
-              <div class="artifact-card" data-artifact="previews">
+              <div class="artifact-card artifact-card-uniform" data-artifact="previews">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Hover Previews</h3>
@@ -387,22 +397,22 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="previews-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="previews-all" style="display:none;">Recompute All</button>
-                    <button class="btn-options" data-artifact="previews">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    <button class="btn-recompute d-none" data-operation="previews-all">Recompute All</button>
+                    <button class="btn-sm btn-clear d-none" data-operation="previews-clear" title="Delete all hover preview videos">Clear</button>
+                    <button class="btn-options" data-artifact="previews" aria-label="Hover preview options">
+                      <svg width="14" height="14" aria-hidden="true">
+                        <use href="icons.svg#icon-options" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="previewsOptions" style="display:none;">
+                <div class="options-tooltip d-none" id="previewsOptions">
                   <label>Segments: <input type="number" id="previewSegments" value="9" min="5" max="20"></label>
                   <label>Duration (sec): <input type="number" id="previewDuration" value="1.0" min="0.5" max="3.0" step="0.1"></label>
                 </div>
               </div>
 
-              <div class="artifact-card" data-artifact="phash">
+              <div class="artifact-card artifact-card-uniform" data-artifact="phash">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Perceptual Hash</h3>
@@ -415,18 +425,19 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="phash-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="phash-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute d-none" data-operation="phash-all">Recompute All</button>
+                    <button class="btn-sm btn-clear d-none" data-operation="phash-clear" title="Delete all perceptual hash artifacts">Clear</button>
                     <button class="btn-options" data-artifact="phash">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="phashOptions" style="display:none;">
+                <div class="options-tooltip d-none" id="phashOptions">
                   <label>Frames: <input type="number" id="phashFrames" value="5" min="3" max="10"></label>
-                  <label>Algorithm: 
+                  <label>Algorithm:
                     <div class="select">
                       <select id="phashAlgo" class="control-select">
                         <option value="ahash">Average Hash</option>
@@ -439,7 +450,7 @@
                 </div>
               </div>
 
-              <div class="artifact-card" data-artifact="scenes">
+              <div class="artifact-card artifact-card-uniform" data-artifact="scenes">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Scene Detection</h3>
@@ -452,22 +463,23 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="scenes-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="scenes-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute d-none" data-operation="scenes-all">Recompute All</button>
+                    <button class="btn-sm btn-clear d-none" data-operation="scenes-clear" title="Delete all scene detection JSON">Clear</button>
                     <button class="btn-options" data-artifact="scenes">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="scenesOptions" style="display:none;">
+                <div class="options-tooltip d-none" id="scenesOptions">
                   <label>Threshold: <input type="number" id="sceneThreshold" value="0.4" min="0.1" max="1.0" step="0.1"></label>
                   <label>Limit: <input type="number" id="sceneLimit" value="0" min="0" max="100"></label>
                 </div>
               </div>
 
-              <div class="artifact-card" data-artifact="heatmaps">
+              <div class="artifact-card artifact-card-uniform" data-artifact="heatmaps">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Heatmaps</h3>
@@ -480,19 +492,19 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="heatmaps-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="heatmaps-all" style="display:none;">Recompute All</button>
-                    <button class="btn-preview" id="previewHeatmapsBtn" title="Preview a sample heatmap PNG">Preview</button>
+                    <button class="btn-recompute d-none" data-operation="heatmaps-all">Recompute All</button>
+                    <button class="btn-sm btn-clear d-none" data-operation="heatmaps-clear" title="Delete all heatmap PNGs">Clear</button>
                     <button class="btn-options" data-artifact="heatmaps">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="heatmapsOptions" style="display:none;">
+                <div class="options-tooltip d-none" id="heatmapsOptions">
                   <label>Interval (sec): <input type="number" id="heatmapInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
-                  <label>Mode: 
+                  <label>Mode:
                     <div class="select">
                       <select id="heatmapMode" class="control-select">
                         <option value="brightness">Brightness</option>
@@ -505,7 +517,7 @@
                 </div>
               </div>
 
-              <div class="artifact-card" data-artifact="subtitles">
+              <div class="artifact-card artifact-card-uniform" data-artifact="subtitles">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Subtitles</h3>
@@ -518,17 +530,18 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="subtitles-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="subtitles-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute d-none" data-operation="subtitles-all">Recompute All</button>
+                    <button class="btn-sm btn-clear d-none" data-operation="subtitles-clear" title="Delete all subtitle files">Clear</button>
                     <button class="btn-options" data-artifact="subtitles">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="subtitlesOptions" style="display:none;">
-                  <label>Model: 
+                <div class="options-tooltip d-none" id="subtitlesOptions">
+                  <label>Model:
                     <div class="select">
                       <select id="subtitleModel" class="control-select">
                         <option value="tiny">Tiny</option>
@@ -544,7 +557,7 @@
                 </div>
               </div>
 
-              <div class="artifact-card" data-artifact="faces">
+              <div class="artifact-card artifact-card-uniform" data-artifact="faces">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Face Detection</h3>
@@ -557,16 +570,17 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="faces-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="faces-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute d-none" data-operation="faces-all">Recompute All</button>
+                    <button class="btn-sm btn-clear d-none" data-operation="faces-clear" title="Delete face detection JSON & embeddings">Clear</button>
                     <button class="btn-options" data-artifact="faces">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="facesOptions" style="display:none;">
+                <div class="options-tooltip d-none" id="facesOptions">
                   <label>Interval (sec): <input type="number" id="faceInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
                   <label>Min Size: <input type="number" id="faceMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
                   <label>Backend:
@@ -582,11 +596,11 @@
                   <label>Scale Factor: <input type="number" id="faceScale" value="1.1" min="1.01" max="2.0" step="0.01"></label>
                   <label>Min Neighbors: <input type="number" id="faceMinNeighbors" value="5" min="0" max="20" step="1"></label>
                   <label>Similarity Thresh: <input type="number" id="faceSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
-                  <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08);">
+                  <div class="embed-extra">
                     <button class="btn-sm" id="facesBrowserBtn" title="Detect faces in your browser and upload the result">
                       Generate Faces (Browser)
                     </button>
-                    <div style="color: var(--muted); font-size: 12px; line-height:1.4; margin-top:6px;">
+                    <div class="hint-sm">
                       Uses your browser's built-in FaceDetector to find faces and uploads boxes. The server will compute lightweight embeddings for clustering.
                     </div>
                   </div>
@@ -594,7 +608,7 @@
               </div>
 
               <!-- Embeddings (recompute embeddings without re-detecting boxes) -->
-              <div class="artifact-card" data-artifact="embed">
+              <div class="artifact-card artifact-card-uniform" data-artifact="embed">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Embeddings</h3>
@@ -607,16 +621,17 @@
                   </div>
                   <div class="artifact-actions">
                     <button class="btn-generate" data-operation="embed-missing">Generate Missing</button>
-                    <button class="btn-recompute" data-operation="embed-all" style="display:none;">Recompute All</button>
+                    <button class="btn-recompute d-none" data-operation="embed-all">Recompute All</button>
+                    <button class="btn-sm btn-clear d-none" data-operation="embed-clear" title="Delete all embedding vectors">Clear</button>
                     <button class="btn-options" data-artifact="embed" title="Options">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V6a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip" id="embedOptions" style="display:none;">
+                <div class="options-tooltip d-none" id="embedOptions">
                   <label>Interval (sec): <input type="number" id="embedInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
                   <label>Min Size: <input type="number" id="embedMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
                   <label>Backend:
@@ -632,16 +647,13 @@
                   <label>Similarity Thresh: <input type="number" id="embedSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
                 </div>
               </div>
-
             </div>
           </div>
-
           <!-- Orphaned Artifacts Section -->
           <div class="task-section">
             <div class="section-header">
               <h2>Orphaned Artifacts</h2>
             </div>
-            
             <div class="orphan-card">
               <div class="orphan-header">
                 <div class="orphan-info">
@@ -656,7 +668,7 @@
                   <button class="btn-preview" id="previewOrphansBtn" disabled>Preview</button>
                 </div>
               </div>
-              <div class="orphan-details" id="orphanDetails" style="display:none;">
+              <div class="orphan-details d-none" id="orphanDetails">
                 <div class="orphan-list" id="orphanList">
                   <!-- Orphan files will be listed here -->
                 </div>
@@ -665,96 +677,106 @@
           </div>
         </div>
       </div>
-      
+
       <!-- Settings Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="settings-tab" id="settings-panel" hidden>
         <div class="tab-content">
           <h2>Settings</h2>
-          <div class="task-section" style="margin-top: 12px;">
+          <div class="task-section task-section-spaced">
+            <div class="section-header">
+              <h2>Library Root</h2>
+            </div>
+            <div class="file-selection file-selection-root">
+              <div class="root-input-row">
+                <input id="folderInput" type="text" class="control-input root-input" placeholder="Type relative path (Enter) or absolute path to set root" title="Relative path to browse; absolute path to change root. Enter to apply." />
+                <button id="refresh" class="btn-sm" title="Reload current listing">Reload</button>
+                <button id="pickRootBtn" class="btn-sm" title="Open folder picker">Pick…</button>
+              </div>
+              <div class="hint-sm">
+                Enter a relative path within the current root to browse (e.g. <code>Shows/Season 1</code>). Enter an absolute path (e.g. <code>/Volumes/Media</code> or <code>~/Movies</code>) to change the library root. Double‑click the input or click Pick… to open a folder picker.
+              </div>
+            </div>
+          </div>
+          <div class="task-section task-section-spaced">
             <div class="section-header">
               <h2>Player Preferences</h2>
             </div>
-            <div class="file-selection" style="padding: 12px 0;">
-              <label class="selection-option" style="gap: 10px; align-items: flex-start;">
+            <div class="file-selection file-selection-compact">
+              <label class="selection-option selection-option-wide">
                 <input type="checkbox" id="settingAutoplayResume" />
                 <div>
-                  <div style="font-weight:600; display:flex; align-items:center; gap:8px;">
+                  <div class="subtitle-icon-label">
                     Autoplay on load when previously playing
                     <!-- reference subtitle icon placeholder (from user image) -->
-                    <span aria-hidden="true" title="Subtitle icon reference" style="display:inline-block; width:16px; height:12px; border-radius:3px; background:#2c323d; position:relative; overflow:hidden;">
-                      <span style="position:absolute; left:2px; right:2px; top:3px; height:3px; background:#12161f; border-radius:2px;"></span>
-                      <span style="position:absolute; left:6px; right:2px; bottom:3px; height:3px; background:#12161f; border-radius:2px;"></span>
+                    <span aria-hidden="true" title="Subtitle icon reference" class="subtitle-icon">
+                      <span class="subtitle-line top"></span>
+                      <span class="subtitle-line bottom"></span>
                     </span>
                   </div>
-                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                  <div class="hint-sm">
                     If enabled, the player resumes playback automatically when a video was playing before closing. Default is off.
                   </div>
                 </div>
               </label>
-
-              <label class="selection-option" style="gap: 10px; align-items: flex-start; margin-top: 12px;">
+              <label class="selection-option selection-option-wide mt-12">
                 <input type="checkbox" id="settingShowHeatmap" />
                 <div>
-                  <div style="font-weight:600;">Show timeline heatmap</div>
-                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                  <div class="fw-600">Show timeline heatmap</div>
+                  <div class="hint-sm">
                     Toggle the heatmap overlay on the player timeline. This only affects display; artifacts and badges still load as usual.
                   </div>
                 </div>
               </label>
-
-              <label class="selection-option" style="gap: 10px; align-items: flex-start; margin-top: 12px;">
+              <label class="selection-option selection-option-wide mt-12">
                 <input type="checkbox" id="settingShowScenes" />
                 <div>
-                  <div style="font-weight:600;">Show scene boundary markers</div>
-                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                  <div class="fw-600">Show scene boundary markers</div>
+                  <div class="hint-sm">
                     Toggle the scene boundary ticks on the player timeline. This only affects display; scenes data still loads as usual.
                   </div>
                 </div>
               </label>
             </div>
           </div>
-          <div class="task-section" style="margin-top: 12px;">
+          <div class="task-section task-section-spaced">
             <div class="section-header">
               <h2>Library Preferences</h2>
             </div>
-            <div class="file-selection" style="padding: 12px 0;">
-              <label class="selection-option" style="gap: 10px; align-items: flex-start;">
+            <div class="file-selection file-selection-compact">
+              <label class="selection-option selection-option-wide">
                 <input type="checkbox" id="settingHoverPreviews" />
                 <div>
-                  <div style="font-weight:600;">Enable hover video previews</div>
-                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                  <div class="fw-600">Enable hover video previews</div>
+                  <div class="hint-sm">
                     When enabled, cards will play a small preview on hover. Previews are only played if they already exist; no background generation is triggered automatically.
                   </div>
                 </div>
               </label>
-              <label class="selection-option" style="gap: 10px; align-items: flex-start; margin-top: 12px;">
+              <label class="selection-option selection-option-wide mt-12">
                 <input type="checkbox" id="settingHoverOnDemand" />
                 <div>
-                  <div style="font-weight:600;">Generate hover previews on demand</div>
-                  <div style="color: var(--muted); font-size: 12px; line-height:1.4;">
+                  <div class="fw-600">Generate hover previews on demand</div>
+                  <div class="hint-sm">
                     When enabled, hovering a card will request the server to create a preview if one doesn’t exist yet. This may start background work and use CPU.
                   </div>
                 </div>
               </label>
             </div>
           </div>
-          <div class="task-section" style="margin-top: 12px;">
+          <div class="task-section task-section-spaced">
             <div class="section-header">
               <h2>Job Processing</h2>
             </div>
-            <div class="file-selection" style="padding: 12px 0; display:flex; align-items:center; justify-content: space-between; gap:16px;">
-              <div style="display:flex; align-items:center; gap:16px; width:100%;">
-                <div style="font-weight:600;">Max concurrent jobs</div>
-                <input type="number" id="settingConcurrency" min="1" max="16" step="1" value="4" style="width:120px;" />
+            <div class="file-selection file-selection-compact file-selection-inline">
+              <div class="flex-row gap-16 w-100">
+                <div class="fw-600">Max concurrent jobs</div>
+                <input type="number" id="settingConcurrency" min="1" max="16" step="1" value="4" class="w-120" />
               </div>
             </div>
           </div>
         </div>
       </div>
-      
     </div>
   </main>
-  
-  
 </body>
 </html>
