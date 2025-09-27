@@ -48,6 +48,13 @@ If OpenCV wheels fail on ARM and you pass `--apt-opencv`, the script will attemp
 Hot reload: the default `serve.sh` uses `--reload` so backend changes auto-apply.
 Frontend assets are served directly from the working directory.
 
+### Assistant / automation guidance
+See `AGENTS.md` for agent operational guidelines.
+See `.github/copilot-hints.md` for the concise rule anchor (open this file before starting AI-assisted edits for stronger context priming).
+See `COPILOT_GUIDE.md` for extended semantics (endpoints, adaptive artifact button rules, safe patch checklist).
+
+If you change core UI semantics or API endpoints, update those docs to keep them authoritative.
+
 ## Troubleshooting
 ffmpeg missing: install via your package manager (e.g., `brew install ffmpeg`, `apt-get install ffmpeg`).
 Port already in use: set `PORT=9999 ./serve.sh`.

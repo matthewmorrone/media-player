@@ -322,8 +322,8 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="metadata-missing">Generate Missing</button>
-                    <button class="btn-recompute d-none" data-operation="metadata-all">Recompute All</button>
+                    <button class="btn-generate hidden" data-operation="metadata-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="metadata-all">Recompute All</button>
                   </div>
                 </div>
               </div>
@@ -340,9 +340,9 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="thumbnails-missing" title="Generate missing thumbnails">Generate Missing</button>
-                    <button class="btn-recompute d-none" data-operation="thumbnails-all" title="Recompute all thumbnails">Recompute All</button>
-                    <button class="btn-sm btn-clear d-none" data-operation="thumbnails-clear" title="Delete all generated thumbnails without regenerating">Clear</button>
+                    <button class="btn-generate hidden" data-operation="thumbnails-missing" title="Generate missing thumbnails">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="thumbnails-all" title="Recompute all thumbnails">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="thumbnails-clear" title="Delete all generated thumbnails without regenerating">Clear</button>
                     <button class="btn-options" data-artifact="thumbnails" title="Options" aria-label="Thumbnail options">
                       <svg width="14" height="14" aria-hidden="true">
                         <use href="icons.svg#icon-options" />
@@ -367,9 +367,9 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="sprites-missing">Generate Missing</button>
-                    <button class="btn-recompute d-none" data-operation="sprites-all">Recompute All</button>
-                    <button class="btn-sm btn-clear d-none" data-operation="sprites-clear" title="Delete all sprite sheets">Clear</button>
+                    <button class="btn-generate hidden" data-operation="sprites-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="sprites-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="sprites-clear" title="Delete all sprite sheets">Clear</button>
                     <button class="btn-options" data-artifact="sprites" aria-label="Sprite options">
                       <svg width="14" height="14" aria-hidden="true">
                         <use href="icons.svg#icon-options" />
@@ -396,9 +396,9 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="previews-missing">Generate Missing</button>
-                    <button class="btn-recompute d-none" data-operation="previews-all">Recompute All</button>
-                    <button class="btn-sm btn-clear d-none" data-operation="previews-clear" title="Delete all hover preview videos">Clear</button>
+                    <button class="btn-generate hidden" data-operation="previews-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="previews-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="previews-clear" title="Delete all hover preview videos">Clear</button>
                     <button class="btn-options" data-artifact="previews" aria-label="Hover preview options">
                       <svg width="14" height="14" aria-hidden="true">
                         <use href="icons.svg#icon-options" />
@@ -424,9 +424,9 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="phash-missing">Generate Missing</button>
-                    <button class="btn-recompute d-none" data-operation="phash-all">Recompute All</button>
-                    <button class="btn-sm btn-clear d-none" data-operation="phash-clear" title="Delete all perceptual hash artifacts">Clear</button>
+                    <button class="btn-generate hidden" data-operation="phash-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="phash-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="phash-clear" title="Delete all perceptual hash artifacts">Clear</button>
                     <button class="btn-options" data-artifact="phash">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3" />
@@ -462,9 +462,9 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="scenes-missing">Generate Missing</button>
-                    <button class="btn-recompute d-none" data-operation="scenes-all">Recompute All</button>
-                    <button class="btn-sm btn-clear d-none" data-operation="scenes-clear" title="Delete all scene detection JSON">Clear</button>
+                    <button class="btn-generate hidden" data-operation="scenes-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="scenes-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="scenes-clear" title="Delete all scene detection JSON">Clear</button>
                     <button class="btn-options" data-artifact="scenes">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3" />
@@ -491,9 +491,9 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="heatmaps-missing">Generate Missing</button>
-                    <button class="btn-recompute d-none" data-operation="heatmaps-all">Recompute All</button>
-                    <button class="btn-sm btn-clear d-none" data-operation="heatmaps-clear" title="Delete all heatmap PNGs">Clear</button>
+                    <button class="btn-generate hidden" data-operation="heatmaps-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="heatmaps-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="heatmaps-clear" title="Delete all heatmap PNGs">Clear</button>
                     <button class="btn-options" data-artifact="heatmaps">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3" />
@@ -529,9 +529,9 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="subtitles-missing">Generate Missing</button>
-                    <button class="btn-recompute d-none" data-operation="subtitles-all">Recompute All</button>
-                    <button class="btn-sm btn-clear d-none" data-operation="subtitles-clear" title="Delete all subtitle files">Clear</button>
+                    <button class="btn-generate hidden" data-operation="subtitles-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="subtitles-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="subtitles-clear" title="Delete all subtitle files">Clear</button>
                     <button class="btn-options" data-artifact="subtitles">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3" />
@@ -569,9 +569,9 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="faces-missing">Generate Missing</button>
-                    <button class="btn-recompute d-none" data-operation="faces-all">Recompute All</button>
-                    <button class="btn-sm btn-clear d-none" data-operation="faces-clear" title="Delete face detection JSON & embeddings">Clear</button>
+                    <button class="btn-generate hidden" data-operation="faces-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="faces-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="faces-clear" title="Delete face detection JSON & embeddings">Clear</button>
                     <button class="btn-options" data-artifact="faces">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3" />
@@ -620,9 +620,9 @@
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate" data-operation="embed-missing">Generate Missing</button>
-                    <button class="btn-recompute d-none" data-operation="embed-all">Recompute All</button>
-                    <button class="btn-sm btn-clear d-none" data-operation="embed-clear" title="Delete all embedding vectors">Clear</button>
+                    <button class="btn-generate hidden" data-operation="embed-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="embed-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="embed-clear" title="Delete all embedding vectors">Clear</button>
                     <button class="btn-options" data-artifact="embed" title="Options">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3" />
