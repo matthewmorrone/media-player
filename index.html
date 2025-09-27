@@ -11,8 +11,8 @@
 </head>
 
 <body>
-  <!-- Inline SVG sprite (moved from external icons.svg for reliable <use> rendering across browsers / file protocols) -->
-  <svg aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden">
+  <!-- Inline SVG sprite (all icon symbols embedded; external icons.svg removed) -->
+  <svg aria-hidden="true" focusable="false" class="svg-sprite">
     <!-- Options / settings decorative icon -->
     <symbol id="icon-options" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="3" />
@@ -58,6 +58,17 @@
     <div class="tab-panels">
       <!-- Player Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="player-tab" id="player-panel" hidden>
+        <!-- Split layout now stretches full height -->
+        <div class="player-split">
+          <div class="player-sidebar">
+            <!-- Sidebar (20%) content placeholder -->
+            <!-- TODO: insert playlist / file info / upcoming items -->
+          </div>
+          <div class="player-main">
+            <!-- Main (80%) content placeholder -->
+            <!-- TODO: insert video player / timeline / controls -->
+          </div>
+        </div>
       </div>
 
       <!-- Hidden SVG filters for video color matrix -->
@@ -194,9 +205,9 @@
             <div class="section-header">
               <h2>Job Monitor</h2>
               <div class="section-actions">
-                <button id="cancelAllBtn" class="btn-sm" style="display:none;" title="Cancel all queued and running jobs">Cancel All</button>
-                <button id="cancelQueuedBtn" class="btn-sm" style="display:none;" title="Cancel all queued jobs">Cancel Queued</button>
-                <button id="clearCompletedBtn" class="btn-sm" style="display:none;" title="Remove completed jobs from the list">Clear Completed</button>
+                <button id="cancelAllBtn" class="btn-sm d-none" title="Cancel all queued and running jobs">Cancel All</button>
+                <button id="cancelQueuedBtn" class="btn-sm d-none" title="Cancel all queued jobs">Cancel Queued</button>
+                <button id="clearCompletedBtn" class="btn-sm d-none" title="Remove completed jobs from the list">Clear Completed</button>
               </div>
             </div>
 

@@ -3695,7 +3695,7 @@ async def no_cache_middleware(request, call_next):
     resp = await call_next(request)
     path = request.url.path
     # Apply no-cache headers to all static files served from root directory and /static
-    if (path in {"/", "/index.css", "/index.js", "/old-index.html", "/icons.svg", "/favicon.ico"} or
+    if (path in {"/", "/index.css", "/index.js", "/old-index.html", "/favicon.ico"} or
         path.startswith("/static") or
         (not path.startswith("/api") and "." in path.split("/")[-1])):
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -3728,12 +3728,6 @@ def index_js():
     return Response("// JS not found", media_type="text/javascript")
 
 
-@app.get("/icons.svg", include_in_schema=False)
-def icons_svg():
-    svg = _STATIC / "icons.svg"
-    if svg.exists():
-        return Response(svg.read_text(encoding="utf-8"), media_type="image/svg+xml")
-    return Response("<!-- icons not found -->", media_type="image/svg+xml")
 
 
 @app.get("/favicon.ico", include_in_schema=False)

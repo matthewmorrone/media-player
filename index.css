@@ -28,28 +28,43 @@
    ============================================================= */
 
 /* 1. Root Variables */
+/* Restored canonical design token set (was accidentally removed during cleanup) */
 :root {
-  --bg: #0f1115;
-  --panel: #151923;
-  --text: #e6e6e6;
-  --muted: #a0a0a0;
+  /* Core palette */
+  --bg: #0d1117;
+  --panel: #152030;
+  --card: #1d2737;
+  --card-bg: #1d2737;
+  --card-hover: #243247;
+  --text: #dbe2f1;
+  --muted: #94a2c7;
   --accent: #4f8cff;
-  --card: #1b2130;
-  --card-hover: #232b3d;
-  --grid-gap: 14px;
-  --header-h: 54px;
-  --player-chrome-h: 120px; /* reserved vertical space for controls + paddings */
-  /* merged from later root */
+  --success: #22c55e;
+  --danger: #ef4444;
+  --warn: #f59e0b;
+
+  /* Layout / shape */
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 14px;
+  --header-h: 54px; /* unified with later viewport-fit section */
+  /* --player-split-h removed: using flex-based natural height now */
+
+  /* Motion & effects */
+  --transition: .2s cubic-bezier(.4,.2,.2,1);
+  --focus-ring: 0 0 0 2px rgba(79,140,255,.5);
+  /* Removed fixed player height variable; full flex-based height now */
+  --player-sidebar-w: 300px; /* fixed sidebar width so right panel handles horizontal resize */
 }
 
 /* 2. Base / Resets */
-* {
-  box-sizing: border-box;
+* { 
+  box-sizing: border-box; 
 }
 
-html,
-body {
-  height: 100%;
+html, 
+body { 
+  height: 100%; 
 }
 
 body {
@@ -59,6 +74,9 @@ body {
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
 }
 
 header {
@@ -72,7 +90,11 @@ header {
 }
 
 main {
-  padding: 24px 64px;
+  padding: 0 64px; /* remove vertical padding so panels can truly fill viewport */
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* allow inner panels to control scrolling */
 }
 
 /* 3. Utilities */
@@ -493,7 +515,6 @@ button.btn-danger {
   visibility: hidden;
 }
 
-/* Note: Icon symbols now reside only in external icons.svg; inline <svg> holds filters only. */
 .fw-600 {
   font-weight: 600;
 }
@@ -1269,12 +1290,18 @@ button.btn-danger {
   flex: 1;
   display: flex;
   flex-direction: column;
+  /* margin-top removed so active panel can occupy full height */
 }
 
 .tab-panel {
   flex: 1;
   display: flex;
   flex-direction: column;
+}
+
+/* Give non-player panels internal breathing room since main padding was removed */
+.tab-panel:not(#player-panel) {
+  padding: 24px 0 24px;
 }
 
 .tab-panel[hidden] {
@@ -1592,6 +1619,73 @@ button.btn-danger {
 
 .artifact-info {
   flex: 1;
+}
+
+#player-panel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 20px;
+}
+.player-split {
+  display: flex;
+  flex: 1 1 auto; /* fill remaining space */
+  width: 100%;
+  gap: 8px;
+  align-items: stretch;
+  box-sizing: border-box;
+  min-height: 0;
+  /* no explicit height: rely on flex chain (body > main > tab-panels > #player-panel > .player-split) */
+}
+.player-split .player-sidebar,
+.player-split .player-main {
+  border: 1px solid var(--border-color, #333);
+  border-radius: 4px;
+  padding: 8px; /* reduced padding for more compact height */
+  box-sizing: border-box;
+  background: var(--panel-bg, rgba(0,0,0,0.15));
+  overflow: auto;
+  min-height: 0;
+  max-height: 100%;
+}
+.player-split .player-sidebar {
+  flex: 0 0 var(--player-sidebar-w);
+  width: var(--player-sidebar-w);
+  max-width: var(--player-sidebar-w);
+}
+.player-split .player-main {
+  flex: 1 1 auto; /* fully fluid */
+  min-width: 0;  /* prevent overflow due to long content */
+}
+
+@media (max-width: 900px) {
+  .player-split .player-sidebar {
+    flex: 0 0 220px;
+    width: 220px;
+    max-width: 220px;
+  }
+}
+
+@media (max-width: 640px) {
+  .player-split { flex-direction: column; }
+  .player-split .player-sidebar,
+  .player-split .player-main {
+    width: 100%;
+    max-width: none;
+    flex: 0 0 auto;
+  }
+  .player-split .player-main { flex: 1 1 auto; }
+}
+
+/* Full-height opt-in modifier: add class to #player-panel if needed */
+/* Full-height modifier no longer required; keeping hook in case future conditional behavior needed */
+/* #player-panel.is-fullheight .player-split { } */
+.svg-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
 }
 
 .artifact-info h3 {
@@ -2995,24 +3089,8 @@ body.resizing-job-table {
 /* Keep sidebar on the left; on narrower screens shrink width instead of stacking */
 
 /* === Viewport-Fit Player (no scroll) === */
-:root {
-  --header-h: 54px;
-}
 
-#player-panel {
-  height: calc(100vh - var(--header-h));
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-#player-panel .player-shell {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  padding: 4px 8px 12px;
-  gap: 10px;
-}
+/* (Removed duplicate #player-panel height block; earlier flex rule governs layout now) */
 
 #player-panel .player-main {
   flex: 1;
