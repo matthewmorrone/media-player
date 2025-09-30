@@ -5033,9 +5033,55 @@ def api_phash_duplicates(
             "group": c,
             "distance_mode": "xor",
             "frame_count": None,  # not available without deeper sidecar parse; left nullable
+            "group_count": len(c),
+            # representative_meta will attempt to provide small metadata (size/duration) when available
+            "representative_meta": None,
+            # group_details may include optional phash hex if sidecars exist; best-effort only
+            "group_details": None,
         }
         for c in clusters
     ]
+    # Best-effort: enrich clusters with small metadata for representative and optional phash entries
+    for item in result:
+        try:
+            rep = item.get("representative")
+            if rep:
+                p = Path(rep)
+                # representative paths are stored relative to root in pairs; try to resolve
+                try:
+                    if not p.is_absolute():
+                        p = (STATE["root"] / p).resolve()
+                except Exception:
+                    pass
+                meta = None
+                try:
+                    mp = metadata_path(p)
+                    if mp.exists():
+                        meta_j = json.loads(mp.read_text())
+                        meta = {"duration": extract_duration(meta_j), "size": p.stat().st_size if p.exists() else None}
+                except Exception:
+                    meta = None
+                item["representative_meta"] = meta
+            # group_details: try to include phash hex per member when available
+            details = []
+            for m in item.get("group", []) or []:
+                try:
+                    pm = Path(m)
+                    if not pm.is_absolute():
+                        pm = (STATE["root"] / pm).resolve()
+                except Exception:
+                    pm = None
+                row = {"path": m}
+                try:
+                    if pm and phash_path(pm).exists():
+                        j = json.loads(phash_path(pm).read_text())
+                        row["phash"] = j.get("phash")
+                except Exception:
+                    pass
+                details.append(row)
+            item["group_details"] = details
+        except Exception:
+            continue
     # Pagination over clusters
     total = len(result)
     total_pages = max(1, (total + page_size - 1) // page_size)
@@ -8841,7 +8887,8 @@ def tasks_batch_operation(request: Request):
             job_params["quality"] = 2
         elif operation == "phash":
             job_params["frames"] = params.get("frames", 5)
-            algo = params.get("algorithm") or params.get("algo")
+            # Accept multiple alias names from UI for algorithm
+            algo = params.get("algorithm") or params.get("algo") or params.get("phash_algorithm")
             if isinstance(algo, str) and algo.lower() in {"ahash","phash","dhash"}:
                 job_params["algorithm"] = algo.lower()
         elif operation == "sprites":
@@ -8859,12 +8906,20 @@ def tasks_batch_operation(request: Request):
                     job_params["quality"] = qv
             except Exception:
                 pass
+            # Also accept quality as string (e.g., "4") or legacy scales; best-effort clamp
+            if "quality" in params and not job_params.get("quality"):
+                try:
+                    qv2 = int(str(params.get("quality")))
+                    job_params["quality"] = max(0, min(8, qv2))
+                except Exception:
+                    pass
         elif operation == "previews":
             job_params["segments"] = params.get("segments", 9)
             job_params["duration"] = params.get("duration", 1.0)
             # Optional width override for hover previews
             try:
-                pw = int(params.get("width", 0))
+                # Accept alternative key names for width
+                pw = int(params.get("width", params.get("preview_width", params.get("previews_width", 0))))
                 if pw >= 120 and pw <= 1280:
                     job_params["width"] = pw
             except Exception:
