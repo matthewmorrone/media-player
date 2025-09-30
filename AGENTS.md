@@ -1,3 +1,97 @@
+# Agents & Automation Policy
+
+This file defines explicit rules and guard-rails for any automated or AI-driven process ("agents") that will modify this repository.
+
+Purpose
+- Provide a concise, machine-actionable policy so agents behave safely and predictably.
+- Prevent common anti-patterns (including programmatic DOM construction for repeated UI fragments) that harm maintainability and UX.
+
+Assistant Quick Guide (short checklist)
+- Do not interact with git unless explicitly requested to do so. When git interaction is required, explain why and include the exact commands or PR flow.
+- Do not create new files unless explicitly requested. If a new file is warranted, propose it first and include rationale in the PR description.
+- Always implement best coding practices and formatting (use existing project style where present). Avoid drive-by reformatting unrelated to the change.
+- Do not use inline styles in HTML; prefer CSS classes and update `index.css`.
+- Add comments only when they clarify non-obvious logic; avoid noise comments.
+
+
+Scope
+- Applies to any automated actor (scripts, CI jobs, chat assistants, code-generating agents) that creates, modifies, or deletes files in this repo.
+- Does not replace human code review. Agents must create a PR for any non-trivial change and must include a clear explanation of their changes.
+
+Agent Rules (mandatory)
+1. Use templates, not DOM assembly: Agents MUST NOT construct repeated UI fragments by composing strings, by frequently calling `document.createElement(...)`, or by using `innerHTML`/`insertAdjacentHTML` to inject large UI fragments in front-end JavaScript. Instead agents MUST add or reuse an HTML `<template id="...">` and clone it via `template.content.cloneNode(true)`.
+	 - Allowed exceptions (require explicit justification in PR): tiny ephemeral measurement nodes, small utility nodes used only for non-UI measurement, or programmatic SVG where templates are impractical.
+2. No inline styles: Agents must not add inline style attributes to HTML elements created by agents. Use CSS classes and add styles to `index.css` instead.
+3. No secret persistence: Agents must never add secrets, tokens, credentials, or environment-specific configuration files to the repo.
+4. Keep changes minimal and scoped: Each automated change should be a focused commit that makes a single logical update. Large multi-file transformations require a feature branch and a human reviewer prior to merging.
+5. Add tests or smoke checks when behavior is changed: If an agent changes runtime behavior (API, routing, major UI flows), it must add a basic smoke test in `scripts/` or update documentation describing manual verification steps.
+6. Always include a rollback plan: Add a note in the PR description describing how to revert if the automated change causes regressions (tag, branch, or commit id).
+
+Agent Checklist (what an agent must include in the PR body)
+- Summary of change (1–2 lines)
+- Files modified (list)
+- Why a template was added/used (if front-end changes)
+- Verification steps (unit test, smoke script, manual steps)
+- Rollback instructions (git ref)
+
+Enforcement (recommended)
+- Pre-merge CI check: A lightweight grep-based job that fails when the repo contains new or changed files with the following patterns (unless the change touches an explicit exception list):
+	- `document.createElement(`
+	- `innerHTML\s*=`
+	- `insertAdjacentHTML\(`
+	- `outerHTML\s*=`
+	- `new XMLSerializer\(` (if used to build large fragments)
+
+	The CI job should only run the check on the diff (changed files) to avoid false positives in unchanged legacy code.
+
+- Human review: PRs flagged by the check must be reviewed by a human developer who either approves or asks for templates.
+
+Migration guidance for agents (how to replace programmatic DOM with templates)
+1. Identify repeated structures: cards, list rows, tables, job rows, marker rows.
+2. Add a `<template id="...">` in `index.html` near other templates (e.g., next to `cardTemplate`, `jobRowTemplate`). Include placeholder child elements with clear class names (e.g., `.marker-time`, `.marker-label`).
+3. Replace `createElement` sequences in JS with `const node = document.getElementById('tplId').content.cloneNode(true);` and then fill fields using `node.querySelector('.marker-time').value = ...`.
+4. Run the grep-based enforcement check; update tests/manual verification steps.
+
+Example (BAD vs GOOD)
+- BAD:
+```js
+const row = document.createElement('div');
+row.className = 'marker-row';
+// many appendChild calls...
+markersList.appendChild(row);
+```
+- GOOD:
+HTML:
+```html
+<template id="markerRowTemplate">
+	<div class="marker-row">
+		<input class="marker-time" />
+		<div class="marker-label"></div>
+		<button class="marker-remove">✕</button>
+	</div>
+</template>
+```
+JS:
+```js
+const tpl = document.getElementById('markerRowTemplate');
+const node = tpl.content.cloneNode(true);
+node.querySelector('.marker-time').value = fmtDuration(sec);
+node.querySelector('.marker-label').textContent = label;
+markersList.appendChild(node);
+```
+
+Rollback strategy for agent incidents
+- Tag or branch before applying multi-file automated changes: `git tag -a pre-agent-YYYYMMDD -m "pre-agent baseline"`.
+- If a deploy/regression occurs, revert the PR commit(s) and re-open a human-reviewed PR with fixes.
+
+Agent exceptions
+- Agents may request an exception by opening an Issue and assigning a human reviewer; exception PRs must include:
+	- Detailed justification
+	- A test plan
+	- A time-boxed automatic revert if applicable
+
+Last updated: 2025-09-30
+
 # Agents & Automation
 
 This document tracks autonomous or semi-autonomous helpers ("agents") that have interacted with this repository and the conventions for safe usage.

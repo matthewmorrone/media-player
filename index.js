@@ -1,3 +1,92 @@
+// Reset Player logic
+window.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('btnResetPlayer');
+  const video = document.getElementById('playerVideo');
+  if (btn && video) {
+    btn.addEventListener('click', () => {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      // Optionally clear title and overlays
+      const title = document.getElementById('playerTitle');
+      if (title) {
+        title.textContent = '';
+        title.style.display = 'none';
+      }
+      // Mark that a reset occurred so unload handlers won't re-save state during a following refresh
+      try { localStorage.setItem('mediaPlayer:skipSaveOnUnload', '1'); } catch(_) {}
+      // Clear last played video from localStorage so no movie auto-loads after refresh
+      try {
+        localStorage.removeItem('mediaPlayer:last');
+        localStorage.removeItem('mediaPlayer:lastVideo');
+      } catch(_) {}
+      // Utility to set player title and handle visibility
+      function setPlayerTitle(text) {
+        const title = document.getElementById('playerTitle');
+        if (!title) return;
+        if (text && String(text).trim()) {
+          title.textContent = text;
+          title.style.display = '';
+        } else {
+          title.textContent = '';
+          title.style.display = 'none';
+        }
+      }
+      // Clear file info fields
+      [
+        'fiPath','fiDuration','fiResolution','fiVideoCodec','fiAudioCodec','fiBitrate','fiVBitrate','fiABitrate','fiSize','fiModified'
+      ].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '—'; });
+      // Also clear currentPath and resumeOverrideTime if possible
+      try {
+        if (window.Player) {
+          if ('currentPath' in window.Player) window.Player.currentPath = null;
+          if ('resumeOverrideTime' in window.Player) window.Player.resumeOverrideTime = null;
+        }
+      } catch(_) {}
+      // Clear module-level currentPath (prevents UI from thinking a file is selected)
+      try { currentPath = null; } catch(_) {}
+
+      // Remove per-video persistence keys (mediaPlayer:video:*) so progress/last entries don't rehydrate
+      try {
+        const removals = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (!k) continue;
+          // remove per-video keys and any 'last' keys that might trigger auto-resume
+          if (k.indexOf('mediaPlayer:video:') === 0) removals.push(k);
+          if (/last/i.test(k)) removals.push(k);
+          if (/lastSelected/i.test(k)) removals.push(k);
+        }
+        removals.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
+      } catch(_) {}
+
+      // Clear common sidebar UI elements so no stale info remains
+      try {
+        ['artifactBadgesSidebar','videoPerformers','videoTags','markersList','performerImportPreviewList'].forEach(id => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          if (el.tagName === 'DIV' || el.tagName === 'UL' || el.tagName === 'OL') el.innerHTML = '';
+          else el.textContent = '';
+        });
+        // Clear selection state and UI
+        try {
+          selectedItems = new Set();
+          const selCount = document.getElementById('selectionCount'); if (selCount) selCount.textContent = '0';
+          document.querySelectorAll('.card.selected').forEach(c => c.classList.remove('selected'));
+        } catch(_) {}
+        // Attempt to unload the Player module if available
+        try {
+          if (window.Player && typeof window.Player.unload === 'function') {
+            window.Player.unload();
+          } else if (typeof Player !== 'undefined' && Player && typeof Player.unload === 'function') {
+            Player.unload();
+          }
+        } catch(_) {}
+        // Do not change active tab on reset — preserve user's current tab
+      } catch(_) {}
+    });
+  }
+});
 const grid = document.getElementById("grid");
 const statusEl = document.getElementById("status");
 const spinner = document.getElementById("spinner");
@@ -6,6 +95,8 @@ const folderInput = document.getElementById("folderInput");
 
 // Grid controls
 const searchInput = document.getElementById("searchInput");
+const randomPlayBtn = document.getElementById("randomPlayBtn");
+const randomAutoBtn = document.getElementById("randomAutoBtn");
 const sortSelect = document.getElementById("sortSelect");
 const orderToggle = document.getElementById("orderToggle");
 const densitySlider = document.getElementById("densitySlider");
@@ -32,30 +123,34 @@ let totalPages = 1;
 let totalFiles = 0;
 let selectedItems = new Set();
 let currentDensity = 12; // Default to 12 (maps to 4 columns)
+// Library filter chips state
+let libraryTagFilters = [];
+let libraryPerformerFilters = [];
+let autoRandomEnabled = false;
 
 // Simple density configurations: [pageSize, columns, label]
 // Just controls how many columns are visible
 const densityConfigs = [
-  [200, 20, "Tiny"], // 1 - 20 columns (very small tiles)
-  [180, 18, "Tiny+"], // 2
-  [160, 16, "Small--"], // 3
-  [140, 14, "Small-"], // 4
-  [120, 12, "Small"], // 5
-  [100, 10, "Small+"], // 6
-  [90, 9, "Medium--"], // 7
-  [80, 8, "Medium-"], // 8
-  [70, 7, "Medium"], // 9
-  [60, 6, "Medium+"], // 10
-  [50, 5, "Large--"], // 11
-  [45, 4, "Large-"], // 12 - Default: 4 columns
-  [40, 3, "Large"], // 13
-  [35, 2, "Large+"], // 14
-  [30, 1, "Largest"], // 15 - 1 column (largest tiles)
+  [200, 20], // 1 - 20 columns
+  [180, 18], // 2
+  [160, 16], // 3
+  [140, 14], // 4
+  [120, 12], // 5
+  [100, 10], // 6
+  [90, 9], // 7
+  [80, 8], // 8
+  [70, 7], // 9
+  [60, 6], // 10
+  [50, 5], // 11
+  [45, 4], // 12 - Default: 4 columns
+  [40, 3], // 13
+  [35, 2], // 14
+  [30, 1], // 15 - 1 column
 ];
 
 // Compute columns/page-size from currentDensity and set CSS var
 function applyColumnsAndComputePageSize() {
-  const [, columns] = densityConfigs[currentDensity - 1] || [60, 6];
+  const [, columns] = densityConfigs[currentDensity - 1] || [45, 4];
   document.documentElement.style.setProperty("--columns", String(columns));
 
   // Estimate rows that fit: tile aspect 16/9 + meta (~54px)
@@ -67,70 +162,105 @@ function applyColumnsAndComputePageSize() {
   return columns * rows;
 }
 
-const PLACEHOLDER_IMG =
-  "data:image/svg+xml;utf8," +
-  encodeURIComponent(`
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
-    <defs>
-      <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#0e1016"/>
-        <stop offset="100%" stop-color="#1a2030"/>
-      </linearGradient>
-    </defs>
-    <rect width="320" height="180" fill="url(#g)"/>
-    <g fill="#3b4663">
-      <rect x="30" y="40" width="260" height="100" rx="8"/>
-      <polygon points="140,90 140,70 200,90 140,110" fill="#6b7aa6"/>
-    </g>
-  </svg>`);
+// Use the centralized inline SVG sprite for placeholders. The DOM contains
+// an SVG <use href="#icon-placeholder"> inside each card template; JS will
+// toggle visibility of the <img.thumb> and the <svg.thumb-placeholder> as needed.
+
+// Determine when the sidebar accordion fills available vertical space.
+// If it does, mark the accordion with `.accordion--fills` so internal
+// lists (like .markers-list) can scroll without affecting the page.
+function updateAccordionFillState() {
+  try {
+    const sidebar = document.querySelector('.player-split .player-sidebar');
+    const accordion = sidebar ? sidebar.querySelector('.accordion') : null;
+    if (!sidebar || !accordion) return;
+
+    // Compute the vertical space available inside the sidebar for the accordion
+    const sidebarStyles = window.getComputedStyle(sidebar);
+    const sidebarPaddingTop = parseFloat(sidebarStyles.paddingTop) || 0;
+    const sidebarPaddingBottom = parseFloat(sidebarStyles.paddingBottom) || 0;
+    const available = sidebar.clientHeight - sidebarPaddingTop - sidebarPaddingBottom;
+
+    // Total height of accordion content
+    const accRect = accordion.getBoundingClientRect();
+    const accHeight = accRect.height;
+
+    const fills = accHeight >= Math.max(available - 4, 0); // small tolerance
+    accordion.classList.toggle('accordion--fills', !!fills);
+
+    // If it fills, constrain markers-list to the remaining space below other
+    // accordion items (compute precise available height for markers-list).
+    const markers = accordion.querySelector('.markers-list');
+    if (markers && fills) {
+      // Find the top offset of markers relative to the sidebar
+      const sidebarRect = sidebar.getBoundingClientRect();
+      const markersRect = markers.getBoundingClientRect();
+      const topOffset = markersRect.top - sidebarRect.top;
+      // Reserve 12px padding at bottom
+      const space = Math.max(sidebar.clientHeight - topOffset - 12, 80);
+      markers.style.maxHeight = `${space}px`;
+      markers.style.overflowY = 'auto';
+    } else if (markers) {
+      markers.style.maxHeight = '';
+      markers.style.overflowY = '';
+    }
+  } catch (e) {
+    // ignore in older browsers
+  }
+}
+
+// Debounce helper
+function debounce(fn, wait = 120) {
+  let t = null;
+  return function(...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), wait);
+  };
+}
+
+const debouncedUpdateAccordionFillState = debounce(updateAccordionFillState, 140);
+
+// Run on load and on resize/tab changes
+window.addEventListener('load', debouncedUpdateAccordionFillState);
+window.addEventListener('resize', debouncedUpdateAccordionFillState);
+window.addEventListener('tabchange', (e) => { debouncedUpdateAccordionFillState(); });
+
+// Also observe mutations in the accordion in case content changes dynamically
+try {
+  const sidebarRoot = document.querySelector('.player-split .player-sidebar');
+  if (sidebarRoot) {
+    const mo = new MutationObserver(debouncedUpdateAccordionFillState);
+    mo.observe(sidebarRoot, { childList: true, subtree: true, attributes: true });
+  }
+} catch (_) {}
 
 // Modal elements
-const modal = document.createElement("div");
-modal.className = "modal";
-modal.hidden = true;
-modal.innerHTML = `
-  <div class="panel">
-    <header>
-      <div class="crumbs" id="crumbs"></div>
-    </header>
-    <div class="body">
-      <div class="dirlist" id="dirlist"></div>
-    </div>
-    <div class="actions">
-      <button class="btn" id="chooseBtn">Choose this folder</button>
-      <button class="btn" id="cancelBtn">Cancel</button>
-    </div>
-  </div>`;
-document.body.appendChild(modal);
-const crumbsEl = modal.querySelector("#crumbs");
-const dirlistEl = modal.querySelector("#dirlist");
-const chooseBtn = modal.querySelector("#chooseBtn");
-const cancelBtn = modal.querySelector("#cancelBtn");
-let pickerPath = "";
+
+const modal = document.getElementById('modal');
+const panel = modal ? modal.querySelector('.panel') : null;
+const header = panel ? panel.querySelector('header') : null;
+const crumbsEl = header ? header.querySelector('.crumbs') : null;
+const body = panel ? panel.querySelector('.body') : null;
+const dirlistEl = body ? body.querySelector('.dirlist') : null;
+const actions = panel ? panel.querySelector('.actions') : null;
+const chooseBtn = actions ? actions.querySelector('#chooseBtn') : null;
+const cancelBtn = actions ? actions.querySelector('#cancelBtn') : null;
+let pickerPath = '';
 
 // Lightweight image modal for previews
-const imgModal = document.createElement("div");
-imgModal.className = "modal";
-imgModal.hidden = true;
-imgModal.innerHTML = `
-  <div class="panel" style="max-width: min(920px, 96vw);">
-    <header><div style="display:flex;align-items:center;justify-content:space-between;">
-      <strong>Heatmap Preview</strong>
-      <button class="btn" id="imgModalClose">Close</button>
-    </div></header>
-    <div class="body" style="padding: 0; background: #0e1016;">
-      <img id="imgModalImage" alt="Heatmap" style="display:block; max-width:100%; height:auto;" />
-    </div>
-  </div>`;
-document.body.appendChild(imgModal);
-const imgModalClose = imgModal.querySelector("#imgModalClose");
-const imgModalImage = imgModal.querySelector("#imgModalImage");
-imgModal.addEventListener("click", (e) => {
-  if (e.target === imgModal) {
-    imgModal.hidden = true;
-  }
-});
-imgModalClose.addEventListener("click", () => (imgModal.hidden = true));
+const imgModal = document.getElementById('imgModal');
+const imgModalClose = imgModal ? imgModal.querySelector('#imgModalClose') : null;
+const imgModalImage = imgModal ? imgModal.querySelector('#imgModalImage') : null;
+if (imgModal) {
+  imgModal.addEventListener('click', (e) => {
+    if (e.target === imgModal) {
+      imgModal.hidden = true;
+    }
+  });
+}
+if (imgModalClose) {
+  imgModalClose.addEventListener('click', () => { imgModal.hidden = true; });
+}
 
 function fmtSize(bytes) {
   if (!Number.isFinite(bytes)) return "";
@@ -205,31 +335,6 @@ async function ensureHover(v) {
     // Status unknown (not cached); treat as absent for now.
     status = { hover: false };
   }
-  if (!status.hover && hoverOnDemandEnabled) {
-    // Trigger creation (POST). This should not 404.
-    try {
-      await fetch(`/api/hover/create?path=${qp}`, { method: "POST" });
-    } catch (_) {}
-    // Poll status a few times (bounded) without fetching blob until reported present.
-    for (let i = 0; i < 4; i++) {
-      // ~4 * 350ms = 1.4s max wait
-      await new Promise((r) => setTimeout(r, 350));
-      const s2 = await refreshStatus();
-      if (s2 && s2.hover) {
-        try {
-          const r = await fetch(`/api/hover/get?path=${qp}`);
-          if (!r.ok) return "";
-          const blob = await r.blob();
-          if (!blob || !blob.size) return "";
-          const obj = URL.createObjectURL(blob);
-          v.hover_url = obj;
-          return obj;
-        } catch (_) {
-          return "";
-        }
-      }
-    }
-  }
   return "";
 }
 
@@ -242,8 +347,8 @@ function fmtDuration(sec) {
   const s = sec % 60;
   if (h > 0)
     return (
-      h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
-    );
+    h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
+  );
   return m + ":" + String(s).padStart(2, "0");
 }
 // Clean up any existing hover preview videos except an optional tile we want to keep active
@@ -275,7 +380,7 @@ function videoCard(v) {
   const template = document.getElementById("cardTemplate");
   const el = template.content.cloneNode(true).querySelector(".card");
 
-  const imgSrc = v.cover || PLACEHOLDER_IMG;
+  const imgSrc = v.cover || "";
   const dur = fmtDuration(Number(v.duration));
   const size = fmtSize(Number(v.size));
   const isSelected = selectedItems.has(v.path);
@@ -306,13 +411,20 @@ function videoCard(v) {
   });
 
   const img = el.querySelector(".thumb");
-  img.src = imgSrc;
+  img.src = imgSrc || "";
   img.alt = v.title || v.name;
-  img.dataset.fallback = PLACEHOLDER_IMG;
-  img.onerror = function () {
-    this.onerror = null;
-    this.src = this.dataset.fallback;
-  };
+  // Use the inline placeholder when no thumbnail present or image fails.
+  const placeholderSvg = el.querySelector('svg.thumb-placeholder');
+  function showPlaceholder() {
+    if (img) img.style.display = 'none';
+    if (placeholderSvg) placeholderSvg.style.display = '';
+  }
+  function hidePlaceholder() {
+    if (img) img.style.display = '';
+    if (placeholderSvg) placeholderSvg.style.display = 'none';
+  }
+  if (!imgSrc) showPlaceholder(); else hidePlaceholder();
+  img.addEventListener('error', () => { showPlaceholder(); });
 
   // Resolution / quality badge: prefer height (common convention)
   try {
@@ -371,10 +483,7 @@ function videoCard(v) {
     // Populate Stash-like bottom-left overlay info (resolution + duration)
     if (overlay) {
       const hasRes = !!label;
-      if (overlayRes) {
-        overlayRes.textContent = hasRes ? String(label).toUpperCase() : "";
-        overlayRes.style.display = hasRes ? "inline" : "none";
-      }
+      // (Removed accidental SSE logic injection here)
       if (hasRes) {
         overlay.style.display = "inline-flex";
         try {
@@ -422,6 +531,8 @@ function videoCard(v) {
     try {
       await video.play();
     } catch (_) {}
+
+
   });
 
   el.addEventListener("mouseleave", () => {
@@ -440,14 +551,26 @@ function videoCard(v) {
       // Restore original thumbnail
       const newImg = document.createElement("img");
       newImg.className = "thumb";
-      newImg.src = imgSrc;
+      newImg.src = imgSrc || "";
       newImg.alt = v.title || v.name;
-      newImg.dataset.fallback = PLACEHOLDER_IMG;
-      newImg.onerror = function () {
-        this.onerror = null;
-        this.src = this.dataset.fallback;
-      };
+      // restore placeholder or image visibility after hover
+      const newPlaceholder = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      newPlaceholder.className.baseVal = 'thumb-placeholder';
+      const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      use.setAttributeNS('http://www.w3.org/1999/xlink', 'href', '#icon-placeholder');
+      newPlaceholder.appendChild(use);
+      // If image loads, hide placeholder
+      newImg.addEventListener('load', () => {
+        newImg.style.display = '';
+        if (newPlaceholder) newPlaceholder.style.display = 'none';
+      });
+      newImg.addEventListener('error', () => {
+        newImg.style.display = 'none';
+        if (newPlaceholder) newPlaceholder.style.display = '';
+      });
+      // Replace video with img and placeholder (img first)
       video.replaceWith(newImg);
+      newImg.insertAdjacentElement('afterend', newPlaceholder);
     }
   });
 
@@ -520,6 +643,14 @@ async function loadLibrary() {
     // Only set a relative path; ignore absolute values (those represent the root itself)
     if (val && !isAbsolutePath(val) && p) url.searchParams.set("path", p);
 
+    // Tag / performer filter chips
+    if (libraryTagFilters.length) {
+      url.searchParams.set("tags", libraryTagFilters.join(","));
+    }
+    if (libraryPerformerFilters.length) {
+      url.searchParams.set("performers", libraryPerformerFilters.join(","));
+    }
+
     const res = await fetch(url, { headers: { Accept: "application/json" } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const payload = await res.json();
@@ -589,8 +720,8 @@ async function loadLibrary() {
           combined.sort(
             (a, b) =>
               (a.name || "")
-                .toLowerCase()
-                .localeCompare((b.name || "").toLowerCase()) * (rev ? -1 : 1)
+            .toLowerCase()
+            .localeCompare((b.name || "").toLowerCase()) * (rev ? -1 : 1)
           );
         } else if (curSort === "size") {
           combined.sort(
@@ -622,10 +753,10 @@ async function loadLibrary() {
       } else {
         spinner.style.display = "none";
         statusEl.className =
-          files.length === 0 && searchVal ? "empty" : "empty";
+        files.length === 0 && searchVal ? "empty" : "empty";
         statusEl.textContent = searchVal
-          ? "No results match your search."
-          : "No videos found.";
+        ? "No results match your search."
+        : "No videos found.";
         statusEl.style.display = "block";
         grid.hidden = true;
         return;
@@ -650,9 +781,362 @@ async function loadLibrary() {
   }
 }
 
+// One-time capability check to decide if we should attempt SSE at all (avoids blind 404 probes)
+;(async () => {
+  if (!window.__JOBS_SSE_ENABLED) return;
+  if (window.__JOBS_SSE_UNAVAILABLE) return; // already decided
+  try {
+    const res = await fetch('/config', { cache: 'no-store' });
+    if (!res.ok) return;
+    const cfg = await res.json();
+    const has = !!(cfg && cfg.features && cfg.features.jobs_sse);
+    if (!has) {
+      window.__JOBS_SSE_UNAVAILABLE = true;
+    }
+  } catch (_) {
+    // Silent; fallback polling continues
+  }
+})();
+
+// -----------------------------
+// Simple Accordion Wiring (robust, minimal)
+// Ensures the sidebar accordion works even when other modules aren't active.
+(function wireSimpleAccordion(){
+  function init(){
+    const root = document.getElementById('sidebarAccordion');
+    if (!root) return;
+    const LS_KEY = 'mediaPlayer:sidebarAccordionState';
+    const items = Array.from(root.querySelectorAll('.acc-item'));
+    const loadState = () => {
+      try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}; } catch(_) { return {}; }
+    };
+    const saveState = (st) => { try { localStorage.setItem(LS_KEY, JSON.stringify(st)); } catch(_) {} };
+    let state = loadState();
+
+    items.forEach((it, idx) => {
+      const hdr = it.querySelector('.acc-header');
+      const panel = it.querySelector('.acc-panel');
+      if (!hdr || !panel) return;
+      // (SVG caret is embedded in the HTML markup now; no runtime injection required)
+      const key = it.getAttribute('data-key') || String(idx);
+      const open = Object.prototype.hasOwnProperty.call(state, key)
+      ? !!state[key]
+      : hdr.getAttribute('aria-expanded') === 'true';
+      hdr.setAttribute('aria-expanded', open ? 'true' : 'false');
+      panel.classList.toggle('hidden', !open);
+
+      // Idempotent guard
+      if (hdr._simpleAccordionWired) return;
+      hdr._simpleAccordionWired = true;
+
+      hdr.addEventListener('click', (e) => {
+        // When opening one, close others (true-accordion behavior)
+        const currentlyOpen = hdr.getAttribute('aria-expanded') === 'true';
+        if (!currentlyOpen) {
+          items.forEach((other) => {
+            if (other === it) return;
+            const oh = other.querySelector('.acc-header');
+            const op = other.querySelector('.acc-panel');
+            if (oh && op) {
+              oh.setAttribute('aria-expanded','false');
+              op.classList.add('hidden');
+              other.classList.remove('open');
+              op.classList.remove('open');
+            }
+          });
+        }
+
+        const now = !currentlyOpen;
+        hdr.setAttribute('aria-expanded', now ? 'true' : 'false');
+        panel.classList.toggle('hidden', !now);
+
+        // Toggle .open to trigger CSS transitions defined in index.css
+        it.classList.toggle('open', now);
+        panel.classList.toggle('open', now);
+
+        // Persist state
+        const out = {};
+        items.forEach((ii, j) => {
+          const k = ii.getAttribute('data-key') || String(j);
+          const h = ii.querySelector('.acc-header');
+          if (h) out[k] = h.getAttribute('aria-expanded') === 'true';
+        });
+        saveState(out);
+      });
+    });
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
+  else init();
+})();
+
 refreshBtn.addEventListener("click", loadLibrary);
+if (randomPlayBtn) {
+  randomPlayBtn.addEventListener("click", async () => {
+    try {
+      // Fetch one random page (page_size=1 sort=random) with current filters applied
+      const url = new URL("/api/library", window.location.origin);
+      url.searchParams.set("page", "1");
+      url.searchParams.set("page_size", "1");
+      url.searchParams.set("sort", "random");
+      url.searchParams.set("order", orderToggle.dataset.order || "desc");
+      const resSel = document.getElementById("resSelect");
+      const resVal = resSel ? String(resSel.value || "") : "";
+      if (resVal) url.searchParams.set("res_min", resVal);
+      const searchVal = searchInput.value.trim();
+      if (searchVal) url.searchParams.set("search", searchVal);
+      const val = (folderInput.value || "").trim();
+      const p = currentPath();
+      if (val && !isAbsolutePath(val) && p) url.searchParams.set("path", p);
+      if (libraryTagFilters.length) url.searchParams.set("tags", libraryTagFilters.join(","));
+      if (libraryPerformerFilters.length) url.searchParams.set("performers", libraryPerformerFilters.join(","));
+      const r = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const pl = await r.json();
+      const f = (pl?.data?.files || [])[0];
+      if (!f || !f.path) {
+        alert("No video found for random play.");
+        return;
+      }
+      if (typeof window.__playerOpen === "function") {
+        window.__playerOpen(f.path);
+        // Switch to player tab now (explicit user action)
+        if (window.tabSystem) window.tabSystem.switchToTab("player");
+      }
+    } catch (e) {
+      alert("Random play failed.");
+    }
+  });
+}
+
+// Persist auto-random setting
+function loadAutoRandomSetting() {
+  try { autoRandomEnabled = localStorage.getItem('setting.autoRandom') === '1'; } catch(_) { autoRandomEnabled = false; }
+}
+function saveAutoRandomSetting() {
+  try { localStorage.setItem('setting.autoRandom', autoRandomEnabled ? '1':'0'); } catch(_) {}
+}
+loadAutoRandomSetting();
+if (randomAutoBtn) {
+  const syncBtn = () => {
+    randomAutoBtn.classList.toggle('btn-active', autoRandomEnabled);
+    randomAutoBtn.setAttribute('aria-pressed', autoRandomEnabled ? 'true':'false');
+    randomAutoBtn.title = autoRandomEnabled ? 'Auto random ON (will pick another random video when current ends)' : 'Auto random OFF';
+  };
+  syncBtn();
+  randomAutoBtn.addEventListener('click', () => {
+    autoRandomEnabled = !autoRandomEnabled;
+    saveAutoRandomSetting();
+    syncBtn();
+  });
+}
+
+// Helper to fetch a random file given current filters (reused by manual & auto)
+async function fetchRandomFilePath() {
+  const url = new URL("/api/library", window.location.origin);
+  url.searchParams.set("page", "1");
+  url.searchParams.set("page_size", "1");
+  url.searchParams.set("sort", "random");
+  url.searchParams.set("order", orderToggle?.dataset?.order || "desc");
+  const resSel = document.getElementById("resSelect");
+  const resVal = resSel ? String(resSel.value || "") : "";
+  if (resVal) url.searchParams.set("res_min", resVal);
+  const searchVal = searchInput.value.trim();
+  if (searchVal) url.searchParams.set("search", searchVal);
+  const val = (folderInput.value || "").trim();
+  const p = currentPath();
+  if (val && !isAbsolutePath(val) && p) url.searchParams.set("path", p);
+  if (libraryTagFilters.length) url.searchParams.set("tags", libraryTagFilters.join(","));
+  if (libraryPerformerFilters.length) url.searchParams.set("performers", libraryPerformerFilters.join(","));
+  const r = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const pl = await r.json();
+  const f = (pl?.data?.files || [])[0];
+  return f && f.path ? f.path : null;
+}
+
+// Auto-random listener on player video end
+function installAutoRandomListener() {
+  try {
+    const v = document.getElementById('playerVideo');
+    if (!v || v._autoRandomWired) return;
+    v._autoRandomWired = true;
+    v.addEventListener('ended', async () => {
+      if (!autoRandomEnabled) return;
+      try {
+        const p = await fetchRandomFilePath();
+        if (p && typeof window.__playerOpen === 'function') {
+          window.__playerOpen(p);
+          if (window.tabSystem) window.tabSystem.switchToTab('player');
+        }
+      } catch(_) {}
+    });
+  } catch(_) {}
+
+}
+installAutoRandomListener();
+
+
+// -----------------------------
+// Library tag/performer filter chips
+// -----------------------------
+const libTagInput = document.getElementById("libraryTagFilterInput");
+const libTagList = document.getElementById("libraryTagFilters");
+const libPerfInput = document.getElementById("libraryPerformerFilterInput");
+const libPerfList = document.getElementById("libraryPerformerFilters");
+
+function persistLibraryFilters() {
+  try {
+    localStorage.setItem("filters.tags", JSON.stringify(libraryTagFilters));
+    localStorage.setItem("filters.performers", JSON.stringify(libraryPerformerFilters));
+  } catch (_) {}
+}
+function loadLibraryFilters() {
+  try {
+    const t = JSON.parse(localStorage.getItem("filters.tags") || "[]");
+    const p = JSON.parse(localStorage.getItem("filters.performers") || "[]");
+    if (Array.isArray(t)) libraryTagFilters = t.filter(Boolean);
+    if (Array.isArray(p)) libraryPerformerFilters = p.filter(Boolean);
+  } catch (_) {}
+}
+function renderLibraryChips() {
+  if (libTagList) {
+    libTagList.innerHTML = "";
+    libraryTagFilters.forEach((tag, idx) => {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = tag;
+      chip.title = `Tag filter: ${tag} (click to remove)`;
+      chip.addEventListener("click", () => {
+        libraryTagFilters.splice(idx, 1);
+        persistLibraryFilters();
+        renderLibraryChips();
+        currentPage = 1;
+        loadLibrary();
+      });
+      libTagList.appendChild(chip);
+    });
+  }
+  if (libPerfList) {
+    libPerfList.innerHTML = "";
+    libraryPerformerFilters.forEach((name, idx) => {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = name;
+      chip.title = `Performer filter: ${name} (click to remove)`;
+      chip.addEventListener("click", () => {
+        libraryPerformerFilters.splice(idx, 1);
+        persistLibraryFilters();
+        renderLibraryChips();
+        currentPage = 1;
+        loadLibrary();
+      });
+      libPerfList.appendChild(chip);
+    });
+  }
+}
+function handleLibraryFilterInput(e, kind) {
+  const val = (e.target.value || "").trim();
+  if (!val) return;
+  if (e.key === "Enter") {
+    if (kind === "tag") {
+      if (!libraryTagFilters.includes(val)) libraryTagFilters.push(val);
+    } else if (kind === "perf") {
+      if (!libraryPerformerFilters.includes(val)) libraryPerformerFilters.push(val);
+    }
+    e.target.value = "";
+    persistLibraryFilters();
+    renderLibraryChips();
+    currentPage = 1;
+    loadLibrary();
+  } else if (e.key === "Escape") {
+    e.target.value = "";
+  }
+}
+if (libTagInput) libTagInput.addEventListener("keydown", (e) => handleLibraryFilterInput(e, "tag"));
+if (libPerfInput) libPerfInput.addEventListener("keydown", (e) => handleLibraryFilterInput(e, "perf"));
+loadLibraryFilters();
+renderLibraryChips();
 
 // Grid control event listeners
+
+// -----------------------------
+// Library Stats Panel
+// -----------------------------
+function drawPieChart(canvas, dataObj) {
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const entries = Object.entries(dataObj).filter(([,v]) => Number(v) > 0);
+  const total = entries.reduce((s, [,v]) => s + Number(v), 0);
+  const w = canvas.width;
+  const h = canvas.height;
+  const cx = w/2;
+  const cy = h/2;
+  const radius = Math.min(w,h) * 0.4;
+  ctx.clearRect(0,0,w,h);
+  if (total === 0) {
+    // draw placeholder
+    ctx.fillStyle = '#222';
+    ctx.fillRect(0,0,w,h);
+    ctx.fillStyle = '#999';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('No data', cx, cy);
+    return;
+  }
+  const colors = ["#4dc9f6","#f67019","#f53794","#537bc4","#acc236","#166a8f","#00a950","#58595b"];
+  let start = -Math.PI/2;
+  entries.forEach(([k,v], i) => {
+    const frac = Number(v)/total;
+    const angle = frac * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, radius, start, start + angle);
+    ctx.closePath();
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.fill();
+    start += angle;
+  });
+  // legend
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  let ly = 10;
+  entries.forEach(([k,v], i) => {
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.fillRect(w - 120, ly, 12, 12);
+    ctx.fillStyle = '#ddd';
+    ctx.fillText(`${k} (${v})`, w - 104, ly + 6);
+    ly += 18;
+  });
+}
+
+async function loadStats() {
+  try {
+    const res = await fetch('/api/stats');
+    if (!res.ok) throw new Error('failed');
+    const body = await res.json();
+    if (!body || body.status !== 'success') return;
+    const d = body.data || {};
+    const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = (val === null || val === undefined) ? '—' : val; };
+    setText('statsNumFiles', d.num_files ?? '—');
+    setText('statsTotalSize', (typeof d.total_size === 'number') ? fmtSize(d.total_size) : '—');
+    setText('statsTotalDuration', (typeof d.total_duration === 'number') ? fmtDuration(d.total_duration) : '—');
+    setText('statsNumTags', d.tags ?? '—');
+    setText('statsNumPerformers', d.performers ?? '—');
+
+    const resCanvas = document.getElementById('statsResChart');
+    const durCanvas = document.getElementById('statsDurationChart');
+    if (resCanvas && d.res_buckets) drawPieChart(resCanvas, d.res_buckets);
+    if (durCanvas && d.duration_buckets) drawPieChart(durCanvas, d.duration_buckets);
+  } catch (e) {
+    // silent
+  }
+}
+
+// run on initial load
+window.addEventListener('DOMContentLoaded', () => { setTimeout(loadStats, 500); });
 searchInput.addEventListener("input", () => {
   currentPage = 1;
   loadLibrary();
@@ -660,6 +1144,101 @@ searchInput.addEventListener("input", () => {
 sortSelect.addEventListener("change", () => {
   currentPage = 1;
   loadLibrary();
+});
+// Wire up sidebar artifact generation buttons
+function getSelectedFilePath() {
+  // Use the currently selected file in the grid, or fallback to the first file
+  if (selectedItems.size > 0) {
+    return Array.from(selectedItems)[0];
+  }
+  // Fallback: try to get the first card in the grid
+  const card = document.querySelector('.card[data-path]');
+  return card ? card.dataset.path : null;
+}
+
+function setArtifactSpinner(artifact, spinning) {
+  const btn = document.querySelector(`.artifact-gen-btn[data-artifact="${artifact}"]`);
+  if (!btn) return;
+  const spinner = btn.querySelector('.artifact-spinner');
+  const label = btn.querySelector('.artifact-btn-label');
+  if (spinning) {
+    spinner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="#22c55e" stroke-width="3" fill="none" stroke-dasharray="60" stroke-dashoffset="0"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>';
+    spinner.hidden = false;
+    if (label) label.style.opacity = '0.5';
+    btn.disabled = true;
+  } else {
+    spinner.innerHTML = '';
+    spinner.hidden = true;
+    if (label) label.style.opacity = '';
+    btn.disabled = false;
+  }
+}
+
+async function triggerArtifactJob(artifact) {
+  const filePath = getSelectedFilePath();
+  if (!filePath) {
+    alert('No file selected.');
+    return;
+  }
+  setArtifactSpinner(artifact, true);
+  let endpoint = '';
+  let params = '';
+  switch (artifact) {
+    case 'metadata':
+    endpoint = '/api/metadata/create';
+    params = `?path=${encodeURIComponent(filePath)}`;
+    break;
+    case 'heatmap':
+    endpoint = '/api/heatmaps/create';
+    params = `?path=${encodeURIComponent(filePath)}`;
+    break;
+    case 'scenes':
+    endpoint = '/api/scenes/create';
+    params = `?path=${encodeURIComponent(filePath)}`;
+    break;
+    case 'sprites':
+    endpoint = '/api/sprites/create';
+    params = `?path=${encodeURIComponent(filePath)}`;
+    break;
+    case 'hover':
+    endpoint = '/api/hover/create';
+    params = `?path=${encodeURIComponent(filePath)}`;
+    break;
+    case 'subtitles':
+    endpoint = '/api/subtitles/create';
+    params = `?path=${encodeURIComponent(filePath)}`;
+    break;
+    case 'faces':
+    endpoint = '/api/faces/create';
+    params = `?path=${encodeURIComponent(filePath)}`;
+    break;
+    case 'phash':
+    endpoint = '/api/phash/create';
+    params = `?path=${encodeURIComponent(filePath)}`;
+    break;
+    default:
+    setArtifactSpinner(artifact, false);
+    alert('Unknown artifact type.');
+    return;
+  }
+  try {
+    const res = await fetch(endpoint + params, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // Optionally update badge status/checkmark here
+    setArtifactSpinner(artifact, false);
+    // Optionally show a checkmark or success indicator
+    // Job will appear in Tasks tab automatically via SSE
+  } catch (e) {
+    setArtifactSpinner(artifact, false);
+    alert(`Failed to generate ${artifact}: ${e.message}`);
+  }
+}
+
+document.querySelectorAll('.artifact-gen-btn[data-artifact]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const artifact = btn.getAttribute('data-artifact');
+    triggerArtifactJob(artifact);
+  });
 });
 orderToggle.addEventListener("click", () => {
   const isDesc = orderToggle.dataset.order === "desc";
@@ -832,64 +1411,86 @@ function wireSettings() {
     cbAutoplayResume.checked = loadAutoplayResume();
     cbAutoplayResume.addEventListener("change", () =>
       saveAutoplayResume(!!cbAutoplayResume.checked)
+  );
+}
+
+// Start at Intro End setting (default ON)
+const loadStartAtIntro = () => {
+  try {
+    // default to on if not set
+    const v = localStorage.getItem("setting.startAtIntro");
+    if (v === null || v === undefined) return true;
+    return v === "1";
+  } catch (_) {
+    return true;
+  }
+};
+const saveStartAtIntro = (v) => {
+  try {
+    localStorage.setItem("setting.startAtIntro", v ? "1" : "0");
+  } catch (_) {}
+};
+const cbStartAtIntro = document.getElementById("settingStartAtIntro");
+if (cbStartAtIntro) {
+  cbStartAtIntro.checked = loadStartAtIntro();
+  cbStartAtIntro.addEventListener("change", () => saveStartAtIntro(!!cbStartAtIntro.checked));
+}
+
+// Concurrency setting
+(async () => {
+  try {
+    const r = await fetch("/api/tasks/concurrency");
+    if (r.ok) {
+      const data = await r.json();
+      const val = Number(data?.data?.maxConcurrency) || 4;
+      if (concurrencyInput) concurrencyInput.value = String(val);
+    } else if (concurrencyInput) {
+      concurrencyInput.value = String(
+        Number(localStorage.getItem("setting.maxConcurrency")) || 4
+      );
+    }
+  } catch (_) {
+    if (concurrencyInput)
+      concurrencyInput.value = String(
+      Number(localStorage.getItem("setting.maxConcurrency")) || 4
     );
   }
-
-  // Concurrency setting
-  (async () => {
+})();
+// Debounced autosave on change
+if (concurrencyInput) {
+  let t;
+  const push = async (val) => {
     try {
-      const r = await fetch("/api/tasks/concurrency");
-      if (r.ok) {
-        const data = await r.json();
-        const val = Number(data?.data?.maxConcurrency) || 4;
-        if (concurrencyInput) concurrencyInput.value = String(val);
-      } else if (concurrencyInput) {
-        concurrencyInput.value = String(
-          Number(localStorage.getItem("setting.maxConcurrency")) || 4
-        );
-      }
-    } catch (_) {
-      if (concurrencyInput)
-        concurrencyInput.value = String(
-          Number(localStorage.getItem("setting.maxConcurrency")) || 4
-        );
-    }
-  })();
-  // Debounced autosave on change
-  if (concurrencyInput) {
-    let t;
-    const push = async (val) => {
-      try {
-        const r = await fetch(`/api/tasks/concurrency?value=${val}`, {
-          method: "POST",
-        });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        localStorage.setItem("setting.maxConcurrency", String(val));
-        const data = await r.json();
-        const applied = Number(data?.data?.maxConcurrency) || val;
-        if (concurrencyInput) concurrencyInput.value = String(applied);
-        tasksManager?.showNotification(
-          `Max concurrency set to ${applied}`,
-          "success"
-        );
-      } catch (e) {
-        tasksManager?.showNotification("Failed to set concurrency", "error");
-      }
-    };
-    const debounced = (val) => {
-      clearTimeout(t);
-      t = setTimeout(() => push(val), 400);
-    };
-    const handle = () => {
-      const val = Math.max(
-        1,
-        Math.min(128, Number(concurrencyInput.value || 4))
+      const r = await fetch(`/api/tasks/concurrency?value=${val}`, {
+        method: "POST",
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      localStorage.setItem("setting.maxConcurrency", String(val));
+      const data = await r.json();
+      const applied = Number(data?.data?.maxConcurrency) || val;
+      if (concurrencyInput) concurrencyInput.value = String(applied);
+      tasksManager?.showNotification(
+        `Max concurrency set to ${applied}`,
+        "success"
       );
-      debounced(val);
-    };
-    concurrencyInput.addEventListener("change", handle);
-    concurrencyInput.addEventListener("input", handle);
-  }
+    } catch (e) {
+      tasksManager?.showNotification("Failed to set concurrency", "error");
+    }
+  };
+  const debounced = (val) => {
+    clearTimeout(t);
+    t = setTimeout(() => push(val), 400);
+  };
+  const handle = () => {
+    const val = Math.max(
+      1,
+      Math.min(128, Number(concurrencyInput.value || 4))
+    );
+    debounced(val);
+  };
+  concurrencyInput.addEventListener("change", handle);
+  concurrencyInput.addEventListener("input", handle);
+}
 }
 
 // (Removed: simple Enter handler; replaced below with unified behavior)
@@ -914,21 +1515,27 @@ window.addEventListener("load", () => {
 
   // Prefill placeholder with current root value, but keep input empty for relative navigation
   fetch("/api/root")
-    .then((r) => r.json())
-    .then((p) => {
-      if (p?.status === "success" && p?.data?.root) {
-        folderInput.placeholder = `Root: ${String(
-          p.data.root
-        )} — type a relative path to browse, or an absolute path to change root`;
-        folderInput.value = "";
-      } else {
-        folderInput.value = "";
-      }
-    })
-    .catch(() => {
+  .then((r) => r.json())
+  .then((p) => {
+    if (p?.status === "success" && p?.data?.root) {
+      folderInput.placeholder = `Root: ${String(
+        p.data.root
+      )} — type a relative path to browse, or an absolute path to change root`;
       folderInput.value = "";
-    })
-    .finally(loadLibrary);
+    } else {
+      folderInput.value = "";
+    }
+  })
+  .catch(() => {
+    folderInput.value = "";
+  })
+  .finally(loadLibrary);
+
+  // Ensure job action buttons can be toggled by JS even if residual d-none class remains
+  ["cancelAllBtn", "cancelQueuedBtn", "clearCompletedBtn"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && el.classList.contains("d-none")) el.classList.remove("d-none");
+  });
 
   // Initialize per-artifact options menus
   initArtifactOptionsMenus();
@@ -944,8 +1551,8 @@ function initArtifactOptionsMenus() {
     });
     // also drop raised stacking on any cards
     document
-      .querySelectorAll(".artifact-card.menu-open")
-      .forEach((card) => card.classList.remove("menu-open"));
+    .querySelectorAll(".artifact-card.menu-open")
+    .forEach((card) => card.classList.remove("menu-open"));
   });
   // Open corresponding tooltip for clicked options button
   document.querySelectorAll(".btn-options[data-artifact]").forEach((btn) => {
@@ -961,11 +1568,11 @@ function initArtifactOptionsMenus() {
         if (tt !== tooltip) tt.style.display = "none";
       });
       document
-        .querySelectorAll(".artifact-card.menu-open")
-        .forEach((c) => c.classList.remove("menu-open"));
+      .querySelectorAll(".artifact-card.menu-open")
+      .forEach((c) => c.classList.remove("menu-open"));
       if (tooltip) {
         const willOpen =
-          tooltip.style.display === "none" || !tooltip.style.display;
+        tooltip.style.display === "none" || !tooltip.style.display;
         tooltip.style.display = willOpen ? "block" : "none";
         if (card) {
           if (willOpen) card.classList.add("menu-open");
@@ -1013,6 +1620,11 @@ function handleCardClick(event, path) {
   } else {
     // No items selected and no modifiers: open in Player tab
     Player.open(path);
+    try {
+      if (window.tabSystem && typeof window.tabSystem.switchToTab === 'function') {
+        window.tabSystem.switchToTab('player');
+      }
+    } catch (_) {}
   }
 }
 
@@ -1084,16 +1696,16 @@ selectAllBtn.addEventListener("click", () => {
   });
   updateSelectionUI();
   document
-    .querySelectorAll(".card-checkbox")
-    .forEach((cb) => cb.classList.add("checked"));
+  .querySelectorAll(".card-checkbox")
+  .forEach((cb) => cb.classList.add("checked"));
 });
 
 selectNoneBtn.addEventListener("click", () => {
   selectedItems.clear();
   updateSelectionUI();
   document
-    .querySelectorAll(".card-checkbox")
-    .forEach((cb) => cb.classList.remove("checked"));
+  .querySelectorAll(".card-checkbox")
+  .forEach((cb) => cb.classList.remove("checked"));
 });
 
 // Folder picker
@@ -1140,46 +1752,165 @@ async function renderDir(path) {
   try {
     const { dirs } = await fetchDirs(path);
     if (path) {
-      const up = document.createElement("div");
-      up.className = "dir";
-      up.innerHTML = `<div class="icon"></div><div>.. (up)</div>`;
-      up.addEventListener("click", () => {
-        const segs = path.split("/").filter(Boolean);
+      const tpl = document.getElementById('dirListItemTemplate');
+      const up = tpl.content.firstElementChild.cloneNode(true);
+      up.querySelector('.name').textContent = '.. (up)';
+      up.addEventListener('click', () => {
+        const segs = path.split('/').filter(Boolean);
         segs.pop();
-        goTo(segs.join("/"));
+        goTo(segs.join('/'));
+
+        // -------------------------------------------------
+        // Tags Registry Module
+        // -------------------------------------------------
+        const TagsRegistry = (() => {
+          let listEl, statusEl, searchEl, addBtn, mergeBtn, deleteBtn, rewriteBtn, exportBtn, importBtn, importFile, importReplace;
+          let tags = [];
+          let selected = new Set();
+          function initDom(){
+            if(listEl) return;
+            listEl=document.getElementById("tagsRegistryList");
+            statusEl=document.getElementById("tagsRegistryStatus");
+            searchEl=document.getElementById("tagsRegistrySearch");
+            addBtn=document.getElementById("tagsRegistryAddBtn");
+            mergeBtn=document.getElementById("tagsRegistryMergeBtn");
+            deleteBtn=document.getElementById("tagsRegistryDeleteBtn");
+            rewriteBtn=document.getElementById("tagsRegistryRewriteBtn");
+            exportBtn=document.getElementById("tagsRegistryExportBtn");
+            importBtn=document.getElementById("tagsRegistryImportBtn");
+            importFile=document.getElementById("tagsRegistryImportFile");
+            importReplace=document.getElementById("tagsRegistryImportReplace");
+            wire();
+          }
+          function setStatus(msg){ if(statusEl) statusEl.textContent=msg; }
+          function render(){ if(!listEl) return; listEl.innerHTML=""; const term=(searchEl?.value||"").toLowerCase(); tags.filter(t=>!term||t.name.toLowerCase().includes(term)).forEach(t=>{ const div=document.createElement("div"); div.className="registry-item"; if(selected.has(t.slug)) div.dataset.selected="1"; div.textContent=t.name; div.onclick=()=>{ toggle(t.slug); }; div.ondblclick=()=>rename(t); listEl.appendChild(div); }); updateButtons(); }
+          function updateButtons(){ if(mergeBtn) mergeBtn.disabled=selected.size!==2; if(deleteBtn) deleteBtn.disabled=selected.size===0; }
+          async function fetchTags(){ initDom(); setStatus("Loading…"); try{ const r=await fetch("/api/registry/tags"); const j=await r.json(); tags=j?.data?.tags||[]; setStatus(`${tags.length} tag(s)`); render(); }catch(e){ setStatus("Failed"); } }
+          function toggle(slug){ if(selected.has(slug)) selected.delete(slug); else selected.add(slug); render(); }
+          async function add(){ const name=prompt("New tag name:"); if(!name) return; const r=await fetch("/api/registry/tags/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})}); if(r.ok){ showToast("Tag added","is-success"); fetchTags(); } else showToast("Failed","is-error"); }
+          async function rename(t){ const nn=prompt("Rename tag", t.name); if(!nn||nn===t.name) return; const r=await fetch("/api/registry/tags/rename",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:t.name,new_name:nn})}); if(r.ok){ showToast("Renamed","is-success"); fetchTags(); } else showToast("Rename failed","is-error"); }
+          async function del(){ if(!confirm(`Delete ${selected.size} tag(s)?`)) return; for(const slug of Array.from(selected)){ await fetch("/api/registry/tags/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:slug})}); } selected.clear(); fetchTags(); }
+          async function merge(){ if(selected.size!==2) return; const arr=[...selected]; const into=prompt("Merge: tag that remains", arr[0]); if(!into) return; const from=arr.find(s=>s!==_slugify(into))||arr[0]; const url=`/api/registry/tags/merge?from_name=${encodeURIComponent(from)}&into_name=${encodeURIComponent(into)}`; const r=await fetch(url,{method:"POST"}); if(r.ok){ showToast("Merged","is-success"); selected.clear(); fetchTags(); } else showToast("Merge failed","is-error"); }
+          async function rewrite(){ const r=await fetch("/api/registry/tags/rewrite-sidecars",{method:"POST"}); if(r.ok) showToast("Rewritten","is-success"); else showToast("Rewrite failed","is-error"); }
+          function exportJson(){ fetch("/api/registry/export").then(r=>r.json()).then(j=>{ const blob=new Blob([JSON.stringify({tags:j.data.tags},null,2)],{type:"application/json"}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tags-registry.json"; a.click(); }); }
+          function importJson(){ importFile?.click(); }
+          function handleImport(e){ const f=e.target.files?.[0]; if(!f) return; const reader=new FileReader(); reader.onload=async()=>{ try{ const json=JSON.parse(reader.result); const payload={ tags: json.tags || json, replace: !!importReplace?.checked }; const r=await fetch("/api/registry/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); if(r.ok){ showToast("Imported","is-success"); fetchTags(); } else showToast("Import failed","is-error"); }catch(err){ showToast("Invalid JSON","is-error"); } }; reader.readAsText(f); }
+          function wire(){ searchEl?.addEventListener("input", render); addBtn?.addEventListener("click", add); mergeBtn?.addEventListener("click", merge); deleteBtn?.addEventListener("click", del); rewriteBtn?.addEventListener("click", rewrite); exportBtn?.addEventListener("click", exportJson); importBtn?.addEventListener("click", importJson); importFile?.addEventListener("change", handleImport); }
+          function ensure(){ initDom(); }
+          return { ensure, fetch: fetchTags };
+        })();
+
+        // -------------------------------------------------
+        // Performers Registry Module (re-using existing performers tab if needed later)
+        // -------------------------------------------------
+        // Placeholder for future dedicated performers registry (already have performers tab)
+
+        // -------------------------------------------------
+        // Embedded Auto-Tag logic (Performers & Tags)
+        // -------------------------------------------------
+        function _parseList(val){ return (val||"").split(/[\,\n]/).map(s=>s.trim()).filter(Boolean); }
+        async function _autotagPreview(opts){
+          const payload={
+            path: opts.path || undefined,
+            recursive: !!opts.recursive,
+            use_registry_performers: !!opts.useRegistryPerformers,
+            use_registry_tags: !!opts.useRegistryTags,
+            performers: opts.performers || [],
+            tags: opts.tags || [],
+            limit: opts.limit || 500
+          };
+          const r = await fetch("/api/autotag/preview", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
+          const j = await r.json();
+          if(!r.ok) throw new Error(j?.message||"Preview failed");
+          return j?.data || {};
+        }
+        async function _autotagScan(opts){
+          const payload={
+            path: opts.path || undefined,
+            recursive: !!opts.recursive,
+            use_registry_performers: !!opts.useRegistryPerformers,
+            use_registry_tags: !!opts.useRegistryTags,
+            performers: opts.performers || [],
+            tags: opts.tags || []
+          };
+          const r = await fetch("/api/autotag/scan", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
+          if(!r.ok){ try{ const j=await r.json(); throw new Error(j?.message||"Scan failed"); }catch(e){ throw e; } }
+          return true;
+        }
+
+        function wireEmbeddedAutotag(){
+          // Tags panel elements only (performer autotag removed)
+          const tPath = document.getElementById("autotagPathTags");
+          const tRec = document.getElementById("autotagRecursiveTags");
+          const tUse = document.getElementById("autotagUseRegTagsOnly");
+          const tExtra = document.getElementById("autotagExtraTags");
+          const tPrev = document.getElementById("autotagPreviewTagsBtn");
+          const tScan = document.getElementById("autotagScanTagsBtn");
+          const tStatus = document.getElementById("autotagTagResultsStatus");
+          const tBody = document.getElementById("autotagTagResultsBody");
+          if(tPrev){
+            tPrev.addEventListener("click", async ()=>{
+              tStatus.textContent="Previewing…"; tBody.innerHTML=""; tScan.disabled=true;
+              try {
+                const data = await _autotagPreview({ path: tPath.value.trim(), recursive: tRec.checked, useRegistryTags: tUse.checked, tags: _parseList(tExtra.value) });
+                const rows = data.candidates || [];
+                tStatus.textContent = rows.length? `${rows.length} match(es)`: "No matches";
+                rows.forEach(rw=>{
+                  const tpl = document.getElementById('autotagRowTemplate');
+                  const tr = tpl.content.firstElementChild.cloneNode(true);
+                  tr.querySelector('.file').textContent = rw.file;
+                  tr.querySelector('.tags').textContent = (rw.tags||[]).join(', ');
+                  tBody.appendChild(tr);
+                });
+                tScan.disabled = rows.length===0;
+              } catch(err){ tStatus.textContent = err.message || "Preview failed"; }
+            });
+          }
+          if(tScan){
+            tScan.addEventListener("click", async ()=>{ tScan.disabled=true; try { await _autotagScan({ path: tPath.value.trim(), recursive: tRec.checked, useRegistryTags: tUse.checked, tags: _parseList(tExtra.value) }); showToast("Auto‑tag job queued","is-success"); } catch(err){ showToast(err.message||"Queue failed","is-error"); } });
+          }
+        }
+
+        // Hook tab activation to load registries / autotag lazily
+        document.addEventListener("click", (e)=>{
+          const btn = e.target.closest && e.target.closest(".tab-button");
+          if(!btn) return;
+          const tab = btn.getAttribute("data-tab");
+          if(tab === "tags"){ TagsRegistry.ensure(); TagsRegistry.fetch(); wireEmbeddedAutotag(); }
+        });
       });
       dirlistEl.appendChild(up);
     }
     dirs.sort((a, b) =>
       String(a.name || "").localeCompare(String(b.name || ""))
-    );
-    for (const d of dirs) {
-      const item = document.createElement("div");
-      item.className = "dir";
-      const name = d.name || String(d);
-      const dpath = d.path || (path ? `${path}/${name}` : name);
-      item.innerHTML = `<div class="icon"></div><div>${name}</div>`;
-      item.addEventListener("click", () => goTo(dpath));
-      item.addEventListener("dblclick", () => choose(dpath));
-      dirlistEl.appendChild(item);
-    }
-    if (dirs.length === 0) {
-      const none = document.createElement("div");
-      none.className = "dir muted";
-      const icon = document.createElement("div");
-      icon.className = "icon dim";
-      const label = document.createElement("div");
-      label.textContent = "No folders here";
-      none.appendChild(icon);
-      none.appendChild(label);
-      dirlistEl.appendChild(none);
-    }
-  } catch (e) {
-    const err = document.createElement("div");
-    err.className = "dir";
-    err.textContent = "Failed to list directories.";
-    dirlistEl.appendChild(err);
+  );
+  for (const d of dirs) {
+    const tpl = document.getElementById('dirListItemTemplate');
+    const item = tpl.content.firstElementChild.cloneNode(true);
+    const name = d.name || String(d);
+    const dpath = d.path || (path ? `${path}/${name}` : name);
+    item.querySelector('.name').textContent = name;
+    item.addEventListener('click', () => goTo(dpath));
+    item.addEventListener('dblclick', () => choose(dpath));
+    dirlistEl.appendChild(item);
   }
+  if (dirs.length === 0) {
+    const none = document.createElement("div");
+    none.className = "dir muted";
+    const icon = document.createElement("div");
+    icon.className = "icon dim";
+    const label = document.createElement("div");
+    label.textContent = "No folders here";
+    none.appendChild(icon);
+    none.appendChild(label);
+    dirlistEl.appendChild(none);
+  }
+} catch (e) {
+  const err = document.createElement("div");
+  err.className = "dir";
+  err.textContent = "Failed to list directories.";
+  dirlistEl.appendChild(err);
+}
 }
 
 function openFolderPicker() {
@@ -1286,8 +2017,8 @@ async function setRoot(val) {
     notify(
       `Failed to set root: ${
         err && err.message
-          ? err.message
-          : "Ensure the directory exists and is accessible."
+        ? err.message
+        : "Ensure the directory exists and is accessible."
       }`,
       "error"
     );
@@ -1460,28 +2191,28 @@ class TabSystem {
 
         switch (e.key) {
           case "ArrowLeft":
-            e.preventDefault();
-            targetIndex = index > 0 ? index - 1 : tabButtons.length - 1;
-            break;
+          e.preventDefault();
+          targetIndex = index > 0 ? index - 1 : tabButtons.length - 1;
+          break;
           case "ArrowRight":
-            e.preventDefault();
-            targetIndex = index < tabButtons.length - 1 ? index + 1 : 0;
-            break;
+          e.preventDefault();
+          targetIndex = index < tabButtons.length - 1 ? index + 1 : 0;
+          break;
           case "Home":
-            e.preventDefault();
-            targetIndex = 0;
-            break;
+          e.preventDefault();
+          targetIndex = 0;
+          break;
           case "End":
-            e.preventDefault();
-            targetIndex = tabButtons.length - 1;
-            break;
+          e.preventDefault();
+          targetIndex = tabButtons.length - 1;
+          break;
           case "Enter":
           case " ":
-            e.preventDefault();
-            this.switchToTab(button.dataset.tab);
-            return;
+          e.preventDefault();
+          this.switchToTab(button.dataset.tab);
+          return;
           default:
-            return;
+          return;
         }
 
         tabButtons[targetIndex].focus();
@@ -1564,14 +2295,38 @@ class TabSystem {
     button.textContent = buttonText;
     tabNav.appendChild(button);
 
-    // Create panel
+    // Create panel. Accept either:
+    // - a template id string (e.g. '#myTemplate') to clone
+    // - a HTML string (panelContent) which will be set as innerHTML (fallback)
     const panel = document.createElement("div");
     panel.className = "tab-panel";
     panel.role = "tabpanel";
     panel.setAttribute("aria-labelledby", `${tabId}-tab`);
     panel.id = `${tabId}-panel`;
     panel.hidden = true;
-    panel.innerHTML = panelContent;
+    // If caller passed a template reference (string '#id' or element), prefer cloning
+    try {
+      let tpl = null;
+      if (typeof panelContent === 'string' && panelContent.startsWith('#')) {
+        tpl = document.getElementById(panelContent.slice(1));
+        if (tpl && tpl.tagName === 'TEMPLATE') {
+          panel.appendChild(tpl.content.cloneNode(true));
+        } else {
+          // fallback: treat as HTML id not found -> leave empty
+          panel.innerHTML = '';
+        }
+      } else if (panelContent && panelContent.tagName === 'TEMPLATE') {
+        panel.appendChild(panelContent.content.cloneNode(true));
+      } else if (typeof panelContent === 'string') {
+        // backward-compat: accept raw HTML string
+        panel.innerHTML = panelContent;
+      } else {
+        // unknown type: leave empty
+        panel.innerHTML = '';
+      }
+    } catch (e) {
+      panel.innerHTML = typeof panelContent === 'string' ? panelContent : '';
+    }
     tabPanels.appendChild(panel);
 
     // Register the new tab
@@ -1628,11 +2383,11 @@ function setupViewportFitPlayer() {
   }
   ["resize", "orientationchange"].forEach((ev) =>
     window.addEventListener(ev, recompute)
-  );
-  vid.addEventListener("loadedmetadata", recompute);
-  // Slight delay to allow fonts/layout settle
-  setTimeout(recompute, 0);
-  setTimeout(recompute, 150);
+);
+vid.addEventListener("loadedmetadata", recompute);
+// Slight delay to allow fonts/layout settle
+setTimeout(recompute, 0);
+setTimeout(recompute, 150);
 }
 
 // -----------------------------
@@ -1641,52 +2396,80 @@ function setupViewportFitPlayer() {
 const Player = (() => {
   // DOM refs
   let videoEl,
-    titleEl,
-    curEl,
-    totalEl,
-    timelineEl,
-    heatmapEl,
-    heatmapCanvasEl,
-    progressEl,
-    markersEl,
-    spriteTooltipEl;
+  titleEl,
+  curEl,
+  totalEl,
+  timelineEl,
+  heatmapEl,
+  heatmapCanvasEl,
+  progressEl,
+  markersEl,
+  spriteTooltipEl,
+  overlayBarEl; // floating translucent title bar
+  let subtitleOverlayEl;
   // Custom controls
   let btnPlayPause,
-    btnMute,
-    volSlider,
-    rateSelect,
-    btnCC,
-    btnPip,
-    btnFullscreen;
+  btnMute,
+  volSlider,
+  rateSelect,
+  btnCC,
+  btnPip,
+  btnFullscreen;
   // Sidebar refs
   // Sidebar title removed; retain variable for backward compatibility but unused
   let sbFileNameEl;
   // File info table fields
   let fiDurationEl,
-    fiResolutionEl,
-    fiVideoCodecEl,
-    fiAudioCodecEl,
-    fiBitrateEl,
-    fiVBitrateEl,
-    fiABitrateEl,
-    fiSizeEl,
-    fiModifiedEl,
-    fiPathEl;
+  fiResolutionEl,
+  fiVideoCodecEl,
+  fiAudioCodecEl,
+  fiBitrateEl,
+  fiVBitrateEl,
+  fiABitrateEl,
+  fiSizeEl,
+  fiModifiedEl,
+  fiPathEl;
+  // Playback helpers (avoid unhandled play() rejections)
+  const safePlay = async (v) => {
+    if (!v) return;
+    try {
+      // Some browsers reject play() if another play/pause/seek is pending.
+      // Await and swallow errors per recommended guidance.
+      await v.play();
+    } catch (e) {
+      // ignore AbortError / NotAllowedError etc. Keep UX stable.
+    }
+  };
+  // Await next 'seeked' event (or timeout) for a given video element.
+  const awaitSeekEvent = (v, timeout = 1200) => new Promise((res) => {
+    if (!v) return res();
+    let done = false;
+    const onSeek = () => {
+      if (done) return;
+      done = true;
+      try { v.removeEventListener('seeked', onSeek); } catch(_){}
+      res();
+    };
+    try {
+      v.addEventListener('seeked', onSeek);
+    } catch (_) {}
+    setTimeout(() => { if (!done) { done = true; try { v.removeEventListener('seeked', onSeek); } catch(_){} res(); } }, timeout);
+  });
   // Compact artifact badges
   let badgeHeatmap,
-    badgeScenes,
-    badgeSubtitles,
-    badgeSprites,
-    badgeFaces,
-    badgeHover,
-    badgePhash;
+  badgeScenes,
+  badgeSubtitles,
+  badgeSprites,
+  badgeFaces,
+  badgeHover,
+  badgePhash;
   let badgeHeatmapStatus,
-    badgeScenesStatus,
-    badgeSubtitlesStatus,
-    badgeSpritesStatus,
-    badgeFacesStatus,
-    badgeHoverStatus,
-    badgePhashStatus;
+  badgeScenesStatus,
+  badgeSubtitlesStatus,
+  badgeSpritesStatus,
+  badgeFacesStatus,
+  badgeHoverStatus,
+  badgePhashStatus;
   let btnSetThumb, btnAddMarker;
 
   // State
@@ -1694,9 +2477,27 @@ const Player = (() => {
   let duration = 0;
   let sprites = null; // { index, sheet }
   let scenes = [];
+  let introEnd = null;
+  let outroBegin = null;
   let hasHeatmap = false;
   let subtitlesUrl = null;
   let timelineMouseDown = false;
+  // Overlay auto-hide timer
+  let overlayHideTimer = null;
+  // @TODO copilot: make this configurable in a setting
+  const OVERLAY_FADE_DELAY = 2500; // ms before fading overlay bar
+  // Scrubber elements
+  let scrubberEl = null,
+  scrubberTrackEl = null,
+  scrubberProgressEl = null,
+  scrubberBufferEl = null,
+  scrubberTimeEl = null;
+  let btnSetIntroEnd = null;
+  let scrubberRAF = null;
+  let scrubberDragging = false;
+  let scrubberWasPaused = null;
+  let scrubberHandleEl = null;
+  let scrubberScenesLayer = null;
 
   // ---- Progress persistence (localStorage) ----
   const LS_PREFIX = "mediaPlayer";
@@ -1777,17 +2578,75 @@ const Player = (() => {
   }
 
   function initDom() {
+    btnSetOutroBegin = qs("btnSetOutroBegin");
+    if (btnSetOutroBegin && !btnSetOutroBegin._wired) {
+      btnSetOutroBegin._wired = true;
+      btnSetOutroBegin.addEventListener('click', async () => {
+        if (!currentPath || !videoEl) return;
+        const t = Math.max(0, Math.min(duration || 0, videoEl.currentTime || 0));
+        try {
+          // Save to localStorage for now; backend support can be added
+          localStorage.setItem(`${LS_PREFIX}:outroBegin:${currentPath}`, String(t));
+          outroBegin = t;
+          notify('Outro set','success');
+          renderMarkers();
+          renderMarkersList();
+        } catch(e) {
+          notify('Failed to set outro begin','error');
+        }
+      });
+    }
     if (videoEl) return; // already
     videoEl = qs("playerVideo");
     titleEl = qs("playerTitle");
+    overlayBarEl = qs("playerOverlayBar");
+    if (videoEl && !videoEl._dblWired) {
+      videoEl._dblWired = true;
+      videoEl.addEventListener('dblclick', async (e) => {
+        try {
+          const container = videoEl && videoEl.parentElement ? videoEl.parentElement : document.body;
+          if (!document.fullscreenElement) await container.requestFullscreen();
+          else await document.exitFullscreen();
+        } catch (_) {}
+      });
+    }
+    // subtitle overlay element (in-video textual captions rendered by JS)
+    subtitleOverlayEl = qs('subtitleOverlay');
+    if (overlayBarEl && (!titleEl || !titleEl.textContent.trim())) {
+      overlayBarEl.dataset.empty = '1';
+    }
+    // Scrubber
+    scrubberEl = qs("playerScrubber");
+    scrubberTrackEl = qs("playerScrubberTrack");
+    scrubberProgressEl = qs("playerScrubberProgress");
+    scrubberBufferEl = qs("playerScrubberBuffer");
+    scrubberTimeEl = qs("playerScrubberTime");
+    if (scrubberTrackEl && !scrubberHandleEl) {
+      scrubberHandleEl = document.createElement('div');
+      scrubberHandleEl.className = 'scrubber-handle';
+      scrubberTrackEl.appendChild(scrubberHandleEl);
+    }
+    if (scrubberTrackEl && !scrubberScenesLayer) {
+      scrubberScenesLayer = document.createElement('div');
+      scrubberScenesLayer.className = 'scrubber-scenes';
+      scrubberTrackEl.appendChild(scrubberScenesLayer);
+    }
     curEl = qs("curTime");
     totalEl = qs("totalTime");
-    timelineEl = qs("timeline");
+    timelineEl = qs("timeline"); // legacy element (may be missing)
     heatmapEl = qs("timelineHeatmap");
     heatmapCanvasEl = qs("timelineHeatmapCanvas");
     progressEl = qs("timelineProgress");
     markersEl = qs("timelineMarkers");
     spriteTooltipEl = qs("spritePreview");
+    if (!spriteTooltipEl) {
+      // Fallback in case markup changed; create ephemeral element
+      spriteTooltipEl = document.createElement('div');
+      spriteTooltipEl.id = 'spritePreview';
+      spriteTooltipEl.style.position = 'absolute';
+      spriteTooltipEl.style.display = 'none';
+      (videoEl && videoEl.parentElement ? videoEl.parentElement : document.body).appendChild(spriteTooltipEl);
+    }
     badgeHeatmap = qs("badgeHeatmap");
     badgeScenes = qs("badgeScenes");
     badgeSubtitles = qs("badgeSubtitles");
@@ -1802,8 +2661,27 @@ const Player = (() => {
     badgeFacesStatus = qs("badgeFacesStatus");
     badgeHoverStatus = qs("badgeHoverStatus");
     badgePhashStatus = qs("badgePhashStatus");
+
+    // Support new hyphenated badge IDs (preferred) with fallback to legacy camelCase if present
+    const pick = (hyphen, legacy) => document.getElementById(hyphen) || document.getElementById(legacy);
+    badgeHeatmap = pick('badge-heatmap', 'badgeHeatmap');
+    badgeScenes = pick('badge-scenes', 'badgeScenes');
+    badgeSubtitles = pick('badge-subtitles', 'badgeSubtitles');
+    badgeSprites = pick('badge-sprites', 'badgeSprites');
+    badgeFaces = pick('badge-faces', 'badgeFaces');
+    badgeHover = pick('badge-hover', 'badgeHover');
+    badgePhash = pick('badge-phash', 'badgePhash');
+    badgeHeatmapStatus = pick('badge-heatmap-status', 'badgeHeatmapStatus');
+    badgeScenesStatus = pick('badge-scenes-status', 'badgeScenesStatus');
+    badgeSubtitlesStatus = pick('badge-subtitles-status', 'badgeSubtitlesStatus');
+    badgeSpritesStatus = pick('badge-sprites-status', 'badgeSpritesStatus');
+    badgeFacesStatus = pick('badge-faces-status', 'badgeFacesStatus');
+    badgeHoverStatus = pick('badge-hover-status', 'badgeHoverStatus');
+    badgePhashStatus = pick('badge-phash-status', 'badgePhashStatus');
     btnSetThumb = qs("btnSetThumb");
     btnAddMarker = qs("btnAddMarker");
+    btnSetIntroEnd = qs("btnSetIntroEnd");
+    btnSetOutroBegin = qs("btnSetOutroBegin");
     // Controls
     btnPlayPause = qs("btnPlayPause");
     btnMute = qs("btnMute");
@@ -1825,147 +2703,148 @@ const Player = (() => {
     fiSizeEl = qs("fiSize");
     fiModifiedEl = qs("fiModified");
     fiPathEl = qs("fiPath");
-
-    // Sidebar accordion wiring (id: sidebarAccordion)
-    try {
-      const accRoot = document.getElementById("sidebarAccordion");
-      if (accRoot && !accRoot._wired) {
-        accRoot._wired = true;
-        const LS_KEY = "accordion.player.sidebar.state";
-        const loadState = () => {
-          try {
-            return JSON.parse(localStorage.getItem(LS_KEY) || "{}") || {};
-          } catch (_) {
-            return {};
-          }
-        };
-        const saveState = (st) => {
-          try {
-            localStorage.setItem(LS_KEY, JSON.stringify(st));
-          } catch (_) {}
-        };
-        let state = loadState();
-        const items = Array.from(accRoot.querySelectorAll(".acc-item"));
-        // Initialize panels with animated height
-        items.forEach((it) => {
-          const hdr = it.querySelector(".acc-header");
-          const panel = it.querySelector(".acc-panel");
-          if (!hdr || !panel) return;
-          const key = it.getAttribute("data-key") || items.indexOf(it);
-          const open =
-            state[key] !== undefined
-              ? !!state[key]
-              : hdr.getAttribute("aria-expanded") === "true";
-          hdr.setAttribute("aria-expanded", open ? "true" : "false");
-          panel.style.display = "block";
-          panel.classList.add("anim");
-          panel.style.height = "auto";
-          const h = panel.scrollHeight;
-          panel.style.height = open ? h + "px" : "0px";
-          if (!open) panel.style.paddingTop = panel.style.paddingBottom = "0";
-          else panel.style.removeProperty("padding-top");
-        });
-        function closeAll() {
-          items.forEach((it) => toggleItem(it, false, true));
-          persist();
-        }
-        function persist() {
-          const out = {};
-          items.forEach((it) => {
-            const key = it.getAttribute("data-key") || items.indexOf(it);
-            const hdr = it.querySelector(".acc-header");
-            if (hdr) out[key] = hdr.getAttribute("aria-expanded") === "true";
+    // Allow inline rename of the current file by double‑clicking the Path value
+    if (fiPathEl && !fiPathEl._renameWired) {
+      fiPathEl._renameWired = true;
+      fiPathEl.title = 'Double‑click to rename file (artifacts move with it)';
+      fiPathEl.style.cursor = 'text';
+      fiPathEl.addEventListener('dblclick', () => {
+        try {
+          if (!currentPath) return;
+          if (fiPathEl.querySelector('input')) return; // already editing
+          const origRel = currentPath; // e.g. folder/name.mp4
+          const dir = origRel.includes('/') ? origRel.slice(0, origRel.lastIndexOf('/')) : '';
+          const origName = origRel.split('/').pop() || origRel;
+          const input = document.createElement('textarea');
+          input.value = origName;
+          input.className = 'fi-rename-input';
+          Object.assign(input.style, {
+            width: '100%',
+            background: 'rgba(255,255,255,0.06)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            color: 'var(--text)',
+            font: 'inherit',
+            padding: '2px 4px',
+            borderRadius: '4px',
+            lineHeight: '1.3',
+            resize: 'none',
+            overflow: 'hidden',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all'
           });
-          state = out;
-          saveState(state);
-        }
-        function toggleItem(it, toOpen, instant = false) {
-          const hdr = it.querySelector(".acc-header");
-          const panel = it.querySelector(".acc-panel");
-          if (!hdr || !panel) return;
-          const currentlyOpen = hdr.getAttribute("aria-expanded") === "true";
-          const target = typeof toOpen === "boolean" ? toOpen : !currentlyOpen;
-          if (target === currentlyOpen) return;
-          hdr.setAttribute("aria-expanded", target ? "true" : "false");
-          panel.style.display = "block";
-          panel.classList.add("transitioning");
-          const startH = panel.scrollHeight;
-          if (target) {
-            // Opening: from 0 -> auto height
-            panel.style.height = "0px";
-            panel.style.paddingTop = "";
-            panel.style.paddingBottom = "";
-            requestAnimationFrame(() => {
-              const fullH = panel.scrollHeight;
-              panel.style.height = fullH + "px";
-            });
-          } else {
-            // Closing: from current height -> 0, then hide padding
-            panel.style.height = startH + "px";
-            requestAnimationFrame(() => {
-              panel.style.height = "0px";
-              panel.style.paddingTop = panel.style.paddingBottom = "0";
-            });
-          }
-          if (instant) {
-            panel.style.transition = "none";
-            panel.style.height = target ? panel.scrollHeight + "px" : "0px";
-            setTimeout(() => {
-              panel.style.transition = "";
-              if (!target) panel.style.display = "block";
-            }, 0);
-          }
-          panel.addEventListener(
-            "transitionend",
-            (ev) => {
-              if (ev.propertyName === "height") {
-                panel.classList.remove("transitioning");
-                if (hdr.getAttribute("aria-expanded") === "true") {
-                  panel.style.height = panel.scrollHeight + "px"; // lock
-                } else {
-                  panel.style.display = "block"; // keep for measurement
-                }
+          // Replace content
+          fiPathEl.textContent = '';
+          fiPathEl.appendChild(input);
+          input.focus();
+          input.select();
+          // Auto-resize height to fit content (cap at 5 lines / ~200px)
+          const autoresize = () => {
+            try { input.style.height = 'auto'; input.style.height = Math.min(200, input.scrollHeight) + 'px'; } catch(_) {}
+          };
+          autoresize();
+          input.addEventListener('input', autoresize);
+          let committing = false;
+          const cancel = () => {
+            if (committing) return;
+            // Restore plain text content
+            fiPathEl.textContent = origRel;
+          };
+          const commit = async () => {
+            if (committing) return; committing = true;
+            let newName = (input.value || '').replace(/[\r\n]+/g, ' ').trim();
+            if (!newName) { cancel(); return; }
+            // Disallow path separators for now (rename only, no move) per UX request
+            if (/[\\/]/.test(newName)) {
+              notify('Name cannot contain "/"', 'error');
+              committing = false; input.focus(); return;
+            }
+            if (newName === origName) { cancel(); return; }
+            // Preserve original extension enforcement (server also validates)
+            const origExt = origName.includes('.') ? origName.slice(origName.lastIndexOf('.')) : '';
+            const newExt = newName.includes('.') ? newName.slice(newName.lastIndexOf('.')) : '';
+            if (origExt.toLowerCase() !== newExt.toLowerCase()) {
+              notify('Extension must remain ' + origExt, 'error');
+              committing = false; input.focus(); return;
+            }
+            // Save current playback position to restore after reopen
+            let resumeT = 0; let wasPaused = true;
+            try { if (videoEl) { resumeT = videoEl.currentTime || 0; wasPaused = videoEl.paused; } } catch(_){}
+            fiPathEl.classList.add('renaming');
+            try {
+              const u = new URL('/api/media/rename', window.location.origin);
+              u.searchParams.set('path', origRel);
+              u.searchParams.set('new_name', newName);
+              const r = await fetch(u.toString(), { method: 'POST' });
+              if (!r.ok) {
+                try { const j = await r.json(); notify('Rename failed: ' + (j?.error || r.status), 'error'); } catch(_) { notify('Rename failed', 'error'); }
+                cancel(); return;
               }
-            },
-            { once: true }
-          );
-        }
-        accRoot.addEventListener("click", (e) => {
-          const hdr = e.target.closest(".acc-header");
-          if (!hdr) return;
-          const item = hdr.parentElement;
-          // Modifier click (meta/ctrl) -> close all
-          if (e.metaKey || e.ctrlKey || e.altKey) {
-            closeAll();
-            return;
-          }
-          const alreadyOpen = hdr.getAttribute("aria-expanded") === "true";
-          // True accordion: close others first if opening a new one
-          if (!alreadyOpen) {
-            items.forEach((it) => {
-              if (it !== item) toggleItem(it, false);
-            });
-          }
-          toggleItem(item, !alreadyOpen);
-          persist();
-        });
-        // Double click background area to close all
-        accRoot.addEventListener("dblclick", (e) => {
-          if (e.target === accRoot) {
-            closeAll();
-          }
-        });
-      }
-    } catch (_) {}
+              const dirPrefix = dir ? dir + '/' : '';
+              const newRel = dirPrefix + newName;
+              notify('Renamed to ' + newName, 'success');
+              // Update path + reopen video to keep playback position
+              currentPath = newRel;
+              // Attempt to restore playback after reopen
+              resumeOverrideTime = resumeT;
+              // Immediately swap textarea back to static text before reopening to avoid lingering edit state
+              try { fiPathEl.textContent = newRel; } catch(_){}
+              open(newRel); // will set new metadata + title (overwrites value again safely)
+              if (!wasPaused) { setTimeout(() => { try { if (videoEl && videoEl.paused) safePlay(videoEl); } catch(_){} }, 800); }
+              // Refresh library grid entry names later
+              setTimeout(() => { try { loadLibrary(); } catch(_){} }, 400);
+            } catch(err) {
+              notify('Rename error', 'error');
+              cancel();
+            } finally {
+              fiPathEl.classList.remove('renaming');
+            }
+          };
+          input.addEventListener('keydown', (e) => {
+            if ((e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) || e.key === 'Escape') {
+              e.preventDefault();
+              input.blur();
+            }
+          });
+          input.addEventListener('blur', () => {
+            // Always restore plain text immediately on blur, regardless of commit outcome
+            let newName = (input.value || '').replace(/[\r\n]+/g, ' ').trim();
+            if (!newName || newName === origName) {
+              fiPathEl.textContent = origRel;
+              return;
+            }
+            // Disallow path separators for now (rename only, no move)
+            if (/[\\/]/.test(newName)) {
+              fiPathEl.textContent = origRel;
+              return;
+            }
+            // Preserve original extension enforcement
+            const origExt = origName.includes('.') ? origName.slice(origName.lastIndexOf('.')) : '';
+            const newExt = newName.includes('.') ? newName.slice(newName.lastIndexOf('.')) : '';
+            if (origExt.toLowerCase() !== newExt.toLowerCase()) {
+              fiPathEl.textContent = origRel;
+              return;
+            }
+            // If all validation passes, show new name immediately
+            const dirPrefix = dir ? dir + '/' : '';
+            const newRel = dirPrefix + newName;
+            fiPathEl.textContent = newRel;
+            // Then proceed with commit logic (async)
+            commit();
+          });
+        } catch(_) {}
+      });
+    }
+
+
 
     // Wire basic events
     if (videoEl) {
       videoEl.addEventListener("timeupdate", () => {
         const t = videoEl.currentTime || 0;
-        curEl.textContent = fmtTime(t);
-        if (duration > 0) {
+        if (curEl) curEl.textContent = fmtTime(t);
+        if (duration > 0 && progressEl) {
           const pct = Math.max(0, Math.min(100, (t / duration) * 100));
-          progressEl.style.width = pct + "%";
+          try { progressEl.style.width = pct + "%"; } catch(_) {}
         }
         // Throttled periodic save of progress (every ~5s or on near-end)
         try {
@@ -1986,41 +2865,84 @@ const Player = (() => {
           }
         } catch (_) {}
       });
-      videoEl.addEventListener("loadedmetadata", () => {
+      videoEl.addEventListener("loadedmetadata", async () => {
         duration = Number(videoEl.duration) || 0;
-        totalEl.textContent = fmtTime(duration);
+        if (totalEl) totalEl.textContent = fmtTime(duration);
         syncControls();
         // Attempt restore if we have saved progress
         try {
           const saved = currentPath ? loadProgress(currentPath) : null;
           const override = resumeOverrideTime;
+          // helper: set currentTime and await seek completion (or timeout)
+          const awaitSeek = (t, timeout = 2000) => new Promise((res) => {
+            if (!videoEl) return res();
+            let done = false;
+            const onSeek = () => {
+              if (done) return;
+              done = true;
+              videoEl.removeEventListener('seeked', onSeek);
+              res();
+            };
+            try {
+              videoEl.addEventListener('seeked', onSeek);
+              videoEl.currentTime = Math.max(0, Math.min(duration || 0, t));
+            } catch (_) {
+              if (!done) { done = true; try { videoEl.removeEventListener('seeked', onSeek); } catch(_){} res(); }
+            }
+            // fallback timeout
+            setTimeout(() => { if (!done) { done = true; try { videoEl.removeEventListener('seeked', onSeek); } catch(_){} res(); } }, timeout);
+          });
+          // use Player-level safePlay(videoEl) to attempt playback and swallow rejections
           if (saved && Number.isFinite(saved.t)) {
             const target = Math.max(
               0,
               Math.min(duration || 0, Number(saved.t))
             );
             if (target && Math.abs(target - (videoEl.currentTime || 0)) > 0.5) {
-              videoEl.currentTime = target;
+              await awaitSeek(target);
             }
             if (saved.rate && Number.isFinite(saved.rate)) {
               videoEl.playbackRate = Number(saved.rate);
             }
             const autoplayResume =
-              localStorage.getItem("setting.autoplayResume") === "1";
+            localStorage.getItem("setting.autoplayResume") === "1";
             if (!(saved.paused || !autoplayResume)) {
-              videoEl.play().catch(() => {});
+              await safePlay(videoEl);
             }
           } else if (override && Number.isFinite(override)) {
             const t = Math.max(0, Math.min(duration || 0, Number(override)));
-            if (t && Math.abs(t - (videoEl.currentTime || 0)) > 0.25)
-              videoEl.currentTime = t;
-            const autoplayResume =
-              localStorage.getItem("setting.autoplayResume") === "1";
-            if (autoplayResume) videoEl.play().catch(() => {});
+            if (t && Math.abs(t - (videoEl.currentTime || 0)) > 0.25) await awaitSeek(t);
+            const autoplayResume = localStorage.getItem("setting.autoplayResume") === "1";
+            if (autoplayResume) await safePlay(videoEl);
+          } else {
+            // No saved progress or explicit override — optionally start at intro end
+            try {
+              const startAtIntro = (function(){ try { const cb = document.getElementById('settingStartAtIntro'); if(cb) return !!cb.checked; return localStorage.getItem('setting.startAtIntro') !== '0'; } catch(_) { return true; } })();
+              if (startAtIntro) {
+                // prefer localStorage per-path key first, then server-provided introEnd
+                try {
+                  const key = `${LS_PREFIX}:introEnd:${currentPath}`;
+                  const raw = localStorage.getItem(key);
+                  let applied = false;
+                  if (raw) {
+                    const it = Number(raw);
+                    if (Number.isFinite(it) && it > 0 && it < duration) {
+                      if (Math.abs(it - (videoEl.currentTime || 0)) > 0.25) await awaitSeek(it);
+                      applied = true;
+                    }
+                  }
+                  if (!applied && introEnd && Number.isFinite(Number(introEnd)) && introEnd > 0 && introEnd < duration) {
+                    if (Math.abs(introEnd - (videoEl.currentTime || 0)) > 0.25) await awaitSeek(Number(introEnd));
+                  }
+                } catch(_) {}
+              }
+            } catch (_) {}
           }
           resumeOverrideTime = null;
         } catch (_) {}
       });
+      // keep overlay cleared on metadata load
+      try { if (subtitleOverlayEl) { subtitleOverlayEl.textContent = ''; subtitleOverlayEl.hidden = true; } } catch(_) {}
       videoEl.addEventListener("play", syncControls);
       videoEl.addEventListener("pause", () => {
         syncControls();
@@ -2060,15 +2982,17 @@ const Player = (() => {
         videoEl.addEventListener("click", (e) => {
           // Only toggle when clicking the video surface itself
           if (e.target !== videoEl) return;
-          if (videoEl.paused) videoEl.play();
+          if (videoEl.paused) safePlay(videoEl);
           else videoEl.pause();
         });
       }
     }
-    if (timelineEl) {
+
+    if (timelineEl || scrubberTrackEl) {
       const seekTo = (evt) => {
         if (!duration || !videoEl) return;
-        const rect = timelineEl.getBoundingClientRect();
+        const target = timelineEl || scrubberTrackEl;
+        const rect = target.getBoundingClientRect();
         const x = Math.max(0, Math.min(evt.clientX - rect.left, rect.width));
         const pct = x / rect.width;
         const t = Math.max(0, Math.min(duration, pct * duration));
@@ -2080,7 +3004,7 @@ const Player = (() => {
           rate: videoEl.playbackRate,
         });
       };
-      timelineEl.addEventListener("mousedown", (e) => {
+      (timelineEl || scrubberTrackEl).addEventListener("mousedown", (e) => {
         timelineMouseDown = true;
         seekTo(e);
       });
@@ -2090,14 +3014,14 @@ const Player = (() => {
       window.addEventListener("mouseup", () => {
         timelineMouseDown = false;
       });
-      timelineEl.addEventListener("mouseenter", () => {
+      (timelineEl || scrubberTrackEl).addEventListener("mouseenter", () => {
         spriteHoverEnabled = true;
       });
-      timelineEl.addEventListener("mouseleave", () => {
+      (timelineEl || scrubberTrackEl).addEventListener("mouseleave", () => {
         spriteHoverEnabled = false;
         hideSprite();
       });
-      timelineEl.addEventListener("mousemove", (e) => handleSpriteHover(e));
+      (timelineEl || scrubberTrackEl).addEventListener("mousemove", (e) => handleSpriteHover(e));
     }
     if (btnSetThumb && !btnSetThumb._wired) {
       btnSetThumb._wired = true;
@@ -2114,8 +3038,50 @@ const Player = (() => {
           notify("Cover updated from current frame.", "success");
           // Refresh library tile if visible by reloading page 1 quickly
           setTimeout(() => loadLibrary(), 200);
+          // Also add a marker at this time if not already very close to an existing one
+          try {
+            const epsilon = 0.25; // seconds tolerance
+            const exists = Array.isArray(scenes) && scenes.some(s => Math.abs((s.time||0) - t) <= epsilon);
+            if (!exists) {
+              const mu = new URL('/api/marker', window.location.origin);
+              mu.searchParams.set('path', currentPath);
+              mu.searchParams.set('time', String(t.toFixed(3)));
+              const mr = await fetch(mu.toString(), { method:'POST' });
+              if (mr.ok) {
+                // Reload scenes + markers so UI reflects new tick & list entry
+                await loadScenes();
+                try { renderMarkers(); } catch(_) {}
+              }
+            }
+          } catch(_){ /* ignore marker add errors silently */ }
         } catch (e) {
           notify("Failed to set thumbnail", "error");
+        }
+      });
+    }
+    if (btnSetIntroEnd && !btnSetIntroEnd._wired) {
+      btnSetIntroEnd._wired = true;
+      btnSetIntroEnd.addEventListener('click', async () => {
+        if (!currentPath || !videoEl) return;
+        const t = Math.max(0, Math.min(duration||0, videoEl.currentTime||0));
+        try {
+          // Attempt to persist server-side first
+          try {
+            const mu = new URL('/api/scenes/intro', window.location.origin);
+            mu.searchParams.set('path', currentPath);
+            mu.searchParams.set('time', String(t.toFixed(3)));
+            const mr = await fetch(mu.toString(), { method: 'POST' });
+            if (!mr.ok) throw new Error('server');
+          } catch (e) {
+            // Fallback to localStorage if server fails
+            const key = `${LS_PREFIX}:introEnd:${currentPath}`;
+            localStorage.setItem(key, String(Number(t.toFixed(3))));
+          }
+          notify('Intro end set at ' + fmtTime(t), 'success');
+          try { await loadScenes(); } catch(_){ }
+          try { renderMarkers(); } catch(_){ }
+        } catch (e) {
+          notify('Failed to set intro end', 'error');
         }
       });
     }
@@ -2124,7 +3090,7 @@ const Player = (() => {
       btnPlayPause._wired = true;
       btnPlayPause.addEventListener("click", () => {
         if (!videoEl) return;
-        if (videoEl.paused) videoEl.play();
+        if (videoEl.paused) safePlay(videoEl);
         else videoEl.pause();
       });
     }
@@ -2139,9 +3105,9 @@ const Player = (() => {
       volSlider.addEventListener("input", () => {
         if (videoEl)
           videoEl.volume = Math.max(
-            0,
-            Math.min(1, parseFloat(volSlider.value))
-          );
+          0,
+          Math.min(1, parseFloat(volSlider.value))
+        );
       });
     }
     if (rateSelect && !rateSelect._wired) {
@@ -2155,8 +3121,8 @@ const Player = (() => {
       btnCC.addEventListener("click", () => {
         try {
           const tracks = videoEl
-            ? Array.from(videoEl.querySelectorAll("track"))
-            : [];
+          ? Array.from(videoEl.querySelectorAll("track"))
+          : [];
           const anyShowing = tracks.some((t) => t.mode === "showing");
           tracks.forEach((t) => (t.mode = anyShowing ? "disabled" : "showing"));
           syncControls();
@@ -2178,9 +3144,9 @@ const Player = (() => {
       btnFullscreen.addEventListener("click", async () => {
         try {
           const container =
-            videoEl && videoEl.parentElement
-              ? videoEl.parentElement
-              : document.body;
+          videoEl && videoEl.parentElement
+          ? videoEl.parentElement
+          : document.body;
           if (!document.fullscreenElement) await container.requestFullscreen();
           else await document.exitFullscreen();
         } catch (_) {}
@@ -2253,8 +3219,8 @@ const Player = (() => {
       if (!exists) return; // status endpoint failed entirely
       // Switch to player tab and load via Player module
       resumeOverrideTime = Number.isFinite(last.time)
-        ? Number(last.time)
-        : null;
+      ? Number(last.time)
+      : null;
       if (window.Player && typeof window.Player.open === "function") {
         window.Player.open(p);
       } else if (
@@ -2271,10 +3237,39 @@ const Player = (() => {
   // Wrap existing initial load hook
   const _origInit = window.addEventListener;
   window.addEventListener("load", () => {
+    try {
+      const wasSkipped = (localStorage.getItem('mediaPlayer:skipSaveOnUnload') === '1');
+      if (wasSkipped) {
+        // Remove any lingering last keys and per-video progress stored during the previous session
+        try {
+          // remove exact last keys
+          localStorage.removeItem(keyLastVideoObj());
+        } catch(_) {}
+        try {
+          localStorage.removeItem(keyLastVideoPathLegacy());
+        } catch(_) {}
+        try {
+          // remove any mediaPlayer:video:* entries
+          const toRemove = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (!k) continue;
+            if (k.indexOf(`${LS_PREFIX}:video:`) === 0) toRemove.push(k);
+            if (/last/i.test(k)) toRemove.push(k);
+          }
+          toRemove.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
+        } catch(_) {}
+      }
+    } catch(_) {}
+    try { localStorage.removeItem('mediaPlayer:skipSaveOnUnload'); } catch(_) {}
     setTimeout(tryAutoResumeLast, 800); // slight delay to allow initial directory list
   });
   window.addEventListener("beforeunload", () => {
     try {
+      // If a recent Reset was performed we set a marker to avoid re-saving
+      try {
+        if (localStorage.getItem('mediaPlayer:skipSaveOnUnload') === '1') return;
+      } catch (_) {}
       if (currentPath && videoEl) {
         const t = Math.max(0, videoEl.currentTime || 0);
         saveProgress(currentPath, {
@@ -2325,12 +3320,187 @@ const Player = (() => {
         const tracks = Array.from(videoEl.querySelectorAll("track"));
         const anyShowing = tracks.some((t) => t.mode === "showing");
         btnCC.classList.toggle("active", anyShowing);
+        // Hide overlay if CC is off
+        try {
+          if (subtitleOverlayEl && !anyShowing) { subtitleOverlayEl.hidden = true; }
+        } catch(_) {}
       }
     } catch (_) {}
   }
 
+  // -----------------------------
+  // Floating overlay title bar logic
+  // -----------------------------
+  function showOverlayBar() {
+    try {
+      if (!overlayBarEl) overlayBarEl = document.getElementById("playerOverlayBar");
+      if (!overlayBarEl) return;
+      overlayBarEl.classList.remove("fading");
+      if (scrubberEl) scrubberEl.classList.remove("fading");
+      if (overlayHideTimer) {
+        clearTimeout(overlayHideTimer);
+        overlayHideTimer = null;
+      }
+      const defer = (overlayBarEl.matches(':hover') || (scrubberEl && scrubberEl.matches(':hover')) || scrubberDragging);
+      if (defer) return;
+      overlayHideTimer = setTimeout(() => {
+        try {
+          if (overlayBarEl) overlayBarEl.classList.add('fading');
+          if (scrubberEl) scrubberEl.classList.add('fading');
+        } catch(_){}
+      }, OVERLAY_FADE_DELAY);
+    } catch (_) {}
+  }
+
+  function wireOverlayInteractions() {
+    try {
+      if (!videoEl) return;
+      const main = videoEl.parentElement; // .player-main
+      if (!main || main._overlayWired) return;
+      main._overlayWired = true;
+      ["mousemove", "touchstart"].forEach((ev) => {
+        main.addEventListener(ev, () => showOverlayBar(), { passive: true });
+      });
+      ;[overlayBarEl, scrubberEl].forEach(el => {
+        if (!el) return;
+        el.addEventListener('mouseenter', () => {
+          if (overlayHideTimer) { clearTimeout(overlayHideTimer); overlayHideTimer = null; }
+          overlayBarEl && overlayBarEl.classList.remove('fading');
+          scrubberEl && scrubberEl.classList.remove('fading');
+        });
+        el.addEventListener('mouseleave', () => {
+          if (!scrubberDragging) showOverlayBar();
+        });
+      });
+      // Initial show on first wire
+      showOverlayBar();
+    } catch (_) {}
+  }
+
+  // -----------------------------
+  // Scrubber (progress + buffered) rendering
+  // -----------------------------
+  function fmtShortTime(sec) {
+    if (!Number.isFinite(sec) || sec < 0) return "00:00";
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    if (h) return `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+    return `${m}:${String(s).padStart(2,"0")}`;
+  }
+
+  function updateScrubber() {
+    if (!videoEl || !scrubberEl) return;
+    if (scrubberProgressEl) {
+      const pct = videoEl.duration ? (videoEl.currentTime / videoEl.duration) * 100 : 0;
+      scrubberProgressEl.style.width = pct + "%";
+      if (scrubberHandleEl) scrubberHandleEl.style.left = pct + '%';
+    }
+    if (scrubberBufferEl) {
+      try {
+        const buf = videoEl.buffered;
+        if (buf && buf.length) {
+          const end = buf.end(buf.length - 1);
+          const pctB = videoEl.duration ? (end / videoEl.duration) * 100 : 0;
+          scrubberBufferEl.style.width = pctB + "%";
+        }
+      } catch(_){}
+    }
+    if (scrubberTimeEl) {
+      scrubberTimeEl.textContent = `${fmtShortTime(videoEl.currentTime||0)} / ${fmtShortTime(videoEl.duration||0)}`;
+    }
+    scrubberRAF = requestAnimationFrame(updateScrubber);
+  }
+
+  function startScrubberLoop() {
+    if (!scrubberEl || scrubberRAF) return;
+    scrubberRAF = requestAnimationFrame(updateScrubber);
+  }
+  function stopScrubberLoop() {
+    if (scrubberRAF) cancelAnimationFrame(scrubberRAF);
+    scrubberRAF = null;
+  }
+
+  // Scrubber interactions (drag seek)
+  function pctToTime(pct) {
+    pct = Math.min(1, Math.max(0, pct));
+    return (videoEl && Number.isFinite(videoEl.duration) ? videoEl.duration : 0) * pct;
+  }
+  function seekToClientX(clientX) {
+    if (!videoEl || !scrubberTrackEl) return;
+    const rect = scrubberTrackEl.getBoundingClientRect();
+    const pct = (clientX - rect.left) / rect.width;
+    const t = pctToTime(pct);
+    if (Number.isFinite(t)) { try { videoEl.currentTime = t; } catch(_){} }
+  }
+  function wireScrubberInteractions() {
+    if (!scrubberTrackEl || scrubberTrackEl._wired) return;
+    scrubberTrackEl._wired = true;
+    const onDown = (e) => {
+      if (!videoEl) return;
+      showOverlayBar();
+      scrubberDragging = true;
+      scrubberWasPaused = videoEl.paused;
+      if (!scrubberWasPaused) { try { videoEl.pause(); } catch(_){} }
+      seekToClientX(e.touches ? e.touches[0].clientX : e.clientX);
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('touchmove', onMove, { passive: true });
+      window.addEventListener('mouseup', onUp, { once: true });
+      window.addEventListener('touchend', onUp, { once: true });
+      e.preventDefault();
+    };
+    const onMove = (e) => { if (!scrubberDragging) return; seekToClientX(e.touches ? e.touches[0].clientX : e.clientX); };
+    const onUp = async () => {
+      scrubberDragging = false;
+      try {
+        if (videoEl && scrubberWasPaused === false) {
+          // wait a short while for the browser to settle the currentTime change
+          await awaitSeekEvent(videoEl, 1200);
+          try { await safePlay(videoEl); } catch(_){}
+        }
+      } catch(_) {}
+      scrubberWasPaused = null;
+      showOverlayBar();
+    };
+    scrubberTrackEl.addEventListener('mousedown', onDown);
+    scrubberTrackEl.addEventListener('touchstart', onDown, { passive: true });
+    // Hover sprite previews via existing logic
+    scrubberTrackEl.addEventListener('mouseenter', () => { spriteHoverEnabled = true; });
+    scrubberTrackEl.addEventListener('mouseleave', () => { spriteHoverEnabled = false; hideSprite(); });
+    scrubberTrackEl.addEventListener('mousemove', (e) => handleSpriteHover(e));
+  }
+
+  function renderSceneTicks() {
+    if (!scrubberScenesLayer || !Array.isArray(scenes) || !videoEl || !Number.isFinite(videoEl.duration) || videoEl.duration <= 0) return;
+    scrubberScenesLayer.innerHTML = '';
+    const dur = videoEl.duration;
+    scenes.forEach(sc => {
+      const time = Number(sc?.time ?? sc?.t ?? sc?.start ?? sc?.s);
+      if (!Number.isFinite(time) || time <= 0 || time >= dur) return;
+      const span = document.createElement('span');
+      span.style.left = (time / dur * 100) + '%';
+      scrubberScenesLayer.appendChild(span);
+    });
+    // Draw intro-end marker on scrubber (localStorage preferred, then server introEnd)
+    try {
+      let it = null;
+      const key = `${LS_PREFIX}:introEnd:${currentPath}`;
+      const raw = currentPath ? localStorage.getItem(key) : null;
+      if (raw && Number.isFinite(Number(raw))) it = Number(raw);
+      else if (typeof introEnd !== 'undefined' && introEnd && Number.isFinite(Number(introEnd))) it = Number(introEnd);
+      if (it !== null && Number.isFinite(it) && it > 0 && it < dur) {
+        const s = document.createElement('span');
+        s.className = 'intro-scrubber-marker';
+        s.style.left = (it / dur * 100) + '%';
+        s.title = 'Intro end: ' + fmtTime(it);
+        scrubberScenesLayer.appendChild(s);
+      }
+    } catch(_) {}
+  }
+
   function open(path) {
     initDom();
+    wireOverlayInteractions();
     currentPath = path;
     // Switch to Player tab only when user explicitly opens a video via a card click (handled upstream).
     // Avoid forcing tab switch here to respect persisted tab preference.
@@ -2346,7 +3516,48 @@ const Player = (() => {
       // Defer autoplay decision to loadedmetadata restore
       // Attempt to keep lastVideo reference for convenience
       saveProgress(path, { t: 0, d: 0, paused: true, rate: 1 });
+      startScrubberLoop();
+      videoEl.addEventListener("ended", () => stopScrubberLoop(), { once: true });
+      wireScrubberInteractions();
+      // When metadata arrives, we can now safely render scene ticks if scenes already loaded
+      videoEl.addEventListener('loadedmetadata', () => {
+        try { renderSceneTicks(); } catch(_){ }
+        // Also, on initial load, if an intro-end exists, seek there so the scrubber shows the correct start position.
+        try {
+          (function(){
+            try {
+              const startAtIntro = (function(){ try { const cb = document.getElementById('settingStartAtIntro'); if(cb) return !!cb.checked; return localStorage.getItem('setting.startAtIntro') !== '0'; } catch(_) { return true; } })();
+              if (!startAtIntro) return;
+              // prefer localStorage per-path key first
+              const key = `${LS_PREFIX}:introEnd:${path}`;
+              const raw = localStorage.getItem(key);
+              let t = null;
+              if (raw && Number.isFinite(Number(raw))) t = Number(raw);
+              else if (typeof introEnd !== 'undefined' && introEnd && Number.isFinite(Number(introEnd))) t = Number(introEnd);
+              if (t !== null && Number.isFinite(t) && t > 0 && videoEl.duration && t < videoEl.duration) {
+                let done = false;
+                const onSeek = () => { if (done) return; done = true; try { videoEl.removeEventListener('seeked', onSeek); } catch(_){} try { updateScrubber(); } catch(_){} };
+                try { videoEl.addEventListener('seeked', onSeek); videoEl.currentTime = Math.max(0, Math.min(videoEl.duration, t)); }
+                catch(_) { try { updateScrubber(); } catch(_){} }
+                // ensure scrubber updates even if seeked not fired
+                setTimeout(() => { try { updateScrubber(); } catch(_){} }, 250);
+              }
+            } catch(_){}
+          })();
+        } catch(_){}
+      }, { once: true });
     }
+    // Update floating title bar if present
+    try {
+      const titleTarget = document.getElementById('playerTitle');
+      if (titleTarget) {
+        const rawName = path.split('/').pop() || path;
+        const baseName = rawName.replace(/\.[^.]+$/, '') || rawName;
+        titleTarget.textContent = baseName;
+        if (overlayBarEl && baseName) { delete overlayBarEl.dataset.empty; }
+        if (typeof showOverlayBar === 'function') showOverlayBar();
+      }
+    } catch(_){}
     // Metadata and title
     (async () => {
       try {
@@ -2358,6 +3569,7 @@ const Player = (() => {
         const rawName = path.split("/").pop() || path;
         const baseName = rawName.replace(/\.[^.]+$/, "") || rawName;
         if (titleEl) titleEl.textContent = baseName;
+        if (overlayBarEl && baseName) { delete overlayBarEl.dataset.empty; }
         // sidebar title removed
         // Populate file info table
         try {
@@ -2365,27 +3577,27 @@ const Player = (() => {
             fiDurationEl.textContent = fmtTime(Number(d.duration) || 0) || "—";
           if (fiResolutionEl)
             fiResolutionEl.textContent =
-              d.width && d.height ? `${d.width}x${d.height}` : "—";
+          d.width && d.height ? `${d.width}x${d.height}` : "—";
           if (fiVideoCodecEl) fiVideoCodecEl.textContent = d.vcodec || "—";
           if (fiAudioCodecEl) fiAudioCodecEl.textContent = d.acodec || "—";
           if (fiBitrateEl)
             fiBitrateEl.textContent = d.bitrate
-              ? Number(d.bitrate) >= 1000
-                ? Number(d.bitrate / 1000).toFixed(0) + " kbps"
-                : d.bitrate + " bps"
-              : "—";
+          ? Number(d.bitrate) >= 1000
+          ? Number(d.bitrate / 1000).toFixed(0) + " kbps"
+          : d.bitrate + " bps"
+          : "—";
           if (fiVBitrateEl)
             fiVBitrateEl.textContent = d.vbitrate
-              ? Number(d.vbitrate) >= 1000
-                ? Number(d.vbitrate / 1000).toFixed(0) + " kbps"
-                : d.vbitrate + " bps"
-              : "—";
+          ? Number(d.vbitrate) >= 1000
+          ? Number(d.vbitrate / 1000).toFixed(0) + " kbps"
+          : d.vbitrate + " bps"
+          : "—";
           if (fiABitrateEl)
             fiABitrateEl.textContent = d.abitrate
-              ? Number(d.abitrate) >= 1000
-                ? Number(d.abitrate / 1000).toFixed(0) + " kbps"
-                : d.abitrate + " bps"
-              : "—";
+          ? Number(d.abitrate) >= 1000
+          ? Number(d.abitrate / 1000).toFixed(0) + " kbps"
+          : d.abitrate + " bps"
+          : "—";
           if (fiSizeEl)
             fiSizeEl.textContent = d.size ? fmtSize(Number(d.size)) : "—";
           if (fiModifiedEl) {
@@ -2405,6 +3617,7 @@ const Player = (() => {
         const rawName = path.split("/").pop() || path;
         const baseName = rawName.replace(/\.[^.]+$/, "") || rawName;
         if (titleEl) titleEl.textContent = baseName;
+        if (overlayBarEl && baseName) { delete overlayBarEl.dataset.empty; }
         // sidebar title removed
         try {
           if (fiDurationEl) fiDurationEl.textContent = "—";
@@ -2430,8 +3643,108 @@ const Player = (() => {
       loadSprites();
       loadScenes();
       loadSubtitles();
+      try { loadVideoChips(); } catch(_){}
     })();
     wireBadgeActions();
+  }
+  // Expose globally for Random Play
+  try { window.__playerOpen = open; } catch(_) {}
+
+  // -----------------------------
+  // Video performers & tags chips
+  // -----------------------------
+  async function loadVideoChips() {
+    if (!currentPath) return;
+    const perfListEl = document.getElementById('videoPerformers');
+    const tagListEl = document.getElementById('videoTags');
+    if (!perfListEl || !tagListEl) return;
+    perfListEl.innerHTML = '';
+    tagListEl.innerHTML = '';
+    // Fetch metadata that might contain tags/performers (extendable). If not present, fallback to dedicated endpoints if exist.
+    let performers = []; let tags = [];
+    try {
+      const u = new URL('/api/media/info', window.location.origin); // backend media info endpoint (prefixed)
+      u.searchParams.set('path', currentPath);
+      const r = await fetch(u.toString());
+      if (r.ok) {
+        const j = await r.json();
+        const d = j?.data || j;
+        if (Array.isArray(d?.performers)) performers = d.performers.filter(x=>!!x).slice(0,200);
+        if (Array.isArray(d?.tags)) tags = d.tags.filter(x=>!!x).slice(0,400);
+      }
+    } catch(_){ /* ignore; fallback empty */ }
+    renderChipSet(perfListEl, performers, 'performer');
+    renderChipSet(tagListEl, tags, 'tag');
+    wireChipInputs();
+  }
+
+  function renderChipSet(container, items, kind) {
+    if (!container) return;
+    container.innerHTML = '';
+    (items||[]).forEach(item => {
+      if (!item || typeof item !== 'string') return;
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = item;
+      const rm = document.createElement('span');
+      rm.className = 'remove';
+      rm.textContent = '×';
+      chip.appendChild(rm);
+      chip.title = 'Remove ' + kind;
+      chip.addEventListener('click', () => removeChip(kind, item));
+      container.appendChild(chip);
+    });
+  }
+
+  function wireChipInputs() {
+    const perfInput = document.getElementById('videoPerformerInput');
+    const tagInput = document.getElementById('videoTagInput');
+    if (perfInput && !perfInput._wired) {
+      perfInput._wired = true;
+      perfInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const val = (perfInput.value||'').trim();
+          if (val) { addChip('performer', val); perfInput.value=''; }
+        }
+      });
+    }
+    if (tagInput && !tagInput._wired) {
+      tagInput._wired = true;
+      tagInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const val = (tagInput.value||'').trim();
+          if (val) { addChip('tag', val); tagInput.value=''; }
+        }
+      });
+    }
+  }
+
+  async function addChip(kind, value) {
+    if (!currentPath || !value) return;
+    try {
+      const ep = kind === 'performer' ? '/api/media/performers/add' : '/api/media/tags/add';
+      const url = new URL(ep, window.location.origin);
+      url.searchParams.set('path', currentPath);
+      url.searchParams.set(kind, value);
+      const r = await fetch(url.toString(), { method:'POST' });
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      loadVideoChips();
+    } catch(_) { notify('Failed to add '+kind, 'error'); }
+  }
+
+  async function removeChip(kind, value) {
+    if (!currentPath || !value) return;
+    try {
+      const ep = kind === 'performer' ? '/api/media/performers/remove' : '/api/media/tags/remove';
+      const url = new URL(ep, window.location.origin);
+      url.searchParams.set('path', currentPath);
+      url.searchParams.set(kind, value);
+      const r = await fetch(url.toString(), { method:'POST' });
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      loadVideoChips();
+    } catch(_) { notify('Failed to remove '+kind, 'error'); }
   }
 
   // Run browser-side face detection using the FaceDetector API and upload results to server
@@ -2446,7 +3759,7 @@ const Player = (() => {
       }
       // Feature check
       const Supported =
-        "FaceDetector" in window && typeof window.FaceDetector === "function";
+      "FaceDetector" in window && typeof window.FaceDetector === "function";
       if (!Supported) {
         notify(
           "FaceDetector API not available in this browser. Try Chrome/Edge desktop.",
@@ -2522,17 +3835,17 @@ const Player = (() => {
       // Helper: precise seek
       const seekTo = (t) =>
         new Promise((res) => {
-          const onSeek = () => {
-            videoEl.removeEventListener("seeked", onSeek);
-            res();
-          };
-          videoEl.addEventListener("seeked", onSeek);
-          try {
-            videoEl.currentTime = Math.max(0, Math.min(total, t));
-          } catch (_) {
-            res();
-          }
-        });
+        const onSeek = () => {
+          videoEl.removeEventListener("seeked", onSeek);
+          res();
+        };
+        videoEl.addEventListener("seeked", onSeek);
+        try {
+          videoEl.currentTime = Math.max(0, Math.min(total, t));
+        } catch (_) {
+          res();
+        }
+      });
       for (let i = 0; i < samples.length; i++) {
         const t = samples[i];
         await seekTo(t);
@@ -2565,7 +3878,7 @@ const Player = (() => {
         videoEl.currentTime = prevT;
       } catch (_) {}
       try {
-        if (!wasPaused) await videoEl.play();
+        if (!wasPaused) await safePlay(videoEl);
       } catch (_) {}
       if (faces.length === 0) {
         notify("No faces detected in sampled frames.", "error");
@@ -2626,7 +3939,7 @@ const Player = (() => {
     try {
       try {
         const st =
-          window.__artifactStatus && window.__artifactStatus[currentPath];
+        window.__artifactStatus && window.__artifactStatus[currentPath];
         if (st && st.heatmap === false) {
           if (badgeHeatmapStatus) badgeHeatmapStatus.textContent = "✗";
           if (badgeHeatmap) badgeHeatmap.dataset.present = "0";
@@ -2660,9 +3973,9 @@ const Player = (() => {
 
       if (!renderedViaJson) {
         const url =
-          "/api/heatmaps/png?path=" +
-          encodeURIComponent(currentPath) +
-          `&t=${Date.now()}`;
+        "/api/heatmaps/png?path=" +
+        encodeURIComponent(currentPath) +
+        `&t=${Date.now()}`;
         // Try to load an image to detect availability
         await new Promise((resolve) => {
           const probe = new Image();
@@ -2732,13 +4045,53 @@ const Player = (() => {
     return `rgba(${r},${g},${bl},${al})`;
   }
 
+  // Render heatmap samples (array of numbers 0..1) onto the canvas spanning full duration
+  function drawHeatmapCanvas(samples) {
+    try {
+      if (!heatmapCanvasEl) return;
+      const ctx = heatmapCanvasEl.getContext('2d', { willReadFrequently: false });
+      if (!ctx) return;
+      const w = heatmapCanvasEl.width = heatmapCanvasEl.clientWidth || heatmapCanvasEl.offsetWidth || 800;
+      const h = heatmapCanvasEl.height = heatmapCanvasEl.clientHeight || heatmapCanvasEl.offsetHeight || 24;
+      ctx.clearRect(0,0,w,h);
+      if (!Array.isArray(samples) || !samples.length) return;
+      // Determine bar width; ensure we cover entire width even if samples fewer than pixels.
+      const n = samples.length;
+      const barW = Math.max(1, Math.floor(w / n));
+      for (let i=0;i<n;i++) {
+        const v = Number(samples[i]);
+        if (!Number.isFinite(v)) continue;
+        ctx.fillStyle = heatColor(v);
+        const x = Math.floor(i / (n-1) * (w - barW));
+        ctx.fillRect(x, 0, barW+1, h); // +1 to avoid gaps
+      }
+      // Optional subtle top/bottom fade overlay for aesthetics
+      const grad = ctx.createLinearGradient(0,0,0,h);
+      grad.addColorStop(0, 'rgba(0,0,0,0.35)');
+      grad.addColorStop(0.15, 'rgba(0,0,0,0)');
+      grad.addColorStop(0.85, 'rgba(0,0,0,0)');
+      grad.addColorStop(1, 'rgba(0,0,0,0.35)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0,0,w,h);
+    } catch(_) {}
+  }
+
+  function clearHeatmapCanvas() {
+    try {
+      if (!heatmapCanvasEl) return;
+      const ctx = heatmapCanvasEl.getContext('2d');
+      if (!ctx) return;
+      ctx.clearRect(0,0,heatmapCanvasEl.width, heatmapCanvasEl.height);
+    } catch(_) {}
+  }
+
   async function loadSprites() {
     // initialize
     sprites = null;
     if (!currentPath) return;
     try {
       const st =
-        window.__artifactStatus && window.__artifactStatus[currentPath];
+      window.__artifactStatus && window.__artifactStatus[currentPath];
       if (st && st.sprites === false) {
         if (badgeSpritesStatus) badgeSpritesStatus.textContent = "✗";
         if (badgeSprites) badgeSprites.dataset.present = "0";
@@ -2772,7 +4125,7 @@ const Player = (() => {
     if (!currentPath) return;
     try {
       const st =
-        window.__artifactStatus && window.__artifactStatus[currentPath];
+      window.__artifactStatus && window.__artifactStatus[currentPath];
       if (st && st.scenes === false) {
         if (badgeScenesStatus) badgeScenesStatus.textContent = "✗";
         if (badgeScenes) badgeScenes.dataset.present = "0";
@@ -2788,15 +4141,19 @@ const Player = (() => {
       const data = await r.json();
       const d = data?.data || {};
       const arr =
-        d.scenes && Array.isArray(d.scenes) ? d.scenes : d.markers || [];
+      d.scenes && Array.isArray(d.scenes) ? d.scenes : d.markers || [];
+      // intro_end may be present as a top-level numeric field
+      introEnd = Number.isFinite(Number(d.intro_end)) ? Number(d.intro_end) : null;
       scenes = arr
-        .map((s) => ({ time: Number(s.time || s.t || s.start || 0) }))
-        .filter((s) => Number.isFinite(s.time));
+      .map((s) => ({ time: Number(s.time || s.t || s.start || 0) }))
+      .filter((s) => Number.isFinite(s.time));
       renderMarkers();
       if (badgeScenesStatus)
         badgeScenesStatus.textContent = scenes.length ? "✓" : "✗";
       if (badgeScenes) badgeScenes.dataset.present = scenes.length ? "1" : "0";
       applyTimelineDisplayToggles();
+      // Scene ticks may depend on duration; schedule retries until duration known
+      if (scenes.length) scheduleSceneTicksRetry();
     } catch (_) {
       scenes = [];
       renderMarkers();
@@ -2806,29 +4163,47 @@ const Player = (() => {
     applyTimelineDisplayToggles();
   }
 
+  let sceneTickRetryTimer = null;
+  function scheduleSceneTicksRetry(attempt=0) {
+    if (sceneTickRetryTimer) { clearTimeout(sceneTickRetryTimer); sceneTickRetryTimer = null; }
+    if (!videoEl || !Array.isArray(scenes) || !scenes.length) return;
+    const ready = Number.isFinite(videoEl.duration) && videoEl.duration > 0;
+    if (ready) { try { renderSceneTicks(); } catch(_){} return; }
+    if (attempt > 12) return; // ~3s max (12 * 250ms)
+    sceneTickRetryTimer = setTimeout(() => scheduleSceneTicksRetry(attempt+1), 250);
+  }
+
   async function loadSubtitles() {
     subtitlesUrl = null;
     if (!currentPath || !videoEl) return;
     try {
       const st =
-        window.__artifactStatus && window.__artifactStatus[currentPath];
+      window.__artifactStatus && window.__artifactStatus[currentPath];
       if (st && st.subtitles === false) {
         if (badgeSubtitlesStatus) badgeSubtitlesStatus.textContent = "✗";
         if (badgeSubtitles) badgeSubtitles.dataset.present = "0";
         return;
       }
     } catch (_) {}
-    // Remove existing tracks
-    Array.from(videoEl.querySelectorAll("track")).forEach((t) => t.remove());
+    // Remove existing tracks and their cue listeners
+    Array.from(videoEl.querySelectorAll("track")).forEach((t) => {
+      try {
+        const tt = t.track || null;
+        if (tt && t._cueHandler) {
+          try { tt.removeEventListener && tt.removeEventListener('cuechange', t._cueHandler); } catch(_) {}
+        }
+      } catch(_) {}
+      try { t.remove(); } catch(_) {}
+    });
     try {
       const test = await fetch(
         "/api/subtitles/get?path=" + encodeURIComponent(currentPath)
       );
       if (test.ok) {
         const src =
-          "/api/subtitles/get?path=" +
-          encodeURIComponent(currentPath) +
-          `&t=${Date.now()}`;
+        "/api/subtitles/get?path=" +
+        encodeURIComponent(currentPath) +
+        `&t=${Date.now()}`;
         subtitlesUrl = src;
         const track = document.createElement("track");
         track.kind = "subtitles";
@@ -2837,6 +4212,31 @@ const Player = (() => {
         track.default = true;
         track.src = src; // browser will parse SRT in many cases; if not, still downloadable
         videoEl.appendChild(track);
+        // If browser exposes textTracks, listen for cue changes and render into overlay
+        try {
+          const tt = track.track || Array.from(videoEl.textTracks || []).find(t => t.kind === 'subtitles');
+          if (tt) {
+            // ensure track mode is showing only when toggled; start disabled to let CC button control display
+            if (typeof tt.mode !== 'undefined') tt.mode = 'disabled';
+            const onCueChange = () => {
+              try {
+                const active = Array.from(tt.activeCues || []).map(c => c.text).join('\n');
+                if (subtitleOverlayEl) {
+                  if (active && active.trim()) {
+                    subtitleOverlayEl.textContent = active.replace(/\r?\n/g, '\n');
+                    subtitleOverlayEl.hidden = false;
+                  } else {
+                    subtitleOverlayEl.textContent = '';
+                    subtitleOverlayEl.hidden = true;
+                  }
+                }
+              } catch(_) {}
+            };
+            // store reference to remove later if needed
+            track._cueHandler = onCueChange;
+            try { tt.addEventListener('cuechange', onCueChange); } catch(_) {}
+          }
+        } catch(_) {}
         if (badgeSubtitlesStatus) badgeSubtitlesStatus.textContent = "✓";
         if (badgeSubtitles) badgeSubtitles.dataset.present = "1";
       }
@@ -2852,23 +4252,255 @@ const Player = (() => {
   function renderMarkers() {
     if (!markersEl) return;
     markersEl.innerHTML = "";
-    if (!duration || !scenes || scenes.length === 0) return;
-    const rect = timelineEl.getBoundingClientRect();
+    const haveScenes = Array.isArray(scenes) && scenes.length > 0;
+    // Always refresh sidebar list even before metadata duration is known
+    try { renderMarkersList(); } catch(_) {}
+    if (!haveScenes) return; // nothing else to draw yet
+    if (!duration || !Number.isFinite(duration) || duration <= 0) return; // wait for loadedmetadata
     for (const s of scenes) {
       const t = Math.max(0, Math.min(duration, Number(s.time)));
+      if (!Number.isFinite(t) || t <= 0 || t >= duration) continue;
       const pct = (t / duration) * 100;
       const mark = document.createElement("div");
-      mark.style.position = "absolute";
+      mark.className = 'marker-tick';
       mark.style.left = `calc(${pct}% - 2px)`;
-      mark.style.top = "0";
-      mark.style.width = "4px";
-      mark.style.height = "100%";
-      mark.style.background = "rgba(255,255,255,0.7)";
-      mark.style.mixBlendMode = "screen";
       mark.title = fmtTime(t);
       markersEl.appendChild(mark);
     }
+    // Draw intro end marker if available and in-range
+    try {
+      if (introEnd && Number.isFinite(Number(introEnd)) && duration && introEnd > 0 && introEnd < duration) {
+        const pct = (introEnd / duration) * 100;
+        const im = document.createElement('div');
+        im.className = 'intro-marker-tick';
+        im.style.left = `calc(${pct}% - 3px)`;
+        im.title = 'Intro end: ' + fmtTime(introEnd);
+        markersEl.appendChild(im);
+      }
+      if (typeof outroBegin !== 'undefined' && Number.isFinite(Number(outroBegin)) && duration && outroBegin > 0 && outroBegin < duration) {
+        const pct = (outroBegin / duration) * 100;
+        const om = document.createElement('div');
+        om.className = 'outro-marker-tick';
+        om.style.left = `calc(${pct}% - 3px)`;
+        om.title = 'Outro begin: ' + fmtTime(outroBegin);
+        markersEl.appendChild(om);
+      }
+    } catch(_) {}
   }
+
+  // Sidebar Markers List DOM rendering
+  function renderMarkersList() {
+    const list = document.getElementById('markersList');
+    if (!list) return;
+    list.innerHTML = '';
+    // Show intro-end and outro-begin markers if set for this file
+    try {
+      let it = null;
+      if (introEnd && Number.isFinite(Number(introEnd))) {
+        it = Number(introEnd);
+      } else {
+        const introKey = `${LS_PREFIX}:introEnd:${currentPath}`;
+        const rawIntro = currentPath ? localStorage.getItem(introKey) : null;
+        if (rawIntro && Number.isFinite(Number(rawIntro))) it = Number(rawIntro);
+      }
+      if (it !== null && Number.isFinite(it)) {
+        const introRow = document.createElement('div');
+        introRow.className = 'marker-row marker-row--intro';
+        const label = document.createElement('div');
+        label.textContent = 'Intro';
+        label.style.flex = '1';
+        label.style.fontWeight = '700';
+        const timeLabel = document.createElement('div');
+        timeLabel.textContent = fmtTime(it);
+        timeLabel.className = 'marker-time-label';
+        timeLabel.style.marginRight = '8px';
+        const jump = document.createElement('button');
+        jump.type = 'button';
+        jump.className = 'marker-jump';
+        jump.textContent = 'Jump';
+        jump.addEventListener('click', ()=> { if(videoEl){ videoEl.currentTime = Math.min(duration, Math.max(0, it)); }});
+        const clr = document.createElement('button');
+        clr.type = 'button';
+        clr.className = 'marker-remove';
+        clr.textContent = 'Clear';
+        clr.addEventListener('click', async ()=> { try {
+          try { localStorage.removeItem(`${LS_PREFIX}:introEnd:${currentPath}`); } catch(_){}
+          // also remove server-side
+          try { const mu = new URL('/api/scenes/intro', window.location.origin); mu.searchParams.set('path', currentPath); await fetch(mu.toString(), { method: 'DELETE' }); } catch(_){ }
+          notify('Intro end cleared','success');
+          await loadScenes(); renderMarkersList();
+        } catch(_) { notify('Failed to clear intro end','error'); } });
+        introRow.appendChild(label);
+        introRow.appendChild(timeLabel);
+        introRow.appendChild(jump);
+        introRow.appendChild(clr);
+        list.appendChild(introRow);
+      }
+      // Outro begin
+      let ot = null;
+      if (outroBegin && Number.isFinite(Number(outroBegin))) {
+        ot = Number(outroBegin);
+      } else {
+        const outroKey = `${LS_PREFIX}:outroBegin:${currentPath}`;
+        const rawOutro = currentPath ? localStorage.getItem(outroKey) : null;
+        if (rawOutro && Number.isFinite(Number(rawOutro))) ot = Number(rawOutro);
+      }
+      if (ot !== null && Number.isFinite(ot)) {
+        const outroRow = document.createElement('div');
+        outroRow.className = 'marker-row marker-row--outro';
+        const label = document.createElement('div');
+        label.textContent = 'Outro';
+        label.style.flex = '1';
+        label.style.fontWeight = '700';
+        const timeLabel = document.createElement('div');
+        timeLabel.textContent = fmtTime(ot);
+        timeLabel.className = 'marker-time-label';
+        timeLabel.style.marginRight = '8px';
+        const jump = document.createElement('button');
+        jump.type = 'button';
+        jump.className = 'marker-jump';
+        jump.textContent = 'Jump';
+        jump.addEventListener('click', ()=> { 
+          if(videoEl){ 
+            videoEl.currentTime = Math.min(duration, Math.max(0, ot));
+          }
+        });
+        const clr = document.createElement('button');
+        clr.type = 'button';
+        clr.className = 'marker-remove';
+        clr.textContent = 'Clear';
+        clr.addEventListener('click', async ()=> { try {
+          try { localStorage.removeItem(`${LS_PREFIX}:outroBegin:${currentPath}`); } catch(_){}
+          notify('Outro begin cleared','success');
+          outroBegin = null;
+          renderMarkers();
+          renderMarkersList();
+        } catch(_) { notify('Failed to clear outro begin','error'); } });
+        outroRow.appendChild(label);
+        outroRow.appendChild(timeLabel);
+        outroRow.appendChild(jump);
+        outroRow.appendChild(clr);
+        list.appendChild(outroRow);
+      }
+    } catch(_) {}
+    if (!Array.isArray(scenes) || scenes.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'markers-empty';
+      empty.textContent = 'No markers';
+      list.appendChild(empty);
+      return;
+    }
+    // Sort by time
+    const sorted = scenes.slice().sort((a,b)=> (a.time||0)-(b.time||0));
+    sorted.forEach((sc, idx) => {
+      const row = document.createElement('div');
+      row.className = 'marker-row';
+      const t = Number(sc.time)||0;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'marker-time-input';
+      input.value = fmtTime(t).padStart(5,'0');
+      input.setAttribute('aria-label', 'Marker time');
+      input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); commitTimeEdit(input, sc);} });
+      input.addEventListener('blur', ()=> commitTimeEdit(input, sc));
+      const jump = document.createElement('button');
+      jump.type = 'button';
+      jump.className = 'marker-jump';
+      jump.textContent = 'Jump';
+      jump.addEventListener('click', ()=> { if(videoEl){ videoEl.currentTime = Math.min(duration, Math.max(0, sc.time||0)); }});
+      const del = document.createElement('button');
+      del.type='button';
+      del.className='marker-remove';
+      del.setAttribute('aria-label','Remove marker');
+      del.textContent='×';
+      del.addEventListener('click', ()=> removeMarker(sc));
+      row.appendChild(input);
+      row.appendChild(jump);
+      row.appendChild(del);
+      list.appendChild(row);
+    });
+  }
+
+  function parseTimeString(str){
+    if(!str) return 0;
+    const parts = str.trim().split(':').map(p=>p.trim()).filter(Boolean);
+    if(parts.some(p=>!/^[0-9]{1,2}$/.test(p))) return NaN;
+    let h=0,m=0,s=0;
+    if(parts.length===3){ h=+parts[0]; m=+parts[1]; s=+parts[2]; }
+    else if(parts.length===2){ m=+parts[0]; s=+parts[1]; }
+    else if(parts.length===1){ s=+parts[0]; }
+    return (h*3600)+(m*60)+s;
+  }
+
+  async function commitTimeEdit(input, sceneObj){
+    const raw = input.value.trim();
+    const seconds = parseTimeString(raw);
+    if(!Number.isFinite(seconds) || seconds < 0){
+      input.classList.add('is-error');
+      setTimeout(()=>input.classList.remove('is-error'), 1200);
+      input.value = fmtTime(Number(sceneObj.time||0));
+      return;
+    }
+    const clamped = Math.min(Math.max(0, seconds), Math.max(0, duration || 0));
+    if(Math.abs(clamped - (sceneObj.time||0)) < 0.01){
+      input.value = fmtTime(clamped);
+      return;
+    }
+    try {
+      const url = new URL('/api/marker/update', window.location.origin);
+      url.searchParams.set('path', currentPath||'');
+      url.searchParams.set('old_time', String(sceneObj.time||0));
+      url.searchParams.set('new_time', String(clamped));
+      const r = await fetch(url.toString(), { method:'POST' });
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      sceneObj.time = clamped;
+      // Refresh scenes from server for authoritative order
+      await loadScenes();
+      renderMarkersList();
+    } catch(e){
+      notify('Failed to update marker', 'error');
+      input.value = fmtTime(Number(sceneObj.time||0));
+    }
+  }
+
+  async function removeMarker(sceneObj){
+    try {
+      const url = new URL('/api/marker/delete', window.location.origin);
+      url.searchParams.set('path', currentPath||'');
+      url.searchParams.set('time', String(sceneObj.time||0));
+      const r = await fetch(url.toString(), { method:'POST' });
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      // Reload scenes
+      await loadScenes();
+      renderMarkersList();
+      notify('Marker removed','success');
+    } catch(e){
+      notify('Failed to remove marker','error');
+    }
+  }
+
+  // Add marker button (sidebar)
+  (function wireAddMarkerButton(){
+    const btn = document.getElementById('btnAddMarker');
+    if(!btn || btn._wired) return;
+    btn._wired = true;
+    btn.addEventListener('click', async () => {
+      if(!currentPath || !videoEl) return;
+      const t = Math.max(0, Math.min(duration||0, videoEl.currentTime||0));
+      try {
+        const url = new URL('/api/marker', window.location.origin);
+        url.searchParams.set('path', currentPath);
+        url.searchParams.set('time', String(t.toFixed(3)));
+        const r = await fetch(url.toString(), { method:'POST' });
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        await loadScenes();
+        renderMarkersList();
+        notify('Marker added','success');
+      } catch(e){
+        notify('Failed to add marker','error');
+      }
+    });
+  })();
 
   function renderSidebarScenes() {
     /* list removed in compact sidebar */
@@ -2880,46 +4512,46 @@ const Player = (() => {
     if (!currentPath) return;
     // Lazy acquire (in case of markup changes) without assuming globals exist
     const badgeCover =
-      window.badgeCover || document.getElementById("badge-cover");
+    window.badgeCover || document.getElementById("badge-cover");
     const badgeCoverStatus =
-      window.badgeCoverStatus || document.getElementById("badge-cover-status");
+    window.badgeCoverStatus || document.getElementById("badge-cover-status");
     const badgeHover =
-      window.badgeHover || document.getElementById("badge-hover");
+    window.badgeHover || document.getElementById("badge-hover");
     const badgeHoverStatus =
-      window.badgeHoverStatus || document.getElementById("badge-hover-status");
+    window.badgeHoverStatus || document.getElementById("badge-hover-status");
     const badgeSprites =
-      window.badgeSprites || document.getElementById("badge-sprites");
+    window.badgeSprites || document.getElementById("badge-sprites");
     const badgeSpritesStatus =
-      window.badgeSpritesStatus ||
-      document.getElementById("badge-sprites-status");
+    window.badgeSpritesStatus ||
+    document.getElementById("badge-sprites-status");
     const badgeScenes =
-      window.badgeScenes || document.getElementById("badge-scenes");
+    window.badgeScenes || document.getElementById("badge-scenes");
     const badgeScenesStatus =
-      window.badgeScenesStatus ||
-      document.getElementById("badge-scenes-status");
+    window.badgeScenesStatus ||
+    document.getElementById("badge-scenes-status");
     const badgeSubtitles =
-      window.badgeSubtitles || document.getElementById("badge-subtitles");
+    window.badgeSubtitles || document.getElementById("badge-subtitles");
     const badgeSubtitlesStatus =
-      window.badgeSubtitlesStatus ||
-      document.getElementById("badge-subtitles-status");
+    window.badgeSubtitlesStatus ||
+    document.getElementById("badge-subtitles-status");
     const badgeFaces =
-      window.badgeFaces || document.getElementById("badge-faces");
+    window.badgeFaces || document.getElementById("badge-faces");
     const badgeFacesStatus =
-      window.badgeFacesStatus || document.getElementById("badge-faces-status");
+    window.badgeFacesStatus || document.getElementById("badge-faces-status");
     const badgePhash =
-      window.badgePhash || document.getElementById("badge-phash");
+    window.badgePhash || document.getElementById("badge-phash");
     const badgePhashStatus =
-      window.badgePhashStatus || document.getElementById("badge-phash-status");
+    window.badgePhashStatus || document.getElementById("badge-phash-status");
     const badgeHeatmap =
-      window.badgeHeatmap || document.getElementById("badge-heatmap");
+    window.badgeHeatmap || document.getElementById("badge-heatmap");
     const badgeHeatmapStatus =
-      window.badgeHeatmapStatus ||
-      document.getElementById("badge-heatmap-status");
+    window.badgeHeatmapStatus ||
+    document.getElementById("badge-heatmap-status");
     const badgeMeta =
-      window.badgeMeta || document.getElementById("badge-metadata");
+    window.badgeMeta || document.getElementById("badge-metadata");
     const badgeMetaStatus =
-      window.badgeMetaStatus ||
-      document.getElementById("badge-metadata-status");
+    window.badgeMetaStatus ||
+    document.getElementById("badge-metadata-status");
     try {
       const u = new URL("/api/artifacts/status", window.location.origin);
       u.searchParams.set("path", currentPath);
@@ -2971,9 +4603,9 @@ const Player = (() => {
       // Capability gating: map kind -> operation type
       try {
         const caps =
-          (window.tasksManager && window.tasksManager.capabilities) ||
-          window.__capabilities ||
-          {};
+        (window.tasksManager && window.tasksManager.capabilities) ||
+        window.__capabilities ||
+        {};
         const needsFfmpeg = new Set([
           "heatmap",
           "scenes",
@@ -3012,19 +4644,55 @@ const Player = (() => {
           url = new URL("/api/phash/create", window.location.origin);
         else return;
         url.searchParams.set("path", currentPath);
+        // Mark badge loading before request to give immediate feedback
+        const badgeEl = document.getElementById(`badge-${kind}`) || document.getElementById(`badge-${kind.toLowerCase()}`);
+        if (badgeEl) {
+          badgeEl.dataset.loading = '1';
+        }
         const r = await fetch(url.toString(), { method: "POST" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         notify(kind + " generation started", "success");
-        setTimeout(() => {
-          if (kind === "heatmap") loadHeatmap();
-          else if (kind === "scenes") loadScenes();
-          else if (kind === "subtitles") loadSubtitles();
-          else if (kind === "sprites") loadSprites();
-          else if (kind === "faces" || kind === "hover" || kind === "phash")
-            loadArtifactStatuses();
-        }, 400);
+        // Poll artifact status until present or timeout
+        const startedAt = Date.now();
+        const TIMEOUT_MS = 60_000; // 1 min fallback
+        const POLL_INTERVAL = 1200;
+        const poll = async () => {
+          if (!currentPath) return finish();
+          try {
+            await loadArtifactStatuses();
+            // Determine presence based on kind
+            const st = window.__artifactStatus && window.__artifactStatus[currentPath];
+            let present = false;
+            if (st) {
+              if (kind === 'heatmap') present = !!st.heatmap;
+              else if (kind === 'scenes') present = !!st.scenes;
+              else if (kind === 'subtitles') present = !!st.subtitles;
+              else if (kind === 'sprites') present = !!st.sprites;
+              else if (kind === 'faces') present = !!st.faces;
+              else if (kind === 'hover') present = !!st.hover;
+              else if (kind === 'phash') present = !!st.phash;
+            }
+            if (present) {
+              // Load any richer data renderers once present
+              if (kind === 'heatmap') await loadHeatmap();
+              else if (kind === 'scenes') await loadScenes();
+              else if (kind === 'sprites') await loadSprites();
+              else if (kind === 'subtitles') await loadSubtitles();
+              return finish();
+            }
+          } catch(_) {}
+          if (Date.now() - startedAt < TIMEOUT_MS) {
+            setTimeout(poll, POLL_INTERVAL);
+          } else finish();
+        };
+        const finish = () => {
+          if (badgeEl) delete badgeEl.dataset.loading;
+        };
+        setTimeout(poll, 500);
       } catch (e) {
         notify("Failed to start " + kind + " job", "error");
+        const badgeEl = document.getElementById(`badge-${kind}`) || document.getElementById(`badge-${kind.toLowerCase()}`);
+        if (badgeEl) delete badgeEl.dataset.loading;
       }
     };
     const attach = (btn, kind) => {
@@ -3035,32 +4703,36 @@ const Player = (() => {
         if (!present) gen(kind);
       });
     };
-    attach(badgeHeatmap, "heatmap");
-    attach(badgeScenes, "scenes");
-    attach(badgeSubtitles, "subtitles");
-    attach(badgeSprites, "sprites");
-    attach(badgeFaces, "faces");
-    attach(badgeHover, "hover");
-    attach(badgePhash, "phash");
+    // Resolve current badge elements (hyphenated IDs preferred)
+    const bHeat = document.getElementById('badge-heatmap') || badgeHeatmap;
+    const bScenes = document.getElementById('badge-scenes') || badgeScenes;
+    const bSubs = document.getElementById('badge-subtitles') || badgeSubtitles;
+    const bSprites = document.getElementById('badge-sprites') || badgeSprites;
+    const bFaces = document.getElementById('badge-faces') || badgeFaces;
+    const bHover = document.getElementById('badge-hover') || badgeHover;
+    const bPhash = document.getElementById('badge-phash') || badgePhash;
+    attach(bHeat, "heatmap");
+    attach(bScenes, "scenes");
+    attach(bSubs, "subtitles");
+    attach(bSprites, "sprites");
+    attach(bFaces, "faces");
+    attach(bHover, "hover");
+    attach(bPhash, "phash");
   }
 
   function handleSpriteHover(evt) {
-    if (!sprites || !sprites.index || !sprites.sheet) {
-      hideSprite();
-      return;
-    }
-    if (!spriteHoverEnabled) {
-      hideSprite();
-      return;
-    }
-    const rect = timelineEl.getBoundingClientRect();
+    if (!sprites || !sprites.index || !sprites.sheet) { hideSprite(); return; }
+    if (!spriteHoverEnabled) { hideSprite(); return; }
+    const targetTrack = scrubberTrackEl || timelineEl;
+    if (!targetTrack) { hideSprite(); return; }
+    const rect = targetTrack.getBoundingClientRect();
     // Tooltip now lives under the controls container below the video
     const container =
-      spriteTooltipEl && spriteTooltipEl.parentElement
-        ? spriteTooltipEl.parentElement
-        : videoEl && videoEl.parentElement
-        ? videoEl.parentElement
-        : document.body;
+    spriteTooltipEl && spriteTooltipEl.parentElement
+    ? spriteTooltipEl.parentElement
+    : videoEl && videoEl.parentElement
+    ? videoEl.parentElement
+    : document.body;
     const containerRect = container.getBoundingClientRect();
     const x = evt.clientX - rect.left;
     if (x < 0 || x > rect.width) {
@@ -3068,11 +4740,13 @@ const Player = (() => {
       return;
     }
     const pct = x / rect.width;
-    const t = pct * (duration || 0);
+    const vidDur = (Number.isFinite(duration) && duration > 0) ? duration : (videoEl && Number.isFinite(videoEl.duration) ? videoEl.duration : 0);
+    if (!vidDur) { hideSprite(); return; }
+    const t = pct * vidDur;
     // Position tooltip
     // Determine tile width/height for placement
     let tw = 240,
-      th = 135;
+    th = 135;
     try {
       const idx = sprites.index;
       tw = Number(idx.tile_width || (idx.tile && idx.tile[0]) || tw);
@@ -3084,21 +4758,16 @@ const Player = (() => {
     const thS = Math.max(1, Math.round(th * scale));
     const halfW = Math.max(1, Math.floor(twS / 2));
     const baseLeft = rect.left - containerRect.left + x - halfW; // center on cursor
-    const clampedLeft = Math.max(
-      8,
-      Math.min(containerRect.width - (twS + 8), baseLeft)
-    );
-    spriteTooltipEl.style.left = clampedLeft + "px";
-    // Place the preview directly above the entire controls container
-    // Bottom of the tooltip sits 'gap' px above the top edge of #playerControlsContainer
-    const gap = 12; // px
-    const anchorTop = -gap;
-    spriteTooltipEl.style.top = anchorTop + "px";
-    spriteTooltipEl.style.bottom = "auto";
-    spriteTooltipEl.style.transform = "translateY(-100%)";
-    // Ensure tooltip stays above any overlay bars
-    spriteTooltipEl.style.zIndex = "9999";
-    spriteTooltipEl.style.display = "block";
+    const clampedLeft = Math.max(8, Math.min(containerRect.width - (twS + 8), baseLeft));
+    // Compute vertical placement so the preview sits just above the scrubber track
+    const gap = 8; // px gap between preview bottom and scrubber top
+    const previewTop = (rect.top - containerRect.top) - gap - thS; // rect.top relative to container
+    spriteTooltipEl.style.left = clampedLeft + 'px';
+    spriteTooltipEl.style.top = Math.max(0, previewTop) + 'px';
+    spriteTooltipEl.style.bottom = 'auto';
+    spriteTooltipEl.style.transform = 'none';
+    spriteTooltipEl.style.zIndex = '9999';
+    spriteTooltipEl.style.display = 'block';
     // Compute background position based on sprite metadata
     try {
       const idx = sprites.index;
@@ -3107,10 +4776,8 @@ const Player = (() => {
       const interval = Number(idx.interval || 10);
       // tw/th already computed above for placement
       const totalFrames = Math.max(1, Number(idx.frames || cols * rows));
-      const frame = Math.min(
-        totalFrames - 1,
-        Math.floor(t / Math.max(0.1, interval))
-      );
+      // Choose the nearest frame rather than always floor for a tighter temporal match
+      const frame = Math.min(totalFrames - 1, Math.round(t / Math.max(0.1, interval)));
       const col = frame % cols;
       const row = Math.floor(frame / cols);
       const xOff = -(col * tw) * scale;
@@ -3139,7 +4806,7 @@ const Player = (() => {
       if (e.code === "Space") {
         e.preventDefault();
         if (!videoEl) return;
-        if (videoEl.paused) videoEl.play();
+        if (videoEl.paused) safePlay(videoEl);
         else videoEl.pause();
       }
     } catch (_) {}
@@ -3166,21 +4833,59 @@ const Player = (() => {
   // Apply show/hide for heatmap and markers based on settings
   function applyTimelineDisplayToggles() {
     try {
-      if (heatmapEl)
-        heatmapEl.style.display = showHeatmap && hasHeatmap ? "" : "none";
-      if (heatmapCanvasEl)
-        heatmapCanvasEl.style.display = showHeatmap && hasHeatmap ? "" : "none";
+      const band = document.getElementById('scrubberHeatmapBand');
+      if (band) {
+        if (showHeatmap && hasHeatmap) band.classList.remove('hidden');
+        else band.classList.add('hidden');
+      }
       if (markersEl)
         markersEl.style.display =
-          showScenes && scenes && scenes.length > 0 ? "" : "none";
+      showScenes && scenes && scenes.length > 0 ? "" : "none";
+      renderSceneTicks();
     } catch (_) {}
   }
 
   // Public API
-  return { open, detectAndUploadFacesBrowser };
+  return { open, showOverlayBar, detectAndUploadFacesBrowser };
 })();
 
 window.Player = Player;
+// Player module assigned to window
+
+// -----------------------------
+// Global: Pause video when leaving Player tab
+// -----------------------------
+(function setupTabPause(){
+  function pauseIfNotActive(activeId){
+    try {
+      if (!window.Player) return;
+      const v = document.getElementById('playerVideo');
+      if (!v) return;
+      const active = activeId || (window.tabSystem && window.tabSystem.getActiveTab && window.tabSystem.getActiveTab());
+      if (active !== 'player' && !v.paused && !v.ended) { try { v.pause(); } catch(_){} }
+    } catch(_){}
+  }
+  // Hook custom tabSystem event style if it exposes on/subscribe
+  try {
+    const ts = window.tabSystem;
+    if (ts && typeof ts.on === 'function') {
+      ts.on('switch', (id) => pauseIfNotActive(id));
+    } else if (ts && typeof ts.addEventListener === 'function') {
+      ts.addEventListener('switch', (e) => pauseIfNotActive(e.detail));
+    }
+  } catch(_){}
+  // MutationObserver fallback watching player panel visibility/class changes
+  try {
+    const panel = document.getElementById('player-panel');
+    if (panel && !panel._pauseObserver) {
+      const obs = new MutationObserver(() => pauseIfNotActive());
+      obs.observe(panel, { attributes:true, attributeFilter:['hidden','class'] });
+      panel._pauseObserver = obs;
+    }
+  } catch(_){}
+  // Also pause on document hidden (tab/background)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) pauseIfNotActive('not-player'); });
+})();
 
 // -----------------------------
 // Player Enhancements: Sidebar collapse + Effects (filters/transforms)
@@ -3190,9 +4895,10 @@ function initPlayerEnhancements() {
   const sidebar = document.getElementById("playerSidebar");
   const toggleBtn = document.getElementById("sidebarToggle");
   const accordionRoot = document.getElementById("sidebarAccordion");
+
   const stage =
-    document.getElementById("videoStage") ||
-    document.querySelector(".player-stage-simple");
+  document.getElementById("videoStage") ||
+  document.querySelector(".player-stage-simple");
   const playerLayout = document.getElementById("playerLayout");
   const filterRanges = document.querySelectorAll(
     "#effectsPanel input[type=range][data-fx]"
@@ -3210,9 +4916,9 @@ function initPlayerEnhancements() {
     sidebar.setAttribute("data-collapsed", collapsed ? "true" : "false");
     if (playerLayout)
       playerLayout.setAttribute(
-        "data-sidebar-collapsed",
-        collapsed ? "true" : "false"
-      );
+      "data-sidebar-collapsed",
+      collapsed ? "true" : "false"
+    );
     toggleBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     // Arrow glyph semantics: show chevron pointing toward where the sidebar will appear when expanded.
     // Using single angle characters for compactness.
@@ -3330,18 +5036,13 @@ function initPlayerEnhancements() {
     state.r = 1;
     state.g = 1;
     state.b = 1;
-    state.blur = 0;
+    const rect = (timelineEl || scrubberTrackEl).getBoundingClientRect();
     syncInputs();
     applyEffects();
     saveState();
-  }
-  function syncInputs() {
-    filterRanges.forEach((r) => {
-      const k = r.dataset.fx;
-      if (k in state) {
-        r.value = state[k];
-      }
-    });
+    const mark = document.createElement("div");
+    mark.className = 'marker-tick';
+    mark.style.left = `calc(${pct}% - 2px)`;
   }
   // On each save, if values are default set remove from storage to avoid stale persistence overriding reset on reload
   function saveState() {
@@ -3368,36 +5069,36 @@ function initPlayerEnhancements() {
   function applyPreset(name) {
     switch (name) {
       case "cinematic":
-        state.r = 1.05;
-        state.g = 1.02;
-        state.b = 0.96;
-        state.blur = 0;
-        break;
+      state.r = 1.05;
+      state.g = 1.02;
+      state.b = 0.96;
+      state.blur = 0;
+      break;
       case "warm":
-        state.r = 1.15;
-        state.g = 1.05;
-        state.b = 0.9;
-        state.blur = 0;
-        break;
+      state.r = 1.15;
+      state.g = 1.05;
+      state.b = 0.9;
+      state.blur = 0;
+      break;
       case "cool":
-        state.r = 0.92;
-        state.g = 1.02;
-        state.b = 1.12;
-        state.blur = 0;
-        break;
+      state.r = 0.92;
+      state.g = 1.02;
+      state.b = 1.12;
+      state.blur = 0;
+      break;
       case "dreamy":
-        state.r = 1.05;
-        state.g = 1.05;
-        state.b = 1.05;
-        state.blur = 4;
-        break;
+      state.r = 1.05;
+      state.g = 1.05;
+      state.b = 1.05;
+      state.blur = 4;
+      break;
       case "flat":
       default:
-        state.r = 1;
-        state.g = 1;
-        state.b = 1;
-        state.blur = 0;
-        break;
+      state.r = 1;
+      state.g = 1;
+      state.b = 1;
+      state.blur = 0;
+      break;
     }
     applyEffects();
     syncInputs();
@@ -3424,10 +5125,10 @@ function initPlayerEnhancements() {
   // removed transform reset binding
   presetButtons.forEach((pb) =>
     pb.addEventListener("click", () => applyPreset(pb.dataset.preset))
-  );
-  // (Removed duplicate Shift+S listener)
-  loadState();
-  renderValues();
+);
+// (Removed duplicate Shift+S listener)
+loadState();
+renderValues();
 }
 
 if (document.readyState === "loading") {
@@ -3466,37 +5167,37 @@ function wireSimplePlayerDrawer() {
         (a.tagName === "INPUT" ||
           a.tagName === "TEXTAREA" ||
           a.isContentEditable)
-      )
+        )
         return;
-      toggle();
-    }
-  });
-}
+        toggle();
+      }
+    });
+  }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", wireSimplePlayerDrawer, {
-    once: true,
-  });
-} else {
-  wireSimplePlayerDrawer();
-}
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", wireSimplePlayerDrawer, {
+      once: true,
+    });
+  } else {
+    wireSimplePlayerDrawer();
+  }
 
-// Sidepanel collapse (new simplified sidebar replacement)
-function wireSidepanel() {
-  // Sidebar removed; function retained as a no-op for backward compatibility.
-  return;
-}
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", wireSidepanel, { once: true });
-} else {
-  wireSidepanel();
-}
+  // Sidepanel collapse (new simplified sidebar replacement)
+  function wireSidepanel() {
+    // Sidebar removed; function retained as a no-op for backward compatibility.
+    return;
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", wireSidepanel, { once: true });
+  } else {
+    wireSidepanel();
+  }
 
-// -----------------------------
-// Performers Module
-// -----------------------------
-const Performers = (() => {
-  let gridEl,
+  // -----------------------------
+  // Performers Module
+  // -----------------------------
+  const Performers = (() => {
+    let gridEl,
     searchEl,
     addBtn,
     importBtn,
@@ -3504,603 +5205,823 @@ const Performers = (() => {
     deleteBtn,
     dropZone,
     statusEl;
-  let performers = [];
-  let selected = new Set();
-  let searchTerm = "";
-  let searchTimer = null;
-  let lastFocusedIndex = -1; // for keyboard navigation
-  let shiftAnchor = null; // for shift range selection
+    let performers = [];
+    let selected = new Set();
+    let searchTerm = "";
+    let searchTimer = null;
+    let lastFocusedIndex = -1; // for keyboard navigation
+    let shiftAnchor = null; // for shift range selection
 
-  function initDom() {
-    if (gridEl) return;
-    gridEl = document.getElementById("performersGrid");
-    searchEl = document.getElementById("performerSearch");
-    addBtn = document.getElementById("performerAddBtn");
-    importBtn = document.getElementById("performerImportBtn");
-    mergeBtn = document.getElementById("performerMergeBtn");
-    deleteBtn = document.getElementById("performerDeleteBtn");
-    dropZone = document.getElementById("performerDropZone");
-    statusEl = document.getElementById("performersStatus");
-    wireEvents();
-  }
-  function setStatus(msg, show = true) {
-    if (!statusEl) return;
-    statusEl.textContent = msg || "";
-    statusEl.style.display = show ? "block" : "none";
-  }
-  function render() {
-    if (!gridEl) return;
-    gridEl.innerHTML = "";
-    const frag = document.createDocumentFragment();
-    const termLower = searchTerm.toLowerCase();
-    const filtered = performers.filter(
-      (p) => !termLower || p.name.toLowerCase().includes(termLower)
-    );
-    if (addBtn) {
-      const exact = filtered.some((p) => p.name.toLowerCase() === termLower);
-      addBtn.style.display = searchTerm && !exact ? "inline-block" : "none";
-      addBtn.textContent = `Add '${searchTerm}'`;
-      addBtn.disabled = !searchTerm;
+    function initDom() {
+      if (gridEl) return;
+      gridEl = document.getElementById("performersGrid");
+      searchEl = document.getElementById("performerSearch");
+      addBtn = document.getElementById("performerAddBtn");
+      importBtn = document.getElementById("performerImportBtn");
+      mergeBtn = document.getElementById("performerMergeBtn");
+      deleteBtn = document.getElementById("performerDeleteBtn");
+      dropZone = document.getElementById("performerDropZone");
+      statusEl = document.getElementById("performersStatus");
+      wireEvents();
     }
-    filtered.forEach((p) => {
-      const card = document.createElement("div");
-      card.className = "perf-card";
-      card.dataset.norm = p.norm;
-      if (selected.has(p.norm)) card.dataset.selected = "1";
-      const h = document.createElement("h3");
-      h.textContent = p.name;
-      const count = document.createElement("div");
-      count.className = "count";
-      count.textContent = `${p.count} file${p.count === 1 ? "" : "s"}`;
-      const actions = document.createElement("div");
-      actions.className = "actions";
-      const btnRename = document.createElement("button");
-      btnRename.className = "btn-xs";
-      btnRename.textContent = "Rename";
-      btnRename.onclick = () => renamePrompt(p);
-      const tagsWrap = document.createElement("div");
-      tagsWrap.className = "tags";
-      (p.tags || []).forEach((tag) => {
-        const tEl = document.createElement("span");
-        tEl.className = "tag";
-        tEl.textContent = tag;
-        tEl.title = "Click to remove";
-        tEl.onclick = (ev) => {
-          ev.stopPropagation();
-          removeTag(p, tag);
-        };
-        tagsWrap.appendChild(tEl);
+    function setStatus(msg, show = true) {
+      if (!statusEl) return;
+      statusEl.textContent = msg || "";
+      statusEl.style.display = show ? "block" : "none";
+    }
+    function render() {
+      if (!gridEl) { return; }
+      gridEl.innerHTML = "";
+      const frag = document.createDocumentFragment();
+      const termLower = searchTerm.toLowerCase();
+      const filtered = performers.filter(
+        (p) => !termLower || p.name.toLowerCase().includes(termLower)
+      );
+      if (addBtn) {
+        const exact = filtered.some((p) => p.name.toLowerCase() === termLower);
+        addBtn.style.display = searchTerm && !exact ? "inline-block" : "none";
+        addBtn.textContent = `Add '${searchTerm}'`;
+        addBtn.disabled = !searchTerm;
+      }
+      if (filtered.length === 0) {
+        const msg = document.createElement("div");
+        msg.className = "hint-sm";
+        msg.style.opacity = ".7";
+        msg.style.padding = "24px 0";
+        msg.textContent = "No performers found.";
+        gridEl.appendChild(msg);
+      } else {
+        filtered.forEach((p) => {
+          const card = document.createElement("div");
+          card.className = "perf-card";
+          card.dataset.norm = p.norm;
+          if (selected.has(p.norm)) card.dataset.selected = "1";
+          const h = document.createElement("h3");
+          h.textContent = p.name;
+          const count = document.createElement("div");
+          count.className = "count";
+          count.textContent = `${p.count} file${p.count === 1 ? "" : "s"}`;
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          const btnRename = document.createElement("button");
+          btnRename.className = "btn-xs";
+          btnRename.textContent = "Rename";
+          btnRename.onclick = () => renamePrompt(p);
+          const tagsWrap = document.createElement("div");
+          tagsWrap.className = "tags";
+          (p.tags || []).forEach((tag) => {
+            const tEl = document.createElement("span");
+            tEl.className = "tag";
+            tEl.textContent = tag;
+            tEl.title = "Click to remove";
+            tEl.onclick = (ev) => {
+              ev.stopPropagation();
+              removeTag(p, tag);
+            };
+            tagsWrap.appendChild(tEl);
+          });
+          const addTagBtn = document.createElement("button");
+          addTagBtn.className = "btn-xs";
+          addTagBtn.textContent = "+";
+          addTagBtn.title = "Add tag";
+          addTagBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            addTagPrompt(p);
+          };
+          actions.appendChild(btnRename);
+          actions.appendChild(addTagBtn);
+          card.appendChild(h);
+          card.appendChild(count);
+          card.appendChild(tagsWrap);
+          card.appendChild(actions);
+          card.tabIndex = 0; // focusable
+          card.onclick = (e) => handleCardClick(e, p, filtered);
+          card.onkeydown = (e) => handleCardKey(e, p, filtered);
+          frag.appendChild(card);
+        });
+        gridEl.appendChild(frag);
+      }
+      updateSelectionUI();
+      // Ensure performers grid loads on page load
+      window.addEventListener('DOMContentLoaded', () => {
+        if (window.fetchPerformers) window.fetchPerformers();
       });
-      const addTagBtn = document.createElement("button");
-      addTagBtn.className = "btn-xs";
-      addTagBtn.textContent = "+";
-      addTagBtn.title = "Add tag";
-      addTagBtn.onclick = (ev) => {
-        ev.stopPropagation();
-        addTagPrompt(p);
-      };
-      actions.appendChild(btnRename);
-      actions.appendChild(addTagBtn);
-      card.appendChild(h);
-      card.appendChild(count);
-      card.appendChild(tagsWrap);
-      card.appendChild(actions);
-      card.tabIndex = 0; // focusable
-      card.onclick = (e) => handleCardClick(e, p, filtered);
-      card.onkeydown = (e) => handleCardKey(e, p, filtered);
-      frag.appendChild(card);
-    });
-    gridEl.appendChild(frag);
-    updateSelectionUI();
-  }
-  function updateSelectionUI() {
-    document.querySelectorAll(".perf-card").forEach((c) => {
-      if (selected.has(c.dataset.norm)) c.dataset.selected = "1";
-      else c.removeAttribute("data-selected");
-    });
-    const multi = selected.size >= 2;
-    if (mergeBtn) mergeBtn.disabled = !multi;
-    if (deleteBtn) deleteBtn.disabled = selected.size === 0;
-  }
-  async function fetchPerformers() {
-    initDom();
-    try {
-      setStatus("Loading…", true);
-      const url = new URL("/api/performers", window.location.origin);
-      if (searchTerm) url.searchParams.set("search", searchTerm);
-      const r = await fetch(url);
-      const j = await r.json();
-      performers = j?.data?.performers || [];
-      setStatus("", false);
-      render();
-    } catch (e) {
-      setStatus("Failed to load performers", true);
     }
-  }
-  function debounceSearch() {
-    if (searchTimer) clearTimeout(searchTimer);
-    searchTimer = setTimeout(fetchPerformers, 400);
-  }
-  function toggleSelect(norm, opts = { range: false, anchor: false }) {
-    if (opts.range && shiftAnchor) {
-      // range selection
-      const filtered = currentFiltered();
-      const aIndex = filtered.findIndex((p) => p.norm === shiftAnchor);
-      const bIndex = filtered.findIndex((p) => p.norm === norm);
-      if (aIndex > -1 && bIndex > -1) {
-        const [start, end] =
-          aIndex < bIndex ? [aIndex, bIndex] : [bIndex, aIndex];
-        for (let i = start; i <= end; i++) {
-          selected.add(filtered[i].norm);
+    function updateSelectionUI() {
+      document.querySelectorAll(".perf-card").forEach((c) => {
+        if (selected.has(c.dataset.norm)) c.dataset.selected = "1";
+        else c.removeAttribute("data-selected");
+      });
+      const multi = selected.size >= 2;
+      if (mergeBtn) mergeBtn.disabled = !multi;
+      if (deleteBtn) deleteBtn.disabled = selected.size === 0;
+    }
+    async function fetchPerformers() {
+      initDom();
+      try {
+        // fetchPerformers called
+        setStatus("Loading…", true);
+        const url = new URL("/api/performers", window.location.origin);
+        if (searchTerm) url.searchParams.set("search", searchTerm);
+        const r = await fetch(url);
+        const j = await r.json();
+        // performers response loaded
+        performers = j?.data?.performers || [];
+        setStatus("", false);
+        render();
+      } catch (e) {
+        setStatus("Failed to load performers", true);
+        if (gridEl) {
+          gridEl.innerHTML = "";
+          const msg = document.createElement("div");
+          msg.className = "hint-sm";
+          msg.style.opacity = ".7";
+          msg.style.padding = "24px 0";
+          msg.style.color = "#e44";
+          msg.textContent = "Error loading performers.";
+          gridEl.appendChild(msg);
         }
-        updateSelectionUI();
+        console.error(e);
+      }
+    }
+    function debounceSearch() {
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(fetchPerformers, 400);
+    }
+    function toggleSelect(norm, opts = { range: false, anchor: false }) {
+      if (opts.range && shiftAnchor) {
+        // range selection
+        const filtered = currentFiltered();
+        const aIndex = filtered.findIndex((p) => p.norm === shiftAnchor);
+        const bIndex = filtered.findIndex((p) => p.norm === norm);
+        if (aIndex > -1 && bIndex > -1) {
+          const [start, end] =
+          aIndex < bIndex ? [aIndex, bIndex] : [bIndex, aIndex];
+          for (let i = start; i <= end; i++) {
+            selected.add(filtered[i].norm);
+          }
+          updateSelectionUI();
+          return;
+        }
+      }
+      if (selected.has(norm)) selected.delete(norm);
+      else selected.add(norm);
+      if (opts.anchor) shiftAnchor = norm;
+      updateSelectionUI();
+    }
+    function currentFiltered() {
+      const termLower = searchTerm.toLowerCase();
+      return performers.filter(
+        (p) => !termLower || p.name.toLowerCase().includes(termLower)
+      );
+    }
+    function handleCardClick(e, p, filtered) {
+      const norm = p.norm;
+      if (e.shiftKey) {
+        toggleSelect(norm, { range: true });
         return;
       }
-    }
-    if (selected.has(norm)) selected.delete(norm);
-    else selected.add(norm);
-    if (opts.anchor) shiftAnchor = norm;
-    updateSelectionUI();
-  }
-  function currentFiltered() {
-    const termLower = searchTerm.toLowerCase();
-    return performers.filter(
-      (p) => !termLower || p.name.toLowerCase().includes(termLower)
-    );
-  }
-  function handleCardClick(e, p, filtered) {
-    const norm = p.norm;
-    if (e.shiftKey) {
-      toggleSelect(norm, { range: true });
-      return;
-    }
-    if (e.metaKey || e.ctrlKey) {
-      toggleSelect(norm, { anchor: true });
-      return;
-    }
-    if (selected.size <= 1 && selected.has(norm)) {
-      selected.delete(norm);
-      shiftAnchor = norm;
-    } else {
-      selected.clear();
-      selected.add(norm);
-      shiftAnchor = norm;
-    }
-    updateSelectionUI();
-    lastFocusedIndex = filtered.findIndex((x) => x.norm === norm);
-  }
-  function handleCardKey(e, p, filtered) {
-    const norm = p.norm;
-    const index = filtered.findIndex((x) => x.norm === norm);
-    if (
-      [
-        "ArrowDown",
-        "ArrowUp",
-        "ArrowLeft",
-        "ArrowRight",
-        "Home",
-        "End",
-        " ",
-      ].includes(e.key) ||
-      (e.key === "a" && (e.metaKey || e.ctrlKey))
-    ) {
-      e.preventDefault();
-    }
-    const cols = calcColumns();
-    function focusAt(i) {
-      if (i < 0 || i >= filtered.length) return;
-      const card = gridEl.querySelector(
-        `.perf-card[data-norm="${filtered[i].norm}"]`
-      );
-      if (card) {
-        card.focus();
-        lastFocusedIndex = i;
+      if (e.metaKey || e.ctrlKey) {
+        toggleSelect(norm, { anchor: true });
+        return;
       }
+      if (selected.size <= 1 && selected.has(norm)) {
+        selected.delete(norm);
+        shiftAnchor = norm;
+      } else {
+        selected.clear();
+        selected.add(norm);
+        shiftAnchor = norm;
+      }
+      updateSelectionUI();
+      lastFocusedIndex = filtered.findIndex((x) => x.norm === norm);
     }
-    switch (e.key) {
-      case " ":
+    function handleCardKey(e, p, filtered) {
+      const norm = p.norm;
+      const index = filtered.findIndex((x) => x.norm === norm);
+      if (
+        [
+          "ArrowDown",
+          "ArrowUp",
+          "ArrowLeft",
+          "ArrowRight",
+          "Home",
+          "End",
+          " ",
+        ].includes(e.key) ||
+        (e.key === "a" && (e.metaKey || e.ctrlKey))
+      ) {
+        e.preventDefault();
+      }
+      const cols = calcColumns();
+      function focusAt(i) {
+        if (i < 0 || i >= filtered.length) return;
+        const card = gridEl.querySelector(
+          `.perf-card[data-norm="${filtered[i].norm}"]`
+        );
+        if (card) {
+          card.focus();
+          lastFocusedIndex = i;
+        }
+      }
+      switch (e.key) {
+        case " ":
         toggleSelect(norm, { anchor: true });
         break;
-      case "Enter":
+        case "Enter":
         renamePrompt(p);
         break;
-      case "Delete":
-      case "Backspace":
+        case "Delete":
+        case "Backspace":
         deleteSelected();
         break;
-      case "a":
+        case "a":
         if (e.metaKey || e.ctrlKey) {
           selected = new Set(filtered.map((x) => x.norm));
           updateSelectionUI();
         }
         break;
-      case "ArrowRight":
+        case "ArrowRight":
         focusAt(index + 1);
         break;
-      case "ArrowLeft":
+        case "ArrowLeft":
         focusAt(index - 1);
         break;
-      case "ArrowDown":
+        case "ArrowDown":
         focusAt(index + cols);
         break;
-      case "ArrowUp":
+        case "ArrowUp":
         focusAt(index - cols);
         break;
-      case "Home":
+        case "Home":
         focusAt(0);
         break;
-      case "End":
+        case "End":
         focusAt(filtered.length - 1);
         break;
-      case "Shift":
+        case "Shift":
         break;
-      default:
+        default:
         return;
+      }
     }
-  }
-  function calcColumns() {
-    if (!gridEl) return 1;
-    const style = getComputedStyle(gridEl);
-    const template = style.gridTemplateColumns;
-    if (!template) return 1;
-    return template.split(" ").length;
-  }
-  async function addCurrent() {
-    if (!searchTerm) return;
-    try {
-      await fetch("/api/performers/add", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: searchTerm }),
-      });
-      await fetchPerformers();
-    } catch (_) {}
-  }
-  async function importPrompt(e) {
-    // Default behavior: open file chooser. Hold Alt/Option to fall back to manual paste prompt.
-    if (e && e.altKey) {
+    function calcColumns() {
+      if (!gridEl) return 1;
+      const style = getComputedStyle(gridEl);
+      const template = style.gridTemplateColumns;
+      if (!template) return 1;
+      return template.split(" ").length;
+    }
+    async function addCurrent() {
+      if (!searchTerm) return;
+      try {
+        await fetch("/api/performers/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: searchTerm }),
+        });
+        await fetchPerformers();
+      } catch (_) {}
+    }
+    async function importPrompt(e) {
+      // Default behavior: open file chooser. Hold Alt/Option to fall back to manual paste prompt.
+      if (e && e.altKey) {
+        const txt = prompt("Paste newline-separated names or JSON array:");
+        if (!txt) return;
+        try {
+          const r = await fetch("/api/performers/import", {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: txt,
+          });
+          if (!r.ok) throw new Error("Import failed");
+          if (window.showToast) window.showToast("Performers imported", "is-success");
+          await fetchPerformers();
+        } catch (err) {
+          if (window.showToast) window.showToast(err.message || "Import failed", "is-error");
+        }
+        return;
+      }
+      if (fileInput) {
+        try {
+          fileInput.click();
+          return;
+        } catch (_) {
+          /* fallback to prompt below */
+        }
+      }
       const txt = prompt("Paste newline-separated names or JSON array:");
       if (!txt) return;
       try {
-        await fetch("/api/performers/import", {
+        const r = await fetch("/api/performers/import", {
           method: "POST",
           headers: { "Content-Type": "text/plain" },
           body: txt,
         });
+        if (!r.ok) throw new Error("Import failed");
+        if (window.showToast) window.showToast("Performers imported", "is-success");
         await fetchPerformers();
-      } catch (_) {}
-      return;
-    }
-    if (fileInput) {
-      try {
-        fileInput.click();
-        return;
-      } catch (_) {
-        /* fallback to prompt below */
+      } catch (err) {
+        if (window.showToast) window.showToast(err.message || "Import failed", "is-error");
       }
     }
-    const txt = prompt("Paste newline-separated names or JSON array:");
-    if (!txt) return;
-    try {
-      await fetch("/api/performers/import", {
-        method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body: txt,
-      });
-      await fetchPerformers();
-    } catch (_) {}
-  }
-  async function renamePrompt(p) {
-    const val = prompt("Rename performer:", p.name);
-    if (!val || val === p.name) return;
-    try {
-      await fetch("/api/performers/rename", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ old: p.name, new: val }),
-      });
-      await fetchPerformers();
-    } catch (_) {}
-  }
-  async function addTagPrompt(p) {
-    const tag = prompt("Add tag for " + p.name + ":");
-    if (!tag) return;
-    try {
-      await fetch("/api/performers/tags/add", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: p.name, tag }),
-      });
-      await fetchPerformers();
-    } catch (_) {}
-  }
-  async function removeTag(p, tag) {
-    if (!confirm(`Remove tag '${tag}' from ${p.name}?`)) return;
-    try {
-      await fetch("/api/performers/tags/remove", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: p.name, tag }),
-      });
-      await fetchPerformers();
-    } catch (_) {}
-  }
-  async function mergeSelected() {
-    if (selected.size < 2) return;
-    const list = [...selected];
-    const target = prompt("Merge into (target name):", "");
-    if (!target) return;
-    try {
-      await fetch("/api/performers/merge", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: list.map(
-            (n) => performers.find((p) => p.norm === n)?.name || n
-          ),
-          to: target,
-        }),
-      });
-      selected.clear();
-      await fetchPerformers();
-    } catch (_) {}
-  }
-  async function deleteSelected() {
-    if (!selected.size) return;
-    if (!confirm(`Delete ${selected.size} performer(s)?`)) return;
-    for (const norm of [...selected]) {
-      const rec = performers.find((p) => p.norm === norm);
-      if (!rec) continue;
+    async function renamePrompt(p) {
+      const val = prompt("Rename performer:", p.name);
+      if (!val || val === p.name) return;
       try {
-        await fetch("/api/performers?name=" + encodeURIComponent(rec.name), {
-          method: "DELETE",
+        await fetch("/api/performers/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ old: p.name, new: val }),
         });
+        await fetchPerformers();
       } catch (_) {}
     }
-    selected.clear();
-    await fetchPerformers();
-  }
-  function wireEvents() {
-    if (searchEl && !searchEl._wired) {
-      searchEl._wired = true;
-      searchEl.addEventListener("input", () => {
-        searchTerm = searchEl.value.trim();
-        debounceSearch();
-      });
-      searchEl.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") {
-          searchEl.value = "";
-          searchTerm = "";
-          fetchPerformers();
-        }
-      });
-    }
-    if (addBtn && !addBtn._wired) {
-      addBtn._wired = true;
-      addBtn.addEventListener("click", addCurrent);
-    }
-    if (importBtn && !importBtn._wired) {
-      importBtn._wired = true;
-      importBtn.addEventListener("click", importPrompt);
-    }
-    if (mergeBtn && !mergeBtn._wired) {
-      mergeBtn._wired = true;
-      mergeBtn.addEventListener("click", mergeSelected);
-    }
-    if (deleteBtn && !deleteBtn._wired) {
-      deleteBtn._wired = true;
-      deleteBtn.addEventListener("click", deleteSelected);
-    }
-    if (dropZone && !dropZone._wired) {
-      dropZone._wired = true;
-      wireDropZone();
-    }
-    document.addEventListener("keydown", globalKeyHandler);
-  }
-  // Wire hidden file input fallback
-  const fileInput = document.getElementById("performerFileInput");
-  if (fileInput && !fileInput._wired) {
-    fileInput._wired = true;
-    fileInput.addEventListener("change", async (e) => {
-      const files = [...(fileInput.files || [])];
-      if (!files.length) return;
+    async function addTagPrompt(p) {
+      const tag = prompt("Add tag for " + p.name + ":");
+      if (!tag) return;
       try {
+        await fetch("/api/performers/tags/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: p.name, tag }),
+        });
+        await fetchPerformers();
+      } catch (_) {}
+    }
+    async function removeTag(p, tag) {
+      if (!confirm(`Remove tag '${tag}' from ${p.name}?`)) return;
+      try {
+        await fetch("/api/performers/tags/remove", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: p.name, tag }),
+        });
+        await fetchPerformers();
+      } catch (_) {}
+    }
+    async function mergeSelected() {
+      if (selected.size < 2) return;
+      const list = [...selected];
+      const target = prompt("Merge into (target name):", "");
+      if (!target) return;
+      try {
+        await fetch("/api/performers/merge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            from: list.map(
+              (n) => performers.find((p) => p.norm === n)?.name || n
+            ),
+            to: target,
+          }),
+        });
+        selected.clear();
+        await fetchPerformers();
+      } catch (_) {}
+    }
+    async function deleteSelected() {
+      if (!selected.size) return;
+      if (!confirm(`Delete ${selected.size} performer(s)?`)) return;
+      for (const norm of [...selected]) {
+        const rec = performers.find((p) => p.norm === norm);
+        if (!rec) continue;
+        try {
+          await fetch("/api/performers?name=" + encodeURIComponent(rec.name), {
+            method: "DELETE",
+          });
+        } catch (_) {}
+      }
+      selected.clear();
+      await fetchPerformers();
+    }
+    function wireEvents() {
+      if (searchEl && !searchEl._wired) {
+        searchEl._wired = true;
+        searchEl.addEventListener("input", () => {
+          searchTerm = searchEl.value.trim();
+          debounceSearch();
+        });
+        searchEl.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") {
+            searchEl.value = "";
+            searchTerm = "";
+            fetchPerformers();
+          }
+        });
+      }
+      if (addBtn && !addBtn._wired) {
+        addBtn._wired = true;
+        addBtn.addEventListener("click", addCurrent);
+      }
+      if (importBtn && !importBtn._wired) {
+        importBtn._wired = true;
+        importBtn.addEventListener("click", importPrompt);
+      }
+      if (mergeBtn && !mergeBtn._wired) {
+        mergeBtn._wired = true;
+        mergeBtn.addEventListener("click", mergeSelected);
+      }
+      if (deleteBtn && !deleteBtn._wired) {
+        deleteBtn._wired = true;
+        deleteBtn.addEventListener("click", deleteSelected);
+      }
+      if (dropZone && !dropZone._wired) {
+        dropZone._wired = true;
+        wireDropZone();
+      }
+      document.addEventListener("keydown", globalKeyHandler);
+    }
+    // Wire hidden file input fallback
+    const fileInput = document.getElementById("performerFileInput");
+    if (fileInput && !fileInput._wired) {
+      fileInput._wired = true;
+      fileInput.addEventListener("change", async (e) => {
+        const files = [...(fileInput.files || [])];
+        if (!files.length) return;
         let combined = "";
         for (const f of files) {
           try {
             combined += (await f.text()) + "\n";
           } catch (_) {}
         }
-        if (combined.trim()) {
-          setStatus("Importing…", true);
-          await fetch("/api/performers/import", {
-            method: "POST",
-            headers: { "Content-Type": "text/plain" },
-            body: combined,
-          });
-          await fetchPerformers();
-          setStatus("Imported performers", true);
-          setTimeout(() => setStatus("", false), 1200);
-        }
-      } catch (err) {
-        console.warn("file input import failed", err);
-        setStatus("Import failed", true);
-        setTimeout(() => setStatus("", false), 1500);
-      } finally {
-        fileInput.value = "";
-      }
-    });
-  }
-  if (dropZone && !dropZone._clickWired) {
-    dropZone._clickWired = true;
-    dropZone.addEventListener("click", () => {
-      if (fileInput) fileInput.click();
-    });
-    dropZone.addEventListener("dblclick", () => {
-      if (fileInput) fileInput.click();
-    });
-    dropZone.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        if (fileInput) fileInput.click();
-      }
-    });
-  }
-  function globalKeyHandler(e) {
-    if (!isPanelActive()) return;
-    if (e.key === "Escape" && selected.size) {
-      selected.clear();
-      updateSelectionUI();
-    }
-  }
-  function isPanelActive() {
-    const panel = document.getElementById("performers-panel");
-    return panel && !panel.hasAttribute("hidden");
-  }
-  function wireDropZone() {
-    if (document._perfDndAttached) return;
-    document._perfDndAttached = true;
-    let over = false;
-    let hoverTimer = null;
-    function panelActive() {
-      return isPanelActive();
-    }
-    function showHover() {
-      if (!dropZone) return;
-      dropZone.classList.add("drag-hover");
-      dropZone.style.background = "rgba(79,140,255,0.18)";
-      dropZone.style.outline = "2px dashed rgba(79,140,255,0.55)";
-    }
-    function clearHover() {
-      if (!dropZone) return;
-      dropZone.classList.remove("drag-hover");
-      dropZone.style.background = "";
-      dropZone.style.outline = "";
-    }
-    async function readPayload(dt) {
-      if (!dt) return "";
-      let out = "";
-      const items = dt.items ? [...dt.items] : [];
-      for (const it of items) {
-        if (it.kind === "string") {
-          try {
-            out = await new Promise((r) => it.getAsString(r));
-          } catch (_) {}
-          if (out) return out;
-        }
-      }
-      if (dt.files && dt.files.length) {
-        for (const f of dt.files) {
-          try {
-            if (
-              f.type.startsWith("text/") ||
-              /\.(txt|csv|json)$/i.test(f.name)
-            ) {
-              out = await f.text();
-              if (out) return out;
-            }
-          } catch (_) {}
-        }
+        if (!combined.trim()) return;
+        // Parse performer names
+        let rawNames = [];
         try {
-          if (!out) out = await dt.files[0].text();
-        } catch (_) {}
-      }
-      return out;
+          const trimmed = combined.trim();
+          if (/^\s*\[/.test(trimmed)) {
+            try { const arr = JSON.parse(trimmed); if (Array.isArray(arr)) rawNames = arr.map(x=>String(x)); } catch(_){ rawNames = []; }
+          }
+          if (!rawNames.length) {
+            rawNames = trimmed.split(/\r?\n|,|;|\t/).map(s=>s.trim()).filter(Boolean);
+          }
+          rawNames = Array.from(new Set(rawNames));
+        } catch(_) {}
+        // Show modal with would-be imports
+        const modal = document.getElementById('performerImportPreviewModal');
+        const list = document.getElementById('performerImportPreviewList');
+        const closeBtn = document.getElementById('performerImportPreviewClose');
+        const confirmBtn = document.getElementById('performerImportPreviewConfirm');
+        if (!modal || !list || !confirmBtn || !closeBtn) return;
+        list.innerHTML = '';
+        rawNames.forEach(name => {
+          const div = document.createElement('div');
+          div.className = 'chip';
+          div.textContent = name;
+          list.appendChild(div);
+        });
+        modal.hidden = false;
+        function closeModal(){ modal.hidden = true; fileInput.value = ""; }
+        if (!closeBtn._wired) { closeBtn._wired = true; closeBtn.addEventListener('click', closeModal); }
+        if (!confirmBtn._wired) {
+          confirmBtn._wired = true;
+          confirmBtn.addEventListener('click', async () => {
+            modal.hidden = true;
+            setStatus("Importing…", true);
+            let imported = false, errorMsg = "";
+            // Try text/plain first
+            try {
+              const r = await fetch("/api/performers/import", {
+                method: "POST",
+                headers: { "Content-Type": "text/plain" },
+                body: rawNames.join("\n")
+              });
+              if (r.ok) {
+                imported = true;
+                if (window.showToast) window.showToast("Performers imported", "is-success");
+                if (window.fetchPerformers) window.fetchPerformers();
+                setStatus("Imported performers", true);
+              } else if (r.status === 422) {
+                // Fallback to JSON
+                const r2 = await fetch("/api/performers/import", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ names: rawNames })
+                });
+                const j2 = await r2.json();
+                if (r2.ok) {
+                  imported = true;
+                  if (window.showToast) window.showToast("Performers imported", "is-success");
+                  if (window.fetchPerformers) window.fetchPerformers();
+                  setStatus("Imported performers", true);
+                } else {
+                  errorMsg = j2?.message || "Import failed";
+                }
+              } else {
+                const j = await r.json();
+                errorMsg = j?.message || "Import failed";
+              }
+            } catch (err) {
+              errorMsg = err.message || "Import failed";
+            } finally {
+              fileInput.value = "";
+              if (!imported) {
+                setStatus("Import failed", true);
+                if (window.showToast) window.showToast(errorMsg, "is-error");
+              }
+            }
+          });
+          // Observe player title and hide overlay when empty (compat for browsers without :has)
+          (function watchPlayerTitle() {
+            try {
+              const title = document.getElementById('playerTitle');
+              const overlay = document.getElementById('playerOverlayBar');
+              if (!title || !overlay) return;
+              const update = () => {
+                const empty = !title.textContent || title.textContent.trim() === '';
+                overlay.style.display = empty ? 'none' : '';
+              };
+              update();
+              const mo = new MutationObserver(update);
+              mo.observe(title, { childList: true, characterData: true, subtree: true });
+              // also watch for attribute changes that may alter visibility
+              mo.observe(overlay, { attributes: true });
+            } catch (_) {}
+          })();
+        }
+      });
     }
-    function wantsIntercept(dt) {
-      if (!dt) return false;
-      return (
-        dt.types &&
-        (dt.types.includes("Files") ||
+    if (dropZone && !dropZone._clickWired) {
+      dropZone._clickWired = true;
+      dropZone.addEventListener("click", () => {
+        if (fileInput) fileInput.click();
+      });
+      dropZone.addEventListener("dblclick", () => {
+        if (fileInput) fileInput.click();
+      });
+      dropZone.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          if (fileInput) fileInput.click();
+        }
+      });
+    }
+    function globalKeyHandler(e) {
+      if (!isPanelActive()) return;
+      if (e.key === "Escape" && selected.size) {
+        selected.clear();
+        updateSelectionUI();
+      }
+    }
+    function isPanelActive() {
+      const panel = document.getElementById("performers-panel");
+      return panel && !panel.hasAttribute("hidden");
+    }
+    function wireDropZone() {
+      if (document._perfDndAttached) return;
+      document._perfDndAttached = true;
+      let over = false;
+      let hoverTimer = null;
+      function panelActive() {
+        return isPanelActive();
+      }
+      function showHover() {
+        if (!dropZone) return;
+        dropZone.classList.add("drag-hover");
+        dropZone.style.background = "rgba(79,140,255,0.18)";
+        dropZone.style.outline = "2px dashed rgba(79,140,255,0.55)";
+      }
+      function clearHover() {
+        if (!dropZone) return;
+        dropZone.classList.remove("drag-hover");
+        dropZone.style.background = "";
+        dropZone.style.outline = "";
+      }
+      async function readPayload(dt) {
+        if (!dt) return "";
+        let out = "";
+        const items = dt.items ? [...dt.items] : [];
+        for (const it of items) {
+          if (it.kind === "string") {
+            try {
+              out = await new Promise((r) => it.getAsString(r));
+            } catch (_) {}
+            if (out) return out;
+          }
+        }
+        if (dt.files && dt.files.length) {
+          for (const f of dt.files) {
+            try {
+              if (
+                f.type.startsWith("text/") ||
+                /\.(txt|csv|json)$/i.test(f.name)
+              ) {
+                out = await f.text();
+                if (out) return out;
+              }
+            } catch (_) {}
+          }
+          try {
+            if (!out) out = await dt.files[0].text();
+          } catch (_) {}
+        }
+        return out;
+      }
+      function wantsIntercept(dt) {
+        if (!dt) return false;
+        return (
+          dt.types &&
+          (dt.types.includes("Files") ||
           dt.types.includes("text/plain") ||
           dt.files?.length)
+        );
+      }
+      document.addEventListener(
+        "dragover",
+        (e) => {
+          if (!panelActive()) return;
+          if (!wantsIntercept(e.dataTransfer)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (!over) {
+            over = true;
+            showHover();
+          }
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+        },
+        true
       );
-    }
-    document.addEventListener(
-      "dragover",
-      (e) => {
-        if (!panelActive()) return;
-        if (!wantsIntercept(e.dataTransfer)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (!over) {
+      document.addEventListener(
+        "dragenter",
+        (e) => {
+          if (!panelActive()) return;
+          if (!wantsIntercept(e.dataTransfer)) return;
+          e.preventDefault();
+          e.stopPropagation();
           over = true;
           showHover();
-        }
-        if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
-      },
-      true
-    );
-    document.addEventListener(
-      "dragenter",
-      (e) => {
-        if (!panelActive()) return;
-        if (!wantsIntercept(e.dataTransfer)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        over = true;
-        showHover();
-      },
-      true
-    );
-    document.addEventListener(
-      "dragleave",
-      (e) => {
-        if (!panelActive()) return;
-        if (!over) return;
-        if (hoverTimer) clearTimeout(hoverTimer);
-        hoverTimer = setTimeout(() => {
+        },
+        true
+      );
+      document.addEventListener(
+        "dragleave",
+        (e) => {
+          if (!panelActive()) return;
+          if (!over) return;
+          if (hoverTimer) clearTimeout(hoverTimer);
+          hoverTimer = setTimeout(() => {
+            over = false;
+            clearHover();
+          }, 60);
+        },
+        true
+      );
+      document.addEventListener(
+        "drop",
+        async (e) => {
+          if (!panelActive()) return;
+          if (!wantsIntercept(e.dataTransfer)) return;
+          e.preventDefault();
+          e.stopPropagation();
           over = false;
           clearHover();
-        }, 60);
-      },
-      true
-    );
-    document.addEventListener(
-      "drop",
-      async (e) => {
-        if (!panelActive()) return;
-        if (!wantsIntercept(e.dataTransfer)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        over = false;
-        clearHover();
-        try {
-          const text = await readPayload(e.dataTransfer);
-          if (text) {
-            setStatus("Importing…", true);
-            await fetch("/api/performers/import", {
-              method: "POST",
-              headers: { "Content-Type": "text/plain" },
-              body: text,
-            });
-            await fetchPerformers();
+          try {
+            const text = await readPayload(e.dataTransfer);
+            if (text) {
+              setStatus("Importing…", true);
+              await fetch("/api/performers/import", {
+                method: "POST",
+                headers: { "Content-Type": "text/plain" },
+                body: text,
+              });
+              await fetchPerformers();
+            }
+          } catch (err) {
+            console.warn("performers drop failed", err);
+            setStatus("Import failed", true);
+            setTimeout(() => setStatus("", false), 1500);
           }
-        } catch (err) {
-          console.warn("performers drop failed", err);
-          setStatus("Import failed", true);
-          setTimeout(() => setStatus("", false), 1500);
+        },
+        true
+      );
+    }
+    function show() {
+      const p = fetchPerformers();
+      let attempts = 0;
+      const maxAttempts = 40; // up to ~2s
+      function attemptOpen(){
+        if (window.__openPerfAutoMatch) {
+          try { window.__openPerfAutoMatch(); } catch(_) {}
+          return;
         }
-      },
-      true
-    );
-  }
-  function show() {
-    fetchPerformers();
-  }
-  return { show };
-})();
-window.Performers = Performers;
+        if (++attempts <= maxAttempts) setTimeout(attemptOpen, 50);
+      }
+      setTimeout(attemptOpen, 80);
+    }
+    return { show };
+  })();
+  window.Performers = Performers;
 
-// Hook tab switch to load performers when opened
-document.addEventListener("click", (e) => {
-  const btn = e.target.closest && e.target.closest('[data-tab="performers"]');
-  if (btn) {
-    setTimeout(() => {
-      if (window.Performers) window.Performers.show();
-    }, 50);
-  }
-});
+  // Hook tab switch to load performers when opened
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest && e.target.closest('[data-tab="performers"]');
+    if (btn) {
+      setTimeout(() => {
+        if (window.Performers) window.Performers.show();
+      }, 50);
+    }
+  });
+
+  // Fallback direct wiring: ensure clicking the import drop zone always opens file picker
+  // (In case module wiring hasn't run yet or was interrupted.)
+  (function ensurePerformerDropZoneClick() {
+    function wire() {
+      const dz = document.getElementById('performerDropZone');
+      const fi = document.getElementById('performerFileInput');
+      if (!dz || !fi || dz._directClick) return;
+      dz._directClick = true;
+      dz.addEventListener('click', (ev) => {
+        // Ignore if text selection drag ended here
+        if (fi && typeof fi.click === 'function') {
+          try { fi.click(); } catch(_) {}
+        }
+      });
+      dz.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          if (fi && typeof fi.click === 'function') {
+            try { fi.click(); } catch(_) {}
+          }
+        }
+      });
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', wire, { once: true });
+
+      // -----------------------------
+      // Performer Auto-Match Modal (Preview + Apply)
+      // -----------------------------
+      (function wirePerformerAutoMatch(){
+        function qs(id){ return document.getElementById(id); }
+        const openBtn = qs('performerAutoMatchBtn');
+        const modal = qs('performerAutoMatchModal');
+        if(!openBtn || !modal || modal._wired) return; modal._wired=true;
+        const closeBtn = qs('perfAutoMatchClose');
+        const cancelBtn = qs('perfAutoCancelBtn');
+        const applyBtn = qs('perfAutoApplyBtn');
+        const applyBtnFooter = qs('perfAutoApplyBtnFooter');
+        const previewBtn = qs('perfAutoPreviewBtn');
+        const statusEl = qs('perfAutoMatchStatus');
+        const tbody = qs('perfAutoMatchTbody');
+        const pathEl = qs('perfAutoPath');
+        const recEl = qs('perfAutoRecursive');
+        const useEl = qs('perfAutoUseRegistry');
+        const extraEl = qs('perfAutoExtra');
+        let lastRows = [];
+
+        function open(){ modal.hidden=false; modal.setAttribute('data-open','1'); pathEl && pathEl.focus(); document.addEventListener('keydown', escListener); }
+        function close(){ modal.hidden=true; modal.removeAttribute('data-open'); document.removeEventListener('keydown', escListener); }
+        function escListener(e){ if(e.key==='Escape'){ close(); } }
+        function setApplying(dis){ if(applyBtn) applyBtn.disabled=dis; if(applyBtnFooter) applyBtnFooter.disabled=dis; }
+        function enableApply(enabled){ setApplying(!enabled); }
+        async function doPreview(){
+          enableApply(false);
+          statusEl.textContent='Previewing…'; tbody.innerHTML=''; lastRows=[];
+          try {
+            const payload={ path: (pathEl.value||'').trim() || undefined, recursive: !!recEl.checked, use_registry_performers: !!useEl.checked, performers: _parseList(extraEl.value), tags:[], limit: 800 };
+            const r = await fetch('/api/autotag/preview', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+            const j = await r.json();
+            if(!r.ok) throw new Error(j?.message||'Preview failed');
+            const rows = j?.data?.candidates || [];
+            lastRows = rows;
+            statusEl.textContent = rows.length ? rows.length + ' match(es)' : 'No matches';
+            rows.forEach(row=>{
+              const tpl = document.getElementById('autotagRowTemplate');
+              const tr = tpl.content.firstElementChild.cloneNode(true);
+              tr.querySelector('.file').textContent = row.file;
+              tr.querySelector('.tags').textContent = (row.performers||[]).join(', ');
+              tbody.appendChild(tr);
+            });
+            enableApply(rows.length>0);
+          } catch(err){ statusEl.textContent = err.message || 'Preview failed'; }
+        }
+        async function doApply(){ if(!lastRows.length) return; setApplying(true); statusEl.textContent='Queuing job…'; try { const payload={ path: (pathEl.value||'').trim() || undefined, recursive: !!recEl.checked, use_registry_performers: !!useEl.checked, performers: _parseList(extraEl.value), tags:[] };
+        const r = await fetch('/api/autotag/scan', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        if(!r.ok){ try { const j=await r.json(); throw new Error(j?.message||'Queue failed'); } catch(e){ throw e; } }
+        statusEl.textContent='Job queued'; showToast && showToast('Auto‑match job queued','is-success'); setTimeout(close, 800);
+      } catch(err){ statusEl.textContent= err.message || 'Queue failed'; showToast && showToast(err.message||'Queue failed','is-error'); enableApply(true); }
+    }
+    // Expose programmatic opener that auto-previews only first time per open
+    window.__openPerfAutoMatch = function(){
+      if(!modal || !modal.hidden) return; // already open
+      open();
+      // Trigger preview automatically when opened programmatically
+      if(previewBtn && !previewBtn._autoRan){ previewBtn._autoRan = true; doPreview(); }
+    };
+    if(openBtn) openBtn.addEventListener('click', () => { open(); doPreview(); });
+    if(closeBtn) closeBtn.addEventListener('click', close);
+    if(cancelBtn) cancelBtn.addEventListener('click', close);
+    if(previewBtn) previewBtn.addEventListener('click', doPreview);
+    if(applyBtn) applyBtn.addEventListener('click', doApply);
+    if(applyBtnFooter) applyBtnFooter.addEventListener('click', doApply);
+    modal.addEventListener('click', (e)=>{ if(e.target === modal) close(); });
+  })();
+
+} else {
+  wire();
+}
+})();
 
 // Tasks System
 class TasksManager {
@@ -4123,8 +6044,7 @@ class TasksManager {
 
   init() {
     this.initEventListeners();
-    // SSE job events are optional; enable only if page sets window.__JOBS_SSE_ENABLED = true before this script executes
-    if (window.__JOBS_SSE_ENABLED) this.initJobEvents();
+    // SSE job events deferred until /config confirms capability (prevents 404 noise)
     this.startJobPolling();
     // Load backend capabilities and apply UI gating
     this.loadConfigAndApplyGates();
@@ -4134,6 +6054,10 @@ class TasksManager {
     setTimeout(() => this.initJobQueueResizer(), 0);
     // Wire browser faces button (idempotent)
     setTimeout(() => this.wireBrowserFacesButton(), 0);
+    // Fetch server defaults, then hydrate option inputs (with local overrides) & add validation/tooltips
+    setTimeout(() => this.loadDefaultsAndHydrate(), 0);
+    // Persist changes on any option input change
+    setTimeout(() => this.wireOptionPersistence(), 0);
   }
 
   async loadConfigAndApplyGates() {
@@ -4151,6 +6075,12 @@ class TasksManager {
         this.capabilities.ffprobe = Boolean(
           deps.ffprobe ?? data.ffprobe ?? true
         );
+        // Now that we know if SSE exists, decide whether to attach
+        if (window.__JOBS_SSE_ENABLED && feats.jobs_sse && !window.__JOBS_SSE_UNAVAILABLE) {
+          this.initJobEvents();
+        } else {
+          window.__JOBS_SSE_UNAVAILABLE = true;
+        }
         this.capabilities.subtitles_enabled = Boolean(
           caps.subtitles_enabled ?? true
         );
@@ -4186,6 +6116,126 @@ class TasksManager {
     if (base === "faces" || base === "embed") return !!caps.faces_enabled;
     // metadata and others default to allowed
     return true;
+  }
+
+  async loadDefaultsAndHydrate() {
+    try {
+      const r = await fetch('/api/tasks/defaults');
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      const j = await r.json();
+      const data = j?.data || j || {};
+      this.defaults = data;
+      // For each artifact defaults entry, set inputs if not locally overridden
+      const LS_KEY = 'mediaPlayer:artifactOptions';
+      let saved = {};
+      try { saved = JSON.parse(localStorage.getItem(LS_KEY)||'{}')||{}; } catch(_) {}
+      const applyVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (saved && saved[id] !== undefined) return; // user override
+        if (el.type === 'checkbox') el.checked = !!val; else el.value = val;
+      };
+      // Mapping artifact -> input ids
+      const map = {
+        thumbnails: { offset: 'thumbnailOffset' },
+        sprites: { interval:'spriteInterval', width:'spriteWidth', cols:'spriteCols', rows:'spriteRows', quality:'spriteQuality' },
+        previews: { segments:'previewSegments', duration:'previewDuration', width:'previewWidth' },
+        phash: { frames:'phashFrames', algorithm:'phashAlgo' },
+        scenes: { threshold:'sceneThreshold', limit:'sceneLimit' },
+        heatmaps: { interval:'heatmapInterval', mode:'heatmapMode', png:'heatmapPng' },
+        subtitles: { model:'subtitleModel', language:'subtitleLang' },
+        faces: { interval:'faceInterval', min_size_frac:'faceMinSize', backend:'faceBackend', scale_factor:'faceScale', min_neighbors:'faceMinNeighbors', sim_thresh:'faceSimThresh' },
+        embed: { interval:'embedInterval', min_size_frac:'embedMinSize', backend:'embedBackend', sim_thresh:'embedSimThresh' }
+      };
+      Object.entries(map).forEach(([art, fields]) => {
+        const def = data[art] || {};
+        Object.entries(fields).forEach(([k, id]) => {
+          if (def[k] !== undefined) applyVal(id, def[k]);
+        });
+      });
+      // Attach tooltips/help text (idempotent)
+      this.applyOptionTooltips();
+      // Attach validators to numeric inputs
+      this.attachOptionValidators();
+    } catch(_) {
+      // Silently ignore; UI will use baked-in defaults
+    }
+  }
+
+  wireOptionPersistence() {
+    const LS_KEY = 'mediaPlayer:artifactOptions';
+    let cache = {};
+    try { cache = JSON.parse(localStorage.getItem(LS_KEY)||'{}')||{}; } catch(_) {}
+    const persist = () => { try { localStorage.setItem(LS_KEY, JSON.stringify(cache)); } catch(_) {} };
+    const sel = '#spritesOptions input, #previewsOptions input, #thumbnailsOptions input, #phashOptions select, #phashOptions input, #scenesOptions input, #heatmapsOptions input, #heatmapsOptions select, #subtitlesOptions select, #subtitlesOptions input, #facesOptions input, #facesOptions select, #embedOptions input, #embedOptions select';
+    document.querySelectorAll(sel).forEach(el => {
+      if (el._persistWired) return;
+      el._persistWired = true;
+      const handler = () => {
+        const id = el.id; if (!id) return;
+        cache[id] = (el.type === 'checkbox') ? el.checked : el.value;
+        persist();
+      };
+      el.addEventListener('change', handler);
+      el.addEventListener('blur', handler);
+      el.addEventListener('input', (e) => {
+        // Live validate number fields to avoid bad submissions
+        if (el.type === 'number') this.validateNumericInput(el);
+      });
+    });
+  }
+
+  applyOptionTooltips() {
+    const tips = {
+      spriteRows: 'Number of rows in sprite sheet grid. Higher rows * columns increases coverage per sheet.',
+      spriteQuality: 'JPEG quality (0 best / largest, 8 smallest / worst) scaled to backend expectation.',
+      previewWidth: 'Target width in pixels for each hover segment video.',
+      heatmapInterval: 'Sampling interval (seconds) for frame statistics.',
+      heatmapMode: 'Metric: brightness, motion, color, or both combined (legacy composite).',
+      heatmapPng: 'Whether to write a PNG stripe alongside JSON data (uses extra disk).',
+      phashAlgo: 'Hash algorithm for perceptual similarity matching.',
+      faceInterval: 'Seconds between sampled frames for face detection.',
+      faceMinSize: 'Minimum face bounding box size as a fraction of frame dimension.',
+      faceScale: 'Scale factor for cascade / detector; lower detects more, slower.',
+      faceMinNeighbors: 'Min neighbors (cascade) to keep a detection; higher = stricter.',
+      faceSimThresh: 'Similarity threshold when clustering deduplicated faces.',
+      embedSimThresh: 'Similarity threshold for re-embedding / clustering.',
+      spriteInterval: 'Seconds between sprite capture frames.',
+      spriteWidth: 'Scaled width for each captured frame before compositing.'
+    };
+    Object.entries(tips).forEach(([id, tip]) => {
+      const el = document.getElementById(id);
+      if (el && !el.title) el.title = tip;
+    });
+  }
+
+  attachOptionValidators() {
+    const numericIds = [
+      'spriteInterval','spriteWidth','spriteCols','spriteRows','spriteQuality','previewSegments','previewDuration','previewWidth','phashFrames','sceneThreshold','sceneLimit','heatmapInterval','thumbnailOffset','faceInterval','faceMinSize','faceScale','faceMinNeighbors','faceSimThresh','embedInterval','embedMinSize','embedSimThresh'
+    ];
+    numericIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el || el._valWired) return;
+      el._valWired = true;
+      el.addEventListener('blur', () => this.validateNumericInput(el));
+    });
+  }
+
+  validateNumericInput(el) {
+    if (!el) return;
+    if (el.type !== 'number') return;
+    const min = (el.min !== '' && !isNaN(parseFloat(el.min))) ? parseFloat(el.min) : null;
+    const max = (el.max !== '' && !isNaN(parseFloat(el.max))) ? parseFloat(el.max) : null;
+    let val = parseFloat(el.value);
+    if (isNaN(val)) { if (min !== null) val = min; else return; }
+    if (min !== null && val < min) val = min;
+    if (max !== null && val > max) val = max;
+    // Enforce integers where step is 1 or original value looked integer
+    const step = el.step && !isNaN(parseFloat(el.step)) ? parseFloat(el.step) : null;
+    if (step === 1 || (Number.isInteger(parseFloat(el.value)) && (!el.step || parseFloat(el.step) === 1))) {
+      val = Math.round(val);
+    }
+    el.value = String(val);
   }
 
   applyCapabilityGates() {
@@ -4280,15 +6330,15 @@ class TasksManager {
     const fb = document.getElementById("facesBrowserBtn");
     if (fb) {
       const hasFD =
-        "FaceDetector" in window && typeof window.FaceDetector === "function";
+      "FaceDetector" in window && typeof window.FaceDetector === "function";
       // We require either FaceDetector availability (client) AND at least one embedding path on server (ffmpeg or faces backend)
       const serverOk = !!caps.ffmpeg || !!caps.faces_enabled;
       fb.disabled = !(hasFD && serverOk);
       fb.title = fb.disabled
-        ? !hasFD
-          ? "Disabled: FaceDetector API not available in this browser"
-          : "Disabled: no server embedding path available"
-        : "Detect faces in your browser and upload";
+      ? !hasFD
+      ? "Disabled: FaceDetector API not available in this browser"
+      : "Disabled: no server embedding path available"
+      : "Detect faces in your browser and upload";
     }
   }
 
@@ -4297,22 +6347,22 @@ class TasksManager {
     const issues = [];
     if (!caps.ffmpeg)
       issues.push(
-        "FFmpeg not detected — thumbnails, previews, sprites, scenes, heatmaps, and pHash are disabled."
-      );
+      "FFmpeg not detected — thumbnails, previews, sprites, scenes, heatmaps, and pHash are disabled."
+    );
     if (!caps.subtitles_enabled)
       issues.push(
-        "Subtitles backend unavailable — subtitles generation is disabled."
-      );
+      "Subtitles backend unavailable — subtitles generation is disabled."
+    );
     if (!caps.faces_enabled)
       issues.push(
-        "Face backends unavailable — face detection and embeddings are disabled."
-      );
+      "Face backends unavailable — face detection and embeddings are disabled."
+    );
     let banner = document.getElementById("capabilityBanner");
     // Where to insert: top of the tasks panel container
     const tasksPanel = document.getElementById("tasks-panel");
     const container = tasksPanel
-      ? tasksPanel.querySelector(".tasks-container")
-      : null;
+    ? tasksPanel.querySelector(".tasks-container")
+    : null;
     if (!container) return;
     if (issues.length === 0) {
       if (banner) banner.remove();
@@ -4324,76 +6374,78 @@ class TasksManager {
       banner.className = "capability-banner";
       container.insertBefore(banner, container.firstChild);
     }
-    banner.innerHTML = "<strong>Tools notice:</strong> " + issues.join(" ");
+    // Populate banner content safely
+    banner.textContent = '';
+    const strong = document.createElement('strong');
+    strong.textContent = 'Tools notice:';
+    banner.appendChild(strong);
+    banner.appendChild(document.createTextNode(' ' + issues.join(' ')));
   }
 
   initJobEvents() {
-    // Quiet mode: preflight the SSE endpoint once; only attach if available.
-    (async () => {
+    // New approach: avoid any preflight fetches that can 404. Attempt primary EventSource; on immediate failure, try alias once.
+    if (window.__JOBS_SSE_UNAVAILABLE) return;
+    const primary = "/jobs/events";
+    const fallback = "/api/jobs/events";
+    const throttle = 400;
+    const attach = (url, isFallback) => {
+      let es;
       try {
-        const resp = await fetch("/api/jobs/events", {
-          method: "GET",
-          headers: { Accept: "text/event-stream" },
-        });
-        if (!resp.ok) return; // do not attach SSE; rely on polling
-        // We cannot reuse the response body for EventSource; need a fresh EventSource if reachable.
+        es = new EventSource(url);
+      } catch (_) {
+        return false;
+      }
+      this._jobEventsUrl = url;
+      let lastUpdate = 0;
+      const doRefresh = () => {
+        const now = Date.now();
+        if (now - lastUpdate > throttle) {
+          lastUpdate = now;
+          this.refreshJobs();
+          this.loadCoverage();
+        }
+      };
+      es.onmessage = (e) => {
         try {
-          resp.body?.cancel();
-        } catch (_) {}
-      } catch (_) {
-        return;
-      }
-      try {
-        const es = new EventSource("/api/jobs/events");
-        let lastUpdate = 0;
-        const throttle = 400;
-        const doRefresh = () => {
-          const now = Date.now();
-          if (now - lastUpdate > throttle) {
-            lastUpdate = now;
-            this.refreshJobs();
-            this.loadCoverage();
-          }
-        };
-        es.onmessage = (e) => {
-          try {
-            const payload = JSON.parse(e.data);
-            const evt = payload.event;
-            if (
-              evt &&
-              [
-                "created",
-                "queued",
-                "started",
-                "progress",
-                "current",
-                "finished",
-                "result",
-              ].includes(evt)
-            )
-              doRefresh();
-          } catch {}
-        };
-        [
-          "created",
-          "queued",
-          "started",
-          "progress",
-          "current",
-          "finished",
-          "result",
-          "cancel",
-        ].forEach((type) => es.addEventListener(type, () => doRefresh()));
-        es.onerror = () => {
-          try {
-            es.close();
-          } catch (_) {}
-        };
-        this._jobEventSource = es;
-      } catch (_) {
-        /* polling continues */
-      }
-    })();
+          const payload = JSON.parse(e.data);
+          if (payload.event) doRefresh();
+        } catch (_) { }
+      };
+      [
+        "created",
+        "queued",
+        "started",
+        "progress",
+        "current",
+        "finished",
+        "result",
+        "cancel",
+      ].forEach((type) => es.addEventListener(type, () => doRefresh()));
+      es.onopen = () => {
+        if (typeof this._onJobEventsConnected === "function") {
+          this._onJobEventsConnected();
+        }
+      };
+      let triedFallback = false;
+      es.onerror = () => {
+        // If primary fails very early, attempt fallback exactly once.
+        if (!isFallback && !triedFallback && es.readyState === EventSource.CLOSED) {
+          triedFallback = true;
+          try { es.close(); } catch (_) {}
+          attach(fallback, true);
+          return;
+        }
+        try { es.close(); } catch (_) {}
+        window.__JOBS_SSE_UNAVAILABLE = true;
+        try { localStorage.setItem("jobs:sse", "off"); } catch (_) {}
+      };
+      this._jobEventSource = es;
+      return true;
+    };
+    // Try primary; if it throws synchronously, attempt fallback.
+    if (!attach(primary, false)) {
+      attach(fallback, true);
+    }
   }
 
   initEventListeners() {
@@ -4411,10 +6463,10 @@ class TasksManager {
 
     // File selection change
     document
-      .querySelectorAll('input[name="fileSelection"]')
-      .forEach((radio) => {
-        radio.addEventListener("change", () => this.updateSelectedFileCount());
-      });
+    .querySelectorAll('input[name="fileSelection"]')
+    .forEach((radio) => {
+      radio.addEventListener("change", () => this.updateSelectedFileCount());
+    });
 
     // Listen for tab changes to update selected file count and load initial data
     window.addEventListener("tabchange", (e) => {
@@ -4423,6 +6475,13 @@ class TasksManager {
         // Load coverage and jobs when switching to tasks tab
         this.loadCoverage();
         this.refreshJobs();
+      }
+      // Load stats lazily when the stats tab is shown
+      if (e.detail.activeTab === "stats") {
+        try {
+          if (typeof loadStats === 'function') loadStats();
+        }
+        catch(_) {}
       }
     });
 
@@ -4452,6 +6511,7 @@ class TasksManager {
       }
       refreshCardStates();
       this.renderJobsTable();
+      this.ensureJobTableShowsSomeRows();
     };
     if (filterActive)
       filterActive.addEventListener("click", () => toggle("running"));
@@ -4503,7 +6563,7 @@ class TasksManager {
             method: "POST",
           });
           if (!res.ok) throw new Error("HTTP " + res.status);
-          this.showNotification("Queued jobs cancelled", "success");
+          this.showNotification("Queued jobs canceled", "success");
           await this.refreshJobs();
         } catch (e) {
           this.showNotification("Failed to cancel queued jobs", "error");
@@ -4665,11 +6725,11 @@ class TasksManager {
       // Capability gate (skip for clear which only deletes existing files)
       if (!isClear && !this.canRunOperation(base)) {
         const why =
-          base === "subtitles"
-            ? "No subtitles backend available."
-            : base === "faces" || base === "embed"
-            ? "Face backends unavailable."
-            : "FFmpeg not detected.";
+        base === "subtitles"
+        ? "No subtitles backend available."
+        : base === "faces" || base === "embed"
+        ? "Face backends unavailable."
+        : "FFmpeg not detected.";
         this.showNotification(
           `Cannot start ${base} (${mode}). ${why}`,
           "error"
@@ -4700,9 +6760,9 @@ class TasksManager {
             window.location.origin
           );
           const selPaths =
-            fileSelection === "selected"
-              ? Array.from(selectedItems || [])
-              : null;
+          fileSelection === "selected"
+          ? Array.from(selectedItems || [])
+          : null;
           let resp;
           if (selPaths && selPaths.length) {
             resp = await fetch(clearUrl.toString(), {
@@ -4842,89 +6902,68 @@ class TasksManager {
 
     switch (type) {
       case "thumbnails":
-        params.offset = document.getElementById("thumbnailOffset")?.value || 10;
-        break;
+      params.offset = document.getElementById("thumbnailOffset")?.value || 10;
+      break;
       case "phash":
-        params.frames = document.getElementById("phashFrames")?.value || 5;
-        params.algorithm =
-          document.getElementById("phashAlgo")?.value || "ahash";
-        break;
+      params.frames = document.getElementById("phashFrames")?.value || 5;
+      params.algorithm =
+      document.getElementById("phashAlgo")?.value || "ahash";
+      break;
       case "sprites":
-        params.interval =
-          document.getElementById("spriteInterval")?.value || 10;
-        params.width = document.getElementById("spriteWidth")?.value || 320;
-        params.cols = document.getElementById("spriteCols")?.value || 10;
-        break;
+      params.interval =
+      document.getElementById("spriteInterval")?.value || 10;
+      params.width = document.getElementById("spriteWidth")?.value || 320;
+      params.cols = document.getElementById("spriteCols")?.value || 10;
+      params.rows = document.getElementById("spriteRows")?.value || 10;
+      params.quality = document.getElementById("spriteQuality")?.value || 4;
+      break;
       case "previews":
-        params.segments =
-          document.getElementById("previewSegments")?.value || 9;
-        params.duration =
-          document.getElementById("previewDuration")?.value || 1.0;
-        break;
+      params.segments =
+      document.getElementById("previewSegments")?.value || 9;
+      params.duration =
+      document.getElementById("previewDuration")?.value || 1.0;
+      params.width = document.getElementById("previewWidth")?.value || 320;
+      break;
       case "heatmaps":
-        params.interval = parseFloat(
-          document.getElementById("heatmapInterval")?.value || "5.0"
-        );
-        params.mode = document.getElementById("heatmapMode")?.value || "both";
-        // default to true PNG generation for better visual feedback
-        params.png = true;
-        break;
+      params.interval = parseFloat( document.getElementById("heatmapInterval")?.value || "5.0" );
+      // Accept legacy 'both' plus new modes
+      params.mode = document.getElementById("heatmapMode")?.value || "both";
+      // Use checkbox to control PNG generation (default true)
+      params.png = document.getElementById("heatmapPng")?.checked !== false;
+      break;
       case "subtitles":
-        params.model =
-          document.getElementById("subtitleModel")?.value || "small";
-        {
-          const langVal = (
-            document.getElementById("subtitleLang")?.value || ""
-          ).trim();
-          params.language = langVal || "auto";
-        }
-        // translate option not exposed in UI; default false
-        params.translate = false;
-        break;
+      params.model =
+      document.getElementById("subtitleModel")?.value || "small";
+      {
+        const langVal = (
+          document.getElementById("subtitleLang")?.value || ""
+        ).trim();
+        params.language = langVal || "auto";
+      }
+      // translate option not exposed in UI; default false
+      params.translate = false;
+      break;
       case "scenes":
-        params.threshold = parseFloat(
-          document.getElementById("sceneThreshold")?.value || "0.4"
-        );
-        params.limit = parseInt(
-          document.getElementById("sceneLimit")?.value || "0",
-          10
-        );
-        break;
+      params.threshold = parseFloat( document.getElementById("sceneThreshold")?.value || "0.4" );
+      params.limit = parseInt( document.getElementById("sceneLimit")?.value || "0", 10 );
+      break;
       case "faces":
-        params.interval = parseFloat(
-          document.getElementById("faceInterval")?.value || "1.0"
-        );
-        params.min_size_frac = parseFloat(
-          document.getElementById("faceMinSize")?.value || "0.10"
-        );
-        // Advanced tunables (parity with legacy FaceLab)
-        params.backend =
-          document.getElementById("faceBackend")?.value || "auto";
-        // Only some backends use these; harmless to pass through
-        params.scale_factor = parseFloat(
-          document.getElementById("faceScale")?.value || "1.1"
-        );
-        params.min_neighbors = parseInt(
-          document.getElementById("faceMinNeighbors")?.value || "5",
-          10
-        );
-        params.sim_thresh = parseFloat(
-          document.getElementById("faceSimThresh")?.value || "0.9"
-        );
-        break;
+      params.interval = parseFloat( document.getElementById("faceInterval")?.value || "1.0" );
+      params.min_size_frac = parseFloat( document.getElementById("faceMinSize")?.value || "0.10" );
+      // Advanced tunables (parity with legacy FaceLab)
+      params.backend =
+      document.getElementById("faceBackend")?.value || "auto";
+      // Only some backends use these; harmless to pass through
+      params.scale_factor = parseFloat( document.getElementById("faceScale")?.value || "1.1" );
+      params.min_neighbors = parseInt( document.getElementById("faceMinNeighbors")?.value || "5", 10 );
+      params.sim_thresh = parseFloat( document.getElementById("faceSimThresh")?.value || "0.9" );
+      break;
       case "embed":
-        params.interval = parseFloat(
-          document.getElementById("embedInterval")?.value || "1.0"
-        );
-        params.min_size_frac = parseFloat(
-          document.getElementById("embedMinSize")?.value || "0.10"
-        );
-        params.backend =
-          document.getElementById("embedBackend")?.value || "auto";
-        params.sim_thresh = parseFloat(
-          document.getElementById("embedSimThresh")?.value || "0.9"
-        );
-        break;
+      params.interval = parseFloat( document.getElementById("embedInterval")?.value || "1.0" );
+      params.min_size_frac = parseFloat( document.getElementById("embedMinSize")?.value || "0.10" );
+      params.backend = document.getElementById("embedBackend")?.value || "auto";
+      params.sim_thresh = parseFloat( document.getElementById("embedSimThresh")?.value || "0.9" );
+      break;
     }
 
     return params;
@@ -4980,7 +7019,7 @@ class TasksManager {
         total: 0,
       };
       const percentage =
-        data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0;
+      data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0;
 
       // Update percentage
       const percentageEl = document.getElementById(`${artifact}Coverage`);
@@ -5042,15 +7081,16 @@ class TasksManager {
       }
       if (active) {
         active.classList.remove("hidden", "d-none");
+        // Metadata uses same adaptive control: Generate All -> Generate Missing -> Clear All
       }
     });
 
     // Mirror faces coverage to embeddings UI (embeddings share faces.json presence)
     const facesData = this.coverage["faces"] || { processed: 0, total: 0 };
     const embedPct =
-      facesData.total > 0
-        ? Math.round((facesData.processed / facesData.total) * 100)
-        : 0;
+    facesData.total > 0
+    ? Math.round((facesData.processed / facesData.total) * 100)
+    : 0;
     const embedPctEl = document.getElementById("embedCoverage");
     const embedFillEl = document.getElementById("embedFill");
     if (embedPctEl) embedPctEl.textContent = `${embedPct}%`;
@@ -5058,7 +7098,7 @@ class TasksManager {
     const embedGen = document.querySelector('[data-operation="embed-missing"]');
     const embedRe = document.querySelector('[data-operation="embed-all"]');
     const embedClear = document.querySelector('[data-operation="embed-clear"]');
-  [embedGen, embedRe, embedClear].forEach(b => { if (!b) return; b.classList.add('hidden'); b.classList.remove('btn-danger'); b && b.removeAttribute('data-state'); });
+    [embedGen, embedRe, embedClear].forEach(b => { if (!b) return; b.classList.add('hidden'); b.classList.remove('btn-danger'); b && b.removeAttribute('data-state'); });
     let embedActive = null;
     if (embedPct === 0) {
       embedActive = embedRe || embedGen || embedClear;
@@ -5147,12 +7187,10 @@ class TasksManager {
     const tbody = document.getElementById("jobTableBody");
     if (!tbody) return;
     const all = Array.from(this.jobs.values());
-    // Filtering
-    let visible = all;
+    // Filtering: when no filters are active, show no rows (user explicitly hid all)
+    let visible = [];
     if (this.activeFilters && this.activeFilters.size > 0) {
-      visible = all.filter((j) =>
-        this.activeFilters.has(this.normalizeStatus(j))
-      );
+      visible = all.filter((j) => this.activeFilters.has(this.normalizeStatus(j)));
     }
     // Sort with explicit priority: running > queued > others, then by time desc
     const prio = (j) => {
@@ -5199,10 +7237,13 @@ class TasksManager {
     const cancelQueuedBtn = document.getElementById("cancelQueuedBtn");
     const cancelAllBtn = document.getElementById("cancelAllBtn");
     if (clearBtn) {
-      const hasCompleted = Array.from(this.jobs.values()).some(
-        (j) => this.normalizeStatus(j) === "completed"
+      const hasCompletedOrFailed = Array.from(this.jobs.values()).some(
+        (j) => {
+          const s = this.normalizeStatus(j);
+          return s === "completed" || s === "failed";
+        }
       );
-      clearBtn.style.display = hasCompleted ? "inline-block" : "none";
+      clearBtn.style.display = hasCompletedOrFailed ? "inline-block" : "none";
     }
     if (cancelQueuedBtn) {
       const hasQueued = Array.from(this.jobs.values()).some(
@@ -5215,7 +7256,7 @@ class TasksManager {
             method: "POST",
           });
           if (!res.ok) throw new Error("HTTP " + res.status);
-          this.showNotification("Queued jobs cancelled", "success");
+          this.showNotification("Queued jobs canceled", "success");
           this.refreshJobs();
         } catch (e) {
           this.showNotification("Failed to cancel queued jobs", "error");
@@ -5242,6 +7283,19 @@ class TasksManager {
           this.showNotification("Failed to cancel all jobs", "error");
         }
       };
+    }
+
+    // Clamp container height to content so it never grows beyond the table needs
+    const container = document.getElementById('jobTableContainer');
+    if (container) {
+      const table = container.querySelector('table');
+      if (table) {
+        const maxContent = table.scrollHeight + 8; // small padding
+        const current = container.getBoundingClientRect().height;
+        if (current > maxContent) {
+          container.style.height = maxContent + 'px';
+        }
+      }
     }
   }
 
@@ -5277,19 +7331,9 @@ class TasksManager {
   }
 
   createJobRow(job) {
-    const row = document.createElement("tr");
+    const tpl = document.getElementById('jobRowTemplate');
+    const row = tpl.content.firstElementChild.cloneNode(true);
     row.dataset.jobId = job.id;
-    row.innerHTML = `
-      <td class="cell-time"></td>
-      <td class="cell-task"></td>
-      <td class="cell-file" title=""></td>
-      <td class="cell-status"><span class="job-status"></span></td>
-      <td class="cell-progress">
-        <div class="job-progress"><div class="job-progress-fill"></div></div>
-        <div class="cell-sub"><span class="pct"></span><span class="fname"></span></div>
-      </td>
-      <td class="cell-action"></td>
-    `;
     this.updateJobRow(row, job);
     return row;
   }
@@ -5297,8 +7341,8 @@ class TasksManager {
   updateJobRow(row, job) {
     const tstamp = job.startTime || job.createdTime || 0;
     const startTime = tstamp
-      ? new Date(tstamp * 1000).toLocaleTimeString()
-      : "N/A";
+    ? new Date(tstamp * 1000).toLocaleTimeString()
+    : "N/A";
     const baseName = (p) => (p || "").split("/").filter(Boolean).pop() || "";
     const fileName = baseName(job.target) || baseName(job.file);
     row.querySelector(".cell-time").textContent = startTime;
@@ -5347,17 +7391,17 @@ class TasksManager {
       bar.style.width = (status !== "queued" ? pct : 0) + "%";
     }
     row.querySelector(".pct").textContent =
-      status === "queued"
-        ? "Queued"
-        : status === "completed"
-        ? "100%"
-        : status === "canceled"
-        ? "Canceled"
-        : `${pct}%`;
+    status === "queued"
+    ? "Queued"
+    : status === "completed"
+    ? "100%"
+    : status === "canceled"
+    ? "Canceled"
+    : `${pct}%`;
     const fname = row.querySelector(".fname");
     // Show the target path when available for non-queued states
     const targetPath =
-      job && typeof job.target === "string" && job.target ? job.target : "";
+    job && typeof job.target === "string" && job.target ? job.target : "";
     fname.textContent = status === "queued" ? "" : targetPath || "";
     // Action
     const action = row.querySelector(".cell-action");
@@ -5393,88 +7437,152 @@ class TasksManager {
     const container = document.getElementById("jobTableContainer");
     const handle = document.getElementById("jobResizeHandle");
     if (!container || !handle) return;
-    // Restore prior height
-    const saved = localStorage.getItem("jobQueueHeight");
-    if (saved) container.style.maxHeight = saved;
-    let down = false,
-      startY = 0,
-      startH = 0;
-    const onDown = (e) => {
-      down = true;
-      startY = e.clientY;
-      startH = container.getBoundingClientRect().height;
-      document.body.style.userSelect = "none";
+    // Avoid double wiring
+    if (handle._wired) return;
+    handle._wired = true;
+
+    // Clear any lingering max-height from older logic
+    container.style.maxHeight = "";
+
+    let startY = 0;
+    let startHeight = 0;
+    const MIN = 120; // minimum usable height
+    const contentMax = () => {
+      const table = container.querySelector('table');
+      if (!table) return window.innerHeight - 160;
+      // scrollHeight of table (plus small padding)
+      return Math.min(table.scrollHeight + 8, window.innerHeight - 160);
+    };
+    const clamp = (h) => {
+      const max = contentMax();
+      return Math.min(Math.max(h, MIN), max);
     };
     const onMove = (e) => {
-      if (!down) return;
-      const h = Math.max(140, Math.min(720, startH + (e.clientY - startY)));
-      container.style.maxHeight = h + "px";
+      const dy = e.clientY - startY;
+      const newH = clamp(startHeight + dy);
+      container.style.height = newH + "px";
+      container.style.overflow = 'auto';
     };
     const onUp = () => {
-      if (!down) return;
-      down = false;
-      localStorage.setItem(
-        "jobQueueHeight",
-        container.style.maxHeight || "240px"
-      );
-      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.classList.remove("resizing-job-table");
     };
-    handle.addEventListener("mousedown", onDown);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    handle.addEventListener("mousedown", (e) => {
+      // Only left button
+      if (e.button !== 0) return;
+      startY = e.clientY;
+      startHeight = container.getBoundingClientRect().height;
+      container._userResized = true; // mark explicit user intent
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.body.classList.add("resizing-job-table");
+      e.preventDefault();
+    });
+    // Responsive safety: if window shrinks below chosen height, clamp down
+    window.addEventListener("resize", () => {
+      const rect = container.getBoundingClientRect();
+      container.style.height = clamp(rect.height) + 'px';
+    });
+
+    // Auto adjust after initial job render (allow full content if small)
+    setTimeout(() => {
+      const table = container.querySelector('table');
+      if (!table) return;
+      const desired = clamp(table.scrollHeight + 8);
+      container.style.height = desired + 'px';
+    }, 50);
+  }
+
+  // Ensure that after changing filters (or initial render) the job table is tall enough to show a few rows
+  ensureJobTableShowsSomeRows() {
+    const container = document.getElementById('jobTableContainer');
+    if (!container) return;
+    // Respect explicit user resizing unless container is extremely small (<100px)
+    if (container._userResized && container.getBoundingClientRect().height > 100) return;
+    const rows = Array.from(document.querySelectorAll('#jobTableBody tr'))
+    .filter(r => r.style.display !== 'none');
+    if (!rows.length) return; // nothing to show
+    const sample = rows.find(r => r.offsetParent !== null) || rows[0];
+    const rh = sample.getBoundingClientRect().height || 28;
+    const wantRows = Math.min(rows.length, 4); // show up to 4 rows if available
+    // Extra for header + padding
+    const baseExtra = 42;
+    const desired = (rh * wantRows) + baseExtra;
+    const current = container.getBoundingClientRect().height;
+    // Compute max allowed similar to resizer logic
+    const table = container.querySelector('table');
+    const contentHeight = table ? table.scrollHeight + 8 : desired;
+    const viewportCap = window.innerHeight - 160;
+    const cap = Math.min(contentHeight, viewportCap);
+    if (current + 6 < desired) {
+      container.style.height = Math.min(desired, cap) + 'px';
+    }
   }
 
   // Normalize backend status to UI status names
   normalizeStatus(job) {
     // Map server states directly; do not infer running from progress for queued
     let s = (job.status || "").toLowerCase();
-    if (s === "done" || s === "completed") return "completed";
+    if (s === "completed") return "completed";
     if (s === "running") return "running";
     if (s === "queued") return "queued";
-    if (s === "failed" || s === "error" || s === "errored") return "failed";
-    if (s === "canceled" || s === "cancelled" || s === "cancel_requested")
-      return "canceled";
+    if (s === "failed") return "failed";
+    if (s === "canceled") return "canceled";
     return s || "unknown";
   }
 
   showErrorModal(message, job) {
     let modal = document.getElementById("errorModal");
     if (!modal) {
+      // As a fallback only: create the modal structure using DOM APIs (no template strings)
       modal = document.createElement("div");
       modal.id = "errorModal";
       modal.className = "modal";
-      modal.innerHTML = `
-        <div class="modal-content" style="max-width:720px;">
-          <div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-            <h3 style="margin:0;">Job Error</h3>
-            <button class="btn" id="errorModalClose">Close</button>
-          </div>
-          <pre id="errorModalText" style="white-space:pre-wrap; background:#111; color:#f88; padding:12px; border-radius:6px; max-height:50vh; overflow:auto;"></pre>
-        </div>`;
+      const content = document.createElement('div');
+      content.className = 'modal-content';
+      content.style.maxWidth = '720px';
+      const header = document.createElement('div');
+      header.className = 'modal-header';
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.style.justifyContent = 'space-between';
+      header.style.gap = '12px';
+      const h3 = document.createElement('h3'); h3.style.margin = '0'; h3.textContent = 'Job Error';
+      const closeBtn = document.createElement('button'); closeBtn.className = 'btn'; closeBtn.id = 'errorModalClose'; closeBtn.textContent = 'Close';
+      header.appendChild(h3); header.appendChild(closeBtn);
+      const pre = document.createElement('pre'); pre.id = 'errorModalText'; pre.style.whiteSpace = 'pre-wrap'; pre.style.background = '#111'; pre.style.color = '#f88'; pre.style.padding = '12px'; pre.style.borderRadius = '6px'; pre.style.maxHeight = '50vh'; pre.style.overflow = 'auto';
+      content.appendChild(header); content.appendChild(pre); modal.appendChild(content);
       document.body.appendChild(modal);
-      const close = () => {
-        modal.hidden = true;
-      };
-      modal.addEventListener("click", (e) => {
-        if (e.target === modal) close();
-      });
-      modal.querySelector("#errorModalClose").addEventListener("click", close);
+      const close = () => { modal.hidden = true; };
+      modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+      closeBtn.addEventListener('click', close);
     }
-    const pre = modal.querySelector("#errorModalText");
-    pre.textContent = message || "Unknown error";
+    const pre = modal.querySelector('#errorModalText');
+    if (pre) pre.textContent = message || 'Unknown error';
     modal.hidden = false;
   }
 
   updateJobStats(stats) {
+    // Recompute ALL counters locally based on the jobs currently loaded.
+    // Requirement: counts reflect everything that "shows up in the list" (i.e., jobs payload),
+    // not a time-windowed subset like completedToday.
+    const jobs = Array.from(this.jobs.values());
+    const norm = (j) => this.normalizeStatus(j);
+    const activeCount = jobs.filter((j) => norm(j) === "running").length;
+    const queuedCount = jobs.filter((j) => norm(j) === "queued").length;
+    const completedCount = jobs.filter((j) => norm(j) === "completed").length;
+    const failedCount = jobs.filter((j) => norm(j) === "failed").length;
+
     const activeEl = document.getElementById("activeJobsCount");
     const queuedEl = document.getElementById("queuedJobsCount");
     const completedEl = document.getElementById("completedJobsCount");
     const failedEl = document.getElementById("failedJobsCount");
 
-    if (activeEl) activeEl.textContent = stats.active || 0;
-    if (queuedEl) queuedEl.textContent = stats.queued || 0;
-    if (completedEl) completedEl.textContent = stats.completedToday || 0;
-    if (failedEl) failedEl.textContent = stats.failed || 0;
+    if (activeEl) activeEl.textContent = activeCount;
+    if (queuedEl) queuedEl.textContent = queuedCount;
+    if (completedEl) completedEl.textContent = completedCount;
+    if (failedEl) failedEl.textContent = failedCount;
   }
 
   async cancelJob(jobId) {
@@ -5486,7 +7594,7 @@ class TasksManager {
       if (response.ok) {
         const data = await response.json();
         if (data.status === "success") {
-          this.showNotification("Job cancelled", "success");
+          this.showNotification("Job canceled", "success");
           this.refreshJobs();
         }
       } else {
@@ -5515,13 +7623,24 @@ class TasksManager {
   }
 
   startJobPolling() {
-    // Poll for job and coverage updates every 1 second when on tasks tab for more responsive updates
-    setInterval(() => {
-      if (tabSystem && tabSystem.getActiveTab() === "tasks") {
+    // Adaptive polling: fast (1s) until SSE (if any) attaches; then slow (15s) fallback.
+    const FAST = 1000;
+    const SLOW = 15000;
+    if (this._jobPollTimer) clearInterval(this._jobPollTimer);
+    let interval = FAST;
+    const tick = () => {
+      if (tabSystem && tabSystem.getActiveTab && tabSystem.getActiveTab() === "tasks") {
         this.refreshJobs();
         this.loadCoverage();
       }
-    }, 1000);
+    };
+    this._jobPollTimer = setInterval(tick, interval);
+    // If SSE later connects, we expose a hook to downgrade polling frequency
+    this._onJobEventsConnected = () => {
+      if (!this._jobPollTimer) return;
+      clearInterval(this._jobPollTimer);
+      this._jobPollTimer = setInterval(tick, SLOW); // keep a light safety net
+    };
   }
 
   showNotification(message, type = "info") {
@@ -5576,6 +7695,8 @@ class TasksManager {
     const orphanCountEl = document.getElementById("orphanCount");
     const cleanupBtn = document.getElementById("cleanupOrphansBtn");
     const previewBtn = document.getElementById("previewOrphansBtn");
+    const orphanDetails = document.getElementById("orphanDetails");
+    const orphanList = document.getElementById("orphanList");
 
     if (orphanCountEl) {
       orphanCountEl.textContent = orphanCount;
@@ -5591,23 +7712,64 @@ class TasksManager {
 
     // Store orphan data for preview
     this.orphanFiles = orphanData.orphaned_files || [];
+
+    // If preview currently visible, refresh its contents
+    if (
+      orphanDetails &&
+      !orphanDetails.classList.contains("d-none") &&
+      orphanList
+    ) {
+      // Rebuild orphan list using DOM nodes (avoid innerHTML)
+      while (orphanList.firstChild) orphanList.removeChild(orphanList.firstChild);
+      if (this.orphanFiles && this.orphanFiles.length) {
+        const frag = document.createDocumentFragment();
+        this.orphanFiles.forEach((file) => {
+          const d = document.createElement('div');
+          d.className = 'orphan-file';
+          d.textContent = file;
+          frag.appendChild(d);
+        });
+        orphanList.appendChild(frag);
+      } else {
+        const d = document.createElement('div');
+        d.className = 'orphan-file empty';
+        d.textContent = 'No orphaned files';
+        orphanList.appendChild(d);
+      }
+    }
   }
 
   async previewOrphans() {
     const orphanDetails = document.getElementById("orphanDetails");
     const orphanList = document.getElementById("orphanList");
-
-    if (orphanDetails.style.display === "none") {
-      // Show preview
-      orphanList.innerHTML = this.orphanFiles
-        .map((file) => `<div class="orphan-file">${file}</div>`)
-        .join("");
-      orphanDetails.style.display = "block";
-      document.getElementById("previewOrphansBtn").textContent = "Hide";
+    if (!orphanDetails || !orphanList) return;
+    const btn = document.getElementById("previewOrphansBtn");
+    const isHidden = orphanDetails.classList.contains("d-none");
+    if (isHidden) {
+      // Show: populate orphanList using DOM nodes
+      while (orphanList.firstChild) orphanList.removeChild(orphanList.firstChild);
+      if (this.orphanFiles && this.orphanFiles.length) {
+        const frag = document.createDocumentFragment();
+        this.orphanFiles.forEach((file) => {
+          const d = document.createElement('div');
+          d.className = 'orphan-file';
+          d.textContent = file;
+          frag.appendChild(d);
+        });
+        orphanList.appendChild(frag);
+      } else {
+        const d = document.createElement('div');
+        d.className = 'orphan-file empty';
+        d.textContent = 'No orphaned files';
+        orphanList.appendChild(d);
+      }
+      orphanDetails.classList.remove("d-none");
+      orphanDetails.removeAttribute("hidden");
+      if (btn) btn.textContent = "Hide";
     } else {
-      // Hide preview
-      orphanDetails.style.display = "none";
-      document.getElementById("previewOrphansBtn").textContent = "Preview";
+      // Hide
+      orphanDetails.classList.add("d-none");
+      if (btn) btn.textContent = "Preview";
     }
   }
 
@@ -5686,3 +7848,49 @@ if (document.readyState === "loading") {
   }
   // Heatmap preview button removed per redesign.
 }
+
+// -----------------------------
+// Sidebar toggle: non-intrusive handle between sidebar and player
+// -----------------------------
+(function wireSidebarToggle(){
+  const toggle = document.getElementById('sidebarToggle');
+  const root = document.documentElement || document.body;
+  const STORAGE_KEY = 'mediaPlayer:sidebarCollapsed';
+
+  function isCollapsed() {
+    try { return localStorage.getItem(STORAGE_KEY) === '1'; } catch(_) { return false; }
+  }
+
+  function setCollapsed(v, save = true) {
+    if (v) {
+      root.classList.add('has-sidebar-collapsed');
+      if (toggle) toggle.setAttribute('aria-expanded','false');
+    } else {
+      root.classList.remove('has-sidebar-collapsed');
+      if (toggle) toggle.setAttribute('aria-expanded','true');
+    }
+    if (save) {
+      try { localStorage.setItem(STORAGE_KEY, v ? '1' : '0'); } catch(_) {}
+    }
+  }
+
+  if (!toggle) return; // nothing to wire
+
+  // initialize from storage
+  setCollapsed(isCollapsed(), false);
+
+  toggle.addEventListener('click', (e) => {
+    const now = !root.classList.contains('has-sidebar-collapsed');
+    setCollapsed(now, true);
+    // small accessibility hint: focus the toggle after action
+    toggle.focus();
+  });
+
+  // Allow keyboard toggle via Space/Enter when focused
+  toggle.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      toggle.click();
+    }
+  });
+})();
