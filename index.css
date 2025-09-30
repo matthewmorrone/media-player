@@ -208,6 +208,11 @@ main {
   transform: translateY(-1px);
 }
 
+/* Visual state while an on-demand hover/preview is being generated */
+.card.hover-generating {
+  outline: 2px dashed rgba(79,140,255,0.25);
+}
+
 /* 5. Buttons & Controls (core) */
 .btn {
   background: var(--panel);
