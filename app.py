@@ -1648,9 +1648,9 @@ def generate_scene_artifacts(
     gen_clips: bool,
     thumbs_width: int,
     clip_duration: float,
+    fast_mode: bool = False,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
-    fast_mode: bool = True,
 ) -> None:
     """
     Detect scene changes using ffmpeg showinfo and optionally export thumbs/clips.
@@ -1661,8 +1661,7 @@ def generate_scene_artifacts(
     """
     j = scenes_json_path(video)
     out_dir = scenes_dir(video)
-    # Create directory lazily only if we actually emit thumbs/clips
-    created_dir = False
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     scenes: list[dict] = []
     if not ffmpeg_available():
@@ -1674,30 +1673,11 @@ def generate_scene_artifacts(
     with _PerFileLock(video, key="scenes"):
         # Use ffmpeg showinfo to find pts_time for frames exceeding scene threshold
         thr = max(0.0, min(1.0, float(threshold)))
-        # Base ffmpeg invocation; use -an to skip audio decode; optionally downscale before detection for speed
-        scale_clause = None
-        if fast_mode:
-            # Heuristic downscale target (avoid needlessly processing 4K frames for scene detection)
-            # Prefer provided thumbs_width as a hint; clamp to reasonable lower bound
-            try:
-                t_w = int(thumbs_width) if thumbs_width and int(thumbs_width) > 0 else 640
-            except Exception:
-                t_w = 640
-            target_w = max(320, min(1280, t_w))
-            scale_clause = f"scale=min({target_w},iw):-1:flags=fast_bilinear"
-        vf_chain = []
-        if scale_clause:
-            vf_chain.append(scale_clause)
-        # Detection + showinfo (on selected frames only)
-        vf_chain.append(f"select=gt(scene,{thr})")
-        vf_chain.append("showinfo")
-        vf_expr = ",".join(vf_chain)
         cmd = [
             "ffmpeg", "-hide_banner",
             *(_ffmpeg_hwaccel_flags()),
             "-i", str(video),
-            "-an",  # skip audio decode for speed
-            "-vf", vf_expr,
+            "-filter_complex", f"select='gt(scene,{thr})',showinfo",
             "-f", "null", "-",
         ]
         # Stream stderr/stdout to incrementally parse showinfo and emit progress
@@ -1734,52 +1714,22 @@ def generate_scene_artifacts(
                     if not line:
                         continue
                     try:
-                        # Capture selected frame timestamps (pts_time lines from showinfo on selected frames)
-                        m_pts = re.search(r"pts_time:(?P<t>[0-9]+(?:\.[0-9]+)?)", line)
-                        if m_pts:
-                            t = float(m_pts.group("t"))
+                        m = re.search(r"pts_time:(?P<t>[0-9]+\.[0-9]+)", line)
+                        if m:
+                            t = float(m.group("t"))
+                            # dedupe close times
                             if (not times) or abs(times[-1] - t) > 0.25:
                                 times.append(t)
                             last_ts = t
-                        # Generic ffmpeg progress fallback (time=HH:MM:SS.xx)
-                        if duration and duration > 0:
-                            m_time = re.search(r"time=(?P<h>\d+):(\d+):(\d+\.?\d*)", line)
-                            if m_time:
-                                try:
-                                    h, rest = int(m_time.group("h")), line[line.find(":")+1:]
-                                except Exception:
-                                    h = 0
-                                # Simpler: parse full time= with regex capturing hours mins secs
-                                m_full = re.search(r"time=(?P<H>\d+):(?P<M>\d+):(?P<S>\d+\.?\d*)", line)
-                                if m_full:
-                                    try:
-                                        ct = (int(m_full.group("H"))*3600)+(int(m_full.group("M"))*60)+float(m_full.group("S"))
-                                        last_ts = max(last_ts, ct)
-                                    except Exception:
-                                        pass
-                        # External job progress via job id OR provided progress_cb
+                        # update approximate pass progress based on last seen timestamp
                         if duration and duration > 0:
                             frac = max(0.0, min(1.0, float(last_ts) / float(duration)))
-                            # Prefer provided progress_cb if available for unified semantics
-                            if progress_cb:
+                            jid = getattr(JOB_CTX, "jid", None)
+                            if jid:
                                 try:
-                                    progress_cb(int(frac * 50), 100)  # reserve second half for generation phase
+                                    _set_job_progress(jid, total=100, processed_set=int(frac * 100))
                                 except Exception:
                                     pass
-                            else:
-                                jid = getattr(JOB_CTX, "jid", None)
-                                if jid:
-                                    try:
-                                        _set_job_progress(jid, total=100, processed_set=int(frac * 50))
-                                    except Exception:
-                                        pass
-                        # Early exit if we have reached requested limit of scenes
-                        if limit and limit > 0 and len(times) >= limit:
-                            try:
-                                os.killpg(proc.pid, signal.SIGTERM)
-                            except Exception:
-                                proc.terminate()
-                            break
                     except Exception:
                         pass
                     # cancel check
@@ -1805,18 +1755,8 @@ def generate_scene_artifacts(
     if int(proc_rc or 0) != 0 and not times:
         times = []
 
-    if limit and limit > 0 and len(times) > limit:
+    if limit and limit > 0:
         times = times[: int(limit)]
-
-    # Fallback: if no scene cuts detected but we have a duration, synthesize a start + end marker
-    if not times and duration and duration > 1.0:
-        # Provide at least one mid-point so UI can display a tick (heuristic: every 5 minutes up to 10 markers)
-        approx_count = max(1, min(10, int(duration // 300)))
-        if approx_count == 1:
-            times = [duration / 2.0]
-        else:
-            step_size = duration / (approx_count + 1)
-            times = [step_size * i for i in range(1, approx_count + 1)]
 
     total_steps = len(times)
     step = 0
@@ -1826,12 +1766,6 @@ def generate_scene_artifacts(
         entry: dict[str, Any] = {"time": float(t)}
         if gen_thumbs:
             thumb = out_dir / f"{video.stem}.scene_{i:03d}.jpg"
-            if not created_dir:
-                try:
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    created_dir = True
-                except Exception:
-                    pass
             cmd_t = [
                 "ffmpeg", "-y",
                 *(_ffmpeg_hwaccel_flags()),
@@ -1849,18 +1783,11 @@ def generate_scene_artifacts(
             step += 1
             if progress_cb and total_steps:
                 try:
-                    # Map generation phase to second half of 100-scale if earlier detection used progress_cb
-                    progress_cb(50 + int((step / max(1, total_steps)) * 50), 100)
+                    progress_cb(min(step, total_steps), total_steps)
                 except Exception:
                     pass
         if gen_clips:
             clip = out_dir / f"{video.stem}.scene_{i:03d}.mp4"
-            if not created_dir:
-                try:
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    created_dir = True
-                except Exception:
-                    pass
             cmd_c = [
                 "ffmpeg", "-y",
                 *(_ffmpeg_hwaccel_flags()),
@@ -1881,21 +1808,14 @@ def generate_scene_artifacts(
             step += 1
             if progress_cb and total_steps:
                 try:
-                    progress_cb(50 + int((step / max(1, total_steps)) * 50), 100)
+                    progress_cb(min(step, total_steps), total_steps)
                 except Exception:
                     pass
 
     j.write_text(json.dumps({"scenes": scenes}, indent=2))
-    # Remove scenes directory if it exists but ended up empty (avoid clutter)
-    if created_dir:
+    if progress_cb and total_steps:
         try:
-            if out_dir.exists() and not any(out_dir.iterdir()):
-                out_dir.rmdir()
-        except Exception:
-            pass
-    if progress_cb:
-        try:
-            progress_cb(100, 100)
+            progress_cb(total_steps, total_steps)
         except Exception:
             pass
 
@@ -2457,7 +2377,7 @@ def compute_heatmaps(
                         pass
 
     data = {
-        "interval": float(interval), 
+        "interval": float(interval),
         "samples": samples
     }
     heatmaps_json_path(video).write_text(json.dumps(data, indent=2))
@@ -2539,8 +2459,8 @@ def run_whisper_backend(
     # Returns list of segments: {start,end,text}
     if os.environ.get("FFPROBE_DISABLE"):
         segs = [{
-            "start": i * 2.0, 
-            "end": i * 2.0 + 1.5, 
+            "start": i * 2.0,
+            "end": i * 2.0 + 1.5,
             "text": f"Stub segment {i+1}"
         } for i in range(3)]
         if progress_cb:
@@ -2602,8 +2522,8 @@ def run_whisper_backend(
         for s in result.get("segments", []):
             if isinstance(s, dict):
                 segs.append({
-                    "start": s.get("start"), 
-                    "end": s.get("end"), 
+                    "start": s.get("start"),
+                    "end": s.get("end"),
                     "text": s.get("text")
                 })
                 if progress_cb:
@@ -2938,9 +2858,9 @@ def _detect_faces(
         # As a last resort, return a clearly marked sentinel that our exists_check will treat as stub.
         # The caller (compute_face_embeddings) will convert this into a hard error so we don't write stubs.
         return [{
-            "time": 0.0, 
-            "box": [0, 0, 100, 100], 
-            "score": 1.0, 
+            "time": 0.0,
+            "box": [0, 0, 100, 100],
+            "score": 1.0,
             "embedding": []
         }]
 
@@ -3869,6 +3789,22 @@ def favicon_ico():
     ico = _STATIC / "favicon.ico"
     if ico.exists():
         return FileResponse(str(ico), media_type="image/x-icon")
+    return Response(status_code=404)
+
+
+@app.get("/manifest.json", include_in_schema=False)
+def manifest_json():
+    m = _STATIC / "manifest.json"
+    if m.exists() and m.is_file():
+        return Response(m.read_text(encoding="utf-8"), media_type="application/json")
+    return Response(status_code=404)
+
+
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+def apple_touch_icon():
+    p = _STATIC / "apple-touch-icon.png"
+    if p.exists() and p.is_file():
+        return FileResponse(str(p), media_type="image/png")
     return Response(status_code=404)
 
 
@@ -8262,7 +8198,6 @@ def frame_boxed(
 
 # --- Simple marker store expected by v1 UI
 @api.post("/marker")
-
 def set_marker(
     path: str = Query(...),
     time: float = Query(...),
@@ -8629,7 +8564,8 @@ def artifacts_cleanup(
 
 @api.get("/tasks/coverage")
 def tasks_coverage(path: str = Query(default="")):
-    """Get artifact coverage statistics for the given path."""
+    """
+    Get artifact coverage statistics for the given path."""
     try:
         base = safe_join(STATE["root"], path) if path else STATE["root"]
         if not base.exists() or not base.is_dir():
