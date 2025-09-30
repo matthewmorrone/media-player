@@ -107,6 +107,9 @@ const pageInfo = document.getElementById("pageInfo");
 // Hover controls (Settings)
 let hoverPreviewsEnabled = false; // playback on hover
 let hoverOnDemandEnabled = false; // generation on hover
+// Feature flag: keep on-demand hover generation code present but disabled by default.
+// Flip to true (e.g., via build-time replace or future settings exposure) to allow user toggle to function.
+const FEATURE_HOVER_ON_DEMAND = false;
 // Player timeline display toggles (Settings)
 let showHeatmap = true; // default ON
 let showScenes = true; // default ON
@@ -335,6 +338,48 @@ async function ensureHover(v) {
     // Status unknown (not cached); treat as absent for now.
     status = { hover: false };
   }
+
+  // If hover is missing but on-demand generation is enabled, trigger creation
+  try {
+    if (hoverOnDemandEnabled) {
+      // Mark UI state for generation
+      try {
+        const card = document.querySelector(`.card[data-path="${path}"]`);
+        if (card) card.classList.add('hover-generating');
+      } catch (_) {}
+      // Trigger creation endpoint if available
+      try {
+        const u = new URL('/api/hover/create', window.location.origin);
+        u.searchParams.set('path', path);
+        // fire-and-forget, but wait briefly and poll status
+        await fetch(u.toString(), { method: 'POST' });
+        // Poll status up to ~6s
+        const deadline = Date.now() + 6000;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 600));
+          const s = await refreshStatus();
+          if (s && s.hover) {
+            try {
+              const r = await fetch(`/api/hover/get?path=${qp}`);
+              if (!r.ok) break;
+              const blob = await r.blob();
+              if (blob && blob.size) {
+                const obj = URL.createObjectURL(blob);
+                v.hover_url = obj;
+                try { const card = document.querySelector(`.card[data-path="${path}"]`); if (card) card.classList.remove('hover-generating'); } catch(_){}
+                return obj;
+              }
+            } catch(_) { break; }
+          }
+        }
+      } catch(_) {
+        /* ignore failures */
+      } finally {
+        try { const card = document.querySelector(`.card[data-path="${path}"]`); if (card) card.classList.remove('hover-generating'); } catch(_){}
+      }
+    }
+  } catch(_) {}
+
   return "";
 }
 
@@ -1305,7 +1350,8 @@ function saveHoverSetting() {
 function loadHoverOnDemandSetting() {
   try {
     const raw = localStorage.getItem("setting.hoverOnDemand");
-    hoverOnDemandEnabled = raw ? raw === "1" : false;
+    // Default remains false; do not auto-enable when feature flag is off.
+    hoverOnDemandEnabled = FEATURE_HOVER_ON_DEMAND && raw ? raw === "1" : false;
   } catch (_) {
     hoverOnDemandEnabled = false;
   }
