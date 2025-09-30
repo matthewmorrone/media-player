@@ -6472,6 +6472,11 @@ def scenes_create_batch(
     _require_ffmpeg_or_error("scene detection")
     sup_jid = _new_job("scenes-batch", str(base))
     _start_job(sup_jid)
+    # immediate heartbeat for long-running batch supervisor
+    try:
+        JOB_HEARTBEATS[sup_jid] = time.time()
+    except Exception:
+        pass
     def _worker():
         try:
             vids: list[Path] = []
@@ -6518,6 +6523,11 @@ def scenes_create_batch(
                 t.start()
             for t in threads:
                 t.join()
+            # Persist supervisor state and heartbeat at end
+            try:
+                _persist_job(sup_jid)
+            except Exception:
+                pass
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
