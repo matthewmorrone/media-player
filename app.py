@@ -1678,7 +1678,12 @@ def generate_scene_artifacts(
         scale_clause = None
         if fast_mode:
             # Heuristic downscale target (avoid needlessly processing 4K frames for scene detection)
-            target_w = 640 if thumbs_width > 0 else 640
+            # Prefer provided thumbs_width as a hint; clamp to reasonable lower bound
+            try:
+                t_w = int(thumbs_width) if thumbs_width and int(thumbs_width) > 0 else 640
+            except Exception:
+                t_w = 640
+            target_w = max(320, min(1280, t_w))
             scale_clause = f"scale=min({target_w},iw):-1:flags=fast_bilinear"
         vf_chain = []
         if scale_clause:
@@ -3383,6 +3388,7 @@ def _persist_job(jid: str) -> None:
         "result": j.get("result"),
     }
     _json_dump_atomic(_job_file_path(str(j.get("id") or "")), payload)  # type: ignore[arg-type]
+    # Update heartbeat timestamp when persisting job state to reflect liveness
     try:
         JOB_HEARTBEATS[str(j.get("id") or "")] = time.time()
     except Exception:
@@ -3545,6 +3551,7 @@ def _start_job(jid: str):
     except Exception:
         pass
     _persist_job(jid)
+    # Mark heartbeat when job transitions to running
     try:
         JOB_HEARTBEATS[jid] = time.time()
     except Exception:
@@ -3583,6 +3590,7 @@ def _finish_job(jid: str, error: Optional[str] = None):
             j["ended_at"] = time.time()
             j["error"] = error
     _persist_job(jid)
+    # Update heartbeat on finish to indicate recent terminal activity
     try:
         JOB_HEARTBEATS[jid] = time.time()
     except Exception:
@@ -3649,6 +3657,7 @@ def _set_job_progress(jid: str, *, total: Optional[int] = None, processed_inc: i
         "total": total_v,
         "processed": processed_v,
     })
+    # Bump heartbeat on progress updates so long-running jobs appear active
     try:
         JOB_HEARTBEATS[jid] = time.time()
     except Exception:
