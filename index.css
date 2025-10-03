@@ -345,6 +345,13 @@ button.btn-danger {
   width: 100%;
   max-width: 100%;
 }
+.marker-time-label { font-variant-numeric: tabular-nums; }
+.marker-time-label--editable { cursor: pointer; user-select: none; }
+.marker-time-label--editable:hover { text-decoration: underline; }
+.marker-name-label { flex: 1; min-width: 0; font-weight: 500; }
+.marker-name-label--editable { cursor: pointer; user-select: none; }
+.marker-name-label--editable:hover { text-decoration: underline; }
+.marker-name-input { flex: 1; min-width: 0; padding: 2px 4px; font-size: 12px; }
 
 .perf-grid {
   box-sizing: border-box;
@@ -2799,9 +2806,15 @@ body.resizing-job-table {
 }
 
 .icon-btn svg {
-  stroke: currentColor;
-  fill: none;
+  stroke: none;
+  fill: currentColor;
 }
+
+/* Medium icon sizing utility */
+.icon-md { width: 20px; height: 20px; display: inline-block; }
+
+/* Ensure svg inside .icon-md inherits currentColor */
+.icon-md svg { width: 100%; height: 100%; fill: currentColor; }
 
 @media (max-width: 900px) {
   .vol-slider {
@@ -3343,6 +3356,12 @@ body.resizing-job-table {
 .marker-time-input:focus { outline:1px solid #4f8cff; border-color:#4f8cff; }
 .marker-jump { background:#203246; border:1px solid #31465e; color:#d5e2f2; padding:2px 6px; border-radius:4px; cursor:pointer; font-size:11px; }
 .marker-jump:hover { background:#2a3e58; }
+.marker-btn-icon { display:inline-flex; align-items:center; justify-content:center; padding:2px 4px; background:transparent; border:1px solid transparent; border-radius:4px; color:#d5e2f2; line-height:1; }
+.marker-btn-icon svg { display:block; pointer-events:none; }
+.marker-btn-icon.marker-jump { background:#203246; border-color:#31465e; }
+.marker-btn-icon.marker-jump:hover { background:#2a3e58; }
+.marker-btn-icon.marker-remove { background:none; border:none; color:#c74f4f; }
+.marker-btn-icon.marker-remove:hover { color:#ff6b6b; }
 .markers-empty { font-size:12px; opacity:.6; padding:4px 2px; }
 
 .marker-row--intro {

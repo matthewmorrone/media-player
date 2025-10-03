@@ -232,6 +232,25 @@ def _default_preview_crf_vp9() -> int:
 def _default_preview_crf_h264() -> int:
     return max(10, min(51, _env_int("PREVIEW_CRF_H264", 32)))
 
+# Effective preview quality mapping (align hover preview perceptual quality with thumbnail quality intent)
+def _effective_preview_crf_vp9() -> int:
+    # If THUMBNAIL_QUALITY provided, map its (2..31) JPEG-style scale to a VP9 CRF.
+    # Lower q (better) should yield lower CRF (better). We'll center mapping around default thumb q=8 -> crf ~ 42 (legacy default).
+    tq = _env_int("THUMBNAIL_QUALITY", -1)
+    if tq >= 2:  # valid
+        # Map 2(best) -> 30, 8(default) -> 42, 31(worst) -> 55 (clamped)
+        crf = int(30 + (tq - 2) * (25 / 29))  # linear interpolation
+        return max(10, min(63, crf))
+    return _default_preview_crf_vp9()
+
+def _effective_preview_crf_h264() -> int:
+    tq = _env_int("THUMBNAIL_QUALITY", -1)
+    if tq >= 2:
+        # Map 2(best) -> 18, 8(default) -> 32, 31(worst) -> 44
+        crf = int(18 + (tq - 2) * (26 / 29))
+        return max(10, min(51, crf))
+    return _default_preview_crf_h264()
+
 def _default_scene_thumb_q() -> int:
     # JPEG/MJPEG scale: 2(best)..31(worst)
     return max(2, min(31, _env_int("SCENE_THUMB_QUALITY", 8)))
@@ -500,9 +519,11 @@ def _terminate_job_processes(jid: str, grace_seconds: float = 2.0) -> int:
 # Global ffmpeg concurrency gate
 # -----------------------------
 try:
-    _FFMPEG_CONCURRENCY = max(1, min(16, int(os.environ.get("FFMPEG_CONCURRENCY", "2"))))
+    # Default concurrency raised to 4 (was 2) so that lightweight hover preview encodes
+    # can run in parallel up to four at a time without requiring an env override.
+    _FFMPEG_CONCURRENCY = max(1, min(16, int(os.environ.get("FFMPEG_CONCURRENCY", "4"))))
 except Exception:
-    _FFMPEG_CONCURRENCY = 2
+    _FFMPEG_CONCURRENCY = 4
 _FFMPEG_SEM = threading.BoundedSemaphore(_FFMPEG_CONCURRENCY)
 _FFMPEG_SEM_GUARD = threading.Lock()
 
@@ -671,6 +692,7 @@ def metadata_single(video: Path, *, force: bool = False) -> None:
     if out.exists() and not force:
         return
     # If ffprobe is disabled or not available, write a minimal stub instead of failing
+    # @TODO copilot: no want this, should error
     if os.environ.get("FFPROBE_DISABLE") or not ffprobe_available():
         payload = {
             "format": {"duration": "0.0", "bit_rate": "0"},
@@ -864,7 +886,7 @@ def generate_hover_preview(
     video: Path,
     *,
     segments: int = 9,
-    seg_dur: float = 0.8,
+    seg_dur: float = 2,
     width: int = 240,
     fmt: str = "webm",
     out: Optional[Path] = None,
@@ -873,6 +895,10 @@ def generate_hover_preview(
 ) -> Path:
     out = out or (artifact_dir(video) / f"{video.stem}.preview.{fmt}")
     out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        print(f"[hover][init] video={video} fmt={fmt} segs={segments} seg_dur={seg_dur} width={width} out={out}")
+    except Exception:
+        pass
     # Collect debug/inspection info to persist next to the preview
     hover_info: dict[str, Any] = {
         "status": "started",
@@ -890,6 +916,8 @@ def generate_hover_preview(
     # If explicitly disabled, or ffmpeg missing, write a lightweight stub to keep pipelines moving.
     if os.environ.get("FFPROBE_DISABLE") and not ffmpeg_available():
         out.write_text("stub preview")
+        try: print("[hover][early-exit] ffprobe disabled & ffmpeg unavailable -> stub")
+        except Exception: pass
         return out
     if not ffmpeg_available():
         # Last-resort: create a tiny stub so idempotent checks pass and jobs don't loop
@@ -897,6 +925,8 @@ def generate_hover_preview(
             out.write_text("stub preview")
         except Exception:
             pass
+        try: print("[hover][early-exit] ffmpeg unavailable -> stub written")
+        except Exception: pass
         return out
     # compute timeline positions
     dur = None
@@ -913,19 +943,47 @@ def generate_hover_preview(
     except Exception:
         dur = None
     segs = max(1, int(segments))
-    # Choose start times robustly; if we know duration, keep segments within [0, dur-seg_dur]
+    # Enforce segments so each (start, start+seg_dur) fits fully when duration known.
     if dur and dur > 0:
-        max_start = max(0.0, float(dur) - float(seg_dur) * 1.05)
+        max_full_segments = int(float(dur) // float(seg_dur)) if seg_dur > 0 else segs
+        if max_full_segments == 0:
+            max_full_segments = 1
+        if segs > max_full_segments:
+            segs = max_full_segments
+        max_start = max(0.0, float(dur) - float(seg_dur))
         if max_start <= 0:
             points = [0.0]
             segs = 1
         else:
             points = [min(max_start, ((i + 1) / (segs + 1)) * max_start) for i in range(segs)]
+        # Enforce a minimum gap between segment starts to avoid visually similar adjacent frames
+        # Gap is 25% of segment duration (capped so we don't overshoot timeline). Adjustable via HOVER_MIN_GAP_FRAC.
+        try:
+            gap_frac = float(os.environ.get("HOVER_MIN_GAP_FRAC", "0.25"))
+        except Exception:
+            gap_frac = 0.25
+        gap_frac = max(0.0, min(0.9, gap_frac))
+        min_gap = float(seg_dur) * gap_frac
+        if min_gap > 0 and len(points) > 1:
+            filtered = []
+            last = -1e9
+            for p in points:
+                if p - last >= min_gap:
+                    filtered.append(p)
+                    last = p
+            # If aggressive filtering removed too many, fall back to at least first/last unique positions
+            if not filtered:
+                filtered = [0.0]
+            points = filtered
+            segs = len(points)
     else:
-        # Without duration, space samples conservatively starting at 0
         points = [max(0.0, i * float(seg_dur)) for i in range(segs)]
+    if len(points) > segs:
+        points = points[:segs]
     try:
         hover_info["points"] = [float(f"{p:.3f}") for p in points]
+        try: print(f"[hover][points] count={len(points)} values={hover_info['points']}")
+        except Exception: pass
     except Exception:
         pass
 
@@ -935,16 +993,23 @@ def generate_hover_preview(
         try_single_pass = str(_psp).strip().lower() not in ("0", "false", "no")
     except Exception:
         try_single_pass = True
-    if progress_cb is not None:
-        try_single_pass = False
+    # Previously we disabled single-pass when progress_cb present to allow per-segment updates.
+    # We now support progress reporting inside single-pass by parsing ffmpeg's -progress output,
+    # so keep try_single_pass unless explicitly disabled via env.
     ff_loglevel = os.environ.get("FFMPEG_LOGLEVEL", "error")
     ff_debug = os.environ.get("FFMPEG_DEBUG") is not None
+    try: print(f"[hover][mode] try_single_pass={try_single_pass} ff_loglevel={ff_loglevel} ff_debug={ff_debug}")
+    except Exception: pass
 
     # Per-file lock to avoid concurrent hover generation on same file
     try:
         with _PerFileLock(video, key="hover"):
+            try: print("[hover][lock] acquired")
+            except Exception: pass
             if try_single_pass:
                 try:
+                    try: print("[hover][single-pass] building filter graph")
+                    except Exception: pass
                     trim_chains: list[str] = []
                     split_labels = "".join([f"[v{i}]" for i in range(segs)])
                     parts = [f"[0:v]split={segs}{split_labels}"]
@@ -968,7 +1033,7 @@ def generate_hover_preview(
                     ]
                     if fmt == "mp4":
                         cmd = base_cmd + [
-                            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_effective_preview_crf_h264()),
                             "-pix_fmt", "yuv420p",
                             "-movflags", "+faststart",
                             *(_ffmpeg_threads_flags()),
@@ -979,7 +1044,133 @@ def generate_hover_preview(
                                 print("[hover] ffmpeg:", " ".join(cmd))
                             except Exception:
                                 pass
-                        proc = _run(cmd)
+                        else:
+                            try: print(f"[hover][single-pass][cmd] {' '.join(cmd)}")
+                            except Exception: pass
+                        # If a progress callback is provided, run ffmpeg with -progress pipe:1 and parse timing.
+                        proc = None
+                        if progress_cb is not None:
+                            try: print("[hover][progress] starting mp4 progress parsing run")
+                            except Exception: pass
+                            import subprocess, time as _time
+                            # Insert -progress option before output file argument
+                            cmd_progress = cmd[:-1] + ["-progress", "pipe:1"] + cmd[-1:]
+                            # Concurrency gate (mirror _run) for ffmpeg
+                            _is_ffmpeg = False
+                            try:
+                                if cmd_progress and os.path.basename(cmd_progress[0]) == "ffmpeg":
+                                    _is_ffmpeg = True
+                            except Exception:
+                                _is_ffmpeg = False
+                            _sem = _FFMPEG_SEM if _is_ffmpeg else None
+                            if _sem is not None:
+                                _sem.acquire()
+                            try:
+                                proc_p = subprocess.Popen(cmd_progress, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                total_target = float(segs) * float(seg_dur)
+                                last_step = -1
+                                start_t = _time.time()
+                                # Watchdog configuration (env-tunable)
+                                try:
+                                    wd_log_after = float(os.environ.get("HOVER_PROGRESS_WATCHDOG_SECS", "10"))
+                                except Exception:
+                                    wd_log_after = 10.0
+                                try:
+                                    wd_kill_after = float(os.environ.get("HOVER_PROGRESS_KILL_SECS", "60"))
+                                except Exception:
+                                    wd_kill_after = 60.0
+                                wd_log_after = max(1.0, wd_log_after)
+                                wd_kill_after = max(wd_log_after + 1.0, wd_kill_after)
+                                last_progress_time = start_t
+                                watchdog_logged = False
+                                killed_for_stall = False
+                                last_raw_ms = -1  # for deduping identical out_time_ms values
+                                while True:
+                                    if cancel_check and cancel_check():
+                                        try:
+                                            proc_p.kill()
+                                        except Exception:
+                                            pass
+                                        raise RuntimeError("canceled")
+                                    line = proc_p.stdout.readline() if proc_p.stdout else ''
+                                    if line == '' and proc_p.poll() is not None:
+                                        break
+                                    line = line.strip()
+                                    if line.startswith('out_time_ms='):
+                                        try:
+                                            ms = int(line.split('=',1)[1])
+                                        except Exception:
+                                            ms = -1
+                                        secs = ms / 1_000_000.0 if ms >= 0 else 0.0
+                                        if ms != last_raw_ms:
+                                            last_raw_ms = ms
+                                            # (debug removed per request)
+                                        # Map continuous time to segment-count style updates for UI consistency
+                                        if total_target > 0 and secs >= 0:
+                                            frac = max(0.0, min(1.0, secs / total_target))
+                                            step = int(round(frac * segs))
+                                            if step > segs:
+                                                step = segs
+                                            if step > last_step:
+                                                last_step = step
+                                                try: progress_cb(step, segs)
+                                                except Exception: pass
+                                                try: print(f"[hover][progress] step={step}/{segs} secs={secs:.3f}")
+                                                except Exception: pass
+                                                last_progress_time = _time.time()
+                                    elif line == 'progress=end':
+                                        try: print(f"[hover][progress] end (mp4 single-pass) video={video.name}")
+                                        except Exception: pass
+                                    # Light sleep prevents busy loop if progress lines sparse
+                                    if proc_p.poll() is None and not line:
+                                        _time.sleep(0.05)
+                                    # Stall watchdog: log once after wd_log_after with no progress, force kill after wd_kill_after
+                                    now_t = _time.time()
+                                    idle = now_t - last_progress_time
+                                    if not watchdog_logged and idle >= wd_log_after and proc_p.poll() is None:
+                                        watchdog_logged = True
+                                        try:
+                                            cur_size = out.stat().st_size if out.exists() else 0
+                                        except Exception:
+                                            cur_size = -1
+                                        try: print(f"[hover][watchdog] no progress for {idle:.1f}s (size={cur_size}) cmd=mp4 single-pass")
+                                        except Exception: pass
+                                    if idle >= wd_kill_after and proc_p.poll() is None:
+                                        try: print(f"[hover][watchdog] killing stalled ffmpeg after {idle:.1f}s (mp4 single-pass)")
+                                        except Exception: pass
+                                        try:
+                                            proc_p.kill()
+                                        except Exception:
+                                            pass
+                                        killed_for_stall = True
+                                        break
+                                rc = proc_p.poll()
+                                # Drain remaining stderr for diagnostics
+                                stderr_txt = ''
+                                try:
+                                    if proc_p.stderr:
+                                        stderr_txt = proc_p.stderr.read()
+                                except Exception:
+                                    pass
+                                proc = subprocess.CompletedProcess(cmd_progress, rc if rc is not None else -1, '', stderr_txt)
+                                # Ensure final progress update hits 100%
+                                if rc == 0 and last_step < segs:
+                                    try:
+                                        progress_cb(segs, segs)
+                                    except Exception:
+                                        pass
+                                    try: print(f"[hover][progress] final step forced {segs}/{segs}")
+                                    except Exception: pass
+                            finally:
+                                if _sem is not None:
+                                    try:
+                                        _sem.release()
+                                    except Exception:
+                                        pass
+                        else:
+                            proc = _run(cmd)
+                            try: print(f"[hover][single-pass][exec] returncode={proc.returncode}")
+                            except Exception: pass
                         if proc.returncode == 0 and _file_nonempty(out):
                             if ff_debug:
                                 try:
@@ -994,7 +1185,7 @@ def generate_hover_preview(
                             return out
                     else:
                         cmd = base_cmd + [
-                            "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                            "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_effective_preview_crf_vp9()),
                             *_vp9_realtime_flags(),
                             "-pix_fmt", "yuv420p",
                             *(_ffmpeg_threads_flags()),
@@ -1005,10 +1196,117 @@ def generate_hover_preview(
                                 print("[hover] ffmpeg:", " ".join(cmd))
                             except Exception:
                                 pass
-                        proc = _run(cmd)
+                        else:
+                            try: print(f"[hover][single-pass][cmd] {' '.join(cmd)}")
+                            except Exception: pass
+                        proc = None
+                        if progress_cb is not None:
+                            try: print("[hover][progress] starting webm progress parsing run")
+                            except Exception: pass
+                            import subprocess, time as _time
+                            cmd_progress = cmd[:-1] + ["-progress", "pipe:1"] + cmd[-1:]
+                            _is_ffmpeg = False
+                            try:
+                                if cmd_progress and os.path.basename(cmd_progress[0]) == "ffmpeg":
+                                    _is_ffmpeg = True
+                            except Exception:
+                                _is_ffmpeg = False
+                            _sem = _FFMPEG_SEM if _is_ffmpeg else None
+                            if _sem is not None:
+                                _sem.acquire()
+                            try:
+                                proc_p = subprocess.Popen(cmd_progress, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                total_target = float(segs) * float(seg_dur)
+                                last_step = -1
+                                # Watchdog configuration for webm variant
+                                try:
+                                    wd_log_after = float(os.environ.get("HOVER_PROGRESS_WATCHDOG_SECS", "10"))
+                                except Exception:
+                                    wd_log_after = 10.0
+                                try:
+                                    wd_kill_after = float(os.environ.get("HOVER_PROGRESS_KILL_SECS", "60"))
+                                except Exception:
+                                    wd_kill_after = 60.0
+                                wd_log_after = max(1.0, wd_log_after)
+                                wd_kill_after = max(wd_log_after + 1.0, wd_kill_after)
+                                import time as _time  # ensure _time for this scope if not imported above
+                                last_progress_time = _time.time()
+                                watchdog_logged = False
+                                killed_for_stall = False
+                                last_raw_ms = -1
+                                while True:
+                                    if cancel_check and cancel_check():
+                                        try: proc_p.kill()
+                                        except Exception: pass
+                                        raise RuntimeError("canceled")
+                                    line = proc_p.stdout.readline() if proc_p.stdout else ''
+                                    if line == '' and proc_p.poll() is not None:
+                                        break
+                                    line=line.strip()
+                                    if line.startswith('out_time_ms='):
+                                        try:
+                                            ms = int(line.split('=',1)[1])
+                                        except Exception:
+                                            ms = -1
+                                        secs = ms/1_000_000.0 if ms >= 0 else 0.0
+                                        if ms != last_raw_ms:
+                                            last_raw_ms = ms
+                                            # (debug removed per request)
+                                        if total_target>0 and secs >= 0:
+                                            frac = max(0.0, min(1.0, secs/total_target))
+                                            step = int(round(frac*segs))
+                                            if step>segs: step=segs
+                                            if step> last_step:
+                                                last_step = step
+                                                try: progress_cb(step, segs)
+                                                except Exception: pass
+                                                try: print(f"[hover][progress] step={step}/{segs} secs={secs:.3f}")
+                                                except Exception: pass
+                                                last_progress_time = _time.time()
+                                    elif line == 'progress=end':
+                                        try: print(f"[hover][progress] end (webm single-pass) video={video.name}")
+                                        except Exception: pass
+                                    if proc_p.poll() is None and not line:
+                                        _time.sleep(0.05)
+                                    now_t = _time.time()
+                                    idle = now_t - last_progress_time
+                                    if not watchdog_logged and idle >= wd_log_after and proc_p.poll() is None:
+                                        watchdog_logged = True
+                                        try:
+                                            cur_size = out.stat().st_size if out.exists() else 0
+                                        except Exception:
+                                            cur_size = -1
+                                        try: print(f"[hover][watchdog] no progress for {idle:.1f}s (size={cur_size}) cmd=webm single-pass")
+                                        except Exception: pass
+                                    if idle >= wd_kill_after and proc_p.poll() is None:
+                                        try: print(f"[hover][watchdog] killing stalled ffmpeg after {idle:.1f}s (webm single-pass)")
+                                        except Exception: pass
+                                        try: proc_p.kill()
+                                        except Exception: pass
+                                        killed_for_stall = True
+                                        break
+                                rc = proc_p.poll()
+                                stderr_txt=''
+                                try:
+                                    if proc_p.stderr: stderr_txt = proc_p.stderr.read()
+                                except Exception: pass
+                                proc = subprocess.CompletedProcess(cmd_progress, rc if rc is not None else -1, '', stderr_txt)
+                                if rc == 0 and last_step < segs:
+                                    try: progress_cb(segs, segs)
+                                    except Exception: pass
+                                    try: print(f"[hover][progress] final step forced {segs}/{segs}")
+                                    except Exception: pass
+                            finally:
+                                if _sem is not None:
+                                    try: _sem.release()
+                                    except Exception: pass
+                        else:
+                            proc = _run(cmd)
+                            try: print(f"[hover][single-pass][exec] returncode={proc.returncode}")
+                            except Exception: pass
                         if (proc.returncode != 0 or not _file_nonempty(out)):
                             cmd = base_cmd + [
-                                "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                                "-c:v", "libvpx", "-b:v", "0", "-crf", str(_effective_preview_crf_vp9()),
                                 *_vp9_realtime_flags(),
                                 *(_ffmpeg_threads_flags()),
                                 str(out),
@@ -1032,23 +1330,37 @@ def generate_hover_preview(
                                 pass
                             return out
                 except Exception:
+                    try: print("[hover][single-pass] failed; falling back to multi-step")
+                    except Exception: pass
                     pass
     except Exception:
         pass
 
-    # Multi-step fallback: segments then concat via filter
+    # Multi-step fallback: segments then concat via filter.
+    # BUGFIX: Previously the TemporaryDirectory context closed BEFORE segments were encoded,
+    # deleting the directory and causing every segment encode to fail with 'No such file or directory (tmp gone)'.
+    # We now keep the entire multi-step process inside the context so temp files persist until concat completes.
     with tempfile.TemporaryDirectory() as td:
         td = str(td)
-        list_path = Path(td) / "list.txt"
+        # Ensure directory still exists (defensive; TemporaryDirectory guarantees this but for clarity)
+        os.makedirs(td, exist_ok=True)
         clip_paths: list[Path] = []
         final_fmt = (fmt or "webm").lower()
         seg_fmt = "mp4" if final_fmt == "webm" else final_fmt
+        success_count = 0
+        fail_count = 0
         for i, start in enumerate(points, start=1):
             if cancel_check and cancel_check():
                 raise RuntimeError("canceled")
-            clip = Path(td) / f"seg_{i:02d}.{seg_fmt}"
+            import tempfile as _tf
+            try:
+                fd, tmp_name = _tf.mkstemp(prefix=f"seg_{i:02d}_", suffix=f".{seg_fmt}", dir=td)
+                os.close(fd)
+                clip = Path(tmp_name)
+            except Exception:
+                clip = Path(td) / f"seg_{i:02d}.{seg_fmt}"
             vfilter = f"scale={width}:-2:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2"
-            cmd = [
+            base_cmd = [
                 "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
                 *(_ffmpeg_hwaccel_flags()),
                 "-noaccurate_seek",
@@ -1056,82 +1368,79 @@ def generate_hover_preview(
                 "-vf", vfilter,
                 "-an",
             ]
+            tried_cmds: list[tuple[list[str], str]] = []
             if seg_fmt == "mp4":
-                cmd += [
-                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
-                    "-pix_fmt", "yuv420p",
-                    "-movflags", "+faststart",
-                    *(_ffmpeg_threads_flags()),
-                    str(clip),
-                ]
-                if ff_debug:
-                    try:
-                        print("[hover] ffmpeg seg:", " ".join(cmd))
-                    except Exception:
-                        pass
-                proc = _run(cmd)
+                tried_cmds.append((base_cmd + [
+                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_effective_preview_crf_h264()),
+                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(clip)
+                ], "libx264"))
+                tried_cmds.append((base_cmd + [
+                    "-c:v", "mpeg4", "-q:v", "5", "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(clip)
+                ], "mpeg4"))
             else:
-                cmd += [
-                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                    *_vp9_realtime_flags(),
-                    "-pix_fmt", "yuv420p",
-                    *(_ffmpeg_threads_flags()),
-                    str(clip),
-                ]
+                tried_cmds.append((base_cmd + [
+                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_effective_preview_crf_vp9()), *_vp9_realtime_flags(), "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(clip)
+                ], "libvpx-vp9"))
+                tried_cmds.append((base_cmd + [
+                    "-c:v", "libvpx", "-b:v", "0", "-crf", str(_effective_preview_crf_vp9()), *_vp9_realtime_flags(), "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(clip)
+                ], "libvpx"))
+            seg_success = False
+            last_err = ""
+            for cmd, label in tried_cmds:
                 if ff_debug:
                     try:
-                        print("[hover] ffmpeg seg:", " ".join(cmd))
+                        print(f"[hover] ffmpeg seg attempt codec={label}:", " ".join(cmd))
                     except Exception:
                         pass
                 proc = _run(cmd)
-                if proc.returncode != 0 or not clip.exists():
-                    cmd = [
-                        "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                        *(_ffmpeg_hwaccel_flags()),
-                        "-noaccurate_seek",
-                        "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{seg_dur:.3f}",
-                        "-vf", vfilter,
-                        "-an",
-                        "-c:v", "libvpx", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
-                        *_vp9_realtime_flags(),
-                        "-pix_fmt", "yuv420p",
-                        *(_ffmpeg_threads_flags()),
-                        str(clip)
-                    ]
-                    if ff_debug:
-                        try:
-                            print("[hover] ffmpeg seg (fallback):", " ".join(cmd))
-                        except Exception:
-                            pass
-                    proc = _run(cmd)
-            if proc.returncode != 0:
+                if proc.returncode == 0 and clip.exists() and clip.stat().st_size > 0:
+                    seg_success = True
+                    break
                 try:
-                    err = (proc.stderr or '').strip()
-                    if err:
-                        print('[hover] segment error:', err)
+                    e = (proc.stderr or '').strip()
+                    if e:
+                        last_err = e
                 except Exception:
                     pass
-                raise RuntimeError(proc.stderr.strip() or "ffmpeg segment failed")
+            if not seg_success:
+                try:
+                    missing_note = " (tmp gone)" if (not clip.exists()) else ""
+                    print(f"[hover] segment {i}/{segs} FAILED start={start:.3f}s err={last_err[:160]}{missing_note}")
+                except Exception:
+                    pass
+                fail_count += 1
+                if progress_cb:
+                    try:
+                        progress_cb(i, segs)
+                    except Exception:
+                        pass
+                continue
             clip_paths.append(clip)
+            success_count += 1
+            try:
+                print(f"[hover] segment {i}/{segs} ok start={start:.3f}s", flush=True)
+            except Exception:
+                pass
             if progress_cb:
                 try:
                     progress_cb(i, segs)
                 except Exception:
                     pass
+            # end segment loop
         # Validate segments have video streams; skip bad ones to avoid filtergraph ':v' errors
-        def _has_video_stream(p: Path) -> bool:
-            if not p.exists() or p.stat().st_size == 0:
-                return False
-            if not ffprobe_available():
-                return True
-            pr = _run([
-                "ffprobe", "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=codec_type",
-                "-of", "csv=p=0",
-                str(p),
-            ])
-            return pr.returncode == 0 and bool((pr.stdout or '').strip())
+    def _has_video_stream(p: Path) -> bool:
+        if not p.exists() or p.stat().st_size == 0:
+            return False
+        if not ffprobe_available():
+            return True
+        pr = _run([
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0",
+            str(p),
+        ])
+        return pr.returncode == 0 and bool((pr.stdout or '').strip())
 
         valid_clip_paths: list[Path] = []
         for cp in clip_paths:
@@ -1158,13 +1467,13 @@ def generate_hover_preview(
                 ]
                 if final_fmt == "webm":
                     cmdx = base_cmd + [
-                        "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()),
+                        "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_effective_preview_crf_vp9()),
                         *_vp9_realtime_flags(),
                         "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
                     ]
                 else:
                     cmdx = base_cmd + [
-                        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()),
+                        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_effective_preview_crf_h264()),
                         "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
                     ]
                 if ff_debug:
@@ -1201,7 +1510,7 @@ def generate_hover_preview(
             ]
             if final_fmt == "webm":
                 cmd1 = base_cmd + [
-                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()), *_vp9_realtime_flags(), "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
+                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_effective_preview_crf_vp9()), *_vp9_realtime_flags(), "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
                 ]
                 if ff_debug:
                     try:
@@ -1212,12 +1521,12 @@ def generate_hover_preview(
                 if pr.returncode != 0:
                     # Retry without hwaccel in case decoder selection is the issue
                     cmd1 = [
-                        "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y", "-i", str(single), "-an", "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_default_preview_crf_vp9()), *_vp9_realtime_flags(), "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
+                        "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y", "-i", str(single), "-an", "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_effective_preview_crf_vp9()), *_vp9_realtime_flags(), "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
                     ]
                     pr = _run(cmd1)
             else:
                 cmd1 = base_cmd + [
-                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()), "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
+                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_effective_preview_crf_h264()), "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
                 ]
                 if ff_debug:
                     try:
@@ -1228,7 +1537,7 @@ def generate_hover_preview(
                 if pr.returncode != 0:
                     cmd1 = [
                         "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                        "-i", str(single), "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_default_preview_crf_h264()), "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
+                        "-i", str(single), "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_effective_preview_crf_h264()), "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
                     ]
                     pr = _run(cmd1)
             if pr.returncode != 0 or not out.exists():
@@ -1333,17 +1642,37 @@ def generate_hover_preview(
             except Exception:
                 pass
             raise RuntimeError(proc2.stderr.strip() or "ffmpeg concat filter failed")
-    # Final guard: only succeed with a non-empty output file
-    if not _file_nonempty(out):
-        raise RuntimeError("hover output missing or too small after processing")
-    if ff_debug:
+        # Final guard: only succeed with a non-empty output file
+        if not _file_nonempty(out):
+            raise RuntimeError("hover output missing or too small after processing")
+        if ff_debug:
+            try:
+                print(f"[hover] success: {out} size={out.stat().st_size}")
+            except Exception:
+                pass
         try:
-            print(f"[hover] success: {out} size={out.stat().st_size}")
+            try:
+                # Determine status based on segment success/failure mix
+                try:
+                    if success_count == 0:
+                        hover_info.update({"status": "failed", "segments_used": 0, "segments_failed": int(fail_count)})
+                    elif fail_count > 0:
+                        hover_info.update({"status": "partial", "segments_used": int(hover_info.get("segments_used") or len(clip_paths) or 0), "segments_failed": int(fail_count)})
+                    else:
+                        hover_info.update({"status": "ok", "segments_used": int(hover_info.get("segments_used") or len(clip_paths) or 0), "segments_failed": 0})
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
         except Exception:
             pass
+        return out
+    # Fallback safeguard (should not reach): ensure a Path is always returned to satisfy type hints
+    if out.exists():
+        return out
     try:
-        hover_info.update({"status": "ok"})
-        _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", hover_info)
+        out.write_text("stub preview (unreachable guard)")
     except Exception:
         pass
     return out
@@ -1516,6 +1845,10 @@ def phash_create_single(
     Writes a JSON with keys {phash, algo, frames, combine}.
     """
     out = phash_path(video)
+    try:
+        print(f"[phash][debug] start video={video} frames={frames} algo={algo} combine={combine} exists={video.exists()} size={(video.stat().st_size if video.exists() else -1)}")
+    except Exception:
+        pass
     out.parent.mkdir(parents=True, exist_ok=True)
 
     # Fallback for environments without ffprobe/ffmpeg or Pillow
@@ -1532,14 +1865,35 @@ def phash_create_single(
     try:
         if metadata_path(video).exists():
             duration = extract_duration(json.loads(metadata_path(video).read_text()))
+            try:
+                print(f"[phash][debug] metadata exists duration={duration}")
+            except Exception:
+                pass
         else:
+            try:
+                print("[phash][debug] metadata missing; probing ffprobe")
+            except Exception:
+                pass
             metadata_single(video, force=False)
             duration = extract_duration(json.loads(metadata_path(video).read_text()))
-    except Exception:
+            try:
+                print(f"[phash][debug] probed duration={duration}")
+            except Exception:
+                pass
+    except Exception as e:
         duration = None
+        try:
+            print(f"[phash][debug] duration detection failed: {e}")
+        except Exception:
+            pass
 
-    if not duration or duration <= 0 or not ffmpeg_available():
+    ff_ok = ffmpeg_available()
+    if not duration or duration <= 0 or not ff_ok:
         # Basic fallback: hash middle-frame thumbnail
+        try:
+            print(f"[phash][debug] fallback path: duration={duration} ffmpeg_ok={ff_ok}")
+        except Exception:
+            pass
         try:
             generate_thumbnail(video, force=False, time_spec="middle", quality=2)
             img = Image.open(thumbs_path(video))
@@ -1551,6 +1905,10 @@ def phash_create_single(
                 "frames": 1,
                 "combine": "single",
             }, indent=2))
+            try:
+                print(f"[phash][debug] wrote fallback single-frame hash hex={_bits_to_hex(bits)[:32]}")
+            except Exception:
+                pass
             if progress_cb:
                 try:
                     progress_cb(1, 1)
@@ -1561,6 +1919,10 @@ def phash_create_single(
             import hashlib
             h = hashlib.sha256(video.read_bytes() if video.exists() else b"")
             out.write_text(json.dumps({"phash": h.hexdigest(), "algo": "file-sha256", "frames": 1, "combine": "none"}, indent=2))
+            try:
+                print(f"[phash][debug] fallback sha256 hash={h.hexdigest()[:32]}")
+            except Exception:
+                pass
             if progress_cb:
                 try:
                     progress_cb(1, 1)
@@ -1572,10 +1934,18 @@ def phash_create_single(
     segs = max(1, int(frames))
     points = [((i + 1) / (segs + 1)) * float(duration) for i in range(segs)]
     hashes: list[list[int]] = []
+    try:
+        print(f"[phash][debug] sampling segs={segs} points={[round(p,3) for p in points]}")
+    except Exception:
+        pass
     with tempfile.TemporaryDirectory() as td:
         for idx, t in enumerate(points):
             if cancel_check and cancel_check():
                 raise RuntimeError("canceled")
+            try:
+                print(f"[phash][debug] extract idx={idx} t={t:.3f}")
+            except Exception:
+                pass
             frame_path = Path(td) / f"phash_{idx:02d}.jpg"
             cmd = [
                 "ffmpeg", "-y",
@@ -1589,6 +1959,15 @@ def phash_create_single(
                 str(frame_path),
             ]
             proc = _run(cmd)
+            if proc.returncode != 0:
+                try:
+                    err_txt = (proc.stderr or "").strip() if hasattr(proc, 'stderr') else ''
+                    if err_txt:
+                        print(f"[phash][frame-error] idx={idx} t={t:.3f}s rc={proc.returncode} video={video.name} err={err_txt[:240]}")
+                    else:
+                        print(f"[phash][frame-error] idx={idx} t={t:.3f}s rc={proc.returncode} video={video.name}")
+                except Exception:
+                    pass
             if proc.returncode != 0 or not frame_path.exists():
                 # Still report progress advance even if frame extraction failed
                 if progress_cb:
@@ -1602,7 +1981,15 @@ def phash_create_single(
                 bits = _hash_image(img, algo)
                 img.close()
                 hashes.append(bits)
-            except Exception:
+                try:
+                    print(f"[phash][debug] hashed idx={idx} bits_len={len(bits)}")
+                except Exception:
+                    pass
+            except Exception as _e:
+                try:
+                    print(f"[phash][debug] hash compute failed idx={idx} err={_e}")
+                except Exception:
+                    pass
                 pass
             if progress_cb:
                 try:
@@ -1619,11 +2006,19 @@ def phash_create_single(
             bits = _hash_image(img, algo)
             img.close()
             hashes = [bits]
+            try:
+                print("[phash][debug] all sampled frames failed; fallback to middle thumbnail")
+            except Exception:
+                pass
         except Exception:
             hashes = []
 
     combined = _combine_hashes(hashes, combine) if hashes else []
     phash_hex = _bits_to_hex(combined) if combined else ""
+    try:
+        print(f"[phash][debug] finalize frames_hashed={len(hashes)} combined_bits={len(combined) if combined else 0} hex={phash_hex[:48]}")
+    except Exception:
+        pass
     out.write_text(json.dumps({
         "phash": phash_hex,
         "algo": algo,
@@ -1693,7 +2088,60 @@ def generate_scene_artifacts(
         except Exception:
             duration = None
         _local_sem = _FFMPEG_SEM
-        _local_sem.acquire()
+        # Pre-acquire heartbeat: if we can't immediately obtain an ffmpeg slot, emit tiny progress so UI reflects liveness
+        pre_acquire_start = time.time()
+        pre_acquire_last_emit = 0.0
+        pre_acquire_steps = 0
+        try:
+            pre_acquire_interval = float(os.environ.get("SCENES_PREWAIT_INTERVAL", "2.5"))
+        except Exception:
+            pre_acquire_interval = 2.5
+        try:
+            pre_acquire_max_steps = int(os.environ.get("SCENES_PREWAIT_STEPS", "2"))  # contributes up to 2% before real pass
+        except Exception:
+            pre_acquire_max_steps = 2
+        acquired = False
+        while not acquired:
+            # Attempt non-blocking acquire first for snappy start
+            acquired = _local_sem.acquire(blocking=False)
+            if acquired:
+                break
+            # Try a short blocking acquire with timeout to avoid tight spin
+            try:
+                acquired = _local_sem.acquire(timeout=0.5)
+            except Exception:
+                acquired = False
+            if acquired:
+                break
+            # If concurrency was changed at runtime, _FFMPEG_SEM may have been swapped.
+            # Refresh our local reference so waiting jobs can benefit from newly added slots.
+            if _FFMPEG_SEM is not _local_sem:
+                try:
+                    _local_sem = _FFMPEG_SEM
+                    try:
+                        print("[scenes][ffmpeg] detected semaphore swap; refreshed reference")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            # Emit pre-start heartbeat progress (0->max pre-wait pct) if still waiting
+            jid_wait = getattr(JOB_CTX, "jid", None)
+            if jid_wait and pre_acquire_steps < pre_acquire_max_steps:
+                elapsed = time.time() - pre_acquire_start
+                if (elapsed - pre_acquire_last_emit) >= pre_acquire_interval:
+                    try:
+                        pct = 0 + pre_acquire_steps + 1  # 1, 2, ...
+                        if pct > 3:
+                            pct = 3  # never exceed 3% before actual ffmpeg run
+                        _set_job_progress(jid_wait, total=100, processed_set=pct)
+                    except Exception:
+                        pass
+                    pre_acquire_last_emit = elapsed
+                    pre_acquire_steps += 1
+            # Cancellation check while waiting
+            evw = JOB_CANCEL_EVENTS.get(getattr(JOB_CTX, "jid", ""))
+            if evw is not None and evw.is_set():
+                raise RuntimeError("canceled")
         proc_rc: Optional[int] = None
         try:
             proc = subprocess.Popen(
@@ -1709,6 +2157,23 @@ def generate_scene_artifacts(
                 pass
             # Incremental parse
             last_ts: float = 0.0
+            # Heartbeat progress support: emit 1–2% early progress if no pts_time lines yet
+            hb_start = time.time()
+            hb_last_emit = 0.0
+            hb_emitted_steps = 0
+            try:
+                hb_initial_delay = float(os.environ.get("SCENES_HEARTBEAT_DELAY", "2.0"))  # seconds before first heartbeat
+            except Exception:
+                hb_initial_delay = 2.0
+            try:
+                hb_interval = float(os.environ.get("SCENES_HEARTBEAT_INTERVAL", "3.0"))  # spacing between heartbeats
+            except Exception:
+                hb_interval = 3.0
+            try:
+                hb_max_steps = int(os.environ.get("SCENES_HEARTBEAT_STEPS", "2"))  # max heartbeats before real progress
+            except Exception:
+                hb_max_steps = 2
+            jid_hb = getattr(JOB_CTX, "jid", None)
             if proc.stdout is not None:
                 for line in proc.stdout:
                     if not line:
@@ -1730,6 +2195,20 @@ def generate_scene_artifacts(
                                     _set_job_progress(jid, total=100, processed_set=int(frac * 100))
                                 except Exception:
                                     pass
+                        # Heartbeat: if we have not seen any pts_time yet (times empty) emit tiny progress
+                        if (not times) and jid_hb and hb_emitted_steps < hb_max_steps:
+                            elapsed = time.time() - hb_start
+                            needed_delay = hb_initial_delay if hb_emitted_steps == 0 else (hb_initial_delay + hb_interval * hb_emitted_steps)
+                            if elapsed >= needed_delay and (elapsed - hb_last_emit) >= (hb_interval if hb_emitted_steps > 0 else 0):
+                                try:
+                                    pct = 1 + hb_emitted_steps  # first emit=1, second=2, etc.
+                                    if pct > 4:
+                                        pct = 4  # never exceed 4% via heartbeat
+                                    _set_job_progress(jid_hb, total=100, processed_set=pct)
+                                except Exception:
+                                    pass
+                                hb_last_emit = elapsed
+                                hb_emitted_steps += 1
                     except Exception:
                         pass
                     # cancel check
@@ -1853,6 +2332,212 @@ def generate_sprite_sheet(
     if ffmpeg_available():
         # Lock per file to prevent concurrent sprite jobs for same video
         with _PerFileLock(video, key="sprites"):
+            # Optional even sampling path: sample frames uniformly across full duration rather than fixed fps window
+            use_even = True
+            try:
+                env_even = os.environ.get("SPRITES_EVEN_SAMPLING")
+                if env_even not in (None, ""):
+                    use_even = env_even not in ("0", "false", "False")
+            except Exception:
+                pass
+            # Only attempt even sampling if we can determine duration and PIL is available
+            dur: Optional[float] = None
+            if use_even:
+                try:
+                    if metadata_path(video).exists():
+                        dur = extract_duration(json.loads(metadata_path(video).read_text()))
+                    else:
+                        metadata_single(video, force=False)
+                        dur = extract_duration(json.loads(metadata_path(video).read_text()))
+                except Exception:
+                    dur = None
+            if use_even and dur and isinstance(dur, (int, float)) and float(dur) > 0:
+                total_tiles = int(cols * rows)
+                # Guard: if absurdly large grid, fallback to legacy (performance)
+                if total_tiles <= 400:  # 20x20 upper bound for even sampling path
+                    try:
+                        from PIL import Image  # type: ignore
+                        import tempfile
+                        import math
+                        # Build list of target timestamps centered in equal segments
+                        _dur_f = float(dur)
+                        if _dur_f < 0.1:  # extremely short clip, fallback
+                            raise RuntimeError("duration too short for even sampling")
+                        segment = _dur_f / float(total_tiles)
+                        times: list[float] = []
+                        for k in range(total_tiles):
+                            # Center sample within segment; clamp inside [0, dur]
+                            ts = (k + 0.5) * segment
+                            if ts > _dur_f:
+                                ts = _dur_f
+                            times.append(ts)
+                        # Temp directory for extracted frames
+                        with tempfile.TemporaryDirectory(prefix="sprites_even_") as tmpd:
+                            tmp_dir = Path(tmpd)
+                            extracted: list[Path] = []
+                            steps = total_tiles
+                            # Parallel extraction with bounded worker pool
+                            import concurrent.futures
+                            # Determine pool size
+                            # Base pool size is limited for fairness so multiple sprite jobs can advance concurrently.
+                            # Without this, the first job could monopolize all ffmpeg slots and starve others (appearing as if only one job progresses).
+                            pool_size = 1  # fair default (one extraction at a time per job)
+                            fair_mode = True
+                            try:
+                                fair_env = os.environ.get("SPRITES_EVEN_FAIR")
+                                if fair_env not in (None, ""):
+                                    # Allow disabling fairness by setting SPRITES_EVEN_FAIR=0
+                                    fair_mode = fair_env not in ("0", "false", "False")
+                            except Exception:
+                                pass
+                            try:
+                                env_pool = os.environ.get("SPRITES_EVEN_WORKERS")
+                                if env_pool not in (None, ""):
+                                    pv = int(env_pool)
+                                    if pv > 0:
+                                        # Explicit override takes precedence over fairness restriction
+                                        pool_size = max(1, min(pv, min(total_tiles, _FFMPEG_CONCURRENCY)))
+                                        fair_mode = False
+                            except Exception:
+                                pass
+                            if not fair_mode:
+                                # Recompute pool_size if fairness disabled and no explicit override (fallback path)
+                                if os.environ.get("SPRITES_EVEN_WORKERS") in (None, ""):
+                                    pool_size = min(total_tiles, _FFMPEG_CONCURRENCY)
+                            # Apply global hard bound
+                            pool_size = max(1, min(16, pool_size))
+                            try:
+                                print(f"[sprites][even] extracting frames parallel pool={pool_size} fair={fair_mode} total={total_tiles} dur={_dur_f:.2f}s")
+                            except Exception:
+                                pass
+                            extracted_paths: list[Optional[Path]] = [None] * total_tiles
+                            completed = 0
+                            completed_lock = threading.Lock()
+                            cancel_flag = {"canceled": False}
+                            def _extract_one(idx_ts):
+                                idx, ts = idx_ts
+                                if cancel_flag["canceled"]:
+                                    return None
+                                if cancel_check and cancel_check():
+                                    cancel_flag["canceled"] = True
+                                    return None
+                                _FFMPEG_SEM.acquire()
+                                try:
+                                    out_path = tmp_dir / f"frame_{idx:04d}.jpg"
+                                    cmd = [
+                                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                                        "-ss", f"{ts:.3f}",
+                                        *(_ffmpeg_hwaccel_flags()),
+                                        "-i", str(video),
+                                        "-vf", f"scale={int(width)}:-2:flags=lanczos",
+                                        "-q:v", str(max(2, min(31, int(quality)))) ,
+                                        "-frames:v", "1",
+                                        *(_ffmpeg_threads_flags()),
+                                        str(out_path),
+                                    ]
+                                    proc = subprocess.run(cmd, capture_output=True, text=True)
+                                    if proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
+                                        return out_path
+                                    return None
+                                finally:
+                                    try:
+                                        _FFMPEG_SEM.release()
+                                    except Exception:
+                                        pass
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix="sprite-even") as ex:
+                                futures = {ex.submit(_extract_one, (idx, ts)): idx for idx, ts in enumerate(times)}
+                                for fut in concurrent.futures.as_completed(futures):
+                                    idx = futures[fut]
+                                    path_or_none = None
+                                    try:
+                                        path_or_none = fut.result()
+                                    except Exception:
+                                        path_or_none = None
+                                    extracted_paths[idx] = path_or_none
+                                    with completed_lock:
+                                        completed += 1
+                                        c = completed
+                                    if progress_cb:
+                                        try:
+                                            progress_cb(c, steps)
+                                        except Exception:
+                                            pass
+                                    # Optional short-circuit if canceled
+                                    if cancel_flag["canceled"]:
+                                        break
+                            if cancel_flag["canceled"]:
+                                raise RuntimeError("canceled")
+                            # Collect successful frames in order (fallback to previous good frame when missing)
+                            last_good: Optional[Path] = None
+                            for i, pth in enumerate(extracted_paths):
+                                if pth and pth.exists() and pth.stat().st_size > 0:
+                                    extracted.append(pth)
+                                    last_good = pth
+                                elif last_good is not None:
+                                    extracted.append(last_good)
+                            # If still none, abort to legacy
+                            if not extracted:
+                                raise RuntimeError("no frames extracted in even sampling path")
+                            # Load first frame to determine tile height
+                            with Image.open(extracted[0]) as im0:
+                                tile_w, tile_h = im0.size
+                            sheet_w = tile_w * cols
+                            sheet_h = tile_h * rows
+                            try:
+                                sheet.parent.mkdir(parents=True, exist_ok=True)
+                            except Exception:
+                                pass
+                            mosaic = Image.new("RGB", (sheet_w, sheet_h))
+                            # Fill grid
+                            idx = 0
+                            for r in range(rows):
+                                for c in range(cols):
+                                    src = extracted[idx] if idx < len(extracted) else extracted[-1]
+                                    try:
+                                        with Image.open(src) as fr:
+                                            mosaic.paste(fr, (c * tile_w, r * tile_h))
+                                    except Exception:
+                                        pass
+                                    idx += 1
+                            # Save composite
+                            try:
+                                mosaic.save(sheet, format="JPEG", quality=max(60, 100 - quality * 5))
+                            except Exception:
+                                mosaic.save(sheet, format="JPEG")
+                            # Write index JSON with time mapping
+                            frames_meta = []
+                            for k, ts in enumerate(times):
+                                frames_meta.append({"i": k, "t": ts})
+                            meta = {
+                                "cols": cols,
+                                "rows": rows,
+                                "interval": segment,  # average spacing
+                                "width": width,
+                                "tile_width": tile_w,
+                                "tile_height": tile_h,
+                                "frames": frames_meta[: total_tiles],
+                                "grid": [cols, rows],
+                                "tile": [tile_w, tile_h],
+                                "even_sampling": True,
+                                "duration": _dur_f,
+                            }
+                            j.write_text(json.dumps(meta, indent=2))
+                            if progress_cb:
+                                try:
+                                    progress_cb(steps, steps)
+                                except Exception:
+                                    pass
+                            try:
+                                print(f"[sprites][even] sheet created {sheet.name} tiles={total_tiles} dur={_dur_f:.2f}s")
+                            except Exception:
+                                pass
+                            return  # Successful even sampling path
+                    except Exception:
+                        # Fall through to legacy single-pass mosaic path
+                        try:
+                            print("[sprites][even] fallback to legacy path")
+                        except Exception:
+                            pass
             # Build filter:
             # - Normalize timestamps to frame count to avoid hwaccel/decoder PTS oddities (prevents duplicate selection)
             # - fps to sample one frame per interval with a slight start offset to avoid the very first frame
@@ -1926,6 +2611,23 @@ def generate_sprite_sheet(
                         pass
                     start_time = time.time()
                     steps = 100
+                    last_progress_time = start_time
+                    last_logged_pct = -1
+                    # Watchdog env knobs
+                    try:
+                        spr_wd_log = float(os.environ.get("SPRITES_WATCHDOG_LOG_SECS", "15"))
+                    except Exception:
+                        spr_wd_log = 15.0
+                    try:
+                        spr_wd_kill = float(os.environ.get("SPRITES_WATCHDOG_KILL_SECS", "120"))
+                    except Exception:
+                        spr_wd_kill = 120.0
+                    spr_wd_log = max(2.0, spr_wd_log)
+                    spr_wd_kill = max(spr_wd_log + 5.0, spr_wd_kill)
+                    watchdog_logged = False
+                    killed_for_stall = False
+                    # We'll read stderr lines opportunistically for richer diagnostics
+                    stderr_buf: list[str] = []
                     while True:
                         rc = proc.poll()
                         now = time.time()
@@ -1939,8 +2641,34 @@ def generate_sprite_sheet(
                                     frac = 0.0
                                 progress = int(frac * steps)
                                 progress_cb(progress, steps)
+                                if progress != last_logged_pct and (progress % 5 == 0 or progress in (0, 99)):
+                                    last_logged_pct = progress
+                                    try:
+                                        print(f"[sprites][progress] {video.name} ~{progress}% (elapsed={now-start_time:.1f}s cap={cap_secs:.1f}s)")
+                                    except Exception:
+                                        pass
                             except Exception:
                                 pass
+                        # drain any available stderr without blocking
+                        try:
+                            if proc.stderr is not None and not rc:
+                                while True:
+                                    try:
+                                        line = proc.stderr.readline()
+                                    except Exception:
+                                        break
+                                    if not line:
+                                        break
+                                    ls = line.strip()
+                                    if ls:
+                                        stderr_buf.append(ls)
+                                        # Attempt to parse pts_time or frame matches for more granular updates
+                                        if 'pts_time:' in ls and 'frame=' in ls:
+                                            last_progress_time = now
+                                        elif 'frame=' in ls:
+                                            last_progress_time = now
+                        except Exception:
+                            pass
                         # handle cancel
                         if cancel_check and cancel_check():
                             try:
@@ -1968,6 +2696,11 @@ def generate_sprite_sheet(
                                     progress_cb(steps, steps)
                                 except Exception:
                                     pass
+                            if rc == 0:
+                                try:
+                                    print(f"[sprites][done] {video.name} elapsed={now-start_time:.2f}s")
+                                except Exception:
+                                    pass
                             # Release ffmpeg slot when the process ends
                             try:
                                 _local_sem.release()
@@ -1985,6 +2718,29 @@ def generate_sprite_sheet(
                                 pass
                             proc_rc = int(rc)
                             break
+                        # Watchdog checks while running
+                        idle = now - last_progress_time
+                        if not watchdog_logged and idle >= spr_wd_log and rc is None:
+                            watchdog_logged = True
+                            try:
+                                cur_size = sheet.stat().st_size if sheet.exists() else 0
+                            except Exception:
+                                cur_size = -1
+                            try:
+                                print(f"[sprites][watchdog] no progress lines for {idle:.1f}s (size={cur_size} bytes) video={video.name}")
+                            except Exception:
+                                pass
+                        if idle >= spr_wd_kill and rc is None:
+                            try:
+                                print(f"[sprites][watchdog] killing stalled ffmpeg after {idle:.1f}s video={video.name}")
+                            except Exception:
+                                pass
+                            try:
+                                proc.terminate()
+                                killed_for_stall = True
+                            except Exception:
+                                pass
+                        time.sleep(0.2)
                         time.sleep(0.2)
                 else:
                     proc = _run(cmd)
@@ -3402,6 +4158,25 @@ def _normalize_job_type(job_type: str) -> str:
         return s[: -len("-batch")]
     return s
 
+def _artifact_from_type(job_type: Optional[str]) -> Optional[str]:
+    """Map job type to canonical artifact identifier used by the frontend badges."""
+    if not job_type:
+        return None
+    t = job_type.lower()
+    mapping = {
+        "cover": "cover",
+        "hover": "hover",
+        "phash": "phash",
+        "scenes": "scenes",
+        "sprites": "sprites",
+        "heatmaps": "heatmap",  # badge uses singular form
+        "faces": "faces",
+        "embed": "faces",      # embed updates faces vectors / faces.json
+        "metadata": "metadata",
+        "subtitles": "subtitles",
+    }
+    return mapping.get(t)
+
 
 def _publish_job_event(evt: dict) -> None:
     """
@@ -3432,6 +4207,8 @@ def _set_job_current(jid: str, current_path: Optional[str]) -> None:
         "type": jtype,
         "path": jpath,
         "current": current_path,
+        "artifact": _artifact_from_type(jtype),
+        "file": current_path or jpath,
     })
 
 
@@ -3454,8 +4231,9 @@ def _new_job(job_type: str, path: str) -> str:
         }
         JOB_CANCEL_EVENTS[jid] = threading.Event()
     _persist_job(jid)
-    _publish_job_event({"event": "created", "id": jid, "type": base_type, "path": path})
-    _publish_job_event({"event": "queued", "id": jid, "type": base_type, "path": path})
+    art = _artifact_from_type(base_type)
+    _publish_job_event({"event": "created", "id": jid, "type": base_type, "path": path, "artifact": art, "file": path})
+    _publish_job_event({"event": "queued", "id": jid, "type": base_type, "path": path, "artifact": art, "file": path})
     return jid
 
 
@@ -3465,6 +4243,12 @@ def _start_job(jid: str):
         if j:
             j["state"] = "running"
             j["started_at"] = time.time()
+            # Diagnostic: print current running count vs max
+            try:
+                running_now = sum(1 for qq in JOBS.values() if str(qq.get("state")) == "running")
+                print(f"[jobs][start] jid={jid} type={j.get('type')} running={running_now}/{JOB_MAX_CONCURRENCY}")
+            except Exception:
+                pass
     # Bind thread-local job context if running in current thread
     try:
         JOB_CTX.jid = jid  # type: ignore[name-defined]
@@ -3480,7 +4264,7 @@ def _start_job(jid: str):
         j = JOBS.get(jid) or {}
         jtype = j.get("type")
         jpath = j.get("path")
-    _publish_job_event({"event": "started", "id": jid, "type": jtype, "path": jpath})
+    _publish_job_event({"event": "started", "id": jid, "type": jtype, "path": jpath, "artifact": _artifact_from_type(jtype), "file": jpath})
 
 
 
@@ -3519,7 +4303,7 @@ def _finish_job(jid: str, error: Optional[str] = None):
         j = JOBS.get(jid) or {}
         jtype = j.get("type")
         jpath = j.get("path")
-    _publish_job_event({"event": "finished", "id": jid, "error": error, "type": jtype, "path": jpath})
+    _publish_job_event({"event": "finished", "id": jid, "error": error, "type": jtype, "path": jpath, "artifact": _artifact_from_type(jtype), "file": jpath})
     # Clear thread-local jid when leaving job context in this thread
     try:
         if getattr(JOB_CTX, "jid", None) == jid:  # type: ignore[name-defined]
@@ -3560,6 +4344,24 @@ def _set_job_progress(jid: str, *, total: Optional[int] = None, processed_inc: i
         except Exception:
             # Best-effort clamping; ignore errors
             pass
+        # Derive a percentage for convenience (frontend prefers job.progress if present)
+        try:
+            t = j.get("total")
+            p = j.get("processed")
+            if isinstance(t, (int, float)) and t and t > 0 and isinstance(p, (int, float)) and p >= 0:
+                pct = int((float(p) / float(t)) * 100)
+                if pct < 0:
+                    pct = 0
+                elif pct > 100:
+                    pct = 100
+                j["progress"] = pct
+            else:
+                # Remove stale progress if insufficient data
+                if "progress" in j:
+                    j.pop("progress", None)
+        except Exception:
+            # Non-fatal
+            pass
     # Persist infrequently changing counters (safe to write each update; small files)
     _persist_job(jid)
     # lightweight progress event (throttling left to clients)
@@ -3569,13 +4371,17 @@ def _set_job_progress(jid: str, *, total: Optional[int] = None, processed_inc: i
         jpath = j.get("path")
         total_v = j.get("total")
         processed_v = j.get("processed")
+        progress_v = j.get("progress")
     _publish_job_event({
         "event": "progress",
         "id": jid,
         "type": jtype,
         "path": jpath,
+        "file": jpath,
+        "artifact": _artifact_from_type(jtype),
         "total": total_v,
         "processed": processed_v,
+        "progress": progress_v,
     })
     # Bump heartbeat on progress updates so long-running jobs appear active
     try:
@@ -3644,6 +4450,11 @@ def _wrap_job(job_type: str, path: str, fn):
         return result
     except Exception as e:  # noqa: BLE001
         # On cancellation or failure, mark finished accordingly
+        try:
+            import traceback, sys
+            print(f"[jobs][error] jid={jid} type={job_type} err={e}\n" + ''.join(traceback.format_exception(*sys.exc_info()))[:1500])
+        except Exception:
+            pass
         _finish_job(jid, str(e) if str(e) and str(e).lower() != "canceled" else None)
         if str(e).lower() == "canceled":
             # Propagate a clean API error for canceled operations
@@ -3661,18 +4472,55 @@ def _wrap_job_background(job_type: str, path: str, fn):
         try:
             # FIFO gate: wait until this job is the earliest queued before starting
             _wait_for_turn(jid)
-            # Prevent duplicate heavy work on same (path, task)
+            # Determine whether to use a "light-slot" start (release JOB_RUN_SEM immediately
+            # after transitioning to running) to allow more ffmpeg-heavy jobs to overlap.
+            # Controlled via env:
+            #   LIGHT_SLOT_ALL=1            -> all jobs use light slot
+            #   LIGHT_SLOT_TYPES=csv        -> only listed types (normalized) use light slot
+            # Default list (if LIGHT_SLOT_TYPES unset): scenes,hover,sprites,phash,faces,heatmaps
+            use_light = False
+            try:
+                if str(os.environ.get("LIGHT_SLOT_ALL", "0")).lower() in ("1", "true", "yes"):  # global override
+                    use_light = True
+                else:
+                    raw = os.environ.get("LIGHT_SLOT_TYPES")
+                    if raw is not None:
+                        wanted = {s.strip().lower() for s in raw.split(',') if s.strip()}
+                    else:
+                        wanted = {"scenes", "hover", "sprites", "phash", "faces", "heatmaps"}
+                    norm = _normalize_job_type(job_type)
+                    use_light = norm in wanted
+            except Exception:
+                use_light = False
+
             fp = Path(path)
             lock = _file_task_lock(fp, job_type)
-            with JOB_RUN_SEM:
+            if use_light:
+                # Acquire per-file lock first (avoid duplicate work), then briefly grab JOB_RUN_SEM
+                # just to mark state=running and publish events; release immediately so other
+                # eligible jobs can also start. Heavy work still respects:
+                #   - per-file lock (we still hold it around fn())
+                #   - ffmpeg process gate via _FFMPEG_SEM inside _run/_run_inner
                 with lock:
-                    # Now officially mark as running and bind job context
-                    _start_job(jid)
-                    try:
-                        JOB_CTX.jid = jid  # type: ignore[name-defined]
-                    except Exception:
-                        pass
+                    with JOB_RUN_SEM:
+                        _start_job(jid)
+                        try:
+                            JOB_CTX.jid = jid  # type: ignore[name-defined]
+                        except Exception:
+                            pass
+                    # JOB_RUN_SEM released here -> improved overlap potential
                     result = fn()
+            else:
+                # Legacy behavior: hold JOB_RUN_SEM for the duration of fn()
+                with JOB_RUN_SEM:
+                    with lock:
+                        _start_job(jid)
+                        try:
+                            JOB_CTX.jid = jid  # type: ignore[name-defined]
+                        except Exception:
+                            pass
+                        result = fn()
+
             with JOB_LOCK:
                 if jid in JOBS:
                     JOBS[jid]["result"] = result if not isinstance(result, JSONResponse) else None
@@ -3685,11 +4533,21 @@ def _wrap_job_background(job_type: str, path: str, fn):
 
 def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[float] = None) -> None:
     """
-    Block until this job is the earliest queued job by created_at.
-    Respects cancellation: if the job's cancel event is set while waiting, raise RuntimeError('canceled').
-    The intent is to ensure FIFO start order while still allowing concurrency via JOB_RUN_SEM.
+    Block until this job is eligible to start under a FIFO window policy.
+
+    Previous behavior: only the single earliest queued job could proceed to acquire JOB_RUN_SEM.
+    That made downstream concurrency (e.g., _FFMPEG_SEM allowing 4 hover encodes) moot because
+    jobs beyond the first stayed 'queued' even if capacity existed.
+
+    New behavior: allow the first K queued jobs (ordered by created_at, id) to proceed, where
+    K = JOB_MAX_CONCURRENCY (dynamic) unless STRICT_FIFO_START=1 is set in the environment.
+    This preserves global ordering fairness while letting multiple jobs transition to 'running'
+    promptly when there is available semaphore capacity.
+
+    Cancellation is still honored at each poll. A timeout (if provided) exits early.
     """
     start_ts = time.time()
+    last_diag = 0.0
     while True:
         # Timeout (best-effort safety)
         if timeout is not None and (time.time() - start_ts) > timeout:
@@ -3706,6 +4564,23 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
             st = str(j.get("state") or "")
             if st in ("running", "done", "completed", "failed", "canceled"):
                 break
+            # Fast-path: if capacity available and not strict fairness, start immediately
+            try:
+                strict_global = str(os.environ.get("JOB_FAIR_START_STRICT", "0")).lower() in ("1", "true", "yes")
+            except Exception:
+                strict_global = False
+            if not strict_global:
+                try:
+                    running_now = sum(1 for qq in JOBS.values() if str(qq.get("state")) == "running")
+                except Exception:
+                    running_now = JOB_MAX_CONCURRENCY
+                if running_now < int(JOB_MAX_CONCURRENCY):
+                    # Diagnostic
+                    try:
+                        print(f"[jobs][turn] fast-path start jid={jid} running={running_now}/{JOB_MAX_CONCURRENCY}")
+                    except Exception:
+                        pass
+                    break
             # Build ordered list of queued jobs
             queued = [
                 (float(qq.get("created_at") or 0), str(qq.get("id") or ""))
@@ -3714,9 +4589,32 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
             ]
             # Note: jobs in state 'restored' are paused and intentionally ignored here
             queued.sort(key=lambda x: (x[0], x[1]))
-            if queued and queued[0][1] == jid:
-                # It's our turn
+            if not queued:
                 break
+            # Determine effective window size
+            try:
+                strict = str(os.environ.get("STRICT_FIFO_START", "0")).lower() in ("1", "true", "yes")
+            except Exception:
+                strict = False
+            window = 1 if strict else max(1, int(JOB_MAX_CONCURRENCY))
+            # Collect the first 'window' job ids eligible to start
+            eligible_ids = {q[1] for q in queued[:window]}
+            if jid in eligible_ids:
+                try:
+                    print(f"[jobs][turn] window-eligible jid={jid} window={window} queue_len={len(queued)}")
+                except Exception:
+                    pass
+                break
+        # Periodic diagnostic if still queued
+        now_ts = time.time()
+        if now_ts - last_diag > 5.0:  # every 5s
+            last_diag = now_ts
+            try:
+                with JOB_LOCK:
+                    q_states = [ (qq.get('id'), qq.get('state')) for qq in JOBS.values() ]
+                print(f"[jobs][turn][waiting] jid={jid} still queued; snapshot states={q_states}")
+            except Exception:
+                pass
         time.sleep(poll_interval)
 
 
@@ -5938,18 +6836,78 @@ def cover_create_batch(
 
 
 @api.delete("/cover/delete")
-def cover_delete(path: str = Query(...)):
-    name, directory = _name_and_dir(path)
-    video = Path(directory) / name
-    deleted = False
-    p = thumbs_path(video)
-    if p.exists():
+async def cover_delete(request: Request, path: str | None = Query(default=None)):
+    """Delete thumbnail (cover) image(s).
+
+    Modes:
+      - Single: supply ?path=relative/file.mp4 (deletes its .thumbnail.jpg)
+      - Batch: JSON body {"paths": ["a.mp4", "b/c.mp4"]}
+      - Global: neither provided => delete all *.thumbnail.jpg under root
+    """
+    body_paths: list[str] = []
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            js = await request.json()
+            if isinstance(js, dict):
+                arr = js.get("paths")
+                if isinstance(arr, list):
+                    body_paths = [str(p) for p in arr if isinstance(p, str)]
+    except Exception:
+        body_paths = []
+
+    root: Path = STATE["root"]
+    targets: list[Path] = []
+    if path:
+        name, directory = _name_and_dir(path)
+        targets.append(Path(directory) / name)
+    elif body_paths:
+        for rel in body_paths:
+            name, directory = _name_and_dir(rel)
+            targets.append(Path(directory) / name)
+    else:
+        # Global - collect all thumbnail artifacts
+        for p in root.rglob("*.thumbnail.jpg"):
+            targets.append(p)
+    try:
+        print(f"[cover.delete] root={root} collected_sources={len(targets)} mode={'single' if path else ('batch' if body_paths else 'global')}")
+    except Exception:
+        pass
+
+    deleted = 0
+    errors = 0
+    for candidate in targets:
         try:
-            p.unlink()
-            deleted = True
+            # If candidate already points to the thumbnail artifact (endswith .thumbnail.jpg) delete directly
+            if str(candidate).endswith(".thumbnail.jpg") and candidate.exists():
+                try:
+                    candidate.unlink()
+                    deleted += 1
+                    print(f"[cover.delete] deleted artifact {candidate}", flush=True)
+                except Exception:
+                    errors += 1
+                    print(f"[cover.delete] failed deleting artifact {candidate}", flush=True)
+                continue
+            # Treat as source video - derive thumb path
+            t = thumbs_path(candidate)
+            if t.exists():
+                try:
+                    t.unlink()
+                    deleted += 1
+                    print(f"[cover.delete] deleted derived {t} (source={candidate})", flush=True)
+                except Exception:
+                    errors += 1
+                    print(f"[cover.delete] failed derived delete {t} (source={candidate})", flush=True)
         except Exception:
-            pass
-    return api_success({"deleted": deleted}) if deleted else raise_api_error("Cover not found", status_code=404)
+            errors += 1
+            print(f"[cover.delete] unexpected error {candidate}", flush=True)
+
+    mode = "single" if path else ("batch" if body_paths else "global")
+    # For single mode keep legacy 404 behavior if nothing deleted
+    if mode == "single" and deleted == 0 and errors == 0:
+        raise_api_error("Cover not found", status_code=404)
+    result = {"requested": len(targets), "deleted": deleted, "errors": errors, "mode": mode}
+    print(f"[cover.delete] result={result}", flush=True)
+    return api_success(result)
 
 
 # --- Hover --- single-file previews only ---
@@ -6003,6 +6961,29 @@ def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_d
     video = Path(directory) / name
     # Hard-require ffmpeg for real hover generation; don't create jobs if missing
     _require_ffmpeg_or_error("hover previews")
+    # If background mode is desired (default), delegate to background wrapper so multiple
+    # requests can enqueue and transition to running without the client waiting for completion.
+    # Clients can pass ?sync=1 to force legacy synchronous behavior (returns when done).
+    try:
+        sync_flag = str(os.environ.get("HOVER_SYNC_DEFAULT", "0")) in ("1", "true", "yes")
+        # Query param override (FastAPI will include it if provided)
+    except Exception:
+        sync_flag = False
+    # Note: we can't read query param 'sync' directly here without adding a function arg; add it:
+    return _hover_create_impl(video, segments=segments, seg_dur=seg_dur, width=width, overwrite=overwrite, background=not sync_flag)
+
+
+@api.post("/hover/create/bg")
+def hover_create_background(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False)):
+    """Explicit background hover creation endpoint; always queues job and returns job id immediately."""
+    name, directory = _name_and_dir(path)
+    video = Path(directory) / name
+    _require_ffmpeg_or_error("hover previews")
+    return _hover_create_impl(video, segments=segments, seg_dur=seg_dur, width=width, overwrite=overwrite, background=True)
+
+
+def _hover_create_impl(video: Path, *, segments: int, seg_dur: float, width: int, overwrite: bool, background: bool):
+    # Shared implementation used by sync and background endpoints.
     def _do():
         # If exists and not overwriting, return early
         out = _hover_concat_path(video)
@@ -6055,7 +7036,11 @@ def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_d
             pass
         return api_success({"created": True, "path": str(out)})
     try:
-        return _wrap_job("hover", str(video.relative_to(STATE["root"])), _do)
+        rel = str(video.relative_to(STATE["root"]))
+        if background:
+            return _wrap_job_background("hover", rel, _do)
+        else:
+            return _wrap_job("hover", rel, _do)
     except Exception as e:
         raise_api_error(f"hover create failed: {e}", status_code=500)
 
@@ -6147,7 +7132,28 @@ def hover_create_batch(
                                     raise RuntimeError("hover result too small or missing")
                                 with JOB_LOCK:
                                     if jid in JOBS:
-                                        JOBS[jid]["result"] = {"path": str(out_path), "size": int(size)}
+                                        # Attempt to read hover info JSON for richer result data
+                                        seg_used = None
+                                        seg_planned = int(segments)
+                                        status_val = None
+                                        seg_failed = None
+                                        try:
+                                            info_path = artifact_dir(p) / f"{p.stem}{SUFFIX_PREVIEW_JSON}"
+                                            if info_path.exists():
+                                                inf = json.loads(info_path.read_text())
+                                                seg_used = inf.get("segments_used") or inf.get("segments_planned")
+                                                status_val = inf.get("status")
+                                                seg_failed = inf.get("segments_failed")
+                                        except Exception:
+                                            seg_used = None
+                                        JOBS[jid]["result"] = {
+                                            "path": str(out_path),
+                                            "size": int(size),
+                                            "segments_used": int(seg_used) if seg_used is not None else int(segments),
+                                            "segments_planned": int(seg_planned),
+                                            "status": status_val or "ok",
+                                            "segments_failed": int(seg_failed) if seg_failed is not None else 0,
+                                        }
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
@@ -6169,20 +7175,110 @@ def hover_create_batch(
 
 
 @api.delete("/hover/delete")
-def hover_delete(path: str = Query(...)):
-    name, directory = _name_and_dir(path)
-    video = Path(directory) / name
-    concat = _hover_concat_path(video)
-    deleted = False
-    if concat.exists():
+async def hover_delete(request: Request, path: str | None = Query(default=None)):
+    """Delete hover preview(s).
+
+    Modes:
+      - Single: supply ?path=relative/file.mp4
+      - Batch: JSON body {"paths": ["a.mp4", "b/c.mp4"]}
+      - Global: neither provided => delete all *.hover.webm under root
+    """
+    body_paths: list[str] = []
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            js = await request.json()
+            if isinstance(js, dict):
+                arr = js.get("paths")
+                if isinstance(arr, list):
+                    body_paths = [str(p) for p in arr if isinstance(p, str)]
+    except Exception:
+        body_paths = []
+
+    targets: list[Path] = []
+    root: Path = STATE["root"]
+    if path:
+        name, directory = _name_and_dir(path)
+        targets.append(Path(directory) / name)
+    elif body_paths:
+        for rel in body_paths:
+            name, directory = _name_and_dir(rel)
+            targets.append(Path(directory) / name)
+    else:
+        # Global delete: collect all preview artifacts (video + metadata)
+        patterns = (f"*{SUFFIX_PREVIEW_WEBM}", f"*{SUFFIX_PREVIEW_JSON}")
+        for patt in patterns:
+            for p in root.rglob(patt):
+                targets.append(p)
+    try:
+        print(f"[hover.delete] root={root} SUFFIX_PREVIEW_WEBM={SUFFIX_PREVIEW_WEBM} SUFFIX_PREVIEW_JSON={SUFFIX_PREVIEW_JSON} collected_targets={len(targets)}", flush=True)
+    except Exception:
+        pass
+
+    deleted = 0
+    meta_deleted = 0
+    errors = 0
+    def _p(msg: str):
         try:
-            concat.unlink()
-            deleted = True
+            print(f"[hover.delete] {msg}", flush=True)
         except Exception:
             pass
-    if deleted:
-        return api_success({"deleted": True})
-    raise_api_error("Hover not found", status_code=404)
+    _p(f"start mode={'single' if path else ('batch' if body_paths else 'global')} path={path!r} body_paths={len(body_paths)}")
+    _p(f"targets={len(targets)} first_target={targets[0] if targets else None}")
+    for candidate in targets:
+        try:
+            # If candidate is already a preview artifact (webm or json) delete directly
+            name = str(candidate)
+            if name.endswith(SUFFIX_PREVIEW_WEBM) or name.endswith(SUFFIX_PREVIEW_JSON):
+                if candidate.exists():
+                    try:
+                        candidate.unlink()
+                        if name.endswith(SUFFIX_PREVIEW_WEBM):
+                            deleted += 1
+                            _p(f"deleted preview {candidate}")
+                        else:
+                            meta_deleted += 1
+                            _p(f"deleted preview meta {candidate}")
+                    except Exception:
+                        errors += 1
+                        _p(f"failed deleting direct artifact {candidate}")
+                continue
+            # Otherwise treat as source video
+            try:
+                webm = preview_webm_path(candidate)
+                if webm.exists():
+                    webm.unlink()
+                    deleted += 1
+                    _p(f"deleted derived preview {webm} (source={candidate})")
+            except Exception:
+                errors += 1
+                _p(f"failed deleting derived preview {candidate}")
+            try:
+                meta = preview_json_path(candidate)
+                if meta.exists():
+                    meta.unlink()
+                    meta_deleted += 1
+                    _p(f"deleted derived preview meta {meta} (source={candidate})")
+            except Exception:
+                errors += 1
+                _p(f"failed deleting derived preview meta {candidate}")
+        except Exception:
+            errors += 1
+            _p(f"unexpected error deleting candidate {candidate}")
+
+    result = {
+        "requested": len(targets),
+        "deleted_video_previews": deleted,
+        "deleted_metadata": meta_deleted,
+        "errors": errors,
+        "mode": "single" if path else ("batch" if body_paths else "global"),
+    }
+    _p(f"result={result}")
+    return api_success(result)
+
+# Compatibility shim (older frontend might call without /api prefix)
+@app.delete("/hover/delete", include_in_schema=False)
+async def hover_delete_compat(request: Request, path: str | None = Query(default=None)):
+    return await hover_delete(request, path)  # delegate
 
 
 @api.get("/hover/list")
@@ -6283,11 +7379,24 @@ def phash_create(path: str = Query(...), frames: int = Query(default=5), algo: s
     _algo = str(algo)
     _combine = str(combine)
     def _do():
+        try:
+            print(f"[phash][debug] job start path={fp} frames={_frames} algo={_algo} combine={_combine}")
+        except Exception:
+            pass
         phash_create_single(fp, frames=_frames, algo=_algo, combine=_combine)
+        try:
+            print(f"[phash][debug] job end path={fp}")
+        except Exception:
+            pass
         return api_success({"created": True, "path": str(phash_path(fp))})
     try:
         return _wrap_job("phash", str(fp.relative_to(STATE["root"])), _do)
     except Exception as e:
+        import traceback, sys
+        try:
+            print(f"[phash][debug] phash_create exception: {e}\n" + ''.join(traceback.format_exception(*sys.exc_info()))[:1200])
+        except Exception:
+            pass
         raise_api_error(f"phash failed: {e}", status_code=500)
 
 
@@ -6365,31 +7474,87 @@ def scenes_create(path: str = Query(...), threshold: float = Query(default=0.4),
     fp = safe_join(STATE["root"], path)
     # Scene detection and outputs require ffmpeg present
     _require_ffmpeg_or_error("scene detection")
-    def _do():
-        # Wire a progress callback that maps internal steps to the job
-        jid = getattr(JOB_CTX, "jid", None)
-        def _pcb(i: int, n: int):
-            if jid:
-                try:
-                    _set_job_progress(jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
-                except Exception:
-                    pass
-        generate_scene_artifacts(
-            fp,
-            threshold=float(threshold),
-            limit=int(limit),
-            gen_thumbs=bool(thumbs),
-            gen_clips=bool(clips),
-            thumbs_width=int(thumbs_width),
-            clip_duration=float(clip_duration),
-            progress_cb=_pcb,
-            fast_mode=bool(fast),
-        )
-        return api_success({"created": True, "path": str(scenes_json_path(fp))})
-    try:
-        return _wrap_job("scenes", str(fp.relative_to(STATE["root"])), _do)
-    except Exception as e:
-        raise_api_error(f"scenes failed: {e}", status_code=500)
+    # Custom lightweight background wrapper: acquire/release JOB_RUN_SEM only for start
+    # so that long-running scene detection does not monopolize a global slot. ffmpeg
+    # process concurrency is still bounded by _FFMPEG_SEM; per-file lock prevents
+    # duplicate work on the same video. Opt-out by setting SCENES_LIGHT_SLOT=0.
+    light_slot = os.environ.get("SCENES_LIGHT_SLOT", "1") != "0"
+    jid = _new_job("scenes", str(fp.relative_to(STATE["root"])))
+    def _runner():
+        try:
+            _wait_for_turn(jid)
+            lk = _file_task_lock(fp, "scenes")
+            if light_slot:
+                # Acquire per-file lock first; then briefly grab global semaphore to mark running.
+                with lk:
+                    with JOB_RUN_SEM:
+                        _start_job(jid)
+                        try:
+                            JOB_CTX.jid = jid  # type: ignore[name-defined]
+                        except Exception:
+                            pass
+                        # Initialize fixed 0..100 progress scale immediately
+                        try:
+                            _set_job_progress(jid, total=100, processed_set=0)
+                        except Exception:
+                            pass
+                    # JOB_RUN_SEM released here; heavy work below proceeds concurrently.
+                    def _pcb(i: int, n: int):
+                        try:
+                            n = max(1, int(n))
+                            i = max(0, min(int(i), n))
+                            pct = int((i / n) * 100)
+                            _set_job_progress(jid, total=100, processed_set=pct)
+                        except Exception:
+                            pass
+                    generate_scene_artifacts(
+                        fp,
+                        threshold=float(threshold),
+                        limit=int(limit),
+                        gen_thumbs=bool(thumbs),
+                        gen_clips=bool(clips),
+                        thumbs_width=int(thumbs_width),
+                        clip_duration=float(clip_duration),
+                        progress_cb=_pcb,
+                        fast_mode=bool(fast),
+                    )
+            else:
+                # Fallback: keep legacy behavior (hold semaphore entire time)
+                with JOB_RUN_SEM:
+                    with lk:
+                        _start_job(jid)
+                        try:
+                            JOB_CTX.jid = jid  # type: ignore[name-defined]
+                        except Exception:
+                            pass
+                        try:
+                            _set_job_progress(jid, total=100, processed_set=0)
+                        except Exception:
+                            pass
+                        def _pcb(i: int, n: int):
+                            try:
+                                n = max(1, int(n))
+                                i = max(0, min(int(i), n))
+                                pct = int((i / n) * 100)
+                                _set_job_progress(jid, total=100, processed_set=pct)
+                            except Exception:
+                                pass
+                        generate_scene_artifacts(
+                            fp,
+                            threshold=float(threshold),
+                            limit=int(limit),
+                            gen_thumbs=bool(thumbs),
+                            gen_clips=bool(clips),
+                            thumbs_width=int(thumbs_width),
+                            clip_duration=float(clip_duration),
+                            progress_cb=_pcb,
+                            fast_mode=bool(fast),
+                        )
+            _finish_job(jid, None)
+        except Exception as e:  # noqa: BLE001
+            _finish_job(jid, str(e) if str(e).lower() != "canceled" else None)
+    threading.Thread(target=_runner, name=f"job-scenes-{jid}", daemon=True).start()
+    return api_success({"job": jid, "queued": True, "lightSlot": light_slot})
 
 
 @api.delete("/scenes/delete")
@@ -6473,14 +7638,27 @@ def scenes_create_batch(
                     if only_missing and scenes_json_exists(p):
                         return
                     jid = _new_job("scenes", str(p.relative_to(STATE["root"])) )
-                    _start_job(jid)
+                    light_slot_item = os.environ.get("SCENES_LIGHT_SLOT", "1") != "0"
+                    lk = _file_task_lock(p, "scenes")
                     try:
-                        lk = _file_task_lock(p, "scenes")
-                        with JOB_RUN_SEM:
+                        if light_slot_item:
                             with lk:
+                                with JOB_RUN_SEM:
+                                    _start_job(jid)
+                                    try:
+                                        JOB_CTX.jid = jid  # type: ignore[name-defined]
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _set_job_progress(jid, total=100, processed_set=0)
+                                    except Exception:
+                                        pass
                                 def _pcb(i: int, n: int, _jid=jid):
                                     try:
-                                        _set_job_progress(_jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                                        n = max(1, int(n))
+                                        i = max(0, min(int(i), n))
+                                        pct = int((i / n) * 100)
+                                        _set_job_progress(_jid, total=100, processed_set=pct)
                                     except Exception:
                                         pass
                                 generate_scene_artifacts(
@@ -6494,9 +7672,37 @@ def scenes_create_batch(
                                     progress_cb=_pcb,
                                     fast_mode=bool(fast),
                                 )
+                        else:
+                            with JOB_RUN_SEM:
+                                with lk:
+                                    _start_job(jid)
+                                    try:
+                                        JOB_CTX.jid = jid  # type: ignore[name-defined]
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _set_job_progress(jid, total=100, processed_set=0)
+                                    except Exception:
+                                        pass
+                                    def _pcb(i: int, n: int, _jid=jid):
+                                        try:
+                                            _set_job_progress(_jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                                        except Exception:
+                                            pass
+                                    generate_scene_artifacts(
+                                        p,
+                                        threshold=float(threshold),
+                                        limit=int(limit),
+                                        gen_thumbs=bool(thumbs),
+                                        gen_clips=bool(clips),
+                                        thumbs_width=int(thumbs_width),
+                                        clip_duration=float(clip_duration),
+                                        progress_cb=_pcb,
+                                        fast_mode=bool(fast),
+                                    )
                         _finish_job(jid, None)
-                    except Exception as e:
-                        _finish_job(jid, str(e))
+                    except Exception as _e:
+                        _finish_job(jid, str(_e))
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
             for p in vids:
@@ -6559,12 +7765,24 @@ def sprites_create(path: str = Query(...), interval: float = Query(default=12.0)
             if jid:
                 try:
                     _set_job_progress(jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
+                    # Lightweight debug log every 10% (avoid log spam)
+                    if n and n > 0:
+                        try:
+                            pct = int((int(i) / int(n)) * 100) if int(n) > 0 else 0
+                        except Exception:
+                            pct = 0
+                        if pct % 10 == 0:
+                            try:
+                                print(f"[sprites][progress-cb] jid={jid} {pct}% i={i} n={n}")
+                            except Exception:
+                                pass
                 except Exception:
                     pass
         generate_sprite_sheet(fp, interval=float(interval), width=int(width), cols=int(cols), rows=int(rows), quality=int(quality), progress_cb=_pcb)
         return api_success({"created": True})
+    # Use background wrapper so UI returns immediately; job status polled/SSE updated asynchronously
     try:
-        return _wrap_job("sprites", str(fp.relative_to(STATE["root"])), _do)
+        return _wrap_job_background("sprites", str(fp.relative_to(STATE["root"])), _do)
     except Exception as e:
         raise_api_error(f"sprites failed: {e}", status_code=500)
 
@@ -6951,16 +8169,76 @@ def metadata_create(path: str = Query(...)):
 
 
 @api.delete("/metadata/delete")
-def metadata_delete(path: str = Query(...)):
-    fp = safe_join(STATE["root"], path)
-    m = metadata_path(fp)
-    if m.exists():
+async def metadata_delete(request: Request, path: str | None = Query(default=None)):
+    """Delete metadata sidecar(s).
+
+    Modes:
+      - Single: ?path=relative/file.mp4
+      - Batch: JSON body {"paths": [..]}
+      - Global: none supplied => delete all *.metadata.json under root
+    """
+    body_paths: list[str] = []
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            js = await request.json()
+            if isinstance(js, dict):
+                arr = js.get("paths")
+                if isinstance(arr, list):
+                    body_paths = [str(p) for p in arr if isinstance(p, str)]
+    except Exception:
+        body_paths = []
+
+    root: Path = STATE["root"]
+    targets: list[Path] = []
+    if path:
+        name, directory = _name_and_dir(path)
+        targets.append(Path(directory) / name)
+    elif body_paths:
+        for rel in body_paths:
+            name, directory = _name_and_dir(rel)
+            targets.append(Path(directory) / name)
+    else:
+        for p in root.rglob("*.metadata.json"):
+            targets.append(p)
+    try:
+        print(f"[metadata.delete] root={root} collected_sources={len(targets)} mode={'single' if path else ('batch' if body_paths else 'global')}")
+    except Exception:
+        pass
+
+    deleted = 0
+    errors = 0
+    for candidate in targets:
         try:
-            m.unlink()
-            return api_success({"deleted": True})
-        except Exception as e:
-            raise_api_error(f"Failed to delete metadata: {e}", status_code=500)
-    raise_api_error("Metadata not found", status_code=404)
+            # Direct artifact?
+            if str(candidate).endswith(".metadata.json") and candidate.exists():
+                try:
+                    candidate.unlink()
+                    deleted += 1
+                    print(f"[metadata.delete] deleted artifact {candidate}", flush=True)
+                except Exception:
+                    errors += 1
+                    print(f"[metadata.delete] failed deleting artifact {candidate}", flush=True)
+                continue
+            # Derive from source
+            m = metadata_path(candidate)
+            if m.exists():
+                try:
+                    m.unlink()
+                    deleted += 1
+                    print(f"[metadata.delete] deleted derived {m} (source={candidate})", flush=True)
+                except Exception:
+                    errors += 1
+                    print(f"[metadata.delete] failed derived delete {m} (source={candidate})", flush=True)
+        except Exception:
+            errors += 1
+            print(f"[metadata.delete] unexpected error {candidate}", flush=True)
+
+    mode = "single" if path else ("batch" if body_paths else "global")
+    if mode == "single" and deleted == 0 and errors == 0:
+        raise_api_error("Metadata not found", status_code=404)
+    result = {"requested": len(targets), "deleted": deleted, "errors": errors, "mode": mode}
+    print(f"[metadata.delete] result={result}", flush=True)
+    return api_success(result)
 
 
 @api.get("/subtitles/get")
@@ -9108,6 +10386,21 @@ def tasks_jobs():
             # Best-effort target artifact path (relative to root) for the current file, when applicable
             try:
                 jtype = (job.get("type") or "").lower()
+                # Provide a stable "artifact" key aligning with frontend badge dataset values
+                artifact_map = {
+                    "cover": "cover",
+                    "hover": "hover",
+                    "phash": "phash",
+                    "scenes": "scenes",
+                    "sprites": "sprites",
+                    "heatmaps": "heatmap",  # singular badge name
+                    "faces": "faces",
+                    "embed": "faces",  # embed updates faces.json; treat as faces artifact for spinner
+                    "metadata": "metadata",
+                    "subtitles": "subtitles",
+                }
+                if jtype in artifact_map:
+                    formatted_job["artifact"] = artifact_map[jtype]
                 cur = job.get("current") or job.get("label") or job.get("path") or ""
                 target_path_str: Optional[str] = None
                 if cur:
@@ -10349,6 +11642,45 @@ def _handle_cover_job(jid: str, jr: JobRequest, base: Path) -> None:
     _finish_job(jid)
 
 
+def _handle_metadata_job(jid: str, jr: JobRequest, base: Path) -> None:
+    """Generate metadata sidecar JSON files.
+    Missing-mode uses explicit target list when provided; all-mode (jr.force) forces recompute.
+    Mirrors structure of other artifact handlers for consistency.
+    """
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    # Resolve list of videos to process
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    _set_job_progress(jid, total=len(vids), processed_set=0)
+    force = bool(jr.force) or bool(prm.get("overwrite", False))
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        _set_job_current(jid, str(v))
+        lk = _file_task_lock(v, "metadata")
+        with lk:
+            try:
+                metadata_single(v, force=force)
+            except Exception:
+                # Capture but continue with next file
+                pass
+        cur = JOBS.get(jid, {}).get("processed", 0)
+        _set_job_progress(jid, processed_set=int(cur) + 1)
+    _job_set_result(jid, {"processed": len(vids), "forced": bool(force)})
+    _finish_job(jid)
+
+
 def _handle_embed_job(jid: str, jr: JobRequest, base: Path) -> None:
     prm = jr.params or {}
     targets = prm.get("targets") or []
@@ -10893,6 +12225,7 @@ def _handle_scenes_job(jid: str, jr: JobRequest, base: Path) -> None:
     thumbs_width = int(prm.get("thumbs_width", 320))
     clip_duration = float(prm.get("clip_duration", 2.0))
     done_files = 0
+    failed_paths: list[str] = []
     for v in vids:
         if _job_check_canceled(jid):
             _finish_job(jid)
@@ -10929,8 +12262,90 @@ def _handle_scenes_job(jid: str, jr: JobRequest, base: Path) -> None:
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
         except Exception:
+            # Per-file failure: mark progress for this file and attempt to write an empty scenes JSON
+            done_files += 1
+            try:
+                rel = str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)
+                failed_paths.append(rel)
+            except Exception:
+                failed_paths.append(str(v))
+            try:
+                sj = scenes_json_path(v)
+                if not sj.exists():
+                    sj.write_text(json.dumps({"scenes": []}, indent=2))
+            except Exception:
+                pass
+            _set_job_progress(jid, processed_set=done_files * 100)
+    _set_job_current(jid, None)
+    try:
+        result: dict[str, Any] = {"processed": len(vids), "failed": len(failed_paths)}
+        if failed_paths:
+            result["failed_paths"] = failed_paths[:200]
+        _job_set_result(jid, result)
+    except Exception:
+        _job_set_result(jid, {"processed": len(vids)})
+    _finish_job(jid)
+
+
+def _handle_phash_job(jid: str, jr: JobRequest, base: Path) -> None:
+    prm = jr.params or {}
+    targets = prm.get("targets") or []
+    if targets:
+        vids: list[Path] = []
+        for rel in targets:
+            try:
+                p = safe_join(STATE["root"], rel)
+                if p.exists() and p.is_file():
+                    vids.append(p)
+            except Exception:
+                continue
+    else:
+        vids = _iter_videos(base, bool(jr.recursive))
+    # Each file scaled to 100 progress units
+    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    done_files = 0
+    frames = int(prm.get("frames", 5))
+    algo = str(prm.get("algorithm" or prm.get("algo", "ahash")))
+    combine = str(prm.get("combine", "xor"))
+    force = bool(jr.force)
+    for v in vids:
+        if _job_check_canceled(jid):
+            _finish_job(jid)
+            return
+        try:
+            _set_job_current(jid, str(v))
+            lk = _file_task_lock(v, "phash")
+            with lk:
+                if phash_path(v).exists() and not force:
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+                else:
+                    def _pcb(i: int, n: int, _base=done_files):
+                        try:
+                            n = max(1, int(n))
+                            i = max(0, min(int(i), n))
+                            overall = (_base * 100) + int((i / n) * 100)
+                            _set_job_progress(jid, processed_set=overall)
+                        except Exception:
+                            pass
+                    def _cc() -> bool:
+                        return _job_check_canceled(jid)
+                    try:
+                        phash_create_single(v, frames=frames, algo=algo, combine=combine, progress_cb=_pcb, cancel_check=_cc)
+                    except Exception as e:
+                        try:
+                            print(f"[phash][handler][error] file={v.name} err={e}")
+                        except Exception:
+                            pass
+                    done_files += 1
+                    _set_job_progress(jid, processed_set=done_files * 100)
+        except Exception as e:
             done_files += 1
             _set_job_progress(jid, processed_set=done_files * 100)
+            try:
+                print(f"[phash][handler][exception] file={v.name} err={e}")
+            except Exception:
+                pass
     _set_job_current(jid, None)
     _job_set_result(jid, {"processed": len(vids)})
     _finish_job(jid)
@@ -11483,6 +12898,8 @@ def _run_job_worker(jid: str, jr: JobRequest):
             "transcode": _handle_transcode_job,
             "autotag": _handle_autotag_job,
             "cover": _handle_cover_job,
+            # Newly added: generate metadata sidecar JSON (was previously missing, causing 'unknown task')
+            "metadata": _handle_metadata_job,
             "embed": _handle_embed_job,
             "clip": _handle_clip_job,
             "cleanup-artifacts": _handle_cleanup_artifacts_job,
@@ -11492,12 +12909,13 @@ def _run_job_worker(jid: str, jr: JobRequest):
             "hover": _handle_hover_job,
             "subtitles": _handle_subtitles_job,
             "scenes": _handle_scenes_job,
-                    "sample": _handle_sample_job,
+            "sample": _handle_sample_job,
             "chain": _handle_chain_job,
             "integrity-scan": _handle_integrity_scan_job,
             "index-embeddings": _handle_index_embeddings_job,
-        "waveform": _handle_waveform_job,
-        "motion": _handle_motion_job,
+            "waveform": _handle_waveform_job,
+            "motion": _handle_motion_job,
+            "phash": _handle_phash_job,
         }
         h = handlers.get(task)
         if not h:

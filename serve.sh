@@ -50,13 +50,13 @@ if [ -z "${WHISPER_CPP_MODEL:-}" ]; then
     fi
   fi
 fi
-if [ -n "${WHISPER_CPP_BIN:-}" ] && [ -n "${WHISPER_CPP_MODEL:-}" ]; then
-  echo "whisper.cpp backend: BIN=$WHISPER_CPP_BIN MODEL=$(basename "$WHISPER_CPP_MODEL")"
-fi
+# if [ -n "${WHISPER_CPP_BIN:-}" ] && [ -n "${WHISPER_CPP_MODEL:-}" ]; then
+#   # echo "whisper.cpp backend: BIN=$WHISPER_CPP_BIN MODEL=$(basename "$WHISPER_CPP_MODEL")"
+# fi
 
 # Exclude scripts directory to avoid noisy reloads from helper scripts
 
-echo "[serve.sh] Starting Media Player on ${HOST}:${PORT} (MEDIA_ROOT=${MEDIA_ROOT})" 1>&2
+# echo "[serve.sh] Starting Media Player on ${HOST}:${PORT} (MEDIA_ROOT=${MEDIA_ROOT})" 1>&2
 
 # Runner resolution (from salvaged stash logic, adapted)
 choose_runner() {

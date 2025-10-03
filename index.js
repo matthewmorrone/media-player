@@ -1,55 +1,52 @@
-// Reset Player logic
+// Reset Player logic (sanitized)
 window.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('btnResetPlayer');
   const video = document.getElementById('playerVideo');
+  const title = document.getElementById('playerTitle');
   if (btn && video) {
     btn.addEventListener('click', () => {
-      video.pause();
-      video.removeAttribute('src');
-      video.load();
-      // Optionally clear title and overlays
-      const title = document.getElementById('playerTitle');
+      try { video.pause(); } catch (_) { }
+      try { video.removeAttribute('src'); } catch (_) { }
+      try { video.load(); } catch (_) { }
       if (title) {
         title.textContent = '';
         title.style.display = 'none';
       }
       // Mark that a reset occurred so unload handlers won't re-save state during a following refresh
-      try { localStorage.setItem('mediaPlayer:skipSaveOnUnload', '1'); } catch(_) {}
+      try { localStorage.setItem('mediaPlayer:skipSaveOnUnload', '1'); } catch (_) { }
       // Clear last played video from localStorage so no movie auto-loads after refresh
       try {
-        localStorage.removeItem('mediaPlayer:last');
-        localStorage.removeItem('mediaPlayer:lastVideo');
-      } catch(_) {}
-      // Utility to set player title and handle visibility
-      function setPlayerTitle(text) {
-        const title = document.getElementById('playerTitle');
-        if (!title) return;
-        if (text && String(text).trim()) {
-          title.textContent = text;
-          title.style.display = '';
-        } else {
-          title.textContent = '';
-          title.style.display = 'none';
-        }
-      }
+        ['mediaPlayer:last','mediaPlayer:lastVideo','mediaPlayer:lastSelected'].forEach(k => {
+          try { localStorage.removeItem(k); } catch (_) { }
+        });
+      } catch (_) { }
       // Clear file info fields
       [
-        'fiPath','fiDuration','fiResolution','fiVideoCodec','fiAudioCodec','fiBitrate','fiVBitrate','fiABitrate','fiSize','fiModified'
-      ].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '—'; });
+        'fiPath', 'fiDuration', 'fiResolution', 'fiVideoCodec', 'fiAudioCodec', 'fiBitrate', 'fiVBitrate', 'fiABitrate', 'fiSize', 'fiModified'
+      ].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '—';
+      });
       // Also clear currentPath and resumeOverrideTime if possible
       try {
         if (window.Player) {
           if ('currentPath' in window.Player) window.Player.currentPath = null;
           if ('resumeOverrideTime' in window.Player) window.Player.resumeOverrideTime = null;
         }
-      } catch(_) {}
+      }
+      catch (_) { }
       // Clear module-level currentPath (prevents UI from thinking a file is selected)
-      try { currentPath = null; } catch(_) {}
+      try {
+        currentPath = null;
+      }
+      catch (_) { }
 
       // Remove per-video persistence keys (mediaPlayer:video:*) so progress/last entries don't rehydrate
       try {
         const removals = [];
-        for (let i = 0; i < localStorage.length; i++) {
+        for (let i = 0;
+          i < localStorage.length;
+          i++) {
           const k = localStorage.key(i);
           if (!k) continue;
           // remove per-video keys and any 'last' keys that might trigger auto-resume
@@ -57,12 +54,19 @@ window.addEventListener('DOMContentLoaded', () => {
           if (/last/i.test(k)) removals.push(k);
           if (/lastSelected/i.test(k)) removals.push(k);
         }
-        removals.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
-      } catch(_) {}
+        removals.forEach(k => {
+          try {
+            localStorage.removeItem(k);
+
+          }
+          catch (_) { }
+        });
+      }
+      catch (_) { }
 
       // Clear common sidebar UI elements so no stale info remains
       try {
-        ['artifactBadgesSidebar','videoPerformers','videoTags','markersList','performerImportPreviewList'].forEach(id => {
+        ['artifactBadgesSidebar', 'videoPerformers', 'videoTags', 'markersList', 'performerImportPreviewList'].forEach(id => {
           const el = document.getElementById(id);
           if (!el) return;
           if (el.tagName === 'DIV' || el.tagName === 'UL' || el.tagName === 'OL') el.innerHTML = '';
@@ -71,19 +75,24 @@ window.addEventListener('DOMContentLoaded', () => {
         // Clear selection state and UI
         try {
           selectedItems = new Set();
-          const selCount = document.getElementById('selectionCount'); if (selCount) selCount.textContent = '0';
+          const selCount = document.getElementById('selectionCount');
+          if (selCount) selCount.textContent = '0';
           document.querySelectorAll('.card.selected').forEach(c => c.classList.remove('selected'));
-        } catch(_) {}
+        }
+        catch (_) { }
         // Attempt to unload the Player module if available
         try {
           if (window.Player && typeof window.Player.unload === 'function') {
             window.Player.unload();
-          } else if (typeof Player !== 'undefined' && Player && typeof Player.unload === 'function') {
+          }
+          else if (typeof Player !== 'undefined' && Player && typeof Player.unload === 'function') {
             Player.unload();
           }
-        } catch(_) {}
+        }
+        catch (_) { }
         // Do not change active tab on reset — preserve user's current tab
-      } catch(_) {}
+      }
+      catch (_) { }
     });
   }
 });
@@ -93,8 +102,9 @@ const spinner = document.getElementById("spinner");
 const refreshBtn = document.getElementById("refresh");
 const folderInput = document.getElementById("folderInput");
 
-// Grid controls
-const searchInput = document.getElementById("searchInput");
+// Grid controls (unified search input: plain text, #tag, @performer)
+const unifiedInput = document.getElementById("libraryUnifiedInput");
+const unifiedChipsEl = document.getElementById("libraryUnifiedChips");
 const randomPlayBtn = document.getElementById("randomPlayBtn");
 const randomAutoBtn = document.getElementById("randomAutoBtn");
 const sortSelect = document.getElementById("sortSelect");
@@ -105,14 +115,20 @@ const nextBtn = document.getElementById("nextBtn");
 const pageInfo = document.getElementById("pageInfo");
 
 // Hover controls (Settings)
-let hoverPreviewsEnabled = false; // playback on hover
-let hoverOnDemandEnabled = false; // generation on hover
+let hoverPreviewsEnabled = false;
+// playback on hover
+let hoverOnDemandEnabled = false;
+// generation on hover
+let confirmDeletesEnabled = false;
+// user preference for delete confirmations
 // Feature flag: keep on-demand hover generation code present but disabled by default.
 // Flip to true (e.g., via build-time replace or future settings exposure) to allow user toggle to function.
 const FEATURE_HOVER_ON_DEMAND = false;
 // Player timeline display toggles (Settings)
-let showHeatmap = true; // default ON
-let showScenes = true; // default ON
+let showHeatmap = true;
+// default ON
+let showScenes = true;
+// default ON
 
 // Selection
 const selectionBar = document.getElementById("selectionBar");
@@ -125,117 +141,34 @@ let currentPage = 1;
 let totalPages = 1;
 let totalFiles = 0;
 let selectedItems = new Set();
-let currentDensity = 12; // Default to 12 (maps to 4 columns)
+let currentDensity = 12;
+// Default to 12 (maps to 4 columns)
 // Library filter chips state
 let libraryTagFilters = [];
 let libraryPerformerFilters = [];
+let librarySearchTerms = [];
+// plain text search tokens (chips)
 let autoRandomEnabled = false;
 
-// Simple density configurations: [pageSize, columns, label]
-// Just controls how many columns are visible
+// Simple density configurations: [pageSize, columns]
+// Controls how many columns are visible (affects page size indirectly)
 const densityConfigs = [
-  [200, 20], // 1 - 20 columns
-  [180, 18], // 2
-  [160, 16], // 3
-  [140, 14], // 4
-  [120, 12], // 5
-  [100, 10], // 6
-  [90, 9], // 7
-  [80, 8], // 8
-  [70, 7], // 9
-  [60, 6], // 10
-  [50, 5], // 11
-  [45, 4], // 12 - Default: 4 columns
-  [40, 3], // 13
-  [35, 2], // 14
-  [30, 1], // 15 - 1 column
+  [200, 20],
+  [180, 18],
+  [160, 16],
+  [140, 14],
+  [120, 12], // default
+  [100, 10],
+  [90, 9],
+  [80, 8],
+  [70, 7],
+  [60, 6],
+  [50, 5],
+  [45, 4],
+  [40, 3],
+  [35, 2],
+  [30, 1],
 ];
-
-// Compute columns/page-size from currentDensity and set CSS var
-function applyColumnsAndComputePageSize() {
-  const [, columns] = densityConfigs[currentDensity - 1] || [45, 4];
-  document.documentElement.style.setProperty("--columns", String(columns));
-
-  // Estimate rows that fit: tile aspect 16/9 + meta (~54px)
-  const gridWidth = grid.clientWidth || window.innerWidth - 128; // margins 64px each side
-  const colWidth = Math.max(120, Math.floor(gridWidth / Math.max(1, columns))); // min width safeguard
-  const tileHeight = Math.round((colWidth * 9) / 16) + 54; // image + meta
-  const usableHeight = Math.max(200, window.innerHeight - 220); // header + controls padding
-  const rows = Math.max(2, Math.floor(usableHeight / tileHeight) + 1); // +1 buffer row
-  return columns * rows;
-}
-
-// Use the centralized inline SVG sprite for placeholders. The DOM contains
-// an SVG <use href="#icon-placeholder"> inside each card template; JS will
-// toggle visibility of the <img.thumb> and the <svg.thumb-placeholder> as needed.
-
-// Determine when the sidebar accordion fills available vertical space.
-// If it does, mark the accordion with `.accordion--fills` so internal
-// lists (like .markers-list) can scroll without affecting the page.
-function updateAccordionFillState() {
-  try {
-    const sidebar = document.querySelector('.player-split .player-sidebar');
-    const accordion = sidebar ? sidebar.querySelector('.accordion') : null;
-    if (!sidebar || !accordion) return;
-
-    // Compute the vertical space available inside the sidebar for the accordion
-    const sidebarStyles = window.getComputedStyle(sidebar);
-    const sidebarPaddingTop = parseFloat(sidebarStyles.paddingTop) || 0;
-    const sidebarPaddingBottom = parseFloat(sidebarStyles.paddingBottom) || 0;
-    const available = sidebar.clientHeight - sidebarPaddingTop - sidebarPaddingBottom;
-
-    // Total height of accordion content
-    const accRect = accordion.getBoundingClientRect();
-    const accHeight = accRect.height;
-
-    const fills = accHeight >= Math.max(available - 4, 0); // small tolerance
-    accordion.classList.toggle('accordion--fills', !!fills);
-
-    // If it fills, constrain markers-list to the remaining space below other
-    // accordion items (compute precise available height for markers-list).
-    const markers = accordion.querySelector('.markers-list');
-    if (markers && fills) {
-      // Find the top offset of markers relative to the sidebar
-      const sidebarRect = sidebar.getBoundingClientRect();
-      const markersRect = markers.getBoundingClientRect();
-      const topOffset = markersRect.top - sidebarRect.top;
-      // Reserve 12px padding at bottom
-      const space = Math.max(sidebar.clientHeight - topOffset - 12, 80);
-      markers.style.maxHeight = `${space}px`;
-      markers.style.overflowY = 'auto';
-    } else if (markers) {
-      markers.style.maxHeight = '';
-      markers.style.overflowY = '';
-    }
-  } catch (e) {
-    // ignore in older browsers
-  }
-}
-
-// Debounce helper
-function debounce(fn, wait = 120) {
-  let t = null;
-  return function(...args) {
-    clearTimeout(t);
-    t = setTimeout(() => fn.apply(this, args), wait);
-  };
-}
-
-const debouncedUpdateAccordionFillState = debounce(updateAccordionFillState, 140);
-
-// Run on load and on resize/tab changes
-window.addEventListener('load', debouncedUpdateAccordionFillState);
-window.addEventListener('resize', debouncedUpdateAccordionFillState);
-window.addEventListener('tabchange', (e) => { debouncedUpdateAccordionFillState(); });
-
-// Also observe mutations in the accordion in case content changes dynamically
-try {
-  const sidebarRoot = document.querySelector('.player-split .player-sidebar');
-  if (sidebarRoot) {
-    const mo = new MutationObserver(debouncedUpdateAccordionFillState);
-    mo.observe(sidebarRoot, { childList: true, subtree: true, attributes: true });
-  }
-} catch (_) {}
 
 // Modal elements
 
@@ -250,6 +183,8 @@ const chooseBtn = actions ? actions.querySelector('#chooseBtn') : null;
 const cancelBtn = actions ? actions.querySelector('#cancelBtn') : null;
 let pickerPath = '';
 
+import { fmtSize, fmtDuration, parseTimeString } from './utils.js';
+
 // Lightweight image modal for previews
 const imgModal = document.getElementById('imgModal');
 const imgModalClose = imgModal ? imgModal.querySelector('#imgModalClose') : null;
@@ -262,22 +197,16 @@ if (imgModal) {
   });
 }
 if (imgModalClose) {
-  imgModalClose.addEventListener('click', () => { imgModal.hidden = true; });
+  imgModalClose.addEventListener('click', () => {
+    imgModal.hidden = true;
+
+  });
 }
 
-function fmtSize(bytes) {
-  if (!Number.isFinite(bytes)) return "";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  let v = bytes;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return v.toFixed(v < 10 ? 1 : 0) + " " + units[i];
-}
+// (fmtSize moved to utils.js)
 
-// Ensure a hover (preview) artifact exists for a video record; returns a blob URL or empty string.
+// Ensure a hover (preview) artifact exists for a video record;
+// returns a blob URL or empty string.
 async function ensureHover(v) {
   // Goal: avoid generating any 404 network entries. We first consult unified
   // artifact status (cheap, should never 404). Only if it reports hover=true
@@ -300,7 +229,8 @@ async function ensureHover(v) {
       const d = j && (j.data || j);
       if (d) window.__artifactStatus[path] = d;
       return d || null;
-    } catch (_) {
+    }
+    catch (_) {
       return null;
     }
   };
@@ -314,7 +244,8 @@ async function ensureHover(v) {
       const d = j && (j.data || j);
       if (d) window.__artifactStatus[path] = d;
       return d || null;
-    } catch (_) {
+    }
+    catch (_) {
       return null;
     }
   };
@@ -329,13 +260,15 @@ async function ensureHover(v) {
       const obj = URL.createObjectURL(blob);
       v.hover_url = obj;
       return obj;
-    } catch (_) {
+    }
+    catch (_) {
       return "";
     }
   }
   // Not present yet.
   if (!status) {
-    // Status unknown (not cached); treat as absent for now.
+    // Status unknown (not cached);
+    // treat as absent for now.
     status = { hover: false };
   }
 
@@ -346,7 +279,8 @@ async function ensureHover(v) {
       try {
         const card = document.querySelector(`.card[data-path="${path}"]`);
         if (card) card.classList.add('hover-generating');
-      } catch (_) {}
+      }
+      catch (_) { }
       // Trigger creation endpoint if available
       try {
         const u = new URL('/api/hover/create', window.location.origin);
@@ -366,36 +300,37 @@ async function ensureHover(v) {
               if (blob && blob.size) {
                 const obj = URL.createObjectURL(blob);
                 v.hover_url = obj;
-                try { const card = document.querySelector(`.card[data-path="${path}"]`); if (card) card.classList.remove('hover-generating'); } catch(_){}
+                try {
+                  const card = document.querySelector(`.card[data-path="${path}"]`);
+                  if (card) card.classList.remove('hover-generating');
+                }
+                catch (_) { }
                 return obj;
               }
-            } catch(_) { break; }
+            }
+            catch (_) {
+              break;
+
+            }
           }
         }
-      } catch(_) {
-        /* ignore failures */
-      } finally {
-        try { const card = document.querySelector(`.card[data-path="${path}"]`); if (card) card.classList.remove('hover-generating'); } catch(_){}
+      }
+      catch (_) { }
+      finally {
+        try {
+          const card = document.querySelector(`.card[data-path="${path}"]`);
+          if (card) card.classList.remove('hover-generating');
+        }
+        catch (_) { }
       }
     }
-  } catch(_) {}
+  }
+  catch (_) { }
 
   return "";
 }
 
-// Format seconds (can be float) into H:MM:SS or M:SS
-function fmtDuration(sec) {
-  if (!Number.isFinite(sec) || sec < 0) return "";
-  sec = Math.round(sec);
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  if (h > 0)
-    return (
-    h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
-  );
-  return m + ":" + String(s).padStart(2, "0");
-}
+// (fmtDuration moved to utils.js)
 // Clean up any existing hover preview videos except an optional tile we want to keep active
 function stopAllTileHovers(exceptTile) {
   try {
@@ -409,7 +344,8 @@ function stopAllTileHovers(exceptTile) {
           video.src = "";
           video.load();
           video.remove();
-        } catch (_) {}
+        }
+        catch (_) { }
       }
       t._hovering = false;
       t._hoverToken = (t._hoverToken || 0) + 1;
@@ -418,7 +354,8 @@ function stopAllTileHovers(exceptTile) {
         t._hoverTimer = null;
       }
     });
-  } catch (_) {}
+  }
+  catch (_) { }
 }
 
 function videoCard(v) {
@@ -439,7 +376,8 @@ function videoCard(v) {
     checkbox.setAttribute("role", "checkbox");
     checkbox.setAttribute("tabindex", "0");
     checkbox.setAttribute("aria-checked", isSelected ? "true" : "false");
-  } catch (_) {}
+  }
+  catch (_) { }
   // Clicking the checkbox should always toggle selection (no modifiers required)
   checkbox.addEventListener("click", (ev) => {
     ev.preventDefault();
@@ -468,8 +406,9 @@ function videoCard(v) {
     if (img) img.style.display = '';
     if (placeholderSvg) placeholderSvg.style.display = 'none';
   }
-  if (!imgSrc) showPlaceholder(); else hidePlaceholder();
-  img.addEventListener('error', () => { showPlaceholder(); });
+  if (!imgSrc) showPlaceholder();
+  else hidePlaceholder();
+  img.addEventListener('error', () => showPlaceholder());
 
   // Resolution / quality badge: prefer height (common convention)
   try {
@@ -517,12 +456,14 @@ function videoCard(v) {
       else if (/\b240p\b/.test(lower)) label = "240p";
     }
     if (q) {
-      // We now prefer the bottom-left overlay; hide the top-right badge to avoid duplication
+      // We now prefer the bottom-left overlay;
+      // hide the top-right badge to avoid duplication
       q.textContent = label || "";
       q.style.display = "none";
       try {
         q.setAttribute("aria-hidden", label ? "false" : "true");
-      } catch (_) {}
+      }
+      catch (_) { }
     }
 
     // Populate Stash-like bottom-left overlay info (resolution + duration)
@@ -533,15 +474,19 @@ function videoCard(v) {
         overlay.style.display = "inline-flex";
         try {
           overlay.setAttribute("aria-hidden", "false");
-        } catch (_) {}
-      } else {
+        }
+        catch (_) { }
+      }
+      else {
         overlay.style.display = "none";
         try {
           overlay.setAttribute("aria-hidden", "true");
-        } catch (_) {}
+        }
+        catch (_) { }
       }
     }
-  } catch (_) {}
+  }
+  catch (_) { }
 
   // Add video hover preview functionality
   el.addEventListener("mouseenter", async () => {
@@ -575,10 +520,34 @@ function videoCard(v) {
     if (img) img.replaceWith(video);
     try {
       await video.play();
-    } catch (_) {}
+    }
+    catch (_) { }
 
 
   });
+  function restoreThumb() {
+    const vid = el.querySelector('video.hover-video');
+    if (!vid) return;
+    try { vid.pause(); } catch (_) { }
+    try { vid.src = ''; vid.load(); } catch (_) { }
+    // Put original <img> back (it still exists in closure even after replaceWith)
+    if (img && !img.parentNode) {
+      vid.replaceWith(img);
+    } else if (img && vid.parentNode) {
+      vid.parentNode.replaceChild(img, vid);
+    } else {
+      // Fallback: remove video if img reference lost
+      vid.remove();
+    }
+    // Show placeholder if no thumbnail source
+    if (!imgSrc && placeholderSvg) {
+      if (img) img.style.display = 'none';
+      placeholderSvg.style.display = '';
+    } else {
+      if (img) img.style.display = '';
+      if (placeholderSvg) placeholderSvg.style.display = 'none';
+    }
+  }
 
   el.addEventListener("mouseleave", () => {
     el._hovering = false;
@@ -587,36 +556,7 @@ function videoCard(v) {
       clearTimeout(el._hoverTimer);
       el._hoverTimer = null;
     }
-    const video = el.querySelector("video.hover-video");
-    if (video) {
-      video.pause();
-      video.src = "";
-      video.load();
-
-      // Restore original thumbnail
-      const newImg = document.createElement("img");
-      newImg.className = "thumb";
-      newImg.src = imgSrc || "";
-      newImg.alt = v.title || v.name;
-      // restore placeholder or image visibility after hover
-      const newPlaceholder = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      newPlaceholder.className.baseVal = 'thumb-placeholder';
-      const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-      use.setAttributeNS('http://www.w3.org/1999/xlink', 'href', '#icon-placeholder');
-      newPlaceholder.appendChild(use);
-      // If image loads, hide placeholder
-      newImg.addEventListener('load', () => {
-        newImg.style.display = '';
-        if (newPlaceholder) newPlaceholder.style.display = 'none';
-      });
-      newImg.addEventListener('error', () => {
-        newImg.style.display = 'none';
-        if (newPlaceholder) newPlaceholder.style.display = '';
-      });
-      // Replace video with img and placeholder (img first)
-      video.replaceWith(newImg);
-      newImg.insertAdjacentElement('afterend', newPlaceholder);
-    }
+    restoreThumb();
   });
 
   const title = el.querySelector(".title");
@@ -644,12 +584,14 @@ function dirCard(d) {
 
   el.addEventListener("click", () => {
     folderInput.value = dpath;
-    currentPage = 1; // Reset to first page when navigating to a folder
+    currentPage = 1;
+    // Reset to first page when navigating to a folder
     loadLibrary();
   });
   el.addEventListener("dblclick", () => {
     folderInput.value = dpath;
-    currentPage = 1; // Reset to first page when navigating to a folder
+    currentPage = 1;
+    // Reset to first page when navigating to a folder
     loadLibrary();
   });
 
@@ -680,12 +622,13 @@ async function loadLibrary() {
     if (resVal) url.searchParams.set("res_min", resVal);
 
     // Add search and filter parameters
-    const searchVal = searchInput.value.trim();
+    const searchVal = computeSearchVal();
     if (searchVal) url.searchParams.set("search", searchVal);
 
     const val = (folderInput.value || "").trim();
     const p = currentPath();
-    // Only set a relative path; ignore absolute values (those represent the root itself)
+    // Only set a relative path;
+    // ignore absolute values (those represent the root itself)
     if (val && !isAbsolutePath(val) && p) url.searchParams.set("path", p);
 
     // Tag / performer filter chips
@@ -703,13 +646,27 @@ async function loadLibrary() {
       throw new Error(payload?.message || "Unexpected response");
 
     const data = payload.data || {};
-    const files = Array.isArray(data.files) ? data.files : [];
+    let files = Array.isArray(data.files) ? data.files : [];
     const dirs = Array.isArray(data.dirs) ? data.dirs : [];
 
-    // Update pagination info
-    totalPages = data.total_pages || 1;
-    totalFiles = data.total_files || 0;
-    currentPage = data.page || 1;
+    // Update pagination info (backend may currently return all files due to pagination regression)
+    const effectivePageSize = applyColumnsAndComputePageSize();
+    // If backend reported counts, trust them;
+    // else derive client-side
+    if (data.total_pages && data.total_files) {
+      totalPages = data.total_pages;
+      totalFiles = data.total_files;
+      currentPage = data.page || currentPage;
+    }
+    else {
+      totalFiles = files.length;
+      totalPages = Math.max(1, Math.ceil(totalFiles / effectivePageSize));
+      // Clamp currentPage within bounds
+      if (currentPage > totalPages) currentPage = totalPages;
+      const start = (currentPage - 1) * effectivePageSize;
+      const end = start + effectivePageSize;
+      files = files.slice(start, end);
+    }
 
     // Update pagination UI
     pageInfo.textContent = `Page ${currentPage} of ${totalPages} (${totalFiles} files)`;
@@ -718,7 +675,8 @@ async function loadLibrary() {
 
     grid.innerHTML = "";
     if (files.length === 0) {
-      // When searching, do not auto-fill from subfolders; show no results instead
+      // When searching, do not auto-fill from subfolders;
+      // show no results instead
       if (dirs.length > 0 && !searchVal) {
         // Render folders first for navigation
         for (const d of dirs) grid.appendChild(dirCard(d));
@@ -753,7 +711,8 @@ async function loadLibrary() {
               const pl = await r.json();
               const f2 = Array.isArray(pl?.data?.files) ? pl.data.files : [];
               for (const f of f2) combined.push(f);
-            } catch (_) {
+            }
+            catch (_) {
               /* ignore sub-errors */
             }
           })
@@ -765,19 +724,24 @@ async function loadLibrary() {
           combined.sort(
             (a, b) =>
               (a.name || "")
-            .toLowerCase()
-            .localeCompare((b.name || "").toLowerCase()) * (rev ? -1 : 1)
+                .toLowerCase()
+                .localeCompare((b.name || "").toLowerCase()) * (rev ? -1 : 1)
           );
-        } else if (curSort === "size") {
+        }
+        else if (curSort === "size") {
           combined.sort(
             (a, b) => ((a.size || 0) - (b.size || 0)) * (rev ? -1 : 1)
           );
-        } else if (curSort === "random") {
-          for (let i = combined.length - 1; i > 0; i--) {
+        }
+        else if (curSort === "random") {
+          for (let i = combined.length - 1;
+            i > 0;
+            i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [combined[i], combined[j]] = [combined[j], combined[i]];
           }
-        } else {
+        }
+        else {
           // date or default
           combined.sort(
             (a, b) => ((a.mtime || 0) - (b.mtime || 0)) * (rev ? -1 : 1)
@@ -795,13 +759,14 @@ async function loadLibrary() {
         spinner.style.display = "none";
         grid.hidden = false;
         return;
-      } else {
+      }
+      else {
         spinner.style.display = "none";
         statusEl.className =
-        files.length === 0 && searchVal ? "empty" : "empty";
+          files.length === 0 && searchVal ? "empty" : "empty";
         statusEl.textContent = searchVal
-        ? "No results match your search."
-        : "No videos found.";
+          ? "No results match your search."
+          : "No videos found.";
         statusEl.style.display = "block";
         grid.hidden = true;
         return;
@@ -816,7 +781,8 @@ async function loadLibrary() {
     statusEl.style.display = "none";
     spinner.style.display = "none";
     grid.hidden = false;
-  } catch (e) {
+  }
+  catch (e) {
     console.error("Library loading error:", e);
     spinner.style.display = "none";
     statusEl.className = "error";
@@ -827,9 +793,10 @@ async function loadLibrary() {
 }
 
 // One-time capability check to decide if we should attempt SSE at all (avoids blind 404 probes)
-;(async () => {
+; (async () => {
   if (!window.__JOBS_SSE_ENABLED) return;
-  if (window.__JOBS_SSE_UNAVAILABLE) return; // already decided
+  if (window.__JOBS_SSE_UNAVAILABLE) return;
+  // already decided
   try {
     const res = await fetch('/config', { cache: 'no-store' });
     if (!res.ok) return;
@@ -838,35 +805,46 @@ async function loadLibrary() {
     if (!has) {
       window.__JOBS_SSE_UNAVAILABLE = true;
     }
-  } catch (_) {
-    // Silent; fallback polling continues
+  }
+  catch (_) {
+    // Silent;
+    // fallback polling continues
   }
 })();
 
 // -----------------------------
 // Simple Accordion Wiring (robust, minimal)
 // Ensures the sidebar accordion works even when other modules aren't active.
-(function wireSimpleAccordion(){
-  function init(){
+(function wireSimpleAccordion() {
+  function init() {
     const root = document.getElementById('sidebarAccordion');
     if (!root) return;
     const LS_KEY = 'mediaPlayer:sidebarAccordionState';
     const items = Array.from(root.querySelectorAll('.acc-item'));
     const loadState = () => {
-      try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}; } catch(_) { return {}; }
+      try {
+        return JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {};
+      }
+      catch (_) {
+        return {};
+      }
     };
-    const saveState = (st) => { try { localStorage.setItem(LS_KEY, JSON.stringify(st)); } catch(_) {} };
+    const saveState = (st) => {
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify(st));
+      }
+      catch (_) { }
+    };
     let state = loadState();
 
     items.forEach((it, idx) => {
       const hdr = it.querySelector('.acc-header');
       const panel = it.querySelector('.acc-panel');
       if (!hdr || !panel) return;
-      // (SVG caret is embedded in the HTML markup now; no runtime injection required)
+      // (SVG caret is embedded in the HTML markup now;
+      // no runtime injection required)
       const key = it.getAttribute('data-key') || String(idx);
-      const open = Object.prototype.hasOwnProperty.call(state, key)
-      ? !!state[key]
-      : hdr.getAttribute('aria-expanded') === 'true';
+      const open = Object.prototype.hasOwnProperty.call(state, key) ? !!state[key] : hdr.getAttribute('aria-expanded') === 'true';
       hdr.setAttribute('aria-expanded', open ? 'true' : 'false');
       panel.classList.toggle('hidden', !open);
 
@@ -883,7 +861,7 @@ async function loadLibrary() {
             const oh = other.querySelector('.acc-header');
             const op = other.querySelector('.acc-panel');
             if (oh && op) {
-              oh.setAttribute('aria-expanded','false');
+              oh.setAttribute('aria-expanded', 'false');
               op.classList.add('hidden');
               other.classList.remove('open');
               op.classList.remove('open');
@@ -928,7 +906,7 @@ if (randomPlayBtn) {
       const resSel = document.getElementById("resSelect");
       const resVal = resSel ? String(resSel.value || "") : "";
       if (resVal) url.searchParams.set("res_min", resVal);
-      const searchVal = searchInput.value.trim();
+      const searchVal = computeSearchVal();
       if (searchVal) url.searchParams.set("search", searchVal);
       const val = (folderInput.value || "").trim();
       const p = currentPath();
@@ -948,7 +926,8 @@ if (randomPlayBtn) {
         // Switch to player tab now (explicit user action)
         if (window.tabSystem) window.tabSystem.switchToTab("player");
       }
-    } catch (e) {
+    }
+    catch (e) {
       alert("Random play failed.");
     }
   });
@@ -956,16 +935,27 @@ if (randomPlayBtn) {
 
 // Persist auto-random setting
 function loadAutoRandomSetting() {
-  try { autoRandomEnabled = localStorage.getItem('setting.autoRandom') === '1'; } catch(_) { autoRandomEnabled = false; }
+  try {
+    autoRandomEnabled = localStorage.getItem('setting.autoRandom') === '1';
+
+  }
+  catch (_) {
+    autoRandomEnabled = false;
+
+  }
 }
 function saveAutoRandomSetting() {
-  try { localStorage.setItem('setting.autoRandom', autoRandomEnabled ? '1':'0'); } catch(_) {}
+  try {
+    localStorage.setItem('setting.autoRandom', autoRandomEnabled ? '1' : '0');
+
+  }
+  catch (_) { }
 }
 loadAutoRandomSetting();
 if (randomAutoBtn) {
   const syncBtn = () => {
     randomAutoBtn.classList.toggle('btn-active', autoRandomEnabled);
-    randomAutoBtn.setAttribute('aria-pressed', autoRandomEnabled ? 'true':'false');
+    randomAutoBtn.setAttribute('aria-pressed', autoRandomEnabled ? 'true' : 'false');
     randomAutoBtn.title = autoRandomEnabled ? 'Auto random ON (will pick another random video when current ends)' : 'Auto random OFF';
   };
   syncBtn();
@@ -986,7 +976,7 @@ async function fetchRandomFilePath() {
   const resSel = document.getElementById("resSelect");
   const resVal = resSel ? String(resSel.value || "") : "";
   if (resVal) url.searchParams.set("res_min", resVal);
-  const searchVal = searchInput.value.trim();
+  const searchVal = computeSearchVal();
   if (searchVal) url.searchParams.set("search", searchVal);
   const val = (folderInput.value || "").trim();
   const p = currentPath();
@@ -1014,94 +1004,141 @@ function installAutoRandomListener() {
           window.__playerOpen(p);
           if (window.tabSystem) window.tabSystem.switchToTab('player');
         }
-      } catch(_) {}
+      }
+      catch (_) { }
     });
-  } catch(_) {}
+  }
+  catch (_) { }
 
 }
 installAutoRandomListener();
 
 
 // -----------------------------
-// Library tag/performer filter chips
+// Unified search + filter chips (#tag, @performer, plain text tokens)
 // -----------------------------
-const libTagInput = document.getElementById("libraryTagFilterInput");
-const libTagList = document.getElementById("libraryTagFilters");
-const libPerfInput = document.getElementById("libraryPerformerFilterInput");
-const libPerfList = document.getElementById("libraryPerformerFilters");
-
 function persistLibraryFilters() {
   try {
     localStorage.setItem("filters.tags", JSON.stringify(libraryTagFilters));
     localStorage.setItem("filters.performers", JSON.stringify(libraryPerformerFilters));
-  } catch (_) {}
+    localStorage.setItem("filters.searchTerms", JSON.stringify(librarySearchTerms));
+  }
+  catch (_) { }
 }
 function loadLibraryFilters() {
   try {
     const t = JSON.parse(localStorage.getItem("filters.tags") || "[]");
     const p = JSON.parse(localStorage.getItem("filters.performers") || "[]");
+    const s = JSON.parse(localStorage.getItem("filters.searchTerms") || "[]");
     if (Array.isArray(t)) libraryTagFilters = t.filter(Boolean);
     if (Array.isArray(p)) libraryPerformerFilters = p.filter(Boolean);
-  } catch (_) {}
-}
-function renderLibraryChips() {
-  if (libTagList) {
-    libTagList.innerHTML = "";
-    libraryTagFilters.forEach((tag, idx) => {
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.textContent = tag;
-      chip.title = `Tag filter: ${tag} (click to remove)`;
-      chip.addEventListener("click", () => {
-        libraryTagFilters.splice(idx, 1);
-        persistLibraryFilters();
-        renderLibraryChips();
-        currentPage = 1;
-        loadLibrary();
-      });
-      libTagList.appendChild(chip);
-    });
+    if (Array.isArray(s)) librarySearchTerms = s.filter(Boolean);
   }
-  if (libPerfList) {
-    libPerfList.innerHTML = "";
-    libraryPerformerFilters.forEach((name, idx) => {
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.textContent = name;
-      chip.title = `Performer filter: ${name} (click to remove)`;
-      chip.addEventListener("click", () => {
-        libraryPerformerFilters.splice(idx, 1);
-        persistLibraryFilters();
-        renderLibraryChips();
-        currentPage = 1;
-        loadLibrary();
-      });
-      libPerfList.appendChild(chip);
-    });
-  }
+  catch (_) { }
 }
-function handleLibraryFilterInput(e, kind) {
-  const val = (e.target.value || "").trim();
-  if (!val) return;
-  if (e.key === "Enter") {
-    if (kind === "tag") {
-      if (!libraryTagFilters.includes(val)) libraryTagFilters.push(val);
-    } else if (kind === "perf") {
-      if (!libraryPerformerFilters.includes(val)) libraryPerformerFilters.push(val);
+function renderUnifiedFilterChips() {
+  if (!unifiedChipsEl) return;
+  unifiedChipsEl.innerHTML = "";
+  const tpl = document.getElementById('filterChipTemplate');
+  function add(label, cls, removeFn, title) {
+    let el = null;
+    if (tpl && tpl.content) {
+      el = tpl.content.firstElementChild.cloneNode(true);
     }
-    e.target.value = "";
+    else {
+      el = document.createElement('span');
+      el.className = 'chip';
+      const span = document.createElement('span');
+      span.className = 'chip-label';
+      span.textContent = label;
+      el.appendChild(span);
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'remove';
+      rm.textContent = '×';
+      el.appendChild(rm);
+    }
+    el.classList.add(cls);
+    const labelEl = el.querySelector('.chip-label');
+    if (labelEl) labelEl.textContent = label;
+    if (title) el.title = title;
+    const rmBtn = el.querySelector('.remove');
+    if (rmBtn) rmBtn.addEventListener('click', () => {
+      removeFn();
+      persistLibraryFilters();
+      renderUnifiedFilterChips();
+      currentPage = 1;
+      loadLibrary();
+    });
+    unifiedChipsEl.appendChild(el);
+  }
+  librarySearchTerms.forEach(term => add(term, 'chip-search', () => {
+    librarySearchTerms = librarySearchTerms.filter(t => t !== term);
+  }, `Search term: ${term}`));
+  libraryTagFilters.forEach(tag => add(`#${tag}`, 'chip-tag', () => {
+    libraryTagFilters = libraryTagFilters.filter(t => t !== tag);
+  }, `Tag: ${tag}`));
+  libraryPerformerFilters.forEach(p => add(`@${p}`, 'chip-performer', () => {
+    libraryPerformerFilters = libraryPerformerFilters.filter(x => x !== p);
+  }, `Performer: ${p}`));
+}
+function commitUnifiedInputToken(raw) {
+  if (!raw) return false;
+  let consumed = false;
+  if (raw.startsWith('#')) {
+    const tag = raw.slice(1).trim();
+    if (tag && !libraryTagFilters.includes(tag)) {
+      libraryTagFilters.push(tag);
+      consumed = true;
+    }
+  }
+  else if (raw.startsWith('@')) {
+    const perf = raw.slice(1).trim();
+    if (perf && !libraryPerformerFilters.includes(perf)) {
+      libraryPerformerFilters.push(perf);
+      consumed = true;
+    }
+  }
+  else {
+    if (!librarySearchTerms.includes(raw)) {
+      librarySearchTerms.push(raw);
+      consumed = true;
+    }
+  }
+  if (consumed) {
     persistLibraryFilters();
-    renderLibraryChips();
+    renderUnifiedFilterChips();
     currentPage = 1;
     loadLibrary();
-  } else if (e.key === "Escape") {
-    e.target.value = "";
   }
+  return consumed;
 }
-if (libTagInput) libTagInput.addEventListener("keydown", (e) => handleLibraryFilterInput(e, "tag"));
-if (libPerfInput) libPerfInput.addEventListener("keydown", (e) => handleLibraryFilterInput(e, "perf"));
+function computeSearchVal() {
+  const live = (unifiedInput && unifiedInput.value || '').trim();
+  const parts = [...librarySearchTerms];
+  if (live && !live.startsWith('#') && !live.startsWith('@')) parts.push(live);
+  return parts.join(' ');
+}
+if (unifiedInput) {
+  unifiedInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const raw = unifiedInput.value.trim();
+      if (commitUnifiedInputToken(raw)) unifiedInput.value = '';
+    }
+    else if (e.key === 'Backspace' && !unifiedInput.value) {
+      // Remove last chip (search -> tag -> performer priority reversed for recency illusions)
+      if (libraryPerformerFilters.length) libraryPerformerFilters.pop();
+      else if (libraryTagFilters.length) libraryTagFilters.pop();
+      else if (librarySearchTerms.length) librarySearchTerms.pop();
+      persistLibraryFilters();
+      renderUnifiedFilterChips();
+      currentPage = 1;
+      loadLibrary();
+    }
+  });
+}
 loadLibraryFilters();
-renderLibraryChips();
+renderUnifiedFilterChips();
 
 // Grid control event listeners
 
@@ -1112,28 +1149,29 @@ function drawPieChart(canvas, dataObj) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  const entries = Object.entries(dataObj).filter(([,v]) => Number(v) > 0);
-  const total = entries.reduce((s, [,v]) => s + Number(v), 0);
+  const entries = Object.entries(dataObj).filter(([, v]) => Number(v) > 0);
+  const total = entries.reduce((s, [, v]) => s + Number(v), 0);
   const w = canvas.width;
   const h = canvas.height;
-  const cx = w/2;
-  const cy = h/2;
-  const radius = Math.min(w,h) * 0.4;
-  ctx.clearRect(0,0,w,h);
+  const cx = w / 2;
+  const cy = h / 2;
+  const radius = Math.min(w, h) * 0.4;
+  ctx.clearRect(0, 0, w, h);
   if (total === 0) {
     // draw placeholder
     ctx.fillStyle = '#222';
-    ctx.fillRect(0,0,w,h);
+    ctx.fillRect(0, 0, w, h);
     ctx.fillStyle = '#999';
     ctx.font = '12px sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
     ctx.fillText('No data', cx, cy);
     return;
   }
-  const colors = ["#4dc9f6","#f67019","#f53794","#537bc4","#acc236","#166a8f","#00a950","#58595b"];
-  let start = -Math.PI/2;
-  entries.forEach(([k,v], i) => {
-    const frac = Number(v)/total;
+  const colors = ["#4dc9f6", "#f67019", "#f53794", "#537bc4", "#acc236", "#166a8f", "#00a950", "#58595b"];
+  let start = -Math.PI / 2;
+  entries.forEach(([k, v], i) => {
+    const frac = Number(v) / total;
     const angle = frac * Math.PI * 2;
     ctx.beginPath();
     ctx.moveTo(cx, cy);
@@ -1148,7 +1186,7 @@ function drawPieChart(canvas, dataObj) {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   let ly = 10;
-  entries.forEach(([k,v], i) => {
+  entries.forEach(([k, v], i) => {
     ctx.fillStyle = colors[i % colors.length];
     ctx.fillRect(w - 120, ly, 12, 12);
     ctx.fillStyle = '#ddd';
@@ -1164,7 +1202,10 @@ async function loadStats() {
     const body = await res.json();
     if (!body || body.status !== 'success') return;
     const d = body.data || {};
-    const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = (val === null || val === undefined) ? '—' : val; };
+    const setText = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = (val === null || val === undefined) ? '—' : val;
+    };
     setText('statsNumFiles', d.num_files ?? '—');
     setText('statsTotalSize', (typeof d.total_size === 'number') ? fmtSize(d.total_size) : '—');
     setText('statsTotalDuration', (typeof d.total_duration === 'number') ? fmtDuration(d.total_duration) : '—');
@@ -1175,17 +1216,24 @@ async function loadStats() {
     const durCanvas = document.getElementById('statsDurationChart');
     if (resCanvas && d.res_buckets) drawPieChart(resCanvas, d.res_buckets);
     if (durCanvas && d.duration_buckets) drawPieChart(durCanvas, d.duration_buckets);
-  } catch (e) {
+  }
+  catch (e) {
     // silent
   }
 }
 
 // run on initial load
-window.addEventListener('DOMContentLoaded', () => { setTimeout(loadStats, 500); });
-searchInput.addEventListener("input", () => {
-  currentPage = 1;
-  loadLibrary();
+window.addEventListener('DOMContentLoaded', () => {
+  setTimeout(loadStats, 500);
+
 });
+// Unified input live search (uncommitted text acts as search term)
+if (unifiedInput) {
+  unifiedInput.addEventListener("input", () => {
+    currentPage = 1;
+    loadLibrary();
+  });
+}
 sortSelect.addEventListener("change", () => {
   currentPage = 1;
   loadLibrary();
@@ -1207,12 +1255,21 @@ function setArtifactSpinner(artifact, spinning) {
   const spinner = btn.querySelector('.artifact-spinner');
   const label = btn.querySelector('.artifact-btn-label');
   if (spinning) {
-    spinner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="#22c55e" stroke-width="3" fill="none" stroke-dasharray="60" stroke-dashoffset="0"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>';
+    const tpl = document.getElementById('loadingSpinnerTemplate');
+    if (tpl && tpl.content) {
+      while (spinner.firstChild) spinner.removeChild(spinner.firstChild);
+      spinner.appendChild(tpl.content.firstElementChild.cloneNode(true));
+    }
+    else {
+      // Fallback to legacy inline SVG if template missing
+      spinner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="#22c55e" stroke-width="3" fill="none" stroke-dasharray="60" stroke-dashoffset="0"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>';
+    }
     spinner.hidden = false;
     if (label) label.style.opacity = '0.5';
     btn.disabled = true;
-  } else {
-    spinner.innerHTML = '';
+  }
+  else {
+    while (spinner.firstChild) spinner.removeChild(spinner.firstChild);
     spinner.hidden = true;
     if (label) label.style.opacity = '';
     btn.disabled = false;
@@ -1226,55 +1283,31 @@ async function triggerArtifactJob(artifact) {
     return;
   }
   setArtifactSpinner(artifact, true);
+  // Record an optimistic active spinner state keyed by path+artifact so TasksManager can reconcile later
+  try {
+    window.__activeArtifactSpinners = window.__activeArtifactSpinners || new Map();
+    window.__activeArtifactSpinners.set(`${filePath}::${artifact}`, { path: filePath, artifact, since: Date.now(), manual: true });
+  }
+  catch (_) { }
   let endpoint = '';
   let params = '';
-  switch (artifact) {
-    case 'metadata':
-    endpoint = '/api/metadata/create';
+  if (artifact) {
+    endpoint = `/api/${artifact}/create`;
     params = `?path=${encodeURIComponent(filePath)}`;
-    break;
-    case 'heatmap':
-    endpoint = '/api/heatmaps/create';
-    params = `?path=${encodeURIComponent(filePath)}`;
-    break;
-    case 'scenes':
-    endpoint = '/api/scenes/create';
-    params = `?path=${encodeURIComponent(filePath)}`;
-    break;
-    case 'sprites':
-    endpoint = '/api/sprites/create';
-    params = `?path=${encodeURIComponent(filePath)}`;
-    break;
-    case 'hover':
-    endpoint = '/api/hover/create';
-    params = `?path=${encodeURIComponent(filePath)}`;
-    break;
-    case 'subtitles':
-    endpoint = '/api/subtitles/create';
-    params = `?path=${encodeURIComponent(filePath)}`;
-    break;
-    case 'faces':
-    endpoint = '/api/faces/create';
-    params = `?path=${encodeURIComponent(filePath)}`;
-    break;
-    case 'phash':
-    endpoint = '/api/phash/create';
-    params = `?path=${encodeURIComponent(filePath)}`;
-    break;
-    default:
+  }
+  else {
     setArtifactSpinner(artifact, false);
     alert('Unknown artifact type.');
-    return;
+    return
   }
   try {
     const res = await fetch(endpoint + params, { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // Optionally update badge status/checkmark here
+    // Do NOT clear spinner here; we now wait for job completion via TasksManager reconciliation.
+  }
+  catch (e) {
     setArtifactSpinner(artifact, false);
-    // Optionally show a checkmark or success indicator
-    // Job will appear in Tasks tab automatically via SSE
-  } catch (e) {
-    setArtifactSpinner(artifact, false);
+    try { window.__activeArtifactSpinners?.delete?.(`${filePath}::${artifact}`); } catch (_) { }
     alert(`Failed to generate ${artifact}: ${e.message}`);
   }
 }
@@ -1300,7 +1333,8 @@ if (resSelect) {
     // Persist selection
     try {
       localStorage.setItem("filter.res_min", resSelect.value || "");
-    } catch (_) {}
+    }
+    catch (_) { }
     currentPage = 1;
     loadLibrary();
   });
@@ -1333,7 +1367,8 @@ function loadHoverSetting() {
   try {
     const raw = localStorage.getItem("setting.hoverPreviews");
     hoverPreviewsEnabled = raw ? raw === "1" : false;
-  } catch (_) {
+  }
+  catch (_) {
     hoverPreviewsEnabled = false;
   }
 }
@@ -1344,26 +1379,27 @@ function saveHoverSetting() {
       "setting.hoverPreviews",
       hoverPreviewsEnabled ? "1" : "0"
     );
-  } catch (_) {}
+  }
+  catch (_) { }
 }
 
 function loadHoverOnDemandSetting() {
   try {
     const raw = localStorage.getItem("setting.hoverOnDemand");
-    // Default remains false; do not auto-enable when feature flag is off.
+    // Default remains false;
+    // do not auto-enable when feature flag is off.
     hoverOnDemandEnabled = FEATURE_HOVER_ON_DEMAND && raw ? raw === "1" : false;
-  } catch (_) {
+  }
+  catch (_) {
     hoverOnDemandEnabled = false;
   }
 }
 
 function saveHoverOnDemandSetting() {
   try {
-    localStorage.setItem(
-      "setting.hoverOnDemand",
-      hoverOnDemandEnabled ? "1" : "0"
-    );
-  } catch (_) {}
+    localStorage.setItem("setting.hoverOnDemand", hoverOnDemandEnabled ? "1" : "0");
+  }
+  catch (_) { }
 }
 
 // Settings for timeline display toggles
@@ -1372,33 +1408,41 @@ function loadShowHeatmapSetting() {
     const raw = localStorage.getItem("setting.showHeatmap");
     // Default to ON when unset
     showHeatmap = raw == null ? true : raw === "1";
-  } catch (_) {
+  }
+  catch (_) {
     showHeatmap = true;
   }
 }
 function saveShowHeatmapSetting() {
   try {
     localStorage.setItem("setting.showHeatmap", showHeatmap ? "1" : "0");
-  } catch (_) {}
+  }
+  catch (_) { }
 }
 function loadShowScenesSetting() {
   try {
     const raw = localStorage.getItem("setting.showScenes");
     showScenes = raw == null ? true : raw === "1";
-  } catch (_) {
+  }
+  catch (_) {
     showScenes = true;
   }
 }
 function saveShowScenesSetting() {
   try {
     localStorage.setItem("setting.showScenes", showScenes ? "1" : "0");
-  } catch (_) {}
+  }
+  catch (_) { }
 }
 
 function wireSettings() {
   const cbPlay = document.getElementById("settingHoverPreviews");
   const cbDemand = document.getElementById("settingHoverOnDemand");
+  const cbConfirmDeletes = document.getElementById("settingConfirmDeletes");
   const concurrencyInput = document.getElementById("settingConcurrency");
+  const ffmpegConcurrencyInput = document.getElementById("settingFfmpegConcurrency");
+  const ffmpegThreadsInput = document.getElementById("settingFfmpegThreads");
+  const ffmpegTimelimitInput = document.getElementById("settingFfmpegTimelimit");
   const cbAutoplayResume = document.getElementById("settingAutoplayResume");
   const cbShowHeatmap = document.getElementById("settingShowHeatmap");
   const cbShowScenes = document.getElementById("settingShowScenes");
@@ -1406,6 +1450,15 @@ function wireSettings() {
   loadHoverOnDemandSetting();
   loadShowHeatmapSetting();
   loadShowScenesSetting();
+  // Load confirm delete preference
+  try {
+    confirmDeletesEnabled = localStorage.getItem("setting.confirmDeletes") === "1";
+
+  }
+  catch (_) {
+    confirmDeletesEnabled = false;
+
+  }
   if (cbPlay) {
     cbPlay.checked = !!hoverPreviewsEnabled;
     cbPlay.addEventListener("change", () => {
@@ -1419,6 +1472,16 @@ function wireSettings() {
     cbDemand.addEventListener("change", () => {
       hoverOnDemandEnabled = !!cbDemand.checked;
       saveHoverOnDemandSetting();
+    });
+  }
+  if (cbConfirmDeletes) {
+    cbConfirmDeletes.checked = !!confirmDeletesEnabled;
+    cbConfirmDeletes.addEventListener("change", () => {
+      confirmDeletesEnabled = !!cbConfirmDeletes.checked;
+      try {
+        localStorage.setItem("setting.confirmDeletes", confirmDeletesEnabled ? "1" : "0");
+      }
+      catch (_) { }
     });
   }
 
@@ -1444,102 +1507,158 @@ function wireSettings() {
   const loadAutoplayResume = () => {
     try {
       return localStorage.getItem("setting.autoplayResume") === "1";
-    } catch (_) {
+    }
+    catch (_) {
       return false;
     }
   };
   const saveAutoplayResume = (v) => {
     try {
       localStorage.setItem("setting.autoplayResume", v ? "1" : "0");
-    } catch (_) {}
+    }
+    catch (_) { }
   };
   if (cbAutoplayResume) {
     cbAutoplayResume.checked = loadAutoplayResume();
-    cbAutoplayResume.addEventListener("change", () =>
-      saveAutoplayResume(!!cbAutoplayResume.checked)
-  );
-}
-
-// Start at Intro End setting (default ON)
-const loadStartAtIntro = () => {
-  try {
-    // default to on if not set
-    const v = localStorage.getItem("setting.startAtIntro");
-    if (v === null || v === undefined) return true;
-    return v === "1";
-  } catch (_) {
-    return true;
+    cbAutoplayResume.addEventListener("change", () => saveAutoplayResume(!!cbAutoplayResume.checked));
   }
-};
-const saveStartAtIntro = (v) => {
-  try {
-    localStorage.setItem("setting.startAtIntro", v ? "1" : "0");
-  } catch (_) {}
-};
-const cbStartAtIntro = document.getElementById("settingStartAtIntro");
-if (cbStartAtIntro) {
-  cbStartAtIntro.checked = loadStartAtIntro();
-  cbStartAtIntro.addEventListener("change", () => saveStartAtIntro(!!cbStartAtIntro.checked));
-}
 
-// Concurrency setting
-(async () => {
-  try {
-    const r = await fetch("/api/tasks/concurrency");
-    if (r.ok) {
-      const data = await r.json();
-      const val = Number(data?.data?.maxConcurrency) || 4;
-      if (concurrencyInput) concurrencyInput.value = String(val);
-    } else if (concurrencyInput) {
-      concurrencyInput.value = String(
-        Number(localStorage.getItem("setting.maxConcurrency")) || 4
-      );
-    }
-  } catch (_) {
-    if (concurrencyInput)
-      concurrencyInput.value = String(
-      Number(localStorage.getItem("setting.maxConcurrency")) || 4
-    );
-  }
-})();
-// Debounced autosave on change
-if (concurrencyInput) {
-  let t;
-  const push = async (val) => {
+  // Start at Intro End setting (default ON)
+  const loadStartAtIntro = () => {
     try {
-      const r = await fetch(`/api/tasks/concurrency?value=${val}`, {
-        method: "POST",
-      });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      localStorage.setItem("setting.maxConcurrency", String(val));
-      const data = await r.json();
-      const applied = Number(data?.data?.maxConcurrency) || val;
-      if (concurrencyInput) concurrencyInput.value = String(applied);
-      tasksManager?.showNotification(
-        `Max concurrency set to ${applied}`,
-        "success"
-      );
-    } catch (e) {
-      tasksManager?.showNotification("Failed to set concurrency", "error");
+      // default to on if not set
+      const v = localStorage.getItem("setting.startAtIntro");
+      if (v === null || v === undefined) return true;
+      return v === "1";
+    }
+    catch (_) {
+      return true;
     }
   };
-  const debounced = (val) => {
-    clearTimeout(t);
-    t = setTimeout(() => push(val), 400);
+  const saveStartAtIntro = (v) => {
+    try {
+      localStorage.setItem("setting.startAtIntro", v ? "1" : "0");
+    }
+    catch (_) { }
   };
-  const handle = () => {
-    const val = Math.max(
-      1,
-      Math.min(128, Number(concurrencyInput.value || 4))
-    );
-    debounced(val);
-  };
-  concurrencyInput.addEventListener("change", handle);
-  concurrencyInput.addEventListener("input", handle);
-}
+  const cbStartAtIntro = document.getElementById("settingStartAtIntro");
+  if (cbStartAtIntro) {
+    cbStartAtIntro.checked = loadStartAtIntro();
+    cbStartAtIntro.addEventListener("change", () => saveStartAtIntro(!!cbStartAtIntro.checked));
+  }
+
+  // Concurrency setting
+  (async () => {
+    try {
+      const r = await fetch("/api/tasks/concurrency");
+      if (r.ok) {
+        const data = await r.json();
+        const val = Number(data?.data?.maxConcurrency) || 4;
+        if (concurrencyInput) concurrencyInput.value = String(val);
+      }
+      else if (concurrencyInput) {
+        concurrencyInput.value = String(
+          Number(localStorage.getItem("setting.maxConcurrency")) || 4
+        );
+      }
+    }
+    catch (_) {
+      if (concurrencyInput)
+        concurrencyInput.value = String(
+          Number(localStorage.getItem("setting.maxConcurrency")) || 4
+        );
+    }
+  })();
+  // FFmpeg settings load
+  (async () => {
+    if (!ffmpegConcurrencyInput && !ffmpegThreadsInput && !ffmpegTimelimitInput) return;
+    try {
+      const r = await fetch("/api/settings/ffmpeg");
+      if (r.ok) {
+        const data = await r.json();
+        const c = Number(data?.data?.concurrency) || 4;
+        const th = Number(data?.data?.threads) || 1;
+        const tl = Number(data?.data?.timelimit);
+        if (ffmpegConcurrencyInput) ffmpegConcurrencyInput.value = String(c);
+        if (ffmpegThreadsInput) ffmpegThreadsInput.value = String(th);
+        if (ffmpegTimelimitInput) ffmpegTimelimitInput.value = String(isNaN(tl) ? 600 : tl);
+      }
+    } catch (e) {
+      // Silent; leave defaults
+    }
+  })();
+  // Debounced autosave on change
+  if (concurrencyInput) {
+    let t;
+    const push = async (val) => {
+      try {
+        const r = await fetch(`/api/tasks/concurrency?value=${val}`, {
+          method: "POST",
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        localStorage.setItem("setting.maxConcurrency", String(val));
+        const data = await r.json();
+        const applied = Number(data?.data?.maxConcurrency) || val;
+        if (concurrencyInput) concurrencyInput.value = String(applied);
+        tasksManager?.showNotification(`Max concurrency set to ${applied}`, "success");
+      }
+      catch (e) {
+        tasksManager?.showNotification("Failed to set concurrency", "error");
+      }
+    };
+    const debounced = (val) => {
+      clearTimeout(t);
+      t = setTimeout(() => push(val), 400);
+    };
+    const handle = () => {
+      const val = Math.max(1, Math.min(128, Number(concurrencyInput.value || 4)));
+      debounced(val);
+    };
+    concurrencyInput.addEventListener("change", handle);
+    concurrencyInput.addEventListener("input", handle);
+  }
+
+  // FFmpeg settings handlers (shared debounce so rapid multi-field edits collapse into one POST)
+  if (ffmpegConcurrencyInput || ffmpegThreadsInput || ffmpegTimelimitInput) {
+    let t2;
+    const pushFfmpeg = async () => {
+      const c = ffmpegConcurrencyInput ? Math.max(1, Math.min(16, Number(ffmpegConcurrencyInput.value || 4))) : undefined;
+      const th = ffmpegThreadsInput ? Math.max(1, Math.min(32, Number(ffmpegThreadsInput.value || 1))) : undefined;
+      const tl = ffmpegTimelimitInput ? Math.max(0, Math.min(86400, Number(ffmpegTimelimitInput.value || 600))) : undefined;
+      const params = new URLSearchParams();
+      if (c !== undefined) params.append("concurrency", String(c));
+      if (th !== undefined) params.append("threads", String(th));
+      if (tl !== undefined) params.append("timelimit", String(tl));
+      try {
+        const r = await fetch(`/api/settings/ffmpeg?${params.toString()}`, { method: "POST" });
+        if (!r.ok) throw new Error();
+        const data = await r.json();
+        const applied = data?.data || {};
+        if (ffmpegConcurrencyInput && applied.concurrency != null) ffmpegConcurrencyInput.value = String(applied.concurrency);
+        if (ffmpegThreadsInput && applied.threads != null) ffmpegThreadsInput.value = String(applied.threads);
+        if (ffmpegTimelimitInput && applied.timelimit != null) ffmpegTimelimitInput.value = String(applied.timelimit);
+        tasksManager?.showNotification(`FFmpeg settings updated (proc=${applied.concurrency}, threads=${applied.threads}, limit=${applied.timelimit}s)`, "success");
+      } catch (e) {
+        tasksManager?.showNotification("Failed to update FFmpeg settings", "error");
+      }
+    };
+    const debouncedF = () => {
+      clearTimeout(t2);
+      t2 = setTimeout(pushFfmpeg, 500);
+    };
+    const attach = (el) => {
+      if (!el) return;
+      el.addEventListener("change", debouncedF);
+      el.addEventListener("input", debouncedF);
+    };
+    attach(ffmpegConcurrencyInput);
+    attach(ffmpegThreadsInput);
+    attach(ffmpegTimelimitInput);
+  }
 }
 
-// (Removed: simple Enter handler; replaced below with unified behavior)
+// (Removed: simple Enter handler;
+// replaced below with unified behavior)
 folderInput.addEventListener("dblclick", () => openFolderPicker());
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") loadLibrary();
@@ -1557,25 +1676,25 @@ window.addEventListener("load", () => {
       if (savedRes && validValues.includes(savedRes)) sel.value = savedRes;
       else if (!savedRes) sel.value = "";
     }
-  } catch (_) {}
+  }
+  catch (_) { }
 
   // Prefill placeholder with current root value, but keep input empty for relative navigation
   fetch("/api/root")
-  .then((r) => r.json())
-  .then((p) => {
-    if (p?.status === "success" && p?.data?.root) {
-      folderInput.placeholder = `Root: ${String(
-        p.data.root
-      )} — type a relative path to browse, or an absolute path to change root`;
+    .then((r) => r.json())
+    .then((p) => {
+      if (p?.status === "success" && p?.data?.root) {
+        folderInput.placeholder = `Root: ${String(
+          p.data.root
+        )} — type a relative path to browse, or an absolute path to change root`;
+      }
       folderInput.value = "";
-    } else {
+
+    })
+    .catch(() => {
       folderInput.value = "";
-    }
-  })
-  .catch(() => {
-    folderInput.value = "";
-  })
-  .finally(loadLibrary);
+    })
+    .finally(loadLibrary);
 
   // Ensure job action buttons can be toggled by JS even if residual d-none class remains
   ["cancelAllBtn", "cancelQueuedBtn", "clearCompletedBtn"].forEach((id) => {
@@ -1592,13 +1711,16 @@ function initArtifactOptionsMenus() {
   // Close any open tooltip when clicking outside
   document.addEventListener("click", (e) => {
     document.querySelectorAll(".options-tooltip").forEach((tt) => {
-      // hide all; specific handlers will re-open targeted one
+      // hide all;
+      // specific handlers will re-open targeted one
       tt.style.display = "none";
+      // ensure hidden class reapplied so future inline style toggles aren't overridden by !important
+      if (!tt.classList.contains("d-none")) tt.classList.add("d-none");
     });
     // also drop raised stacking on any cards
     document
-    .querySelectorAll(".artifact-card.menu-open")
-    .forEach((card) => card.classList.remove("menu-open"));
+      .querySelectorAll(".artifact-card.menu-open")
+      .forEach((card) => card.classList.remove("menu-open"));
   });
   // Open corresponding tooltip for clicked options button
   document.querySelectorAll(".btn-options[data-artifact]").forEach((btn) => {
@@ -1611,15 +1733,24 @@ function initArtifactOptionsMenus() {
       const card = btn.closest(".artifact-card");
       // Toggle: hide others, then toggle this
       document.querySelectorAll(".options-tooltip").forEach((tt) => {
-        if (tt !== tooltip) tt.style.display = "none";
+        if (tt !== tooltip) {
+          tt.style.display = "none";
+          if (!tt.classList.contains("d-none")) tt.classList.add("d-none");
+        }
       });
       document
-      .querySelectorAll(".artifact-card.menu-open")
-      .forEach((c) => c.classList.remove("menu-open"));
+        .querySelectorAll(".artifact-card.menu-open")
+        .forEach((c) => c.classList.remove("menu-open"));
       if (tooltip) {
         const willOpen =
-        tooltip.style.display === "none" || !tooltip.style.display;
+          tooltip.style.display === "none" || !tooltip.style.display;
         tooltip.style.display = willOpen ? "block" : "none";
+        // Remove d-none when opening so the !important rule no longer suppresses it
+        if (willOpen) {
+          tooltip.classList.remove("d-none");
+        } else {
+          if (!tooltip.classList.contains("d-none")) tooltip.classList.add("d-none");
+        }
         if (card) {
           if (willOpen) card.classList.add("menu-open");
           else card.classList.remove("menu-open");
@@ -1640,37 +1771,54 @@ function updateDensity() {
   root.style.setProperty("--columns", String(columns));
 }
 
+// Returns the current page size derived from the density configuration while
+// also ensuring the --columns CSS variable is applied. This centralizes the
+// logic that loadLibrary previously expected (applyColumnsAndComputePageSize).
+// If densityConfigs/currentDensity are out of range, a conservative fallback
+// is used. Keeping this minimal to avoid broader refactors right now.
+function applyColumnsAndComputePageSize() {
+  const config = densityConfigs[currentDensity - 1];
+  if (!config) {
+    // Fallback: assume moderate page size & leave columns unchanged.
+    return 48;
+  }
+  const [pageSize, columns] = config;
+  // Ensure columns style is in sync (mirrors updateDensity side‑effect).
+  document.documentElement.style.setProperty('--columns', String(columns));
+  return pageSize;
+}
+
 // Enhanced selection functions
-let lastSelectedPath = null; // For shift-click range selection
+let lastSelectedPath = null;
+// For shift-click range selection
 
 function handleCardClick(event, path) {
   // If any items are selected, or if Ctrl/Shift is pressed, handle as selection
-  if (
-    selectedItems.size > 0 ||
-    event.ctrlKey ||
-    event.metaKey ||
-    event.shiftKey
-  ) {
+  if (selectedItems.size > 0 || event.ctrlKey || event.metaKey || event.shiftKey) {
     if (event.shiftKey && lastSelectedPath) {
       // Shift-click: select range
       selectRange(lastSelectedPath, path);
-    } else if (event.ctrlKey || event.metaKey) {
+    }
+    else if (event.ctrlKey || event.metaKey) {
       // Ctrl-click: toggle individual item
       toggleSelection(event, path);
       lastSelectedPath = path;
-    } else {
+    }
+    else {
       // Normal click with items selected: toggle this item
       toggleSelection(event, path);
       lastSelectedPath = path;
     }
-  } else {
+  }
+  else {
     // No items selected and no modifiers: open in Player tab
     Player.open(path);
     try {
       if (window.tabSystem && typeof window.tabSystem.switchToTab === 'function') {
         window.tabSystem.switchToTab('player');
       }
-    } catch (_) {}
+    }
+    catch (_) { }
   }
 }
 
@@ -1684,7 +1832,9 @@ function selectRange(startPath, endPath) {
   const start = Math.min(startIdx, endIdx);
   const end = Math.max(startIdx, endIdx);
 
-  for (let i = start; i <= end; i++) {
+  for (let i = start;
+    i <= end;
+    i++) {
     const path = cards[i].dataset.path;
     if (path) {
       selectedItems.add(path);
@@ -1699,7 +1849,8 @@ function toggleSelection(event, path) {
   event.stopPropagation();
   if (selectedItems.has(path)) {
     selectedItems.delete(path);
-  } else {
+  }
+  else {
     selectedItems.add(path);
   }
   updateSelectionUI();
@@ -1711,7 +1862,8 @@ function updateSelectionUI() {
   if (count > 0) {
     selectionBar.hidden = false;
     selectionCount.textContent = `${count} selected`;
-  } else {
+  }
+  else {
     selectionBar.hidden = true;
   }
 }
@@ -1724,12 +1876,15 @@ function updateCardSelection(path) {
       checkbox.classList.add("checked");
       try {
         checkbox.setAttribute("aria-checked", "true");
-      } catch (_) {}
-    } else {
+      }
+      catch (_) { }
+    }
+    else {
       checkbox.classList.remove("checked");
       try {
         checkbox.setAttribute("aria-checked", "false");
-      } catch (_) {}
+      }
+      catch (_) { }
     }
   }
 }
@@ -1742,16 +1897,16 @@ selectAllBtn.addEventListener("click", () => {
   });
   updateSelectionUI();
   document
-  .querySelectorAll(".card-checkbox")
-  .forEach((cb) => cb.classList.add("checked"));
+    .querySelectorAll(".card-checkbox")
+    .forEach((cb) => cb.classList.add("checked"));
 });
 
 selectNoneBtn.addEventListener("click", () => {
   selectedItems.clear();
   updateSelectionUI();
   document
-  .querySelectorAll(".card-checkbox")
-  .forEach((cb) => cb.classList.remove("checked"));
+    .querySelectorAll(".card-checkbox")
+    .forEach((cb) => cb.classList.remove("checked"));
 });
 
 // Folder picker
@@ -1760,34 +1915,43 @@ async function fetchDirs(path = "") {
   if (path) url.searchParams.set("path", path);
   url.searchParams.set("page", "1");
   // Large page_size to avoid server-side file pagination affecting perceived results
-  url.searchParams.set("page_size", "500"); // we only need dirs; dirs are not paginated server-side
+  url.searchParams.set("page_size", "500");
+  // we only need dirs;
+  // dirs are not paginated server-side
   const res = await fetch(url, { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const payload = await res.json();
-  if (payload?.status !== "success")
-    throw new Error(payload?.message || "Unexpected response");
+  if (payload?.status !== "success") throw new Error(payload?.message || "Unexpected response");
   const data = payload.data || {};
   const dirs = Array.isArray(data.dirs) ? data.dirs : [];
   return { cwd: String(data.cwd || ""), dirs };
 }
 
 function renderCrumbs(path) {
-  crumbsEl.innerHTML = "";
-  const segs = path.split("/").filter(Boolean);
-  const mkSeg = (label, p) => {
-    const s = document.createElement("span");
-    s.className = "seg";
-    s.textContent = label;
-    s.addEventListener("click", () => goTo(p));
-    return s;
+  if (!crumbsEl) return;
+  crumbsEl.textContent = '';
+  const tpl = document.getElementById('crumbSegmentTemplate');
+  const addSeg = (label, p, withDivider) => {
+    if (withDivider) crumbsEl.appendChild(document.createTextNode(' / '));
+    let node;
+    if (tpl && tpl.content) {
+      node = tpl.content.firstElementChild.cloneNode(true);
+    }
+    else {
+      node = document.createElement('span');
+      // fallback (template missing) per policy exception
+      node.className = 'seg';
+    }
+    node.textContent = label;
+    node.addEventListener('click', () => goTo(p));
+    crumbsEl.appendChild(node);
   };
-  const divider = document.createTextNode(" / ");
-  crumbsEl.appendChild(mkSeg("root", ""));
-  let acc = "";
+  addSeg('root', '', false);
+  const segs = path.split('/').filter(Boolean);
+  let acc = '';
   for (const seg of segs) {
-    crumbsEl.appendChild(divider.cloneNode());
-    acc = acc ? acc + "/" + seg : seg;
-    crumbsEl.appendChild(mkSeg(seg, acc));
+    acc = acc ? acc + '/' + seg : seg;
+    addSeg(seg, acc, true);
   }
 }
 
@@ -1813,37 +1977,177 @@ async function renderDir(path) {
           let listEl, statusEl, searchEl, addBtn, mergeBtn, deleteBtn, rewriteBtn, exportBtn, importBtn, importFile, importReplace;
           let tags = [];
           let selected = new Set();
-          function initDom(){
-            if(listEl) return;
-            listEl=document.getElementById("tagsRegistryList");
-            statusEl=document.getElementById("tagsRegistryStatus");
-            searchEl=document.getElementById("tagsRegistrySearch");
-            addBtn=document.getElementById("tagsRegistryAddBtn");
-            mergeBtn=document.getElementById("tagsRegistryMergeBtn");
-            deleteBtn=document.getElementById("tagsRegistryDeleteBtn");
-            rewriteBtn=document.getElementById("tagsRegistryRewriteBtn");
-            exportBtn=document.getElementById("tagsRegistryExportBtn");
-            importBtn=document.getElementById("tagsRegistryImportBtn");
-            importFile=document.getElementById("tagsRegistryImportFile");
-            importReplace=document.getElementById("tagsRegistryImportReplace");
+          function initDom() {
+            if (listEl) return;
+            listEl = document.getElementById("tagsRegistryList");
+            statusEl = document.getElementById("tagsRegistryStatus");
+            searchEl = document.getElementById("tagsRegistrySearch");
+            addBtn = document.getElementById("tagsRegistryAddBtn");
+            mergeBtn = document.getElementById("tagsRegistryMergeBtn");
+            deleteBtn = document.getElementById("tagsRegistryDeleteBtn");
+            rewriteBtn = document.getElementById("tagsRegistryRewriteBtn");
+            exportBtn = document.getElementById("tagsRegistryExportBtn");
+            importBtn = document.getElementById("tagsRegistryImportBtn");
+            importFile = document.getElementById("tagsRegistryImportFile");
+            importReplace = document.getElementById("tagsRegistryImportReplace");
             wire();
           }
-          function setStatus(msg){ if(statusEl) statusEl.textContent=msg; }
-          function render(){ if(!listEl) return; listEl.innerHTML=""; const term=(searchEl?.value||"").toLowerCase(); tags.filter(t=>!term||t.name.toLowerCase().includes(term)).forEach(t=>{ const div=document.createElement("div"); div.className="registry-item"; if(selected.has(t.slug)) div.dataset.selected="1"; div.textContent=t.name; div.onclick=()=>{ toggle(t.slug); }; div.ondblclick=()=>rename(t); listEl.appendChild(div); }); updateButtons(); }
-          function updateButtons(){ if(mergeBtn) mergeBtn.disabled=selected.size!==2; if(deleteBtn) deleteBtn.disabled=selected.size===0; }
-          async function fetchTags(){ initDom(); setStatus("Loading…"); try{ const r=await fetch("/api/registry/tags"); const j=await r.json(); tags=j?.data?.tags||[]; setStatus(`${tags.length} tag(s)`); render(); }catch(e){ setStatus("Failed"); } }
-          function toggle(slug){ if(selected.has(slug)) selected.delete(slug); else selected.add(slug); render(); }
-          async function add(){ const name=prompt("New tag name:"); if(!name) return; const r=await fetch("/api/registry/tags/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})}); if(r.ok){ showToast("Tag added","is-success"); fetchTags(); } else showToast("Failed","is-error"); }
-          async function rename(t){ const nn=prompt("Rename tag", t.name); if(!nn||nn===t.name) return; const r=await fetch("/api/registry/tags/rename",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:t.name,new_name:nn})}); if(r.ok){ showToast("Renamed","is-success"); fetchTags(); } else showToast("Rename failed","is-error"); }
-          async function del(){ if(!confirm(`Delete ${selected.size} tag(s)?`)) return; for(const slug of Array.from(selected)){ await fetch("/api/registry/tags/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:slug})}); } selected.clear(); fetchTags(); }
-          async function merge(){ if(selected.size!==2) return; const arr=[...selected]; const into=prompt("Merge: tag that remains", arr[0]); if(!into) return; const from=arr.find(s=>s!==_slugify(into))||arr[0]; const url=`/api/registry/tags/merge?from_name=${encodeURIComponent(from)}&into_name=${encodeURIComponent(into)}`; const r=await fetch(url,{method:"POST"}); if(r.ok){ showToast("Merged","is-success"); selected.clear(); fetchTags(); } else showToast("Merge failed","is-error"); }
-          async function rewrite(){ const r=await fetch("/api/registry/tags/rewrite-sidecars",{method:"POST"}); if(r.ok) showToast("Rewritten","is-success"); else showToast("Rewrite failed","is-error"); }
-          function exportJson(){ fetch("/api/registry/export").then(r=>r.json()).then(j=>{ const blob=new Blob([JSON.stringify({tags:j.data.tags},null,2)],{type:"application/json"}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tags-registry.json"; a.click(); }); }
-          function importJson(){ importFile?.click(); }
-          function handleImport(e){ const f=e.target.files?.[0]; if(!f) return; const reader=new FileReader(); reader.onload=async()=>{ try{ const json=JSON.parse(reader.result); const payload={ tags: json.tags || json, replace: !!importReplace?.checked }; const r=await fetch("/api/registry/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); if(r.ok){ showToast("Imported","is-success"); fetchTags(); } else showToast("Import failed","is-error"); }catch(err){ showToast("Invalid JSON","is-error"); } }; reader.readAsText(f); }
-          function wire(){ searchEl?.addEventListener("input", render); addBtn?.addEventListener("click", add); mergeBtn?.addEventListener("click", merge); deleteBtn?.addEventListener("click", del); rewriteBtn?.addEventListener("click", rewrite); exportBtn?.addEventListener("click", exportJson); importBtn?.addEventListener("click", importJson); importFile?.addEventListener("change", handleImport); }
-          function ensure(){ initDom(); }
-          return { ensure, fetch: fetchTags };
+          function setStatus(msg) {
+            if (statusEl) statusEl.textContent = msg;
+          }
+          function render() {
+            if (!listEl) return;
+            listEl.innerHTML = "";
+            const term = (searchEl?.value || "").toLowerCase();
+            const tpl = document.getElementById('registryItemTemplate');
+            const items = tags.filter(t => !term || t.name.toLowerCase().includes(term));
+            for (const t of items) {
+              let node;
+              if (tpl && tpl.content) {
+                node = tpl.content.firstElementChild.cloneNode(true);
+              }
+              else {
+                // Fallback when template missing (policy exception, should not occur)
+                node = document.createElement('div');
+                node.className = 'registry-item';
+              }
+              if (selected.has(t.slug)) node.dataset.selected = '1';
+              else delete node.dataset.selected;
+              node.textContent = t.name;
+              node.onclick = () => toggle(t.slug);
+              node.ondblclick = () => rename(t);
+              listEl.appendChild(node);
+            }
+            updateButtons();
+          }
+          function updateButtons() {
+            if (mergeBtn) mergeBtn.disabled = selected.size !== 2;
+            if (deleteBtn) deleteBtn.disabled = selected.size === 0;
+          }
+          async function fetchTags() {
+            initDom();
+            setStatus("Loading…");
+            try {
+              const r = await fetch("/api/registry/tags");
+              const j = await r.json();
+              tags = j?.data?.tags || [];
+              setStatus(`${tags.length} tag(s)`);
+              render();
+            } catch (e) {
+              setStatus("Failed");
+
+            }
+          }
+          function toggle(slug) {
+            if (selected.has(slug)) selected.delete(slug);
+            else selected.add(slug);
+            render();
+
+          }
+          async function add() {
+            const name = prompt("New tag name:");
+            if (!name) return;
+            const r = await fetch("/api/registry/tags/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+            if (r.ok) {
+              showToast("Tag added", "is-success");
+              fetchTags();
+
+            }
+            else showToast("Failed", "is-error");
+          }
+          async function rename(t) {
+            const nn = prompt("Rename tag", t.name);
+            if (!nn || nn === t.name) return;
+            const r = await fetch("/api/registry/tags/rename", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: t.name, new_name: nn }) });
+            if (r.ok) {
+              showToast("Renamed", "is-success");
+              fetchTags();
+
+            }
+            else showToast("Rename failed", "is-error");
+          }
+          async function del() {
+            if (!confirm(`Delete ${selected.size} tag(s)?`)) return;
+            for (const slug of Array.from(selected)) {
+              await fetch("/api/registry/tags/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: slug }) });
+            } selected.clear();
+            fetchTags();
+          }
+          async function merge() {
+            if (selected.size !== 2) return;
+            const arr = [...selected];
+            const into = prompt("Merge: tag that remains", arr[0]);
+            if (!into) return;
+            const from = arr.find(s => s !== _slugify(into)) || arr[0];
+            const url = `/api/registry/tags/merge?from_name=${encodeURIComponent(from)}&into_name=${encodeURIComponent(into)}`;
+            const r = await fetch(url, { method: "POST" });
+            if (r.ok) {
+              showToast("Merged", "is-success");
+              selected.clear();
+              fetchTags();
+
+            }
+            else showToast("Merge failed", "is-error");
+          }
+          async function rewrite() {
+            const r = await fetch("/api/registry/tags/rewrite-sidecars", { method: "POST" });
+            if (r.ok) showToast("Rewritten", "is-success");
+            else showToast("Rewrite failed", "is-error");
+          }
+          function exportJson() {
+            fetch("/api/registry/export")
+              .then(r => r.json())
+              .then(j => {
+                const blob = new Blob([JSON.stringify({ tags: j.data.tags }, null, 2)], { type: "application/json" });
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = "tags-registry.json";
+                a.click();
+              });
+          }
+          function importJson() {
+            importFile?.click();
+
+          }
+          function handleImport(e) {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            const reader = new FileReader();
+            reader.onload = async () => {
+              try {
+                const json = JSON.parse(reader.result);
+                const payload = { tags: json.tags || json, replace: !!importReplace?.checked };
+                const r = await fetch("/api/registry/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+                if (r.ok) {
+                  showToast("Imported", "is-success");
+                  fetchTags();
+
+                }
+                else showToast("Import failed", "is-error");
+              }
+              catch (err) {
+                showToast("Invalid JSON", "is-error");
+              }
+            };
+            reader.readAsText(f);
+          }
+          function wire() {
+            searchEl?.addEventListener("input", render);
+            addBtn?.addEventListener("click", add);
+            mergeBtn?.addEventListener("click", merge);
+            deleteBtn?.addEventListener("click", del);
+            rewriteBtn?.addEventListener("click", rewrite);
+            exportBtn?.addEventListener("click", exportJson);
+            importBtn?.addEventListener("click", importJson);
+            importFile?.addEventListener("change", handleImport);
+          }
+          function ensure() {
+            initDom();
+
+          }
+          return {
+            ensure, fetch: fetchTags
+          };
         })();
 
         // -------------------------------------------------
@@ -1854,9 +2158,12 @@ async function renderDir(path) {
         // -------------------------------------------------
         // Embedded Auto-Tag logic (Performers & Tags)
         // -------------------------------------------------
-        function _parseList(val){ return (val||"").split(/[\,\n]/).map(s=>s.trim()).filter(Boolean); }
-        async function _autotagPreview(opts){
-          const payload={
+        function _parseList(val) {
+          return (val || "").split(/[\,\n]/).map(s => s.trim()).filter(Boolean);
+
+        }
+        async function _autotagPreview(opts) {
+          const payload = {
             path: opts.path || undefined,
             recursive: !!opts.recursive,
             use_registry_performers: !!opts.useRegistryPerformers,
@@ -1865,13 +2172,17 @@ async function renderDir(path) {
             tags: opts.tags || [],
             limit: opts.limit || 500
           };
-          const r = await fetch("/api/autotag/preview", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
+          const r = await fetch("/api/autotag/preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
           const j = await r.json();
-          if(!r.ok) throw new Error(j?.message||"Preview failed");
+          if (!r.ok) throw new Error(j?.message || "Preview failed");
           return j?.data || {};
         }
-        async function _autotagScan(opts){
-          const payload={
+        async function _autotagScan(opts) {
+          const payload = {
             path: opts.path || undefined,
             recursive: !!opts.recursive,
             use_registry_performers: !!opts.useRegistryPerformers,
@@ -1879,12 +2190,24 @@ async function renderDir(path) {
             performers: opts.performers || [],
             tags: opts.tags || []
           };
-          const r = await fetch("/api/autotag/scan", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
-          if(!r.ok){ try{ const j=await r.json(); throw new Error(j?.message||"Scan failed"); }catch(e){ throw e; } }
+          const r = await fetch("/api/autotag/scan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (!r.ok) {
+            try {
+              const j = await r.json();
+              throw new Error(j?.message || "Scan failed");
+            }
+            catch (e) {
+              throw e;
+            }
+          }
           return true;
         }
 
-        function wireEmbeddedAutotag(){
+        function wireEmbeddedAutotag() {
           // Tags panel elements only (performer autotag removed)
           const tPath = document.getElementById("autotagPathTags");
           const tRec = document.getElementById("autotagRecursiveTags");
@@ -1894,69 +2217,96 @@ async function renderDir(path) {
           const tScan = document.getElementById("autotagScanTagsBtn");
           const tStatus = document.getElementById("autotagTagResultsStatus");
           const tBody = document.getElementById("autotagTagResultsBody");
-          if(tPrev){
-            tPrev.addEventListener("click", async ()=>{
-              tStatus.textContent="Previewing…"; tBody.innerHTML=""; tScan.disabled=true;
+          if (tPrev) {
+            tPrev.addEventListener("click", async () => {
+              tStatus.textContent = "Previewing…";
+              tBody.innerHTML = "";
+              tScan.disabled = true;
               try {
-                const data = await _autotagPreview({ path: tPath.value.trim(), recursive: tRec.checked, useRegistryTags: tUse.checked, tags: _parseList(tExtra.value) });
+                const data = await _autotagPreview({
+                  path: tPath.value.trim(),
+                  recursive: tRec.checked,
+                  useRegistryTags: tUse.checked,
+                  tags: _parseList(tExtra.value)
+                });
                 const rows = data.candidates || [];
-                tStatus.textContent = rows.length? `${rows.length} match(es)`: "No matches";
-                rows.forEach(rw=>{
+                tStatus.textContent = rows.length ? `${rows.length} match(es)` : "No matches";
+                rows.forEach(rw => {
                   const tpl = document.getElementById('autotagRowTemplate');
                   const tr = tpl.content.firstElementChild.cloneNode(true);
                   tr.querySelector('.file').textContent = rw.file;
-                  tr.querySelector('.tags').textContent = (rw.tags||[]).join(', ');
+                  tr.querySelector('.tags').textContent = (rw.tags || []).join(', ');
                   tBody.appendChild(tr);
                 });
-                tScan.disabled = rows.length===0;
-              } catch(err){ tStatus.textContent = err.message || "Preview failed"; }
+                tScan.disabled = rows.length === 0;
+              }
+              catch (err) {
+                tStatus.textContent = err.message || "Preview failed";
+              }
             });
           }
-          if(tScan){
-            tScan.addEventListener("click", async ()=>{ tScan.disabled=true; try { await _autotagScan({ path: tPath.value.trim(), recursive: tRec.checked, useRegistryTags: tUse.checked, tags: _parseList(tExtra.value) }); showToast("Auto‑tag job queued","is-success"); } catch(err){ showToast(err.message||"Queue failed","is-error"); } });
+          if (tScan) {
+            tScan.addEventListener("click", async () => {
+              tScan.disabled = true;
+              try {
+                await _autotagScan({
+                  path: tPath.value.trim(),
+                  recursive: tRec.checked,
+                  useRegistryTags: tUse.checked,
+                  tags: _parseList(tExtra.value)
+                });
+                showToast("Auto‑tag job queued", "is-success");
+              }
+              catch (err) {
+                showToast(err.message || "Queue failed", "is-error");
+              }
+            });
           }
         }
 
         // Hook tab activation to load registries / autotag lazily
-        document.addEventListener("click", (e)=>{
+        document.addEventListener("click", (e) => {
           const btn = e.target.closest && e.target.closest(".tab-button");
-          if(!btn) return;
+          if (!btn) return;
           const tab = btn.getAttribute("data-tab");
-          if(tab === "tags"){ TagsRegistry.ensure(); TagsRegistry.fetch(); wireEmbeddedAutotag(); }
+          if (tab === "tags") {
+            TagsRegistry.ensure();
+            TagsRegistry.fetch();
+            wireEmbeddedAutotag();
+          }
         });
       });
       dirlistEl.appendChild(up);
     }
-    dirs.sort((a, b) =>
-      String(a.name || "").localeCompare(String(b.name || ""))
-  );
-  for (const d of dirs) {
-    const tpl = document.getElementById('dirListItemTemplate');
-    const item = tpl.content.firstElementChild.cloneNode(true);
-    const name = d.name || String(d);
-    const dpath = d.path || (path ? `${path}/${name}` : name);
-    item.querySelector('.name').textContent = name;
-    item.addEventListener('click', () => goTo(dpath));
-    item.addEventListener('dblclick', () => choose(dpath));
-    dirlistEl.appendChild(item);
+    dirs.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+    for (const d of dirs) {
+      const tpl = document.getElementById('dirListItemTemplate');
+      const item = tpl.content.firstElementChild.cloneNode(true);
+      const name = d.name || String(d);
+      const dpath = d.path || (path ? `${path}/${name}` : name);
+      item.querySelector('.name').textContent = name;
+      item.addEventListener('click', () => goTo(dpath));
+      item.addEventListener('dblclick', () => choose(dpath));
+      dirlistEl.appendChild(item);
+    }
+    if (dirs.length === 0) {
+      const none = document.createElement("div");
+      none.className = "dir muted";
+      const icon = document.createElement("div");
+      icon.className = "icon dim";
+      const label = document.createElement("div");
+      label.textContent = "No folders here";
+      none.appendChild(icon);
+      none.appendChild(label);
+      dirlistEl.appendChild(none);
+    }
   }
-  if (dirs.length === 0) {
-    const none = document.createElement("div");
-    none.className = "dir muted";
-    const icon = document.createElement("div");
-    icon.className = "icon dim";
-    const label = document.createElement("div");
-    label.textContent = "No folders here";
-    none.appendChild(icon);
-    none.appendChild(label);
-    dirlistEl.appendChild(none);
+  catch (e) {
+    const err = document.createElement("div");
+    err.className = "dir";
+    err.textContent = "Failed to list directories.";
+    dirlistEl.appendChild(err);
   }
-} catch (e) {
-  const err = document.createElement("div");
-  err.className = "dir";
-  err.textContent = "Failed to list directories.";
-  dirlistEl.appendChild(err);
-}
 }
 
 function openFolderPicker() {
@@ -1992,14 +2342,12 @@ function isAbsolutePath(p) {
 // Lightweight global notifier so we can show toasts outside TasksManager too
 function notify(message, type = "info") {
   try {
-    if (
-      window.tasksManager &&
-      typeof window.tasksManager.showNotification === "function"
-    ) {
+    if (window.tasksManager && typeof window.tasksManager.showNotification === "function") {
       window.tasksManager.showNotification(message, type);
       return;
     }
-  } catch (_) {}
+  }
+  catch (_) { }
   // Fallback toast using same host/classes (no inline styles)
   let host = document.getElementById("toastHost");
   if (!host) {
@@ -2017,40 +2365,33 @@ function notify(message, type = "info") {
   el.textContent = message;
   host.appendChild(el);
   const lifespan = 5000, fadeMs = 250;
-  setTimeout(() => { el.classList.add("fade-out"); setTimeout(() => el.remove(), fadeMs + 30); }, lifespan - fadeMs);
+  setTimeout(() => {
+    el.classList.add("fade-out");
+    setTimeout(() => el.remove(), fadeMs + 30);
+
+  }, lifespan - fadeMs);
 }
 
 async function setRoot(val) {
   const rootVal = (val || "").trim();
   if (!rootVal) return;
   if (!isAbsolutePath(rootVal)) {
-    notify(
-      "Please enter an absolute path (e.g., /Volumes/Media or ~/Movies).",
-      "error"
-    );
+    notify("Please enter an absolute path (e.g., /Volumes/Media or ~/Movies).", "error");
     return;
   }
   try {
     // Validate path first to prevent 400s
-    const tp = await fetch(
-      "/api/testpath?" + new URLSearchParams({ path: rootVal }),
-      { method: "POST" }
-    );
+    const tp = await fetch("/api/testpath?" + new URLSearchParams({ path: rootVal }), { method: "POST" });
     if (!tp.ok) throw new Error("Path check failed (HTTP " + tp.status + ")");
     const tj = await tp.json();
     const tdata = tj?.data || {};
-    if (!tdata.exists || !tdata.is_dir)
-      throw new Error("Path does not exist or is not a directory");
+    if (!tdata.exists || !tdata.is_dir) throw new Error("Path does not exist or is not a directory");
 
     // Set root on the server
-    const sr = await fetch(
-      "/api/setroot?" + new URLSearchParams({ root: rootVal }),
-      { method: "POST" }
-    );
+    const sr = await fetch("/api/setroot?" + new URLSearchParams({ root: rootVal }), { method: "POST" });
     if (!sr.ok) throw new Error("HTTP " + sr.status);
     const sjson = await sr.json();
-    if (sjson?.status !== "success")
-      throw new Error(sjson?.message || "Failed to set root");
+    if (sjson?.status !== "success") throw new Error(sjson?.message || "Failed to set root");
 
     // After setting root, clear the input so it's ready for relative paths
     const newRoot = String(sjson.data.root || rootVal);
@@ -2059,15 +2400,9 @@ async function setRoot(val) {
     currentPage = 1;
     notify(`Root set to ${newRoot}`, "success");
     await loadLibrary();
-  } catch (err) {
-    notify(
-      `Failed to set root: ${
-        err && err.message
-        ? err.message
-        : "Ensure the directory exists and is accessible."
-      }`,
-      "error"
-    );
+  }
+  catch (err) {
+    notify(`Failed to set root: ${err && err.message ? err.message : "Ensure the directory exists and is accessible."}`, "error");
   }
 }
 
@@ -2075,14 +2410,16 @@ async function setRoot(val) {
 folderInput.addEventListener("keydown", async (e) => {
   if (e.key !== "Enter") return;
   const val = (folderInput.value || "").trim();
-  currentPage = 1; // Reset to first page when changing folders
+  currentPage = 1;
+  // Reset to first page when changing folders
   if (!val) {
     await loadLibrary();
     return;
   }
   if (isAbsolutePath(val)) {
     await setRoot(val);
-  } else {
+  }
+  else {
     await loadLibrary();
   }
 });
@@ -2097,11 +2434,13 @@ if (pickRootBtn) {
 class TabRouter {
   constructor(tabSystem) {
     this.tabSystem = tabSystem;
-    // Persist last active tab across reloads; fall back to library.
+    // Persist last active tab across reloads;
+    // fall back to library.
     try {
       const saved = localStorage.getItem("activeTab");
       this.defaultTab = saved || "library";
-    } catch (e) {
+    }
+    catch (e) {
       this.defaultTab = "library";
     }
     this.history = [];
@@ -2118,14 +2457,12 @@ class TabRouter {
   }
 
   handleRouteChange() {
-    const hash = window.location.hash.slice(1); // Remove the # symbol
+    const hash = window.location.hash.slice(1);
+    // Remove the # symbol
     const tabId = hash || this.defaultTab;
 
     // Track navigation history
-    if (
-      this.history.length === 0 ||
-      this.history[this.history.length - 1] !== tabId
-    ) {
+    if (this.history.length === 0 || this.history[this.history.length - 1] !== tabId) {
       this.history.push(tabId);
       // Keep history reasonable size
       if (this.history.length > 10) {
@@ -2137,7 +2474,8 @@ class TabRouter {
     if (this.tabSystem.tabs.has(tabId) && tabId !== this.tabSystem.activeTab) {
       // Switch without updating URL to avoid infinite loop
       this.tabSystem.switchToTab(tabId, false);
-    } else if (!this.tabSystem.tabs.has(tabId) && hash) {
+    }
+    else if (!this.tabSystem.tabs.has(tabId) && hash) {
       // Invalid tab in URL, redirect to default
       this.updateUrl(this.defaultTab);
     }
@@ -2237,28 +2575,27 @@ class TabSystem {
 
         switch (e.key) {
           case "ArrowLeft":
-          e.preventDefault();
-          targetIndex = index > 0 ? index - 1 : tabButtons.length - 1;
-          break;
+            e.preventDefault();
+            targetIndex = index > 0 ? index - 1 : tabButtons.length - 1;
+            break;
           case "ArrowRight":
-          e.preventDefault();
-          targetIndex = index < tabButtons.length - 1 ? index + 1 : 0;
-          break;
+            e.preventDefault();
+            targetIndex = index < tabButtons.length - 1 ? index + 1 : 0;
+            break;
           case "Home":
-          e.preventDefault();
-          targetIndex = 0;
-          break;
+            e.preventDefault();
+            targetIndex = 0;
+            break;
           case "End":
-          e.preventDefault();
-          targetIndex = tabButtons.length - 1;
-          break;
+            e.preventDefault();
+            targetIndex = tabButtons.length - 1;
+            break;
           case "Enter":
           case " ":
-          e.preventDefault();
-          this.switchToTab(button.dataset.tab);
-          return;
-          default:
-          return;
+            e.preventDefault();
+            this.switchToTab(button.dataset.tab);
+            return;
+          default: return;
         }
 
         tabButtons[targetIndex].focus();
@@ -2291,10 +2628,7 @@ class TabSystem {
     const activeTab = this.tabs.get(tabId);
     if (activeTab && document.activeElement !== activeTab.button) {
       // Don't steal focus unless user is navigating with keyboard
-      if (
-        document.activeElement &&
-        document.activeElement.classList.contains("tab-button")
-      ) {
+      if (document.activeElement && document.activeElement.classList.contains("tab-button")) {
         activeTab.button.focus();
       }
     }
@@ -2314,7 +2648,8 @@ class TabSystem {
     // Persist active tab (ignore failures in private modes)
     try {
       localStorage.setItem("activeTab", tabId);
-    } catch (e) {
+    }
+    catch (e) {
       /* ignore */
     }
   }
@@ -2357,20 +2692,25 @@ class TabSystem {
         tpl = document.getElementById(panelContent.slice(1));
         if (tpl && tpl.tagName === 'TEMPLATE') {
           panel.appendChild(tpl.content.cloneNode(true));
-        } else {
+        }
+        else {
           // fallback: treat as HTML id not found -> leave empty
           panel.innerHTML = '';
         }
-      } else if (panelContent && panelContent.tagName === 'TEMPLATE') {
+      }
+      else if (panelContent && panelContent.tagName === 'TEMPLATE') {
         panel.appendChild(panelContent.content.cloneNode(true));
-      } else if (typeof panelContent === 'string') {
+      }
+      else if (typeof panelContent === 'string') {
         // backward-compat: accept raw HTML string
         panel.innerHTML = panelContent;
-      } else {
+      }
+      else {
         // unknown type: leave empty
         panel.innerHTML = '';
       }
-    } catch (e) {
+    }
+    catch (e) {
       panel.innerHTML = typeof panelContent === 'string' ? panelContent : '';
     }
     tabPanels.appendChild(panel);
@@ -2396,7 +2736,8 @@ if (document.readyState === "loading") {
     wireSettings();
     setupViewportFitPlayer();
   });
-} else {
+}
+else {
   tabSystem = new TabSystem();
   wireSettings();
   setupViewportFitPlayer();
@@ -2418,8 +2759,10 @@ function setupViewportFitPlayer() {
   function recompute() {
     // Panel height already excludes header (sticky header outside main scroll)
     const panelH = playerPanel.getBoundingClientRect().height;
-    // Overlay bar sits over video; treat bar height negligible for layout
-    const spare = 20; // minimal gap/padding reserve
+    // Overlay bar sits over video;
+    // treat bar height negligible for layout
+    const spare = 20;
+    // minimal gap/padding reserve
     const maxH = panelH - spare;
     // Maintain 16:9 aspect by width
     const stageWidth = videoStage.getBoundingClientRect().width;
@@ -2427,13 +2770,11 @@ function setupViewportFitPlayer() {
     const finalH = Math.min(ideal, maxH);
     document.documentElement.style.setProperty("--player-max-h", finalH + "px");
   }
-  ["resize", "orientationchange"].forEach((ev) =>
-    window.addEventListener(ev, recompute)
-);
-vid.addEventListener("loadedmetadata", recompute);
-// Slight delay to allow fonts/layout settle
-setTimeout(recompute, 0);
-setTimeout(recompute, 150);
+  ["resize", "orientationchange"].forEach((ev) => window.addEventListener(ev, recompute));
+  vid.addEventListener("loadedmetadata", recompute);
+  // Slight delay to allow fonts/layout settle
+  setTimeout(recompute, 0);
+  setTimeout(recompute, 150);
 }
 
 // -----------------------------
@@ -2442,39 +2783,43 @@ setTimeout(recompute, 150);
 const Player = (() => {
   // DOM refs
   let videoEl,
-  titleEl,
-  curEl,
-  totalEl,
-  timelineEl,
-  heatmapEl,
-  heatmapCanvasEl,
-  progressEl,
-  markersEl,
-  spriteTooltipEl,
-  overlayBarEl; // floating translucent title bar
+    titleEl,
+    curEl,
+    totalEl,
+    timelineEl,
+    heatmapEl,
+    heatmapCanvasEl,
+    progressEl,
+    markersEl,
+    spriteTooltipEl,
+    overlayBarEl;
+  // floating translucent title bar
   let subtitleOverlayEl;
   // Custom controls
   let btnPlayPause,
-  btnMute,
-  volSlider,
-  rateSelect,
-  btnCC,
-  btnPip,
-  btnFullscreen;
+    btnMute,
+    volSlider,
+    rateSelect,
+    btnCC,
+    btnPip,
+    btnFullscreen;
+  // Remember last non-zero volume so unmute can restore it
+  let _lastNonZeroVolume = 1;
   // Sidebar refs
-  // Sidebar title removed; retain variable for backward compatibility but unused
+  // Sidebar title removed;
+  // retain variable for backward compatibility but unused
   let sbFileNameEl;
   // File info table fields
   let fiDurationEl,
-  fiResolutionEl,
-  fiVideoCodecEl,
-  fiAudioCodecEl,
-  fiBitrateEl,
-  fiVBitrateEl,
-  fiABitrateEl,
-  fiSizeEl,
-  fiModifiedEl,
-  fiPathEl;
+    fiResolutionEl,
+    fiVideoCodecEl,
+    fiAudioCodecEl,
+    fiBitrateEl,
+    fiVBitrateEl,
+    fiABitrateEl,
+    fiSizeEl,
+    fiModifiedEl,
+    fiPathEl;
   // Playback helpers (avoid unhandled play() rejections)
   const safePlay = async (v) => {
     if (!v) return;
@@ -2482,7 +2827,8 @@ const Player = (() => {
       // Some browsers reject play() if another play/pause/seek is pending.
       // Await and swallow errors per recommended guidance.
       await v.play();
-    } catch (e) {
+    }
+    catch (e) {
       // ignore AbortError / NotAllowedError etc. Keep UX stable.
     }
   };
@@ -2493,35 +2839,54 @@ const Player = (() => {
     const onSeek = () => {
       if (done) return;
       done = true;
-      try { v.removeEventListener('seeked', onSeek); } catch(_){}
+      try {
+        v.removeEventListener('seeked', onSeek);
+      }
+      catch (_) { }
       res();
     };
     try {
       v.addEventListener('seeked', onSeek);
-    } catch (_) {}
-    setTimeout(() => { if (!done) { done = true; try { v.removeEventListener('seeked', onSeek); } catch(_){} res(); } }, timeout);
+    }
+    catch (_) { }
+    setTimeout(() => {
+      if (!done) {
+        done = true;
+        try {
+          v.removeEventListener('seeked', onSeek);
+        }
+        catch (_) { } res();
+      }
+    }, timeout);
   });
   // Compact artifact badges
   let badgeHeatmap,
-  badgeScenes,
-  badgeSubtitles,
-  badgeSprites,
-  badgeFaces,
-  badgeHover,
-  badgePhash;
+    badgeScenes,
+    badgeSubtitles,
+    badgeSprites,
+    badgeFaces,
+    badgeHover,
+    badgePhash;
   let badgeHeatmapStatus,
-  badgeScenesStatus,
-  badgeSubtitlesStatus,
-  badgeSpritesStatus,
-  badgeFacesStatus,
-  badgeHoverStatus,
-  badgePhashStatus;
-  let btnSetThumb, btnAddMarker;
+    badgeScenesStatus,
+    badgeSubtitlesStatus,
+    badgeSpritesStatus,
+    badgeFacesStatus,
+    badgeHoverStatus,
+    badgePhashStatus;
+  // Marker / overlay control buttons (grouped for clarity)
+  let btnSetThumb = null;
+  let btnAddMarker = null;
+  let btnSetIntroEnd = null;
+  let btnSetOutroBegin = null;
+  // outro begin marker (skip tail)
 
   // State
-  let currentPath = null; // relative path from /api library
+  let currentPath = null;
+  // relative path from /api library
   let duration = 0;
-  let sprites = null; // { index, sheet }
+  let sprites = null;
+  // { index, sheet }
   let scenes = [];
   let introEnd = null;
   let outroBegin = null;
@@ -2531,14 +2896,15 @@ const Player = (() => {
   // Overlay auto-hide timer
   let overlayHideTimer = null;
   // @TODO copilot: make this configurable in a setting
-  const OVERLAY_FADE_DELAY = 2500; // ms before fading overlay bar
+  const OVERLAY_FADE_DELAY = 2500;
+  // ms before fading overlay bar
   // Scrubber elements
   let scrubberEl = null,
-  scrubberTrackEl = null,
-  scrubberProgressEl = null,
-  scrubberBufferEl = null,
-  scrubberTimeEl = null;
-  let btnSetIntroEnd = null;
+    scrubberTrackEl = null,
+    scrubberProgressEl = null,
+    scrubberBufferEl = null,
+    scrubberTimeEl = null;
+  // (btnSetIntroEnd declared above with other marker buttons)
   let scrubberRAF = null;
   let scrubberDragging = false;
   let scrubberWasPaused = null;
@@ -2573,12 +2939,15 @@ const Player = (() => {
             ts: Date.now(),
           })
         );
-      } catch (_) {}
+      }
+      catch (_) { }
       // Legacy key for backward compatibility
       try {
         localStorage.setItem(keyLastVideoPathLegacy(), path);
-      } catch (_) {}
-    } catch (_) {}
+      }
+      catch (_) { }
+    }
+    catch (_) { }
   }
   function loadProgress(path) {
     try {
@@ -2587,23 +2956,27 @@ const Player = (() => {
       const j = JSON.parse(raw);
       if (!j || typeof j !== "object") return null;
       return j;
-    } catch (_) {
+    }
+    catch (_) {
       return null;
     }
   }
   function getLastVideoEntry() {
-    // Prefer new object key; fallback to legacy path only
+    // Prefer new object key;
+    // fallback to legacy path only
     try {
       const raw = localStorage.getItem(keyLastVideoObj());
       if (raw) {
         const j = JSON.parse(raw);
         if (j && typeof j === "object" && j.path) return j;
       }
-    } catch (_) {}
+    }
+    catch (_) { }
     try {
       const legacy = localStorage.getItem(keyLastVideoPathLegacy());
       if (legacy) return { path: legacy, time: 0 };
-    } catch (_) {}
+    }
+    catch (_) { }
     return null;
   }
 
@@ -2615,34 +2988,88 @@ const Player = (() => {
     const h = Math.floor(sec / 3600);
     const m = Math.floor((sec % 3600) / 60);
     const s = Math.floor(sec % 60);
-    return (
-      (h ? h + ":" : "") +
-      String(m).padStart(2, "0") +
-      ":" +
-      String(s).padStart(2, "0")
-    );
+    return ((h ? h + ":" : "") + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0"));
   }
 
-  function initDom() {
-    btnSetOutroBegin = qs("btnSetOutroBegin");
+  // Helper: wire intro/outro marker buttons once. Keeps logic DRY.
+  function wireIntroOutroButtons() {
+    // Intro end button
+    if (btnSetIntroEnd && !btnSetIntroEnd._wired) {
+      btnSetIntroEnd._wired = true;
+      btnSetIntroEnd.addEventListener('click', async () => {
+        if (!currentPath || !videoEl) return;
+        const t = Math.max(0, Math.min(duration || 0, videoEl.currentTime || 0));
+        try {
+          // Try server persistence first
+          try {
+            const mu = new URL('/api/scenes/intro', window.location.origin);
+            mu.searchParams.set('path', currentPath);
+            mu.searchParams.set('time', String(t.toFixed(3)));
+            const mr = await fetch(mu.toString(), { method: 'POST' });
+            if (!mr.ok) throw new Error('server');
+          }
+          catch (_) {
+            // Fallback to localStorage
+            const key = `${LS_PREFIX}:introEnd:${currentPath}`;
+            localStorage.setItem(key, String(Number(t.toFixed(3))));
+          }
+          notify('Intro end set at ' + fmtTime(t), 'success');
+          try {
+            await loadScenes();
+
+          }
+          catch (_) { }
+          try {
+            renderMarkers();
+
+          }
+          catch (_) { }
+          try {
+            renderMarkersList();
+
+          }
+          catch (_) { }
+        }
+        catch (e) {
+          notify('Failed to set intro end', 'error');
+        }
+      });
+    }
+    // Outro begin button
     if (btnSetOutroBegin && !btnSetOutroBegin._wired) {
       btnSetOutroBegin._wired = true;
       btnSetOutroBegin.addEventListener('click', async () => {
         if (!currentPath || !videoEl) return;
         const t = Math.max(0, Math.min(duration || 0, videoEl.currentTime || 0));
         try {
-          // Save to localStorage for now; backend support can be added
           localStorage.setItem(`${LS_PREFIX}:outroBegin:${currentPath}`, String(t));
           outroBegin = t;
-          notify('Outro set','success');
-          renderMarkers();
-          renderMarkersList();
-        } catch(e) {
-          notify('Failed to set outro begin','error');
+          notify('Outro set', 'success');
+          try {
+            renderMarkers();
+
+          }
+          catch (_) { }
+          try {
+            renderMarkersList();
+
+          }
+          catch (_) { }
+        }
+        catch (e) {
+          notify('Failed to set outro begin', 'error');
         }
       });
     }
-    if (videoEl) return; // already
+  }
+
+  function initDom() {
+    // Resolve button elements (grouped)
+    // (intro/outro buttons already resolved earlier in initDom)
+    // Wire marker intro/outro actions via helper
+    wireIntroOutroButtons();
+    if (videoEl) return;
+    // already
     videoEl = qs("playerVideo");
     titleEl = qs("playerTitle");
     overlayBarEl = qs("playerOverlayBar");
@@ -2653,7 +3080,8 @@ const Player = (() => {
           const container = videoEl && videoEl.parentElement ? videoEl.parentElement : document.body;
           if (!document.fullscreenElement) await container.requestFullscreen();
           else await document.exitFullscreen();
-        } catch (_) {}
+        }
+        catch (_) { }
       });
     }
     // subtitle overlay element (in-video textual captions rendered by JS)
@@ -2679,14 +3107,16 @@ const Player = (() => {
     }
     curEl = qs("curTime");
     totalEl = qs("totalTime");
-    timelineEl = qs("timeline"); // legacy element (may be missing)
+    timelineEl = qs("timeline");
+    // legacy element (may be missing)
     heatmapEl = qs("timelineHeatmap");
     heatmapCanvasEl = qs("timelineHeatmapCanvas");
     progressEl = qs("timelineProgress");
     markersEl = qs("timelineMarkers");
     spriteTooltipEl = qs("spritePreview");
     if (!spriteTooltipEl) {
-      // Fallback in case markup changed; create ephemeral element
+      // Fallback in case markup changed;
+      // create ephemeral element
       spriteTooltipEl = document.createElement('div');
       spriteTooltipEl.id = 'spritePreview';
       spriteTooltipEl.style.position = 'absolute';
@@ -2738,7 +3168,8 @@ const Player = (() => {
     btnFullscreen = qs("btnFullscreen");
 
     // Sidebar
-    sbFileNameEl = null; // removed from DOM
+    sbFileNameEl = null;
+    // removed from DOM
     fiDurationEl = qs("fiDuration");
     fiResolutionEl = qs("fiResolution");
     fiVideoCodecEl = qs("fiVideoCodec");
@@ -2757,8 +3188,10 @@ const Player = (() => {
       fiPathEl.addEventListener('dblclick', () => {
         try {
           if (!currentPath) return;
-          if (fiPathEl.querySelector('input')) return; // already editing
-          const origRel = currentPath; // e.g. folder/name.mp4
+          if (fiPathEl.querySelector('input')) return;
+          // already editing
+          const origRel = currentPath;
+          // e.g. folder/name.mp4
           const dir = origRel.includes('/') ? origRel.slice(0, origRel.lastIndexOf('/')) : '';
           const origName = origRel.split('/').pop() || origRel;
           const input = document.createElement('textarea');
@@ -2785,7 +3218,12 @@ const Player = (() => {
           input.select();
           // Auto-resize height to fit content (cap at 5 lines / ~200px)
           const autoresize = () => {
-            try { input.style.height = 'auto'; input.style.height = Math.min(200, input.scrollHeight) + 'px'; } catch(_) {}
+            try {
+              input.style.height = 'auto';
+              input.style.height = Math.min(200, input.scrollHeight) + 'px';
+
+            }
+            catch (_) { }
           };
           autoresize();
           input.addEventListener('input', autoresize);
@@ -2796,25 +3234,46 @@ const Player = (() => {
             fiPathEl.textContent = origRel;
           };
           const commit = async () => {
-            if (committing) return; committing = true;
+            if (committing) return;
+            committing = true;
             let newName = (input.value || '').replace(/[\r\n]+/g, ' ').trim();
-            if (!newName) { cancel(); return; }
+            if (!newName) {
+              cancel();
+              return;
+
+            }
             // Disallow path separators for now (rename only, no move) per UX request
             if (/[\\/]/.test(newName)) {
               notify('Name cannot contain "/"', 'error');
-              committing = false; input.focus(); return;
+              committing = false;
+              input.focus();
+              return;
             }
-            if (newName === origName) { cancel(); return; }
+            if (newName === origName) {
+              cancel();
+              return;
+
+            }
             // Preserve original extension enforcement (server also validates)
             const origExt = origName.includes('.') ? origName.slice(origName.lastIndexOf('.')) : '';
             const newExt = newName.includes('.') ? newName.slice(newName.lastIndexOf('.')) : '';
             if (origExt.toLowerCase() !== newExt.toLowerCase()) {
               notify('Extension must remain ' + origExt, 'error');
-              committing = false; input.focus(); return;
+              committing = false;
+              input.focus();
+              return;
             }
             // Save current playback position to restore after reopen
-            let resumeT = 0; let wasPaused = true;
-            try { if (videoEl) { resumeT = videoEl.currentTime || 0; wasPaused = videoEl.paused; } } catch(_){}
+            let resumeT = 0;
+            let wasPaused = true;
+            try {
+              if (videoEl) {
+                resumeT = videoEl.currentTime || 0;
+                wasPaused = videoEl.paused;
+
+              }
+            }
+            catch (_) { }
             fiPathEl.classList.add('renaming');
             try {
               const u = new URL('/api/media/rename', window.location.origin);
@@ -2822,8 +3281,17 @@ const Player = (() => {
               u.searchParams.set('new_name', newName);
               const r = await fetch(u.toString(), { method: 'POST' });
               if (!r.ok) {
-                try { const j = await r.json(); notify('Rename failed: ' + (j?.error || r.status), 'error'); } catch(_) { notify('Rename failed', 'error'); }
-                cancel(); return;
+                try {
+                  const j = await r.json();
+                  notify('Rename failed: ' + (j?.error || r.status), 'error');
+
+                }
+                catch (_) {
+                  notify('Rename failed', 'error');
+
+                }
+                cancel();
+                return;
               }
               const dirPrefix = dir ? dir + '/' : '';
               const newRel = dirPrefix + newName;
@@ -2833,15 +3301,36 @@ const Player = (() => {
               // Attempt to restore playback after reopen
               resumeOverrideTime = resumeT;
               // Immediately swap textarea back to static text before reopening to avoid lingering edit state
-              try { fiPathEl.textContent = newRel; } catch(_){}
-              open(newRel); // will set new metadata + title (overwrites value again safely)
-              if (!wasPaused) { setTimeout(() => { try { if (videoEl && videoEl.paused) safePlay(videoEl); } catch(_){} }, 800); }
+              try {
+                fiPathEl.textContent = newRel;
+
+              }
+              catch (_) { }
+              open(newRel);
+              // will set new metadata + title (overwrites value again safely)
+              if (!wasPaused) {
+                setTimeout(() => {
+                  try {
+                    if (videoEl && videoEl.paused) safePlay(videoEl);
+
+                  }
+                  catch (_) { }
+                }, 800);
+              }
               // Refresh library grid entry names later
-              setTimeout(() => { try { loadLibrary(); } catch(_){} }, 400);
-            } catch(err) {
+              setTimeout(() => {
+                try {
+                  loadLibrary();
+
+                }
+                catch (_) { }
+              }, 400);
+            }
+            catch (err) {
               notify('Rename error', 'error');
               cancel();
-            } finally {
+            }
+            finally {
               fiPathEl.classList.remove('renaming');
             }
           };
@@ -2877,7 +3366,8 @@ const Player = (() => {
             // Then proceed with commit logic (async)
             commit();
           });
-        } catch(_) {}
+        }
+        catch (_) { }
       });
     }
 
@@ -2890,17 +3380,17 @@ const Player = (() => {
         if (curEl) curEl.textContent = fmtTime(t);
         if (duration > 0 && progressEl) {
           const pct = Math.max(0, Math.min(100, (t / duration) * 100));
-          try { progressEl.style.width = pct + "%"; } catch(_) {}
+          try {
+            progressEl.style.width = pct + "%";
+
+          }
+          catch (_) { }
         }
         // Throttled periodic save of progress (every ~5s or on near-end)
         try {
           if (!currentPath) return;
           const now = Date.now();
-          if (
-            !videoEl._lastPersist ||
-            now - videoEl._lastPersist > 5000 ||
-            (duration && duration - t < 2)
-          ) {
+          if (!videoEl._lastPersist || now - videoEl._lastPersist > 5000 || (duration && duration - t < 2)) {
             saveProgress(currentPath, {
               t,
               d: duration,
@@ -2909,7 +3399,8 @@ const Player = (() => {
             });
             videoEl._lastPersist = now;
           }
-        } catch (_) {}
+        }
+        catch (_) { }
       });
       videoEl.addEventListener("loadedmetadata", async () => {
         duration = Number(videoEl.duration) || 0;
@@ -2932,18 +3423,32 @@ const Player = (() => {
             try {
               videoEl.addEventListener('seeked', onSeek);
               videoEl.currentTime = Math.max(0, Math.min(duration || 0, t));
-            } catch (_) {
-              if (!done) { done = true; try { videoEl.removeEventListener('seeked', onSeek); } catch(_){} res(); }
+            }
+            catch (_) {
+              if (!done) {
+                done = true;
+                try {
+                  videoEl.removeEventListener('seeked', onSeek);
+
+                }
+                catch (_) { } res();
+              }
             }
             // fallback timeout
-            setTimeout(() => { if (!done) { done = true; try { videoEl.removeEventListener('seeked', onSeek); } catch(_){} res(); } }, timeout);
+            setTimeout(() => {
+              if (!done) {
+                done = true;
+                try {
+                  videoEl.removeEventListener('seeked', onSeek);
+
+                }
+                catch (_) { } res();
+              }
+            }, timeout);
           });
           // use Player-level safePlay(videoEl) to attempt playback and swallow rejections
           if (saved && Number.isFinite(saved.t)) {
-            const target = Math.max(
-              0,
-              Math.min(duration || 0, Number(saved.t))
-            );
+            const target = Math.max(0, Math.min(duration || 0, Number(saved.t)));
             if (target && Math.abs(target - (videoEl.currentTime || 0)) > 0.5) {
               await awaitSeek(target);
             }
@@ -2951,19 +3456,30 @@ const Player = (() => {
               videoEl.playbackRate = Number(saved.rate);
             }
             const autoplayResume =
-            localStorage.getItem("setting.autoplayResume") === "1";
+              localStorage.getItem("setting.autoplayResume") === "1";
             if (!(saved.paused || !autoplayResume)) {
               await safePlay(videoEl);
             }
-          } else if (override && Number.isFinite(override)) {
+          }
+          else if (override && Number.isFinite(override)) {
             const t = Math.max(0, Math.min(duration || 0, Number(override)));
             if (t && Math.abs(t - (videoEl.currentTime || 0)) > 0.25) await awaitSeek(t);
             const autoplayResume = localStorage.getItem("setting.autoplayResume") === "1";
             if (autoplayResume) await safePlay(videoEl);
-          } else {
+          }
+          else {
             // No saved progress or explicit override — optionally start at intro end
             try {
-              const startAtIntro = (function(){ try { const cb = document.getElementById('settingStartAtIntro'); if(cb) return !!cb.checked; return localStorage.getItem('setting.startAtIntro') !== '0'; } catch(_) { return true; } })();
+              const startAtIntro = (function () {
+                try {
+                  const cb = document.getElementById('settingStartAtIntro');
+                  if (cb) return !!cb.checked;
+                  return localStorage.getItem('setting.startAtIntro') !== '0';
+                }
+                catch (_) {
+                  return true;
+                }
+              })();
               if (startAtIntro) {
                 // prefer localStorage per-path key first, then server-provided introEnd
                 try {
@@ -2980,15 +3496,24 @@ const Player = (() => {
                   if (!applied && introEnd && Number.isFinite(Number(introEnd)) && introEnd > 0 && introEnd < duration) {
                     if (Math.abs(introEnd - (videoEl.currentTime || 0)) > 0.25) await awaitSeek(Number(introEnd));
                   }
-                } catch(_) {}
+                }
+                catch (_) { }
               }
-            } catch (_) {}
+            }
+            catch (_) { }
           }
           resumeOverrideTime = null;
-        } catch (_) {}
+        }
+        catch (_) { }
       });
       // keep overlay cleared on metadata load
-      try { if (subtitleOverlayEl) { subtitleOverlayEl.textContent = ''; subtitleOverlayEl.hidden = true; } } catch(_) {}
+      try {
+        if (subtitleOverlayEl) {
+          subtitleOverlayEl.textContent = '';
+          subtitleOverlayEl.hidden = true;
+        }
+      }
+      catch (_) { }
       videoEl.addEventListener("play", syncControls);
       videoEl.addEventListener("pause", () => {
         syncControls();
@@ -3002,36 +3527,15 @@ const Player = (() => {
               rate: videoEl.playbackRate,
             });
           }
-        } catch (_) {}
+        } catch (_) { }
       });
-      videoEl.addEventListener("ended", () => {
-        syncControls();
-        try {
-          if (currentPath) {
-            const t = Math.max(0, videoEl.currentTime || 0);
-            saveProgress(currentPath, {
-              t,
-              d: duration,
-              paused: true,
-              rate: videoEl.playbackRate,
-            });
-          }
-        } catch (_) {}
+      videoEl._clickToggleWired = true;
+      videoEl.addEventListener("click", (e) => {
+        // Only toggle when clicking the video surface itself
+        if (e.target !== videoEl) return;
+        if (videoEl.paused) safePlay(videoEl);
+        else videoEl.pause();
       });
-      videoEl.addEventListener("volumechange", syncControls);
-      videoEl.addEventListener("ratechange", syncControls);
-      videoEl.addEventListener("enterpictureinpicture", syncControls);
-      videoEl.addEventListener("leavepictureinpicture", syncControls);
-      // Click anywhere on the video toggles play/pause
-      if (!videoEl._clickToggleWired) {
-        videoEl._clickToggleWired = true;
-        videoEl.addEventListener("click", (e) => {
-          // Only toggle when clicking the video surface itself
-          if (e.target !== videoEl) return;
-          if (videoEl.paused) safePlay(videoEl);
-          else videoEl.pause();
-        });
-      }
     }
 
     if (timelineEl || scrubberTrackEl) {
@@ -3086,48 +3590,29 @@ const Player = (() => {
           setTimeout(() => loadLibrary(), 200);
           // Also add a marker at this time if not already very close to an existing one
           try {
-            const epsilon = 0.25; // seconds tolerance
-            const exists = Array.isArray(scenes) && scenes.some(s => Math.abs((s.time||0) - t) <= epsilon);
+            const epsilon = 0.25;
+            // seconds tolerance
+            const exists = Array.isArray(scenes) && scenes.some(s => Math.abs((s.time || 0) - t) <= epsilon);
             if (!exists) {
               const mu = new URL('/api/marker', window.location.origin);
               mu.searchParams.set('path', currentPath);
               mu.searchParams.set('time', String(t.toFixed(3)));
-              const mr = await fetch(mu.toString(), { method:'POST' });
+              const mr = await fetch(mu.toString(), { method: 'POST' });
               if (mr.ok) {
                 // Reload scenes + markers so UI reflects new tick & list entry
                 await loadScenes();
-                try { renderMarkers(); } catch(_) {}
+                try {
+                  renderMarkers();
+
+                }
+                catch (_) { }
               }
             }
-          } catch(_){ /* ignore marker add errors silently */ }
-        } catch (e) {
-          notify("Failed to set thumbnail", "error");
-        }
-      });
-    }
-    if (btnSetIntroEnd && !btnSetIntroEnd._wired) {
-      btnSetIntroEnd._wired = true;
-      btnSetIntroEnd.addEventListener('click', async () => {
-        if (!currentPath || !videoEl) return;
-        const t = Math.max(0, Math.min(duration||0, videoEl.currentTime||0));
-        try {
-          // Attempt to persist server-side first
-          try {
-            const mu = new URL('/api/scenes/intro', window.location.origin);
-            mu.searchParams.set('path', currentPath);
-            mu.searchParams.set('time', String(t.toFixed(3)));
-            const mr = await fetch(mu.toString(), { method: 'POST' });
-            if (!mr.ok) throw new Error('server');
-          } catch (e) {
-            // Fallback to localStorage if server fails
-            const key = `${LS_PREFIX}:introEnd:${currentPath}`;
-            localStorage.setItem(key, String(Number(t.toFixed(3))));
           }
-          notify('Intro end set at ' + fmtTime(t), 'success');
-          try { await loadScenes(); } catch(_){ }
-          try { renderMarkers(); } catch(_){ }
-        } catch (e) {
-          notify('Failed to set intro end', 'error');
+          catch (_) { /* ignore marker add errors silently */ }
+        }
+        catch (e) {
+          notify("Failed to set thumbnail", "error");
         }
       });
     }
@@ -3143,18 +3628,42 @@ const Player = (() => {
     if (btnMute && !btnMute._wired) {
       btnMute._wired = true;
       btnMute.addEventListener("click", () => {
-        if (videoEl) videoEl.muted = !videoEl.muted;
+        if (!videoEl) return;
+        // If currently muted (or volume is 0) -> unmute & restore previous volume
+        if (videoEl.muted || videoEl.volume === 0) {
+          videoEl.muted = false;
+          if (videoEl.volume === 0) {
+            // Guard: ensure a sane restore (fallback to 0.5 if somehow lost)
+            videoEl.volume = (_lastNonZeroVolume && _lastNonZeroVolume > 0) ? _lastNonZeroVolume : 0.5;
+          }
+        } else {
+          // Muting: capture current volume if > 0 so we can restore later
+          if (videoEl.volume > 0) _lastNonZeroVolume = videoEl.volume;
+          videoEl.muted = true;
+        }
+        syncControls();
       });
     }
     if (volSlider && !volSlider._wired) {
       volSlider._wired = true;
       volSlider.addEventListener("input", () => {
-        if (videoEl)
-          videoEl.volume = Math.max(
-          0,
-          Math.min(1, parseFloat(volSlider.value))
-        );
+        if (!videoEl) return;
+        const v = Math.max(0, Math.min(1, parseFloat(volSlider.value)));
+        videoEl.volume = v;
+        if (v > 0) {
+          _lastNonZeroVolume = v;
+          if (videoEl.muted) videoEl.muted = false; // unmute when user drags volume up
+        }
+        syncControls();
       });
+    }
+    // Listen for programmatic volume/mute changes to keep UI in sync
+    if (videoEl && !videoEl._volumeSyncAttached) {
+      videoEl.addEventListener("volumechange", () => {
+        if (videoEl.volume > 0 && !videoEl.muted) _lastNonZeroVolume = videoEl.volume;
+        syncControls();
+      });
+      videoEl._volumeSyncAttached = true;
     }
     if (rateSelect && !rateSelect._wired) {
       rateSelect._wired = true;
@@ -3166,36 +3675,33 @@ const Player = (() => {
       btnCC._wired = true;
       btnCC.addEventListener("click", () => {
         try {
-          const tracks = videoEl
-          ? Array.from(videoEl.querySelectorAll("track"))
-          : [];
+          const tracks = videoEl ? Array.from(videoEl.querySelectorAll("track")) : [];
           const anyShowing = tracks.some((t) => t.mode === "showing");
           tracks.forEach((t) => (t.mode = anyShowing ? "disabled" : "showing"));
           syncControls();
-        } catch (_) {}
+        }
+        catch (_) { }
       });
     }
     if (btnPip && !btnPip._wired) {
       btnPip._wired = true;
       btnPip.addEventListener("click", async () => {
         try {
-          if (!document.pictureInPictureElement)
-            await videoEl.requestPictureInPicture();
+          if (!document.pictureInPictureElement) await videoEl.requestPictureInPicture();
           else await document.exitPictureInPicture();
-        } catch (_) {}
+        }
+        catch (_) { }
       });
     }
     if (btnFullscreen && !btnFullscreen._wired) {
       btnFullscreen._wired = true;
       btnFullscreen.addEventListener("click", async () => {
         try {
-          const container =
-          videoEl && videoEl.parentElement
-          ? videoEl.parentElement
-          : document.body;
+          const container = videoEl && videoEl.parentElement ? videoEl.parentElement : document.body;
           if (!document.fullscreenElement) await container.requestFullscreen();
           else await document.exitFullscreen();
-        } catch (_) {}
+        }
+        catch (_) { }
       });
     }
     if (btnAddMarker && !btnAddMarker._wired) {
@@ -3212,7 +3718,8 @@ const Player = (() => {
           notify("Marker added", "success");
           await loadScenes();
           renderMarkers();
-        } catch (e) {
+        }
+        catch (e) {
           notify("Failed to add marker", "error");
         }
       });
@@ -3230,7 +3737,8 @@ const Player = (() => {
   // - A valid last entry exists and file still appears in current listing fetch
   async function tryAutoResumeLast() {
     try {
-      if (currentPath) return; // something already playing/selected
+      if (currentPath) return;
+      // something already playing/selected
       const last = getLastVideoEntry();
       if (!last || !last.path) return;
       // Defer until at least one library load attempt has happened (totalFiles initialized)
@@ -3247,8 +3755,11 @@ const Player = (() => {
       try {
         window.__artifactStatus = window.__artifactStatus || {};
         if (window.__artifactStatus[p]) {
-          exists = true; // path known (even if cover missing) -> we still attempt open; player logic will guard loaders
-        } else {
+          exists = true;
+          // path known (even if cover missing) -> we still attempt open;
+          // player logic will guard loaders
+        }
+        else {
           const su = new URL("/api/artifacts/status", window.location.origin);
           su.searchParams.set("path", p);
           const sr = await fetch(su.toString());
@@ -3261,23 +3772,22 @@ const Player = (() => {
             }
           }
         }
-      } catch (_) {}
-      if (!exists) return; // status endpoint failed entirely
+      }
+      catch (_) { }
+      if (!exists) return;
+      // status endpoint failed entirely
       // Switch to player tab and load via Player module
-      resumeOverrideTime = Number.isFinite(last.time)
-      ? Number(last.time)
-      : null;
+      resumeOverrideTime = Number.isFinite(last.time) ? Number(last.time) : null;
       if (window.Player && typeof window.Player.open === "function") {
         window.Player.open(p);
-      } else if (
-        typeof Player !== "undefined" &&
-        Player &&
-        typeof Player.open === "function"
-      ) {
+      }
+      else if (typeof Player !== "undefined" && Player && typeof Player.open === "function") {
         Player.open(p);
       }
-      // Do NOT auto-switch tab here; resume should be passive unless user opted in explicitly.
-    } catch (_) {}
+      // Do NOT auto-switch tab here;
+      // resume should be passive unless user opted in explicitly.
+    }
+    catch (_) { }
   }
 
   // Wrap existing initial load hook
@@ -3290,10 +3800,12 @@ const Player = (() => {
         try {
           // remove exact last keys
           localStorage.removeItem(keyLastVideoObj());
-        } catch(_) {}
+        }
+        catch (_) { }
         try {
           localStorage.removeItem(keyLastVideoPathLegacy());
-        } catch(_) {}
+        }
+        catch (_) { }
         try {
           // remove any mediaPlayer:video:* entries
           const toRemove = [];
@@ -3303,19 +3815,31 @@ const Player = (() => {
             if (k.indexOf(`${LS_PREFIX}:video:`) === 0) toRemove.push(k);
             if (/last/i.test(k)) toRemove.push(k);
           }
-          toRemove.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
-        } catch(_) {}
+          toRemove.forEach(k => {
+            try {
+              localStorage.removeItem(k);
+            }
+            catch (_) { }
+          });
+        }
+        catch (_) { }
       }
-    } catch(_) {}
-    try { localStorage.removeItem('mediaPlayer:skipSaveOnUnload'); } catch(_) {}
-    setTimeout(tryAutoResumeLast, 800); // slight delay to allow initial directory list
+    }
+    catch (_) { }
+    try {
+      localStorage.removeItem('mediaPlayer:skipSaveOnUnload');
+    }
+    catch (_) { }
+    setTimeout(tryAutoResumeLast, 800);
+    // slight delay to allow initial directory list
   });
   window.addEventListener("beforeunload", () => {
     try {
       // If a recent Reset was performed we set a marker to avoid re-saving
       try {
         if (localStorage.getItem('mediaPlayer:skipSaveOnUnload') === '1') return;
-      } catch (_) {}
+      }
+      catch (_) { }
       if (currentPath && videoEl) {
         const t = Math.max(0, videoEl.currentTime || 0);
         saveProgress(currentPath, {
@@ -3325,7 +3849,8 @@ const Player = (() => {
           rate: videoEl.playbackRate,
         });
       }
-    } catch (_) {}
+    }
+    catch (_) { }
   });
 
   function syncControls() {
@@ -3337,11 +3862,11 @@ const Player = (() => {
         const pauseIcon = btnPlayPause.querySelector(".icon-pause");
         if (playIcon && pauseIcon) {
           if (videoEl.paused) {
-            playIcon.hidden = false;
-            pauseIcon.hidden = true;
+            playIcon.classList.remove("hidden");
+            pauseIcon.classList.add("hidden");
           } else {
-            playIcon.hidden = true;
-            pauseIcon.hidden = false;
+            playIcon.classList.add("hidden");
+            pauseIcon.classList.remove("hidden");
           }
         }
       }
@@ -3351,16 +3876,15 @@ const Player = (() => {
         const muted = btnMute.querySelector(".icon-muted");
         if (vol && muted) {
           if (videoEl.muted || videoEl.volume === 0) {
-            vol.hidden = true;
-            muted.hidden = false;
+            vol.classList.add("hidden");
+            muted.classList.remove("hidden");
           } else {
-            vol.hidden = false;
-            muted.hidden = true;
+            vol.classList.remove("hidden");
+            muted.classList.add("hidden");
           }
         }
       }
-      if (volSlider && typeof videoEl.volume === "number")
-        volSlider.value = String(videoEl.volume);
+      if (volSlider && typeof videoEl.volume === "number") volSlider.value = String(videoEl.volume);
       if (rateSelect) rateSelect.value = String(videoEl.playbackRate || 1);
       if (btnCC) {
         const tracks = Array.from(videoEl.querySelectorAll("track"));
@@ -3368,10 +3892,14 @@ const Player = (() => {
         btnCC.classList.toggle("active", anyShowing);
         // Hide overlay if CC is off
         try {
-          if (subtitleOverlayEl && !anyShowing) { subtitleOverlayEl.hidden = true; }
-        } catch(_) {}
+          if (subtitleOverlayEl && !anyShowing) {
+            subtitleOverlayEl.hidden = true;
+          }
+        }
+        catch (_) { }
       }
-    } catch (_) {}
+    }
+    catch (_) { }
   }
 
   // -----------------------------
@@ -3393,15 +3921,18 @@ const Player = (() => {
         try {
           if (overlayBarEl) overlayBarEl.classList.add('fading');
           if (scrubberEl) scrubberEl.classList.add('fading');
-        } catch(_){}
+        }
+        catch (_) { }
       }, OVERLAY_FADE_DELAY);
-    } catch (_) {}
+    }
+    catch (_) { }
   }
 
   function wireOverlayInteractions() {
     try {
       if (!videoEl) return;
-      const main = videoEl.parentElement; // .player-main
+      const main = videoEl.parentElement;
+      // .player-main
       if (!main || main._overlayWired) return;
       main._overlayWired = true;
       ["mousemove", "touchstart"].forEach((ev) => {
@@ -3410,7 +3941,10 @@ const Player = (() => {
       ;[overlayBarEl, scrubberEl].forEach(el => {
         if (!el) return;
         el.addEventListener('mouseenter', () => {
-          if (overlayHideTimer) { clearTimeout(overlayHideTimer); overlayHideTimer = null; }
+          if (overlayHideTimer) {
+            clearTimeout(overlayHideTimer);
+            overlayHideTimer = null;
+          }
           overlayBarEl && overlayBarEl.classList.remove('fading');
           scrubberEl && scrubberEl.classList.remove('fading');
         });
@@ -3420,7 +3954,8 @@ const Player = (() => {
       });
       // Initial show on first wire
       showOverlayBar();
-    } catch (_) {}
+    }
+    catch (_) { }
   }
 
   // -----------------------------
@@ -3431,8 +3966,8 @@ const Player = (() => {
     const h = Math.floor(sec / 3600);
     const m = Math.floor((sec % 3600) / 60);
     const s = Math.floor(sec % 60);
-    if (h) return `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
-    return `${m}:${String(s).padStart(2,"0")}`;
+    if (h) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    return `${m}:${String(s).padStart(2, "0")}`;
   }
 
   function updateScrubber() {
@@ -3450,10 +3985,11 @@ const Player = (() => {
           const pctB = videoEl.duration ? (end / videoEl.duration) * 100 : 0;
           scrubberBufferEl.style.width = pctB + "%";
         }
-      } catch(_){}
+      }
+      catch (_) { }
     }
     if (scrubberTimeEl) {
-      scrubberTimeEl.textContent = `${fmtShortTime(videoEl.currentTime||0)} / ${fmtShortTime(videoEl.duration||0)}`;
+      scrubberTimeEl.textContent = `${fmtShortTime(videoEl.currentTime || 0)} / ${fmtShortTime(videoEl.duration || 0)}`;
     }
     scrubberRAF = requestAnimationFrame(updateScrubber);
   }
@@ -3477,7 +4013,12 @@ const Player = (() => {
     const rect = scrubberTrackEl.getBoundingClientRect();
     const pct = (clientX - rect.left) / rect.width;
     const t = pctToTime(pct);
-    if (Number.isFinite(t)) { try { videoEl.currentTime = t; } catch(_){} }
+    if (Number.isFinite(t)) {
+      try {
+        videoEl.currentTime = t;
+      }
+      catch (_) { }
+    }
   }
   function wireScrubberInteractions() {
     if (!scrubberTrackEl || scrubberTrackEl._wired) return;
@@ -3487,7 +4028,12 @@ const Player = (() => {
       showOverlayBar();
       scrubberDragging = true;
       scrubberWasPaused = videoEl.paused;
-      if (!scrubberWasPaused) { try { videoEl.pause(); } catch(_){} }
+      if (!scrubberWasPaused) {
+        try {
+          videoEl.pause();
+        }
+        catch (_) { }
+      }
       seekToClientX(e.touches ? e.touches[0].clientX : e.clientX);
       window.addEventListener('mousemove', onMove);
       window.addEventListener('touchmove', onMove, { passive: true });
@@ -3495,24 +4041,36 @@ const Player = (() => {
       window.addEventListener('touchend', onUp, { once: true });
       e.preventDefault();
     };
-    const onMove = (e) => { if (!scrubberDragging) return; seekToClientX(e.touches ? e.touches[0].clientX : e.clientX); };
+    const onMove = (e) => {
+      if (!scrubberDragging) return;
+      seekToClientX(e.touches ? e.touches[0].clientX : e.clientX);
+    };
     const onUp = async () => {
       scrubberDragging = false;
       try {
         if (videoEl && scrubberWasPaused === false) {
           // wait a short while for the browser to settle the currentTime change
           await awaitSeekEvent(videoEl, 1200);
-          try { await safePlay(videoEl); } catch(_){}
+          try {
+            await safePlay(videoEl);
+          }
+          catch (_) { }
         }
-      } catch(_) {}
+      }
+      catch (_) { }
       scrubberWasPaused = null;
       showOverlayBar();
     };
     scrubberTrackEl.addEventListener('mousedown', onDown);
     scrubberTrackEl.addEventListener('touchstart', onDown, { passive: true });
     // Hover sprite previews via existing logic
-    scrubberTrackEl.addEventListener('mouseenter', () => { spriteHoverEnabled = true; });
-    scrubberTrackEl.addEventListener('mouseleave', () => { spriteHoverEnabled = false; hideSprite(); });
+    scrubberTrackEl.addEventListener('mouseenter', () => {
+      spriteHoverEnabled = true;
+    });
+    scrubberTrackEl.addEventListener('mouseleave', () => {
+      spriteHoverEnabled = false;
+      hideSprite();
+    });
     scrubberTrackEl.addEventListener('mousemove', (e) => handleSpriteHover(e));
   }
 
@@ -3541,7 +4099,8 @@ const Player = (() => {
         s.title = 'Intro end: ' + fmtTime(it);
         scrubberScenesLayer.appendChild(s);
       }
-    } catch(_) {}
+    }
+    catch (_) { }
   }
 
   function open(path) {
@@ -3567,12 +4126,24 @@ const Player = (() => {
       wireScrubberInteractions();
       // When metadata arrives, we can now safely render scene ticks if scenes already loaded
       videoEl.addEventListener('loadedmetadata', () => {
-        try { renderSceneTicks(); } catch(_){ }
+        try {
+          renderSceneTicks();
+        }
+        catch (_) { }
         // Also, on initial load, if an intro-end exists, seek there so the scrubber shows the correct start position.
         try {
-          (function(){
+          (function () {
             try {
-              const startAtIntro = (function(){ try { const cb = document.getElementById('settingStartAtIntro'); if(cb) return !!cb.checked; return localStorage.getItem('setting.startAtIntro') !== '0'; } catch(_) { return true; } })();
+              const startAtIntro = (function () {
+                try {
+                  const cb = document.getElementById('settingStartAtIntro');
+                  if (cb) return !!cb.checked;
+                  return localStorage.getItem('setting.startAtIntro') !== '0';
+                }
+                catch (_) {
+                  return true;
+                }
+              })();
               if (!startAtIntro) return;
               // prefer localStorage per-path key first
               const key = `${LS_PREFIX}:introEnd:${path}`;
@@ -3582,15 +4153,40 @@ const Player = (() => {
               else if (typeof introEnd !== 'undefined' && introEnd && Number.isFinite(Number(introEnd))) t = Number(introEnd);
               if (t !== null && Number.isFinite(t) && t > 0 && videoEl.duration && t < videoEl.duration) {
                 let done = false;
-                const onSeek = () => { if (done) return; done = true; try { videoEl.removeEventListener('seeked', onSeek); } catch(_){} try { updateScrubber(); } catch(_){} };
-                try { videoEl.addEventListener('seeked', onSeek); videoEl.currentTime = Math.max(0, Math.min(videoEl.duration, t)); }
-                catch(_) { try { updateScrubber(); } catch(_){} }
+                const onSeek = () => {
+                  if (done) return;
+                  done = true;
+                  try {
+                    videoEl.removeEventListener('seeked', onSeek);
+                  }
+                  catch (_) { } try {
+                    updateScrubber();
+                  }
+                  catch (_) { }
+                };
+                try {
+                  videoEl.addEventListener('seeked', onSeek);
+                  videoEl.currentTime = Math.max(0, Math.min(videoEl.duration, t));
+                }
+                catch (_) {
+                  try {
+                    updateScrubber();
+                  }
+                  catch (_) { }
+                }
                 // ensure scrubber updates even if seeked not fired
-                setTimeout(() => { try { updateScrubber(); } catch(_){} }, 250);
+                setTimeout(() => {
+                  try {
+                    updateScrubber();
+                  }
+                  catch (_) { }
+                }, 250);
               }
-            } catch(_){}
+            }
+            catch (_) { }
           })();
-        } catch(_){}
+        }
+        catch (_) { }
       }, { once: true });
     }
     // Update floating title bar if present
@@ -3600,10 +4196,13 @@ const Player = (() => {
         const rawName = path.split('/').pop() || path;
         const baseName = rawName.replace(/\.[^.]+$/, '') || rawName;
         titleTarget.textContent = baseName;
-        if (overlayBarEl && baseName) { delete overlayBarEl.dataset.empty; }
+        if (overlayBarEl && baseName) {
+          delete overlayBarEl.dataset.empty;
+        }
         if (typeof showOverlayBar === 'function') showOverlayBar();
       }
-    } catch(_){}
+    }
+    catch (_) { }
     // Metadata and title
     (async () => {
       try {
@@ -3615,55 +4214,42 @@ const Player = (() => {
         const rawName = path.split("/").pop() || path;
         const baseName = rawName.replace(/\.[^.]+$/, "") || rawName;
         if (titleEl) titleEl.textContent = baseName;
-        if (overlayBarEl && baseName) { delete overlayBarEl.dataset.empty; }
+        if (overlayBarEl && baseName) {
+          delete overlayBarEl.dataset.empty;
+        }
         // sidebar title removed
         // Populate file info table
         try {
-          if (fiDurationEl)
-            fiDurationEl.textContent = fmtTime(Number(d.duration) || 0) || "—";
-          if (fiResolutionEl)
-            fiResolutionEl.textContent =
-          d.width && d.height ? `${d.width}x${d.height}` : "—";
+          if (fiDurationEl) fiDurationEl.textContent = fmtTime(Number(d.duration) || 0) || "—";
+          if (fiResolutionEl) fiResolutionEl.textContent = d.width && d.height ? `${d.width}x${d.height}` : "—";
           if (fiVideoCodecEl) fiVideoCodecEl.textContent = d.vcodec || "—";
           if (fiAudioCodecEl) fiAudioCodecEl.textContent = d.acodec || "—";
-          if (fiBitrateEl)
-            fiBitrateEl.textContent = d.bitrate
-          ? Number(d.bitrate) >= 1000
-          ? Number(d.bitrate / 1000).toFixed(0) + " kbps"
-          : d.bitrate + " bps"
-          : "—";
-          if (fiVBitrateEl)
-            fiVBitrateEl.textContent = d.vbitrate
-          ? Number(d.vbitrate) >= 1000
-          ? Number(d.vbitrate / 1000).toFixed(0) + " kbps"
-          : d.vbitrate + " bps"
-          : "—";
-          if (fiABitrateEl)
-            fiABitrateEl.textContent = d.abitrate
-          ? Number(d.abitrate) >= 1000
-          ? Number(d.abitrate / 1000).toFixed(0) + " kbps"
-          : d.abitrate + " bps"
-          : "—";
-          if (fiSizeEl)
-            fiSizeEl.textContent = d.size ? fmtSize(Number(d.size)) : "—";
+          if (fiBitrateEl) fiBitrateEl.textContent = d.bitrate ? Number(d.bitrate) >= 1000 ? Number(d.bitrate / 1000).toFixed(0) + " kbps" : d.bitrate + " bps" : "—";
+          if (fiVBitrateEl) fiVBitrateEl.textContent = d.vbitrate ? Number(d.vbitrate) >= 1000 ? Number(d.vbitrate / 1000).toFixed(0) + " kbps" : d.vbitrate + " bps" : "—";
+          if (fiABitrateEl) fiABitrateEl.textContent = d.abitrate ? Number(d.abitrate) >= 1000 ? Number(d.abitrate / 1000).toFixed(0) + " kbps" : d.abitrate + " bps" : "—";
+          if (fiSizeEl) fiSizeEl.textContent = d.size ? fmtSize(Number(d.size)) : "—";
           if (fiModifiedEl) {
             if (d.modified) {
               try {
-                fiModifiedEl.textContent = new Date(
-                  Number(d.modified) * 1000
-                ).toLocaleString();
-              } catch (_) {
+                fiModifiedEl.textContent = new Date(Number(d.modified) * 1000).toLocaleString();
+              }
+              catch (_) {
                 fiModifiedEl.textContent = "—";
               }
-            } else fiModifiedEl.textContent = "—";
+            }
+            else fiModifiedEl.textContent = "—";
           }
           if (fiPathEl) fiPathEl.textContent = path || "—";
-        } catch (_) {}
-      } catch (_) {
+        }
+        catch (_) { }
+      }
+      catch (_) {
         const rawName = path.split("/").pop() || path;
         const baseName = rawName.replace(/\.[^.]+$/, "") || rawName;
         if (titleEl) titleEl.textContent = baseName;
-        if (overlayBarEl && baseName) { delete overlayBarEl.dataset.empty; }
+        if (overlayBarEl && baseName) {
+          delete overlayBarEl.dataset.empty;
+        }
         // sidebar title removed
         try {
           if (fiDurationEl) fiDurationEl.textContent = "—";
@@ -3676,25 +4262,33 @@ const Player = (() => {
           if (fiSizeEl) fiSizeEl.textContent = "—";
           if (fiModifiedEl) fiModifiedEl.textContent = "—";
           if (fiPathEl) fiPathEl.textContent = path || "—";
-        } catch (_) {}
+        }
+        catch (_) { }
       }
     })();
     // Artifacts: load consolidated status first, then conditional loaders
     (async () => {
       try {
         await loadArtifactStatuses();
-      } catch (_) {}
+      }
+      catch (_) { }
       // Now that cache is warm, only invoke loaders that might need full data
       loadHeatmap();
       loadSprites();
       loadScenes();
       loadSubtitles();
-      try { loadVideoChips(); } catch(_){}
+      try {
+        loadVideoChips();
+      }
+      catch (_) { }
     })();
     wireBadgeActions();
   }
   // Expose globally for Random Play
-  try { window.__playerOpen = open; } catch(_) {}
+  try {
+    window.__playerOpen = open;
+  }
+  catch (_) { }
 
   // -----------------------------
   // Video performers & tags chips
@@ -3707,18 +4301,21 @@ const Player = (() => {
     perfListEl.innerHTML = '';
     tagListEl.innerHTML = '';
     // Fetch metadata that might contain tags/performers (extendable). If not present, fallback to dedicated endpoints if exist.
-    let performers = []; let tags = [];
+    let performers = [];
+    let tags = [];
     try {
-      const u = new URL('/api/media/info', window.location.origin); // backend media info endpoint (prefixed)
+      const u = new URL('/api/media/info', window.location.origin);
+      // backend media info endpoint (prefixed)
       u.searchParams.set('path', currentPath);
       const r = await fetch(u.toString());
       if (r.ok) {
         const j = await r.json();
         const d = j?.data || j;
-        if (Array.isArray(d?.performers)) performers = d.performers.filter(x=>!!x).slice(0,200);
-        if (Array.isArray(d?.tags)) tags = d.tags.filter(x=>!!x).slice(0,400);
+        if (Array.isArray(d?.performers)) performers = d.performers.filter(x => !!x).slice(0, 200);
+        if (Array.isArray(d?.tags)) tags = d.tags.filter(x => !!x).slice(0, 400);
       }
-    } catch(_){ /* ignore; fallback empty */ }
+    }
+    catch (_) { }
     renderChipSet(perfListEl, performers, 'performer');
     renderChipSet(tagListEl, tags, 'tag');
     wireChipInputs();
@@ -3727,7 +4324,7 @@ const Player = (() => {
   function renderChipSet(container, items, kind) {
     if (!container) return;
     container.innerHTML = '';
-    (items||[]).forEach(item => {
+    (items || []).forEach(item => {
       if (!item || typeof item !== 'string') return;
       const chip = document.createElement('span');
       chip.className = 'chip';
@@ -3750,8 +4347,11 @@ const Player = (() => {
       perfInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
-          const val = (perfInput.value||'').trim();
-          if (val) { addChip('performer', val); perfInput.value=''; }
+          const val = (perfInput.value || '').trim();
+          if (val) {
+            addChip('performer', val);
+            perfInput.value = '';
+          }
         }
       });
     }
@@ -3760,8 +4360,11 @@ const Player = (() => {
       tagInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
-          const val = (tagInput.value||'').trim();
-          if (val) { addChip('tag', val); tagInput.value=''; }
+          const val = (tagInput.value || '').trim();
+          if (val) {
+            addChip('tag', val);
+            tagInput.value = '';
+          }
         }
       });
     }
@@ -3774,10 +4377,13 @@ const Player = (() => {
       const url = new URL(ep, window.location.origin);
       url.searchParams.set('path', currentPath);
       url.searchParams.set(kind, value);
-      const r = await fetch(url.toString(), { method:'POST' });
-      if (!r.ok) throw new Error('HTTP '+r.status);
+      const r = await fetch(url.toString(), { method: 'POST' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       loadVideoChips();
-    } catch(_) { notify('Failed to add '+kind, 'error'); }
+    }
+    catch (_) {
+      notify('Failed to add ' + kind, 'error');
+    }
   }
 
   async function removeChip(kind, value) {
@@ -3787,10 +4393,13 @@ const Player = (() => {
       const url = new URL(ep, window.location.origin);
       url.searchParams.set('path', currentPath);
       url.searchParams.set(kind, value);
-      const r = await fetch(url.toString(), { method:'POST' });
-      if (!r.ok) throw new Error('HTTP '+r.status);
+      const r = await fetch(url.toString(), { method: 'POST' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       loadVideoChips();
-    } catch(_) { notify('Failed to remove '+kind, 'error'); }
+    }
+    catch (_) {
+      notify('Failed to remove ' + kind, 'error');
+    }
   }
 
   // Run browser-side face detection using the FaceDetector API and upload results to server
@@ -3805,27 +4414,16 @@ const Player = (() => {
       }
       // Feature check
       const Supported =
-      "FaceDetector" in window && typeof window.FaceDetector === "function";
+        "FaceDetector" in window && typeof window.FaceDetector === "function";
       if (!Supported) {
-        notify(
-          "FaceDetector API not available in this browser. Try Chrome/Edge desktop.",
-          "error"
-        );
+        notify("FaceDetector API not available in this browser. Try Chrome/Edge desktop.", "error");
         return;
       }
       // Options from UI
-      const intervalSec = Math.max(
-        0.2,
-        parseFloat(document.getElementById("faceInterval")?.value || "1.0")
-      );
-      const minSizeFrac = Math.max(
-        0.01,
-        Math.min(
-          0.9,
-          parseFloat(document.getElementById("faceMinSize")?.value || "0.10")
-        )
-      );
-      const maxSamples = 300; // safety cap
+      const intervalSec = Math.max(0.2, parseFloat(document.getElementById("faceInterval")?.value || "1.0"));
+      const minSizeFrac = Math.max(0.01, Math.min(0.9, parseFloat(document.getElementById("faceMinSize")?.value || "0.10")));
+      const maxSamples = 300;
+      // safety cap
       // Ensure metadata is ready
       if (!Number.isFinite(duration) || duration <= 0) {
         await new Promise((res) => {
@@ -3861,8 +4459,7 @@ const Player = (() => {
         if (samples.length > maxSamples) {
           const ratio = samples.length / maxSamples;
           const out = [];
-          for (let i = 0; i < samples.length; i += Math.ceil(ratio))
-            out.push(samples[i]);
+          for (let i = 0; i < samples.length; i += Math.ceil(ratio)) out.push(samples[i]);
           samples = out;
         }
       }
@@ -3872,26 +4469,25 @@ const Player = (() => {
       const prevT = videoEl.currentTime || 0;
       try {
         videoEl.pause();
-      } catch (_) {}
-      notify(
-        `Browser face detection: sampling ${samples.length} frame(s)...`,
-        "info"
-      );
+      }
+      catch (_) { }
+      notify(`Browser face detection: sampling ${samples.length} frame(s)...`, "info");
       const faces = [];
       // Helper: precise seek
       const seekTo = (t) =>
         new Promise((res) => {
-        const onSeek = () => {
-          videoEl.removeEventListener("seeked", onSeek);
-          res();
-        };
-        videoEl.addEventListener("seeked", onSeek);
-        try {
-          videoEl.currentTime = Math.max(0, Math.min(total, t));
-        } catch (_) {
-          res();
-        }
-      });
+          const onSeek = () => {
+            videoEl.removeEventListener("seeked", onSeek);
+            res();
+          };
+          videoEl.addEventListener("seeked", onSeek);
+          try {
+            videoEl.currentTime = Math.max(0, Math.min(total, t));
+          }
+          catch (_) {
+            res();
+          }
+        });
       for (let i = 0; i < samples.length; i++) {
         const t = samples[i];
         await seekTo(t);
@@ -3915,17 +4511,20 @@ const Player = (() => {
               score: 1.0,
             });
           }
-        } catch (err) {
+        }
+        catch (err) {
           // continue on errors
         }
       }
       // Restore playback position/state
       try {
         videoEl.currentTime = prevT;
-      } catch (_) {}
+      }
+      catch (_) { }
       try {
         if (!wasPaused) await safePlay(videoEl);
-      } catch (_) {}
+      }
+      catch (_) { }
       if (faces.length === 0) {
         notify("No faces detected in sampled frames.", "error");
         return;
@@ -3933,17 +4532,13 @@ const Player = (() => {
       // If an existing faces.json is present, confirm overwrite
       let overwrite = true;
       try {
-        const head = await fetch(
-          "/api/faces/get?path=" + encodeURIComponent(currentPath),
-          { method: "HEAD" }
-        );
+        const head = await fetch("/api/faces/get?path=" + encodeURIComponent(currentPath), { method: "HEAD" });
         if (head.ok) {
-          overwrite = confirm(
-            "faces.json already exists for this video. Replace it with browser-detected faces?"
-          );
+          overwrite = confirm("faces.json already exists for this video. Replace it with browser-detected faces?");
           if (!overwrite) return;
         }
-      } catch (_) {}
+      }
+      catch (_) { }
       // Upload
       const payload = { faces, backend: "browser-facedetector", stub: false };
       const url = new URL("/api/faces/upload", window.location.origin);
@@ -3958,25 +4553,23 @@ const Player = (() => {
       if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
       if (j?.status === "success") {
-        notify(
-          `Uploaded ${faces.length} face(s) from browser detection.`,
-          "success"
-        );
+        notify(`Uploaded ${faces.length} face(s) from browser detection.`, "success");
         // Refresh indicators
         try {
           if (window.tasksManager) window.tasksManager.loadCoverage();
-        } catch (_) {}
+        }
+        catch (_) { }
         try {
           await loadArtifactStatuses();
-        } catch (_) {}
-      } else {
+        }
+        catch (_) { }
+      }
+      else {
         throw new Error(j?.message || "Upload failed");
       }
-    } catch (e) {
-      notify(
-        "Browser detection failed: " + (e && e.message ? e.message : "error"),
-        "error"
-      );
+    }
+    catch (e) {
+      notify("Browser detection failed: " + (e && e.message ? e.message : "error"), "error");
     }
   }
 
@@ -3985,14 +4578,15 @@ const Player = (() => {
     try {
       try {
         const st =
-        window.__artifactStatus && window.__artifactStatus[currentPath];
+          window.__artifactStatus && window.__artifactStatus[currentPath];
         if (st && st.heatmap === false) {
           if (badgeHeatmapStatus) badgeHeatmapStatus.textContent = "✗";
           if (badgeHeatmap) badgeHeatmap.dataset.present = "0";
           applyTimelineDisplayToggles();
           return;
         }
-      } catch (_) {}
+      }
+      catch (_) { }
       // Prefer JSON + canvas rendering for higher fidelity
       let renderedViaJson = false;
       try {
@@ -4013,15 +4607,13 @@ const Player = (() => {
             renderedViaJson = true;
           }
         }
-      } catch (_) {
+      }
+      catch (_) {
         /* ignore and fallback to PNG probe */
       }
 
       if (!renderedViaJson) {
-        const url =
-        "/api/heatmaps/png?path=" +
-        encodeURIComponent(currentPath) +
-        `&t=${Date.now()}`;
+        const url = "/api/heatmaps/png?path=" + encodeURIComponent(currentPath) + `&t=${Date.now()}`;
         // Try to load an image to detect availability
         await new Promise((resolve) => {
           const probe = new Image();
@@ -4035,32 +4627,27 @@ const Player = (() => {
         }).then((ok) => {
           if (ok) {
             heatmapEl.style.backgroundImage = `url('${url}')`;
-            if (heatmapCanvasEl) {
-              clearHeatmapCanvas();
-            }
+            if (heatmapCanvasEl) clearHeatmapCanvas();
             hasHeatmap = true;
             if (sbHeatmapImg) sbHeatmapImg.src = url;
-          } else {
+          }
+          else {
             heatmapEl.style.backgroundImage = "";
-            if (heatmapCanvasEl) {
-              clearHeatmapCanvas();
-            }
+            if (heatmapCanvasEl) clearHeatmapCanvas();
             hasHeatmap = false;
           }
         });
       }
 
       // Badge update
-      if (badgeHeatmapStatus)
-        badgeHeatmapStatus.textContent = hasHeatmap ? "✓" : "✗";
+      if (badgeHeatmapStatus) badgeHeatmapStatus.textContent = hasHeatmap ? "✓" : "✗";
       if (badgeHeatmap) badgeHeatmap.dataset.present = hasHeatmap ? "1" : "0";
       // Respect display toggle immediately
       applyTimelineDisplayToggles();
-    } catch (_) {
+    }
+    catch (_) {
       heatmapEl.style.backgroundImage = "";
-      if (heatmapCanvasEl) {
-        clearHeatmapCanvas();
-      }
+      if (heatmapCanvasEl) clearHeatmapCanvas();
       hasHeatmap = false;
       if (badgeHeatmapStatus) badgeHeatmapStatus.textContent = "✗";
       if (badgeHeatmap) badgeHeatmap.dataset.present = "0";
@@ -4075,9 +4662,11 @@ const Player = (() => {
     v = clamp(v);
     // Blend between three stops
     if (v < 0.5) {
-      const t = v / 0.5; // 0..1
+      const t = v / 0.5;
+      // 0..1
       return lerpColor([11, 16, 32, 0.5], [79, 140, 255, 0.85], t);
-    } else {
+    }
+    else {
       const t = (v - 0.5) / 0.5;
       return lerpColor([79, 140, 255, 0.85], [255, 122, 89, 0.95], t);
     }
@@ -4099,27 +4688,30 @@ const Player = (() => {
       if (!ctx) return;
       const w = heatmapCanvasEl.width = heatmapCanvasEl.clientWidth || heatmapCanvasEl.offsetWidth || 800;
       const h = heatmapCanvasEl.height = heatmapCanvasEl.clientHeight || heatmapCanvasEl.offsetHeight || 24;
-      ctx.clearRect(0,0,w,h);
+      ctx.clearRect(0, 0, w, h);
       if (!Array.isArray(samples) || !samples.length) return;
-      // Determine bar width; ensure we cover entire width even if samples fewer than pixels.
+      // Determine bar width;
+      // ensure we cover entire width even if samples fewer than pixels.
       const n = samples.length;
       const barW = Math.max(1, Math.floor(w / n));
-      for (let i=0;i<n;i++) {
+      for (let i = 0; i < n; i++) {
         const v = Number(samples[i]);
         if (!Number.isFinite(v)) continue;
         ctx.fillStyle = heatColor(v);
-        const x = Math.floor(i / (n-1) * (w - barW));
-        ctx.fillRect(x, 0, barW+1, h); // +1 to avoid gaps
+        const x = Math.floor(i / (n - 1) * (w - barW));
+        ctx.fillRect(x, 0, barW + 1, h);
+        // +1 to avoid gaps
       }
       // Optional subtle top/bottom fade overlay for aesthetics
-      const grad = ctx.createLinearGradient(0,0,0,h);
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
       grad.addColorStop(0, 'rgba(0,0,0,0.35)');
       grad.addColorStop(0.15, 'rgba(0,0,0,0)');
       grad.addColorStop(0.85, 'rgba(0,0,0,0)');
       grad.addColorStop(1, 'rgba(0,0,0,0.35)');
       ctx.fillStyle = grad;
-      ctx.fillRect(0,0,w,h);
-    } catch(_) {}
+      ctx.fillRect(0, 0, w, h);
+    }
+    catch (_) { }
   }
 
   function clearHeatmapCanvas() {
@@ -4127,8 +4719,9 @@ const Player = (() => {
       if (!heatmapCanvasEl) return;
       const ctx = heatmapCanvasEl.getContext('2d');
       if (!ctx) return;
-      ctx.clearRect(0,0,heatmapCanvasEl.width, heatmapCanvasEl.height);
-    } catch(_) {}
+      ctx.clearRect(0, 0, heatmapCanvasEl.width, heatmapCanvasEl.height);
+    }
+    catch (_) { }
   }
 
   async function loadSprites() {
@@ -4137,13 +4730,14 @@ const Player = (() => {
     if (!currentPath) return;
     try {
       const st =
-      window.__artifactStatus && window.__artifactStatus[currentPath];
+        window.__artifactStatus && window.__artifactStatus[currentPath];
       if (st && st.sprites === false) {
         if (badgeSpritesStatus) badgeSpritesStatus.textContent = "✗";
         if (badgeSprites) badgeSprites.dataset.present = "0";
         return;
       }
-    } catch (_) {}
+    }
+    catch (_) { }
     try {
       const u = new URL("/api/sprites/json", window.location.origin);
       u.searchParams.set("path", currentPath);
@@ -4157,7 +4751,8 @@ const Player = (() => {
         if (badgeSpritesStatus) badgeSpritesStatus.textContent = "✓";
         if (badgeSprites) badgeSprites.dataset.present = "1";
       }
-    } catch (_) {
+    }
+    catch (_) {
       sprites = null;
     }
     if (!sprites) {
@@ -4170,15 +4765,15 @@ const Player = (() => {
     scenes = [];
     if (!currentPath) return;
     try {
-      const st =
-      window.__artifactStatus && window.__artifactStatus[currentPath];
+      const st = window.__artifactStatus && window.__artifactStatus[currentPath];
       if (st && st.scenes === false) {
         if (badgeScenesStatus) badgeScenesStatus.textContent = "✗";
         if (badgeScenes) badgeScenes.dataset.present = "0";
         applyTimelineDisplayToggles();
         return;
       }
-    } catch (_) {}
+    }
+    catch (_) { }
     try {
       const u = new URL("/api/scenes/get", window.location.origin);
       u.searchParams.set("path", currentPath);
@@ -4186,21 +4781,21 @@ const Player = (() => {
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
       const d = data?.data || {};
-      const arr =
-      d.scenes && Array.isArray(d.scenes) ? d.scenes : d.markers || [];
+      const arr = d.scenes && Array.isArray(d.scenes) ? d.scenes : d.markers || [];
       // intro_end may be present as a top-level numeric field
       introEnd = Number.isFinite(Number(d.intro_end)) ? Number(d.intro_end) : null;
       scenes = arr
-      .map((s) => ({ time: Number(s.time || s.t || s.start || 0) }))
-      .filter((s) => Number.isFinite(s.time));
+        .map((s) => ({ time: Number(s.time || s.t || s.start || 0) }))
+        .filter((s) => Number.isFinite(s.time));
       renderMarkers();
-      if (badgeScenesStatus)
-        badgeScenesStatus.textContent = scenes.length ? "✓" : "✗";
+      if (badgeScenesStatus) badgeScenesStatus.textContent = scenes.length ? "✓" : "✗";
       if (badgeScenes) badgeScenes.dataset.present = scenes.length ? "1" : "0";
       applyTimelineDisplayToggles();
-      // Scene ticks may depend on duration; schedule retries until duration known
+      // Scene ticks may depend on duration;
+      // schedule retries until duration known
       if (scenes.length) scheduleSceneTicksRetry();
-    } catch (_) {
+    }
+    catch (_) {
       scenes = [];
       renderMarkers();
       if (badgeScenesStatus) badgeScenesStatus.textContent = "✗";
@@ -4210,59 +4805,76 @@ const Player = (() => {
   }
 
   let sceneTickRetryTimer = null;
-  function scheduleSceneTicksRetry(attempt=0) {
-    if (sceneTickRetryTimer) { clearTimeout(sceneTickRetryTimer); sceneTickRetryTimer = null; }
+  function scheduleSceneTicksRetry(attempt = 0) {
+    if (sceneTickRetryTimer) {
+      clearTimeout(sceneTickRetryTimer);
+      sceneTickRetryTimer = null;
+    }
     if (!videoEl || !Array.isArray(scenes) || !scenes.length) return;
     const ready = Number.isFinite(videoEl.duration) && videoEl.duration > 0;
-    if (ready) { try { renderSceneTicks(); } catch(_){} return; }
-    if (attempt > 12) return; // ~3s max (12 * 250ms)
-    sceneTickRetryTimer = setTimeout(() => scheduleSceneTicksRetry(attempt+1), 250);
+    if (ready) {
+      try {
+
+        renderSceneTicks();
+      }
+      catch (_) { } return;
+    }
+    if (attempt > 12) return;
+    // ~3s max (12 * 250ms)
+    sceneTickRetryTimer = setTimeout(() => scheduleSceneTicksRetry(attempt + 1), 250);
   }
 
   async function loadSubtitles() {
     subtitlesUrl = null;
     if (!currentPath || !videoEl) return;
     try {
-      const st =
-      window.__artifactStatus && window.__artifactStatus[currentPath];
+      const st = window.__artifactStatus && window.__artifactStatus[currentPath];
       if (st && st.subtitles === false) {
         if (badgeSubtitlesStatus) badgeSubtitlesStatus.textContent = "✗";
         if (badgeSubtitles) badgeSubtitles.dataset.present = "0";
         return;
       }
-    } catch (_) {}
+    }
+    catch (_) { }
     // Remove existing tracks and their cue listeners
     Array.from(videoEl.querySelectorAll("track")).forEach((t) => {
       try {
         const tt = t.track || null;
         if (tt && t._cueHandler) {
-          try { tt.removeEventListener && tt.removeEventListener('cuechange', t._cueHandler); } catch(_) {}
+          try {
+
+            tt.removeEventListener && tt.removeEventListener('cuechange', t._cueHandler);
+          }
+          catch (_) { }
         }
-      } catch(_) {}
-      try { t.remove(); } catch(_) {}
+      }
+      catch (_) { }
+      try {
+
+        t.remove();
+      }
+      catch (_) { }
     });
     try {
-      const test = await fetch(
-        "/api/subtitles/get?path=" + encodeURIComponent(currentPath)
-      );
+      const test = await fetch("/api/subtitles/get?path=" + encodeURIComponent(currentPath));
       if (test.ok) {
-        const src =
-        "/api/subtitles/get?path=" +
-        encodeURIComponent(currentPath) +
-        `&t=${Date.now()}`;
+        const src = "/api/subtitles/get?path=" + encodeURIComponent(currentPath) + `&t=${Date.now()}`;
         subtitlesUrl = src;
         const track = document.createElement("track");
         track.kind = "subtitles";
         track.label = "Subtitles";
         track.srclang = "en";
         track.default = true;
-        track.src = src; // browser will parse SRT in many cases; if not, still downloadable
+        track.src = src;
+        // browser will parse SRT in many cases;
+        // if not, still downloadable
         videoEl.appendChild(track);
         // If browser exposes textTracks, listen for cue changes and render into overlay
         try {
           const tt = track.track || Array.from(videoEl.textTracks || []).find(t => t.kind === 'subtitles');
           if (tt) {
-            // ensure track mode is showing only when toggled; start disabled to let CC button control display
+            // ensure track mode is showing only when toggled;
+            // start disabled to let CC button control display
             if (typeof tt.mode !== 'undefined') tt.mode = 'disabled';
             const onCueChange = () => {
               try {
@@ -4271,22 +4883,30 @@ const Player = (() => {
                   if (active && active.trim()) {
                     subtitleOverlayEl.textContent = active.replace(/\r?\n/g, '\n');
                     subtitleOverlayEl.hidden = false;
-                  } else {
+                  }
+                  else {
                     subtitleOverlayEl.textContent = '';
                     subtitleOverlayEl.hidden = true;
                   }
                 }
-              } catch(_) {}
+              }
+              catch (_) { }
             };
             // store reference to remove later if needed
             track._cueHandler = onCueChange;
-            try { tt.addEventListener('cuechange', onCueChange); } catch(_) {}
+            try {
+
+              tt.addEventListener('cuechange', onCueChange);
+            }
+            catch (_) { }
           }
-        } catch(_) {}
+        }
+        catch (_) { }
         if (badgeSubtitlesStatus) badgeSubtitlesStatus.textContent = "✓";
         if (badgeSubtitles) badgeSubtitles.dataset.present = "1";
       }
-    } catch (_) {
+    }
+    catch (_) {
       /* ignore */
     }
     if (!subtitlesUrl) {
@@ -4300,9 +4920,15 @@ const Player = (() => {
     markersEl.innerHTML = "";
     const haveScenes = Array.isArray(scenes) && scenes.length > 0;
     // Always refresh sidebar list even before metadata duration is known
-    try { renderMarkersList(); } catch(_) {}
-    if (!haveScenes) return; // nothing else to draw yet
-    if (!duration || !Number.isFinite(duration) || duration <= 0) return; // wait for loadedmetadata
+    try {
+
+      renderMarkersList();
+    }
+    catch (_) { }
+    if (!haveScenes) return;
+    // nothing else to draw yet
+    if (!duration || !Number.isFinite(duration) || duration <= 0) return;
+    // wait for loadedmetadata
     for (const s of scenes) {
       const t = Math.max(0, Math.min(duration, Number(s.time)));
       if (!Number.isFinite(t) || t <= 0 || t >= duration) continue;
@@ -4331,7 +4957,8 @@ const Player = (() => {
         om.title = 'Outro begin: ' + fmtTime(outroBegin);
         markersEl.appendChild(om);
       }
-    } catch(_) {}
+    }
+    catch (_) { }
   }
 
   // Sidebar Markers List DOM rendering
@@ -4344,7 +4971,8 @@ const Player = (() => {
       let it = null;
       if (introEnd && Number.isFinite(Number(introEnd))) {
         it = Number(introEnd);
-      } else {
+      }
+      else {
         const introKey = `${LS_PREFIX}:introEnd:${currentPath}`;
         const rawIntro = currentPath ? localStorage.getItem(introKey) : null;
         if (rawIntro && Number.isFinite(Number(rawIntro))) it = Number(rawIntro);
@@ -4364,18 +4992,35 @@ const Player = (() => {
         jump.type = 'button';
         jump.className = 'marker-jump';
         jump.textContent = 'Jump';
-        jump.addEventListener('click', ()=> { if(videoEl){ videoEl.currentTime = Math.min(duration, Math.max(0, it)); }});
+        jump.addEventListener('click', () => {
+          if (videoEl) videoEl.currentTime = Math.min(duration, Math.max(0, it));
+        });
         const clr = document.createElement('button');
         clr.type = 'button';
         clr.className = 'marker-remove';
         clr.textContent = 'Clear';
-        clr.addEventListener('click', async ()=> { try {
-          try { localStorage.removeItem(`${LS_PREFIX}:introEnd:${currentPath}`); } catch(_){}
-          // also remove server-side
-          try { const mu = new URL('/api/scenes/intro', window.location.origin); mu.searchParams.set('path', currentPath); await fetch(mu.toString(), { method: 'DELETE' }); } catch(_){ }
-          notify('Intro end cleared','success');
-          await loadScenes(); renderMarkersList();
-        } catch(_) { notify('Failed to clear intro end','error'); } });
+        clr.addEventListener('click', async () => {
+          try {
+            try {
+
+              localStorage.removeItem(`${LS_PREFIX}:introEnd:${currentPath}`);
+            }
+            catch (_) { }
+            // also remove server-side
+            try {
+              const mu = new URL('/api/scenes/intro', window.location.origin);
+              mu.searchParams.set('path', currentPath);
+              await fetch(mu.toString(), { method: 'DELETE' });
+            }
+            catch (_) { }
+            notify('Intro end cleared', 'success');
+            await loadScenes();
+            renderMarkersList();
+          }
+          catch (_) {
+            notify('Failed to clear intro end', 'error');
+          }
+        });
         introRow.appendChild(label);
         introRow.appendChild(timeLabel);
         introRow.appendChild(jump);
@@ -4386,7 +5031,8 @@ const Player = (() => {
       let ot = null;
       if (outroBegin && Number.isFinite(Number(outroBegin))) {
         ot = Number(outroBegin);
-      } else {
+      }
+      else {
         const outroKey = `${LS_PREFIX}:outroBegin:${currentPath}`;
         const rawOutro = currentPath ? localStorage.getItem(outroKey) : null;
         if (rawOutro && Number.isFinite(Number(rawOutro))) ot = Number(rawOutro);
@@ -4406,8 +5052,8 @@ const Player = (() => {
         jump.type = 'button';
         jump.className = 'marker-jump';
         jump.textContent = 'Jump';
-        jump.addEventListener('click', ()=> { 
-          if(videoEl){ 
+        jump.addEventListener('click', () => {
+          if (videoEl) {
             videoEl.currentTime = Math.min(duration, Math.max(0, ot));
           }
         });
@@ -4415,20 +5061,31 @@ const Player = (() => {
         clr.type = 'button';
         clr.className = 'marker-remove';
         clr.textContent = 'Clear';
-        clr.addEventListener('click', async ()=> { try {
-          try { localStorage.removeItem(`${LS_PREFIX}:outroBegin:${currentPath}`); } catch(_){}
-          notify('Outro begin cleared','success');
-          outroBegin = null;
-          renderMarkers();
-          renderMarkersList();
-        } catch(_) { notify('Failed to clear outro begin','error'); } });
+        clr.addEventListener('click', async () => {
+          try {
+            try {
+
+              localStorage.removeItem(`${LS_PREFIX}:outroBegin:${currentPath}`);
+            }
+            catch (_) { }
+            notify('Outro begin cleared', 'success');
+            outroBegin = null;
+            renderMarkers();
+            renderMarkersList();
+          }
+          catch (_) {
+            notify('Failed to clear outro begin', 'error');
+
+          }
+        });
         outroRow.appendChild(label);
         outroRow.appendChild(timeLabel);
         outroRow.appendChild(jump);
         outroRow.appendChild(clr);
         list.appendChild(outroRow);
       }
-    } catch(_) {}
+    }
+    catch (_) { }
     if (!Array.isArray(scenes) || scenes.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'markers-empty';
@@ -4437,113 +5094,278 @@ const Player = (() => {
       return;
     }
     // Sort by time
-    const sorted = scenes.slice().sort((a,b)=> (a.time||0)-(b.time||0));
+    const sorted = scenes.slice().sort((a, b) => (a.time || 0) - (b.time || 0));
+    const tpl = document.getElementById('markerRowTemplate');
     sorted.forEach((sc, idx) => {
-      const row = document.createElement('div');
-      row.className = 'marker-row';
-      const t = Number(sc.time)||0;
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'marker-time-input';
-      input.value = fmtTime(t).padStart(5,'0');
-      input.setAttribute('aria-label', 'Marker time');
-      input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); commitTimeEdit(input, sc);} });
-      input.addEventListener('blur', ()=> commitTimeEdit(input, sc));
-      const jump = document.createElement('button');
-      jump.type = 'button';
-      jump.className = 'marker-jump';
-      jump.textContent = 'Jump';
-      jump.addEventListener('click', ()=> { if(videoEl){ videoEl.currentTime = Math.min(duration, Math.max(0, sc.time||0)); }});
-      const del = document.createElement('button');
-      del.type='button';
-      del.className='marker-remove';
-      del.setAttribute('aria-label','Remove marker');
-      del.textContent='×';
-      del.addEventListener('click', ()=> removeMarker(sc));
-      row.appendChild(input);
-      row.appendChild(jump);
-      row.appendChild(del);
-      list.appendChild(row);
+      if (!tpl) return;
+      const frag = tpl.content.cloneNode(true);
+      const row = frag.querySelector('.marker-row');
+      if (!row) return;
+      const t = Number(sc.time) || 0;
+      const nameLabel = row.querySelector('.marker-name-label');
+      const timeLabel = row.querySelector('.marker-time-label');
+      const jumpBtn = row.querySelector('.marker-jump');
+      const delBtn = row.querySelector('.marker-remove');
+      const fallbackName = sc.label ? String(sc.label) : `#${idx + 1}`;
+      if (nameLabel) {
+        nameLabel.textContent = fallbackName;
+        nameLabel.title = 'Click to edit marker name';
+        nameLabel.tabIndex = 0;
+        nameLabel.addEventListener('click', () => startMarkerNameEdit(nameLabel, sc));
+        nameLabel.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            startMarkerNameEdit(nameLabel, sc);
+          }
+        });
+      }
+      if (timeLabel) {
+        timeLabel.textContent = fmtTime(t);
+        timeLabel.title = 'Click to edit time';
+        timeLabel.tabIndex = 0;
+        timeLabel.addEventListener('click', () => startMarkerTimeEdit(timeLabel, sc));
+        timeLabel.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            startMarkerTimeEdit(timeLabel, sc);
+          }
+        });
+      }
+      if (jumpBtn) {
+        jumpBtn.addEventListener('click', () => {
+          if (videoEl) {
+            videoEl.currentTime = Math.min(duration, Math.max(0, sc.time || 0));
+          }
+        });
+      }
+      if (delBtn) {
+        delBtn.addEventListener('click', () => removeMarker(sc));
+      }
+      list.appendChild(frag);
     });
   }
 
-  function parseTimeString(str){
-    if(!str) return 0;
-    const parts = str.trim().split(':').map(p=>p.trim()).filter(Boolean);
-    if(parts.some(p=>!/^[0-9]{1,2}$/.test(p))) return NaN;
-    let h=0,m=0,s=0;
-    if(parts.length===3){ h=+parts[0]; m=+parts[1]; s=+parts[2]; }
-    else if(parts.length===2){ m=+parts[0]; s=+parts[1]; }
-    else if(parts.length===1){ s=+parts[0]; }
-    return (h*3600)+(m*60)+s;
-  }
+  // (parseTimeString moved to utils.js)
 
-  async function commitTimeEdit(input, sceneObj){
+  async function commitTimeEdit(input, sceneObj) {
     const raw = input.value.trim();
     const seconds = parseTimeString(raw);
-    if(!Number.isFinite(seconds) || seconds < 0){
+    if (!Number.isFinite(seconds) || seconds < 0) {
       input.classList.add('is-error');
-      setTimeout(()=>input.classList.remove('is-error'), 1200);
-      input.value = fmtTime(Number(sceneObj.time||0));
+      setTimeout(() => input.classList.remove('is-error'), 1200);
+      input.value = fmtTime(Number(sceneObj.time || 0));
       return;
     }
     const clamped = Math.min(Math.max(0, seconds), Math.max(0, duration || 0));
-    if(Math.abs(clamped - (sceneObj.time||0)) < 0.01){
+    if (Math.abs(clamped - (sceneObj.time || 0)) < 0.01) {
       input.value = fmtTime(clamped);
       return;
     }
     try {
       const url = new URL('/api/marker/update', window.location.origin);
-      url.searchParams.set('path', currentPath||'');
-      url.searchParams.set('old_time', String(sceneObj.time||0));
+      url.searchParams.set('path', currentPath || '');
+      url.searchParams.set('old_time', String(sceneObj.time || 0));
       url.searchParams.set('new_time', String(clamped));
-      const r = await fetch(url.toString(), { method:'POST' });
-      if(!r.ok) throw new Error('HTTP '+r.status);
+      const r = await fetch(url.toString(), { method: 'POST' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       sceneObj.time = clamped;
       // Refresh scenes from server for authoritative order
       await loadScenes();
       renderMarkersList();
-    } catch(e){
+    }
+    catch (e) {
       notify('Failed to update marker', 'error');
-      input.value = fmtTime(Number(sceneObj.time||0));
+      input.value = fmtTime(Number(sceneObj.time || 0));
     }
   }
 
-  async function removeMarker(sceneObj){
+  // Swap static time label to editable input for a regular marker
+  function startMarkerTimeEdit(labelEl, sceneObj) {
+    if (!labelEl || labelEl._editing) return;
+    labelEl._editing = true;
+    const parent = labelEl.parentElement;
+    if (!parent) return;
+    const original = labelEl.textContent || fmtTime(Number(sceneObj.time || 0));
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'marker-time-input';
+    input.value = original;
+    input.setAttribute('aria-label', 'Edit marker time');
+    // Replace label with input
+    parent.replaceChild(input, labelEl);
+    input.focus();
+    input.select();
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commitTimeEdit(input, sceneObj);
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      }
+    });
+    input.addEventListener('blur', () => commitTimeEdit(input, sceneObj));
+    function cancel() {
+      // restore label
+      const restored = document.createElement('div');
+      restored.className = 'marker-time-label marker-time-label--editable';
+      restored.textContent = fmtTime(Number(sceneObj.time || 0));
+      restored.title = 'Click to edit time';
+      restored.tabIndex = 0;
+      restored.addEventListener('click', () => startMarkerTimeEdit(restored, sceneObj));
+      restored.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          startMarkerTimeEdit(restored, sceneObj);
+        }
+      });
+      try {
+
+        parent.replaceChild(restored, input);
+      }
+      catch (_) { }
+    }
+  }
+
+  // Swap static name label to editable input for a regular marker
+  function startMarkerNameEdit(labelEl, sceneObj) {
+    if (!labelEl || labelEl._editing) return;
+    labelEl._editing = true;
+    const parent = labelEl.parentElement;
+    if (!parent) return;
+    const original = labelEl.textContent || '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'marker-name-input';
+    input.value = original;
+    input.setAttribute('aria-label', 'Edit marker name');
+    parent.replaceChild(input, labelEl);
+    input.focus();
+    input.select();
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commitNameEdit(input, sceneObj, original);
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      }
+    });
+    input.addEventListener('blur', () => commitNameEdit(input, sceneObj, original));
+    function cancel() {
+      restoreLabel(sceneObj);
+    }
+    function restoreLabel(sobj) {
+      const restored = document.createElement('div');
+      restored.className = 'marker-name-label marker-name-label--editable';
+      const fb = sobj.label ? String(sobj.label) : original || `#${Math.max(1, Math.round((sobj.time || 0)))}`;
+      restored.textContent = fb;
+      restored.title = 'Click to edit marker name';
+      restored.tabIndex = 0;
+      restored.addEventListener('click', () => startMarkerNameEdit(restored, sobj));
+      restored.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          startMarkerNameEdit(restored, sobj);
+        }
+      });
+      try {
+        parent.replaceChild(restored, input);
+      }
+      catch (_) { }
+    }
+  }
+
+  async function commitNameEdit(input, sceneObj, original) {
+    const raw = (input.value || '').trim();
+    const newLabel = raw === '' ? null : raw;
+    // allow clearing
+    // If unchanged
+    if ((sceneObj.label || '') === (newLabel || '')) {
+      // restore without network
+      replaceWithLabel();
+      return;
+    }
+    try {
+      const url = new URL('/api/marker/update', window.location.origin);
+      url.searchParams.set('path', currentPath || '');
+      url.searchParams.set('old_time', String(sceneObj.time || 0));
+      url.searchParams.set('new_time', String(sceneObj.time || 0));
+      url.searchParams.set('type', sceneObj.type || 'scene');
+      if (newLabel !== null) url.searchParams.set('label', newLabel);
+      const r = await fetch(url.toString(), { method: 'POST' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      sceneObj.label = newLabel;
+      await loadScenes();
+      // refresh for canonical order/labels
+      renderMarkersList();
+    }
+    catch (e) {
+      notify('Failed to update marker name', 'error');
+      replaceWithLabel();
+    }
+    function replaceWithLabel() {
+      const parent = input.parentElement;
+      if (!parent) return;
+      const restored = document.createElement('div');
+      restored.className = 'marker-name-label marker-name-label--editable';
+      const fb = sceneObj.label ? String(sceneObj.label) : (original || `#${Math.max(1, Math.round((sceneObj.time || 0)))}`);
+      restored.textContent = fb;
+      restored.title = 'Click to edit marker name';
+      restored.tabIndex = 0;
+      restored.addEventListener('click', () => startMarkerNameEdit(restored, sceneObj));
+      restored.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          startMarkerNameEdit(restored, sceneObj);
+        }
+      });
+      try {
+        parent.replaceChild(restored, input);
+      }
+      catch (_) { }
+    }
+  }
+
+  async function removeMarker(sceneObj) {
     try {
       const url = new URL('/api/marker/delete', window.location.origin);
-      url.searchParams.set('path', currentPath||'');
-      url.searchParams.set('time', String(sceneObj.time||0));
-      const r = await fetch(url.toString(), { method:'POST' });
-      if(!r.ok) throw new Error('HTTP '+r.status);
+      url.searchParams.set('path', currentPath || '');
+      url.searchParams.set('time', String(sceneObj.time || 0));
+      const r = await fetch(url.toString(), { method: 'POST' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       // Reload scenes
       await loadScenes();
       renderMarkersList();
-      notify('Marker removed','success');
-    } catch(e){
-      notify('Failed to remove marker','error');
+      notify('Marker removed', 'success');
+    }
+    catch (e) {
+      notify('Failed to remove marker', 'error');
     }
   }
 
   // Add marker button (sidebar)
-  (function wireAddMarkerButton(){
+  (function wireAddMarkerButton() {
     const btn = document.getElementById('btnAddMarker');
-    if(!btn || btn._wired) return;
+    if (!btn || btn._wired) return;
     btn._wired = true;
     btn.addEventListener('click', async () => {
-      if(!currentPath || !videoEl) return;
-      const t = Math.max(0, Math.min(duration||0, videoEl.currentTime||0));
+      if (!currentPath || !videoEl) return;
+      const t = Math.max(0, Math.min(duration || 0, videoEl.currentTime || 0));
       try {
         const url = new URL('/api/marker', window.location.origin);
         url.searchParams.set('path', currentPath);
         url.searchParams.set('time', String(t.toFixed(3)));
-        const r = await fetch(url.toString(), { method:'POST' });
-        if(!r.ok) throw new Error('HTTP '+r.status);
+        const r = await fetch(url.toString(), { method: 'POST' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
         await loadScenes();
         renderMarkersList();
-        notify('Marker added','success');
-      } catch(e){
-        notify('Failed to add marker','error');
+        notify('Marker added', 'success');
+      }
+      catch (e) {
+        notify('Failed to add marker', 'error');
       }
     });
   })();
@@ -4557,47 +5379,24 @@ const Player = (() => {
   async function loadArtifactStatuses() {
     if (!currentPath) return;
     // Lazy acquire (in case of markup changes) without assuming globals exist
-    const badgeCover =
-    window.badgeCover || document.getElementById("badge-cover");
-    const badgeCoverStatus =
-    window.badgeCoverStatus || document.getElementById("badge-cover-status");
-    const badgeHover =
-    window.badgeHover || document.getElementById("badge-hover");
-    const badgeHoverStatus =
-    window.badgeHoverStatus || document.getElementById("badge-hover-status");
-    const badgeSprites =
-    window.badgeSprites || document.getElementById("badge-sprites");
-    const badgeSpritesStatus =
-    window.badgeSpritesStatus ||
-    document.getElementById("badge-sprites-status");
-    const badgeScenes =
-    window.badgeScenes || document.getElementById("badge-scenes");
-    const badgeScenesStatus =
-    window.badgeScenesStatus ||
-    document.getElementById("badge-scenes-status");
-    const badgeSubtitles =
-    window.badgeSubtitles || document.getElementById("badge-subtitles");
-    const badgeSubtitlesStatus =
-    window.badgeSubtitlesStatus ||
-    document.getElementById("badge-subtitles-status");
-    const badgeFaces =
-    window.badgeFaces || document.getElementById("badge-faces");
-    const badgeFacesStatus =
-    window.badgeFacesStatus || document.getElementById("badge-faces-status");
-    const badgePhash =
-    window.badgePhash || document.getElementById("badge-phash");
-    const badgePhashStatus =
-    window.badgePhashStatus || document.getElementById("badge-phash-status");
-    const badgeHeatmap =
-    window.badgeHeatmap || document.getElementById("badge-heatmap");
-    const badgeHeatmapStatus =
-    window.badgeHeatmapStatus ||
-    document.getElementById("badge-heatmap-status");
-    const badgeMeta =
-    window.badgeMeta || document.getElementById("badge-metadata");
-    const badgeMetaStatus =
-    window.badgeMetaStatus ||
-    document.getElementById("badge-metadata-status");
+    const badgeCover = window.badgeCover || document.getElementById("badge-cover");
+    const badgeCoverStatus = window.badgeCoverStatus || document.getElementById("badge-cover-status");
+    const badgeHover = window.badgeHover || document.getElementById("badge-hover");
+    const badgeHoverStatus = window.badgeHoverStatus || document.getElementById("badge-hover-status");
+    const badgeSprites = window.badgeSprites || document.getElementById("badge-sprites");
+    const badgeSpritesStatus = window.badgeSpritesStatus || document.getElementById("badge-sprites-status");
+    const badgeScenes = window.badgeScenes || document.getElementById("badge-scenes");
+    const badgeScenesStatus = window.badgeScenesStatus || document.getElementById("badge-scenes-status");
+    const badgeSubtitles = window.badgeSubtitles || document.getElementById("badge-subtitles");
+    const badgeSubtitlesStatus = window.badgeSubtitlesStatus || document.getElementById("badge-subtitles-status");
+    const badgeFaces = window.badgeFaces || document.getElementById("badge-faces");
+    const badgeFacesStatus = window.badgeFacesStatus || document.getElementById("badge-faces-status");
+    const badgePhash = window.badgePhash || document.getElementById("badge-phash");
+    const badgePhashStatus = window.badgePhashStatus || document.getElementById("badge-phash-status");
+    const badgeHeatmap = window.badgeHeatmap || document.getElementById("badge-heatmap");
+    const badgeHeatmapStatus = window.badgeHeatmapStatus || document.getElementById("badge-heatmap-status");
+    const badgeMeta = window.badgeMeta || document.getElementById("badge-metadata");
+    const badgeMetaStatus = window.badgeMetaStatus || document.getElementById("badge-metadata-status");
     try {
       const u = new URL("/api/artifacts/status", window.location.origin);
       u.searchParams.set("path", currentPath);
@@ -4623,7 +5422,8 @@ const Player = (() => {
       set(!!d.phash, badgePhash, badgePhashStatus);
       set(!!d.heatmap, badgeHeatmap, badgeHeatmapStatus);
       set(!!d.metadata, badgeMeta, badgeMetaStatus);
-    } catch (_) {
+    }
+    catch (_) {
       // On failure, mark unknowns as missing (do not spam console)
       const badges = [
         [badgeCover, badgeCoverStatus],
@@ -4648,10 +5448,7 @@ const Player = (() => {
       if (!currentPath) return;
       // Capability gating: map kind -> operation type
       try {
-        const caps =
-        (window.tasksManager && window.tasksManager.capabilities) ||
-        window.__capabilities ||
-        {};
+        const caps = (window.tasksManager && window.tasksManager.capabilities) || window.__capabilities || {};
         const needsFfmpeg = new Set([
           "heatmap",
           "scenes",
@@ -4671,24 +5468,19 @@ const Player = (() => {
           notify("Cannot start faces: face backends unavailable", "error");
           return;
         }
-      } catch (_) {}
+      }
+      catch (_) { }
       try {
         let url;
-        if (kind === "heatmap")
-          url = new URL("/api/heatmaps/create", window.location.origin);
-        else if (kind === "scenes")
-          url = new URL("/api/scenes/create", window.location.origin);
-        else if (kind === "subtitles")
-          url = new URL("/api/subtitles/create", window.location.origin);
-        else if (kind === "sprites")
-          url = new URL("/api/sprites/create", window.location.origin);
-        else if (kind === "faces")
-          url = new URL("/api/faces/create", window.location.origin);
-        else if (kind === "hover")
-          url = new URL("/api/hover/create", window.location.origin);
-        else if (kind === "phash")
-          url = new URL("/api/phash/create", window.location.origin);
+        if (kind === "heatmap") url = new URL("/api/heatmaps/create", window.location.origin);
+        else if (kind === "scenes") url = new URL("/api/scenes/create", window.location.origin);
+        else if (kind === "subtitles") url = new URL("/api/subtitles/create", window.location.origin);
+        else if (kind === "sprites") url = new URL("/api/sprites/create", window.location.origin);
+        else if (kind === "faces") url = new URL("/api/faces/create", window.location.origin);
+        else if (kind === "hover") url = new URL("/api/hover/create", window.location.origin);
+        else if (kind === "phash") url = new URL("/api/phash/create", window.location.origin);
         else return;
+
         url.searchParams.set("path", currentPath);
         // Mark badge loading before request to give immediate feedback
         const badgeEl = document.getElementById(`badge-${kind}`) || document.getElementById(`badge-${kind.toLowerCase()}`);
@@ -4700,7 +5492,8 @@ const Player = (() => {
         notify(kind + " generation started", "success");
         // Poll artifact status until present or timeout
         const startedAt = Date.now();
-        const TIMEOUT_MS = 60_000; // 1 min fallback
+        const TIMEOUT_MS = 60_000;
+        // 1 min fallback
         const POLL_INTERVAL = 1200;
         const poll = async () => {
           if (!currentPath) return finish();
@@ -4726,16 +5519,19 @@ const Player = (() => {
               else if (kind === 'subtitles') await loadSubtitles();
               return finish();
             }
-          } catch(_) {}
+          }
+          catch (_) { }
           if (Date.now() - startedAt < TIMEOUT_MS) {
             setTimeout(poll, POLL_INTERVAL);
-          } else finish();
+          }
+          else finish();
         };
         const finish = () => {
           if (badgeEl) delete badgeEl.dataset.loading;
         };
         setTimeout(poll, 500);
-      } catch (e) {
+      }
+      catch (e) {
         notify("Failed to start " + kind + " job", "error");
         const badgeEl = document.getElementById(`badge-${kind}`) || document.getElementById(`badge-${kind.toLowerCase()}`);
         if (badgeEl) delete badgeEl.dataset.loading;
@@ -4767,18 +5563,22 @@ const Player = (() => {
   }
 
   function handleSpriteHover(evt) {
-    if (!sprites || !sprites.index || !sprites.sheet) { hideSprite(); return; }
-    if (!spriteHoverEnabled) { hideSprite(); return; }
+    if (!sprites || !sprites.index || !sprites.sheet) {
+      hideSprite();
+      return;
+    }
+    if (!spriteHoverEnabled) {
+      hideSprite();
+      return;
+    }
     const targetTrack = scrubberTrackEl || timelineEl;
-    if (!targetTrack) { hideSprite(); return; }
+    if (!targetTrack) {
+      hideSprite();
+      return;
+    }
     const rect = targetTrack.getBoundingClientRect();
     // Tooltip now lives under the controls container below the video
-    const container =
-    spriteTooltipEl && spriteTooltipEl.parentElement
-    ? spriteTooltipEl.parentElement
-    : videoEl && videoEl.parentElement
-    ? videoEl.parentElement
-    : document.body;
+    const container = spriteTooltipEl && spriteTooltipEl.parentElement ? spriteTooltipEl.parentElement : videoEl && videoEl.parentElement ? videoEl.parentElement : document.body;
     const containerRect = container.getBoundingClientRect();
     const x = evt.clientX - rect.left;
     if (x < 0 || x > rect.width) {
@@ -4787,27 +5587,35 @@ const Player = (() => {
     }
     const pct = x / rect.width;
     const vidDur = (Number.isFinite(duration) && duration > 0) ? duration : (videoEl && Number.isFinite(videoEl.duration) ? videoEl.duration : 0);
-    if (!vidDur) { hideSprite(); return; }
+    if (!vidDur) {
+      hideSprite();
+      return;
+    }
     const t = pct * vidDur;
     // Position tooltip
     // Determine tile width/height for placement
     let tw = 240,
-    th = 135;
+      th = 135;
     try {
       const idx = sprites.index;
       tw = Number(idx.tile_width || (idx.tile && idx.tile[0]) || tw);
       th = Number(idx.tile_height || (idx.tile && idx.tile[1]) || th);
-    } catch (_) {}
-    // Scale preview to avoid being too large; cap width to 180px
+    }
+    catch (_) { }
+    // Scale preview to avoid being too large;
+    // cap width to 180px
     const scale = Math.min(1, 180 / Math.max(1, tw));
     const twS = Math.max(1, Math.round(tw * scale));
     const thS = Math.max(1, Math.round(th * scale));
     const halfW = Math.max(1, Math.floor(twS / 2));
-    const baseLeft = rect.left - containerRect.left + x - halfW; // center on cursor
+    const baseLeft = rect.left - containerRect.left + x - halfW;
+    // center on cursor
     const clampedLeft = Math.max(8, Math.min(containerRect.width - (twS + 8), baseLeft));
     // Compute vertical placement so the preview sits just above the scrubber track
-    const gap = 8; // px gap between preview bottom and scrubber top
-    const previewTop = (rect.top - containerRect.top) - gap - thS; // rect.top relative to container
+    const gap = 8;
+    // px gap between preview bottom and scrubber top
+    const previewTop = (rect.top - containerRect.top) - gap - thS;
+    // rect.top relative to container
     spriteTooltipEl.style.left = clampedLeft + 'px';
     spriteTooltipEl.style.top = Math.max(0, previewTop) + 'px';
     spriteTooltipEl.style.bottom = 'auto';
@@ -4832,11 +5640,11 @@ const Player = (() => {
       spriteTooltipEl.style.height = thS + "px";
       spriteTooltipEl.style.backgroundImage = `url('${sprites.sheet}')`;
       spriteTooltipEl.style.backgroundPosition = `${xOff}px ${yOff}px`;
-      spriteTooltipEl.style.backgroundSize = `${tw * cols * scale}px ${
-        th * rows * scale
-      }px`;
+      spriteTooltipEl.style.backgroundSize = `${tw * cols * scale}px ${th * rows * scale
+        }px`;
       spriteTooltipEl.style.opacity = "0.8";
-    } catch (_) {
+    }
+    catch (_) {
       // If anything goes wrong, hide the preview gracefully
       hideSprite();
     }
@@ -4855,7 +5663,8 @@ const Player = (() => {
         if (videoEl.paused) safePlay(videoEl);
         else videoEl.pause();
       }
-    } catch (_) {}
+    }
+    catch (_) { }
   });
 
   // Persist on unload as a final safeguard
@@ -4869,7 +5678,8 @@ const Player = (() => {
           rate: videoEl.playbackRate,
         });
       }
-    } catch (_) {}
+    }
+    catch (_) { }
   });
 
   function hideSprite() {
@@ -4884,11 +5694,10 @@ const Player = (() => {
         if (showHeatmap && hasHeatmap) band.classList.remove('hidden');
         else band.classList.add('hidden');
       }
-      if (markersEl)
-        markersEl.style.display =
-      showScenes && scenes && scenes.length > 0 ? "" : "none";
+      if (markersEl) markersEl.style.display = showScenes && scenes && scenes.length > 0 ? "" : "none";
       renderSceneTicks();
-    } catch (_) {}
+    }
+    catch (_) { }
   }
 
   // Public API
@@ -4901,36 +5710,47 @@ window.Player = Player;
 // -----------------------------
 // Global: Pause video when leaving Player tab
 // -----------------------------
-(function setupTabPause(){
-  function pauseIfNotActive(activeId){
+(function setupTabPause() {
+  function pauseIfNotActive(activeId) {
     try {
       if (!window.Player) return;
       const v = document.getElementById('playerVideo');
       if (!v) return;
       const active = activeId || (window.tabSystem && window.tabSystem.getActiveTab && window.tabSystem.getActiveTab());
-      if (active !== 'player' && !v.paused && !v.ended) { try { v.pause(); } catch(_){} }
-    } catch(_){}
+      if (active !== 'player' && !v.paused && !v.ended) {
+        try {
+          v.pause();
+        }
+        catch (_) { }
+      }
+    }
+    catch (_) { }
   }
   // Hook custom tabSystem event style if it exposes on/subscribe
   try {
     const ts = window.tabSystem;
     if (ts && typeof ts.on === 'function') {
       ts.on('switch', (id) => pauseIfNotActive(id));
-    } else if (ts && typeof ts.addEventListener === 'function') {
+    }
+    else if (ts && typeof ts.addEventListener === 'function') {
       ts.addEventListener('switch', (e) => pauseIfNotActive(e.detail));
     }
-  } catch(_){}
+  }
+  catch (_) { }
   // MutationObserver fallback watching player panel visibility/class changes
   try {
     const panel = document.getElementById('player-panel');
     if (panel && !panel._pauseObserver) {
       const obs = new MutationObserver(() => pauseIfNotActive());
-      obs.observe(panel, { attributes:true, attributeFilter:['hidden','class'] });
+      obs.observe(panel, { attributes: true, attributeFilter: ['hidden', 'class'] });
       panel._pauseObserver = obs;
     }
-  } catch(_){}
+  }
+  catch (_) { }
   // Also pause on document hidden (tab/background)
-  document.addEventListener('visibilitychange', () => { if (document.hidden) pauseIfNotActive('not-player'); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) pauseIfNotActive('not-player');
+  });
 })();
 
 // -----------------------------
@@ -4943,8 +5763,8 @@ function initPlayerEnhancements() {
   const accordionRoot = document.getElementById("sidebarAccordion");
 
   const stage =
-  document.getElementById("videoStage") ||
-  document.querySelector(".player-stage-simple");
+    document.getElementById("videoStage") ||
+    document.querySelector(".player-stage-simple");
   const playerLayout = document.getElementById("playerLayout");
   const filterRanges = document.querySelectorAll(
     "#effectsPanel input[type=range][data-fx]"
@@ -4960,11 +5780,7 @@ function initPlayerEnhancements() {
     if (!sidebar || !toggleBtn) return;
     const collapsed = localStorage.getItem(LS_KEY_SIDEBAR) === "1";
     sidebar.setAttribute("data-collapsed", collapsed ? "true" : "false");
-    if (playerLayout)
-      playerLayout.setAttribute(
-      "data-sidebar-collapsed",
-      collapsed ? "true" : "false"
-    );
+    if (playerLayout) playerLayout.setAttribute("data-sidebar-collapsed", collapsed ? "true" : "false");
     toggleBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     // Arrow glyph semantics: show chevron pointing toward where the sidebar will appear when expanded.
     // Using single angle characters for compactness.
@@ -4980,7 +5796,8 @@ function initPlayerEnhancements() {
     try {
       loadState();
       renderValues();
-    } catch (_) {}
+    }
+    catch (_) { }
     const infoToggle = document.getElementById("infoToggle");
     const infoDrawer = document.getElementById("infoDrawer");
     if (infoToggle && infoDrawer && !infoToggle._wired) {
@@ -4990,7 +5807,8 @@ function initPlayerEnhancements() {
         if (open) {
           infoDrawer.removeAttribute("hidden");
           infoToggle.setAttribute("aria-expanded", "true");
-        } else {
+        }
+        else {
           infoDrawer.setAttribute("hidden", "");
           infoToggle.setAttribute("aria-expanded", "false");
         }
@@ -5003,7 +5821,8 @@ function initPlayerEnhancements() {
     if (!localStorage.getItem(LS_KEY_SIDEBAR) && window.innerWidth < 1500) {
       localStorage.setItem(LS_KEY_SIDEBAR, "1");
     }
-  } catch (_) {}
+  }
+  catch (_) { }
   applySidebarCollapsed(true);
   if (toggleBtn && !toggleBtn._wired) {
     toggleBtn._wired = true;
@@ -5018,12 +5837,14 @@ function initPlayerEnhancements() {
     try {
       const saved = JSON.parse(localStorage.getItem(LS_KEY_EFFECTS) || "{}");
       if (saved && typeof saved === "object") {
-        // Only apply known keys; ignore corruption
+        // Only apply known keys;
+        // ignore corruption
         ["r", "g", "b", "blur"].forEach((k) => {
           if (k in saved && typeof saved[k] === "number") state[k] = saved[k];
         });
       }
-    } catch (_) {}
+    }
+    catch (_) { }
     // apply to inputs
     filterRanges.forEach((r) => {
       const k = r.dataset.fx;
@@ -5034,34 +5855,18 @@ function initPlayerEnhancements() {
   function saveState() {
     try {
       localStorage.setItem(LS_KEY_EFFECTS, JSON.stringify(state));
-    } catch (_) {}
+    }
+    catch (_) { }
   }
   function applyEffects() {
     if (!stage) return;
     if (COLOR_MATRIX_NODE) {
       const { r, g, b } = state;
       const matrix = [
-        r,
-        0,
-        0,
-        0,
-        0,
-        0,
-        g,
-        0,
-        0,
-        0,
-        0,
-        0,
-        b,
-        0,
-        0,
-        0,
-        0,
-        0,
-        1,
-        0,
-      ].join(" ");
+        r, 0, 0, 0, 0,
+        0, g, 0, 0, 0,
+        0, 0, b, 0, 0,
+        0, 0, 0, 1, 0,].join(" ");
       COLOR_MATRIX_NODE.setAttribute("values", matrix);
     }
     const blurStr = state.blur > 0 ? ` blur(${state.blur}px)` : "";
@@ -5093,13 +5898,12 @@ function initPlayerEnhancements() {
   // On each save, if values are default set remove from storage to avoid stale persistence overriding reset on reload
   function saveState() {
     const defaults = { r: 1, g: 1, b: 1, blur: 0 };
-    const isDefault = Object.keys(defaults).every(
-      (k) => state[k] === defaults[k]
-    );
+    const isDefault = Object.keys(defaults).every((k) => state[k] === defaults[k]);
     try {
       if (isDefault) localStorage.removeItem(LS_KEY_EFFECTS);
       else localStorage.setItem(LS_KEY_EFFECTS, JSON.stringify(state));
-    } catch (_) {}
+    }
+    catch (_) { }
   }
   function renderValues() {
     valueSpans.forEach((sp) => {
@@ -5115,36 +5919,36 @@ function initPlayerEnhancements() {
   function applyPreset(name) {
     switch (name) {
       case "cinematic":
-      state.r = 1.05;
-      state.g = 1.02;
-      state.b = 0.96;
-      state.blur = 0;
-      break;
+        state.r = 1.05;
+        state.g = 1.02;
+        state.b = 0.96;
+        state.blur = 0;
+        break;
       case "warm":
-      state.r = 1.15;
-      state.g = 1.05;
-      state.b = 0.9;
-      state.blur = 0;
-      break;
+        state.r = 1.15;
+        state.g = 1.05;
+        state.b = 0.9;
+        state.blur = 0;
+        break;
       case "cool":
-      state.r = 0.92;
-      state.g = 1.02;
-      state.b = 1.12;
-      state.blur = 0;
-      break;
+        state.r = 0.92;
+        state.g = 1.02;
+        state.b = 1.12;
+        state.blur = 0;
+        break;
       case "dreamy":
-      state.r = 1.05;
-      state.g = 1.05;
-      state.b = 1.05;
-      state.blur = 4;
-      break;
+        state.r = 1.05;
+        state.g = 1.05;
+        state.b = 1.05;
+        state.blur = 4;
+        break;
       case "flat":
       default:
-      state.r = 1;
-      state.g = 1;
-      state.b = 1;
-      state.blur = 0;
-      break;
+        state.r = 1;
+        state.g = 1;
+        state.b = 1;
+        state.blur = 0;
+        break;
     }
     applyEffects();
     syncInputs();
@@ -5157,7 +5961,8 @@ function initPlayerEnhancements() {
     const next = !collapsed;
     try {
       localStorage.setItem(LS_KEY_SIDEBAR, next ? "1" : "0");
-    } catch (_) {}
+    }
+    catch (_) { }
     applySidebarCollapsed();
   }
 
@@ -5169,19 +5974,19 @@ function initPlayerEnhancements() {
   filterRanges.forEach((r) => r.addEventListener("input", onSlider));
   if (resetFiltersBtn) resetFiltersBtn.addEventListener("click", resetFilters);
   // removed transform reset binding
-  presetButtons.forEach((pb) =>
-    pb.addEventListener("click", () => applyPreset(pb.dataset.preset))
-);
-// (Removed duplicate Shift+S listener)
-loadState();
-renderValues();
+  presetButtons.forEach((pb) => pb.addEventListener("click", () => applyPreset(pb.dataset.preset))
+  );
+  // (Removed duplicate Shift+S listener)
+  loadState();
+  renderValues();
 }
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initPlayerEnhancements, {
     once: true,
   });
-} else {
+}
+else {
   initPlayerEnhancements();
 }
 
@@ -5197,7 +6002,8 @@ function wireSimplePlayerDrawer() {
       infoDrawer.removeAttribute("hidden");
       infoToggle.setAttribute("aria-expanded", "true");
       infoToggle.classList.add("active");
-    } else {
+    }
+    else {
       infoDrawer.setAttribute("hidden", "");
       infoToggle.setAttribute("aria-expanded", "false");
       infoToggle.classList.remove("active");
@@ -5213,37 +6019,40 @@ function wireSimplePlayerDrawer() {
         (a.tagName === "INPUT" ||
           a.tagName === "TEXTAREA" ||
           a.isContentEditable)
-        )
+      )
         return;
-        toggle();
-      }
-    });
-  }
+      toggle();
+    }
+  });
+}
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", wireSimplePlayerDrawer, {
-      once: true,
-    });
-  } else {
-    wireSimplePlayerDrawer();
-  }
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", wireSimplePlayerDrawer, {
+    once: true,
+  });
+}
+else {
+  wireSimplePlayerDrawer();
+}
 
-  // Sidepanel collapse (new simplified sidebar replacement)
-  function wireSidepanel() {
-    // Sidebar removed; function retained as a no-op for backward compatibility.
-    return;
-  }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", wireSidepanel, { once: true });
-  } else {
-    wireSidepanel();
-  }
+// Sidepanel collapse (new simplified sidebar replacement)
+function wireSidepanel() {
+  // Sidebar removed;
+  // function retained as a no-op for backward compatibility.
+  return;
+}
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", wireSidepanel, { once: true });
+}
+else {
+  wireSidepanel();
+}
 
-  // -----------------------------
-  // Performers Module
-  // -----------------------------
-  const Performers = (() => {
-    let gridEl,
+// -----------------------------
+// Performers Module
+// -----------------------------
+const Performers = (() => {
+  let gridEl,
     searchEl,
     addBtn,
     importBtn,
@@ -5251,311 +6060,291 @@ function wireSimplePlayerDrawer() {
     deleteBtn,
     dropZone,
     statusEl;
-    let performers = [];
-    let selected = new Set();
-    let searchTerm = "";
-    let searchTimer = null;
-    let lastFocusedIndex = -1; // for keyboard navigation
-    let shiftAnchor = null; // for shift range selection
+  let performers = [];
+  let selected = new Set();
+  let searchTerm = "";
+  let searchTimer = null;
+  let lastFocusedIndex = -1;
+  // for keyboard navigation
+  let shiftAnchor = null;
+  // for shift range selection
 
-    function initDom() {
-      if (gridEl) return;
-      gridEl = document.getElementById("performersGrid");
-      searchEl = document.getElementById("performerSearch");
-      addBtn = document.getElementById("performerAddBtn");
-      importBtn = document.getElementById("performerImportBtn");
-      mergeBtn = document.getElementById("performerMergeBtn");
-      deleteBtn = document.getElementById("performerDeleteBtn");
-      dropZone = document.getElementById("performerDropZone");
-      statusEl = document.getElementById("performersStatus");
-      wireEvents();
+  function initDom() {
+    if (gridEl) return;
+    gridEl = document.getElementById("performersGrid");
+    searchEl = document.getElementById("performerSearch");
+    addBtn = document.getElementById("performerAddBtn");
+    importBtn = document.getElementById("performerImportBtn");
+    mergeBtn = document.getElementById("performerMergeBtn");
+    deleteBtn = document.getElementById("performerDeleteBtn");
+    dropZone = document.getElementById("performerDropZone");
+    statusEl = document.getElementById("performersStatus");
+    wireEvents();
+  }
+  function setStatus(msg, show = true) {
+    if (!statusEl) return;
+    statusEl.textContent = msg || "";
+    statusEl.style.display = show ? "block" : "none";
+  }
+  function render() {
+    if (!gridEl) return;
+    gridEl.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    const termLower = searchTerm.toLowerCase();
+    const filtered = performers.filter(
+      (p) => !termLower || p.name.toLowerCase().includes(termLower)
+    );
+    if (addBtn) {
+      const exact = filtered.some((p) => p.name.toLowerCase() === termLower);
+      addBtn.style.display = searchTerm && !exact ? "inline-block" : "none";
+      addBtn.textContent = `Add '${searchTerm}'`;
+      addBtn.disabled = !searchTerm;
     }
-    function setStatus(msg, show = true) {
-      if (!statusEl) return;
-      statusEl.textContent = msg || "";
-      statusEl.style.display = show ? "block" : "none";
+    if (filtered.length === 0) {
+      const msg = document.createElement("div");
+      msg.className = "hint-sm";
+      msg.style.opacity = ".7";
+      msg.style.padding = "24px 0";
+      msg.textContent = "No performers found.";
+      gridEl.appendChild(msg);
     }
-    function render() {
-      if (!gridEl) { return; }
-      gridEl.innerHTML = "";
-      const frag = document.createDocumentFragment();
-      const termLower = searchTerm.toLowerCase();
-      const filtered = performers.filter(
-        (p) => !termLower || p.name.toLowerCase().includes(termLower)
-      );
-      if (addBtn) {
-        const exact = filtered.some((p) => p.name.toLowerCase() === termLower);
-        addBtn.style.display = searchTerm && !exact ? "inline-block" : "none";
-        addBtn.textContent = `Add '${searchTerm}'`;
-        addBtn.disabled = !searchTerm;
-      }
-      if (filtered.length === 0) {
+    else {
+      filtered.forEach((p) => {
+        const card = document.createElement("div");
+        card.className = "perf-card";
+        card.dataset.norm = p.norm;
+        if (selected.has(p.norm)) card.dataset.selected = "1";
+        const h = document.createElement("h3");
+        h.textContent = p.name;
+        const count = document.createElement("div");
+        count.className = "count";
+        count.textContent = `${p.count} file${p.count === 1 ? "" : "s"}`;
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const btnRename = document.createElement("button");
+        btnRename.className = "btn-xs";
+        btnRename.textContent = "Rename";
+        btnRename.onclick = () => renamePrompt(p);
+        const tagsWrap = document.createElement("div");
+        tagsWrap.className = "tags";
+        (p.tags || []).forEach((tag) => {
+          const tEl = document.createElement("span");
+          tEl.className = "tag";
+          tEl.textContent = tag;
+          tEl.title = "Click to remove";
+          tEl.onclick = (ev) => {
+            ev.stopPropagation();
+            removeTag(p, tag);
+          };
+          tagsWrap.appendChild(tEl);
+        });
+        const addTagBtn = document.createElement("button");
+        addTagBtn.className = "btn-xs";
+        addTagBtn.textContent = "+";
+        addTagBtn.title = "Add tag";
+        addTagBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          addTagPrompt(p);
+        };
+        actions.appendChild(btnRename);
+        actions.appendChild(addTagBtn);
+        card.appendChild(h);
+        card.appendChild(count);
+        card.appendChild(tagsWrap);
+        card.appendChild(actions);
+        card.tabIndex = 0;
+        // focusable
+        card.onclick = (e) => handleCardClick(e, p, filtered);
+        card.onkeydown = (e) => handleCardKey(e, p, filtered);
+        frag.appendChild(card);
+      });
+      gridEl.appendChild(frag);
+    }
+    updateSelectionUI();
+    // Ensure performers grid loads on page load
+    window.addEventListener('DOMContentLoaded', () => {
+      if (window.fetchPerformers) window.fetchPerformers();
+    });
+  }
+  function updateSelectionUI() {
+    document.querySelectorAll(".perf-card").forEach((c) => {
+      if (selected.has(c.dataset.norm)) c.dataset.selected = "1";
+      else c.removeAttribute("data-selected");
+    });
+    const multi = selected.size >= 2;
+    if (mergeBtn) mergeBtn.disabled = !multi;
+    if (deleteBtn) deleteBtn.disabled = selected.size === 0;
+  }
+  async function fetchPerformers() {
+    initDom();
+    try {
+      // fetchPerformers called
+      setStatus("Loading…", true);
+      const url = new URL("/api/performers", window.location.origin);
+      if (searchTerm) url.searchParams.set("search", searchTerm);
+      const r = await fetch(url);
+      const j = await r.json();
+      // performers response loaded
+      performers = j?.data?.performers || [];
+      setStatus("", false);
+      render();
+    }
+    catch (e) {
+      setStatus("Failed to load performers", true);
+      if (gridEl) {
+        gridEl.innerHTML = "";
         const msg = document.createElement("div");
         msg.className = "hint-sm";
         msg.style.opacity = ".7";
         msg.style.padding = "24px 0";
-        msg.textContent = "No performers found.";
+        msg.style.color = "#e44";
+        msg.textContent = "Error loading performers.";
         gridEl.appendChild(msg);
-      } else {
-        filtered.forEach((p) => {
-          const card = document.createElement("div");
-          card.className = "perf-card";
-          card.dataset.norm = p.norm;
-          if (selected.has(p.norm)) card.dataset.selected = "1";
-          const h = document.createElement("h3");
-          h.textContent = p.name;
-          const count = document.createElement("div");
-          count.className = "count";
-          count.textContent = `${p.count} file${p.count === 1 ? "" : "s"}`;
-          const actions = document.createElement("div");
-          actions.className = "actions";
-          const btnRename = document.createElement("button");
-          btnRename.className = "btn-xs";
-          btnRename.textContent = "Rename";
-          btnRename.onclick = () => renamePrompt(p);
-          const tagsWrap = document.createElement("div");
-          tagsWrap.className = "tags";
-          (p.tags || []).forEach((tag) => {
-            const tEl = document.createElement("span");
-            tEl.className = "tag";
-            tEl.textContent = tag;
-            tEl.title = "Click to remove";
-            tEl.onclick = (ev) => {
-              ev.stopPropagation();
-              removeTag(p, tag);
-            };
-            tagsWrap.appendChild(tEl);
-          });
-          const addTagBtn = document.createElement("button");
-          addTagBtn.className = "btn-xs";
-          addTagBtn.textContent = "+";
-          addTagBtn.title = "Add tag";
-          addTagBtn.onclick = (ev) => {
-            ev.stopPropagation();
-            addTagPrompt(p);
-          };
-          actions.appendChild(btnRename);
-          actions.appendChild(addTagBtn);
-          card.appendChild(h);
-          card.appendChild(count);
-          card.appendChild(tagsWrap);
-          card.appendChild(actions);
-          card.tabIndex = 0; // focusable
-          card.onclick = (e) => handleCardClick(e, p, filtered);
-          card.onkeydown = (e) => handleCardKey(e, p, filtered);
-          frag.appendChild(card);
-        });
-        gridEl.appendChild(frag);
       }
-      updateSelectionUI();
-      // Ensure performers grid loads on page load
-      window.addEventListener('DOMContentLoaded', () => {
-        if (window.fetchPerformers) window.fetchPerformers();
-      });
+      console.error(e);
     }
-    function updateSelectionUI() {
-      document.querySelectorAll(".perf-card").forEach((c) => {
-        if (selected.has(c.dataset.norm)) c.dataset.selected = "1";
-        else c.removeAttribute("data-selected");
-      });
-      const multi = selected.size >= 2;
-      if (mergeBtn) mergeBtn.disabled = !multi;
-      if (deleteBtn) deleteBtn.disabled = selected.size === 0;
-    }
-    async function fetchPerformers() {
-      initDom();
-      try {
-        // fetchPerformers called
-        setStatus("Loading…", true);
-        const url = new URL("/api/performers", window.location.origin);
-        if (searchTerm) url.searchParams.set("search", searchTerm);
-        const r = await fetch(url);
-        const j = await r.json();
-        // performers response loaded
-        performers = j?.data?.performers || [];
-        setStatus("", false);
-        render();
-      } catch (e) {
-        setStatus("Failed to load performers", true);
-        if (gridEl) {
-          gridEl.innerHTML = "";
-          const msg = document.createElement("div");
-          msg.className = "hint-sm";
-          msg.style.opacity = ".7";
-          msg.style.padding = "24px 0";
-          msg.style.color = "#e44";
-          msg.textContent = "Error loading performers.";
-          gridEl.appendChild(msg);
-        }
-        console.error(e);
-      }
-    }
-    function debounceSearch() {
-      if (searchTimer) clearTimeout(searchTimer);
-      searchTimer = setTimeout(fetchPerformers, 400);
-    }
-    function toggleSelect(norm, opts = { range: false, anchor: false }) {
-      if (opts.range && shiftAnchor) {
-        // range selection
-        const filtered = currentFiltered();
-        const aIndex = filtered.findIndex((p) => p.norm === shiftAnchor);
-        const bIndex = filtered.findIndex((p) => p.norm === norm);
-        if (aIndex > -1 && bIndex > -1) {
-          const [start, end] =
+  }
+  function debounceSearch() {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(fetchPerformers, 400);
+  }
+  function toggleSelect(norm, opts = { range: false, anchor: false }) {
+    if (opts.range && shiftAnchor) {
+      // range selection
+      const filtered = currentFiltered();
+      const aIndex = filtered.findIndex((p) => p.norm === shiftAnchor);
+      const bIndex = filtered.findIndex((p) => p.norm === norm);
+      if (aIndex > -1 && bIndex > -1) {
+        const [start, end] =
           aIndex < bIndex ? [aIndex, bIndex] : [bIndex, aIndex];
-          for (let i = start; i <= end; i++) {
-            selected.add(filtered[i].norm);
-          }
-          updateSelectionUI();
-          return;
+        for (let i = start; i <= end; i++) {
+          selected.add(filtered[i].norm);
         }
-      }
-      if (selected.has(norm)) selected.delete(norm);
-      else selected.add(norm);
-      if (opts.anchor) shiftAnchor = norm;
-      updateSelectionUI();
-    }
-    function currentFiltered() {
-      const termLower = searchTerm.toLowerCase();
-      return performers.filter(
-        (p) => !termLower || p.name.toLowerCase().includes(termLower)
-      );
-    }
-    function handleCardClick(e, p, filtered) {
-      const norm = p.norm;
-      if (e.shiftKey) {
-        toggleSelect(norm, { range: true });
+        updateSelectionUI();
         return;
       }
-      if (e.metaKey || e.ctrlKey) {
-        toggleSelect(norm, { anchor: true });
-        return;
-      }
-      if (selected.size <= 1 && selected.has(norm)) {
-        selected.delete(norm);
-        shiftAnchor = norm;
-      } else {
-        selected.clear();
-        selected.add(norm);
-        shiftAnchor = norm;
-      }
-      updateSelectionUI();
-      lastFocusedIndex = filtered.findIndex((x) => x.norm === norm);
     }
-    function handleCardKey(e, p, filtered) {
-      const norm = p.norm;
-      const index = filtered.findIndex((x) => x.norm === norm);
-      if (
-        [
-          "ArrowDown",
-          "ArrowUp",
-          "ArrowLeft",
-          "ArrowRight",
-          "Home",
-          "End",
-          " ",
-        ].includes(e.key) ||
-        (e.key === "a" && (e.metaKey || e.ctrlKey))
-      ) {
-        e.preventDefault();
+    if (selected.has(norm)) selected.delete(norm);
+    else selected.add(norm);
+    if (opts.anchor) shiftAnchor = norm;
+    updateSelectionUI();
+  }
+  function currentFiltered() {
+    const termLower = searchTerm.toLowerCase();
+    return performers.filter((p) => !termLower || p.name.toLowerCase().includes(termLower)
+    );
+  }
+  function handleCardClick(e, p, filtered) {
+    const norm = p.norm;
+    if (e.shiftKey) {
+      toggleSelect(norm, { range: true });
+      return;
+    }
+    if (e.metaKey || e.ctrlKey) {
+      toggleSelect(norm, { anchor: true });
+      return;
+    }
+    if (selected.size <= 1 && selected.has(norm)) {
+      selected.delete(norm);
+      shiftAnchor = norm;
+    }
+    else {
+      selected.clear();
+      selected.add(norm);
+      shiftAnchor = norm;
+    }
+    updateSelectionUI();
+    lastFocusedIndex = filtered.findIndex((x) => x.norm === norm);
+  }
+  function handleCardKey(e, p, filtered) {
+    const norm = p.norm;
+    const index = filtered.findIndex((x) => x.norm === norm);
+    if (
+      [
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowRight",
+        "Home",
+        "End",
+        " ",
+      ].includes(e.key) ||
+      (e.key === "a" && (e.metaKey || e.ctrlKey))
+    ) {
+      e.preventDefault();
+    }
+    const cols = calcColumns();
+    function focusAt(i) {
+      if (i < 0 || i >= filtered.length) return;
+      const card = gridEl.querySelector(`.perf-card[data-norm="${filtered[i].norm}"]`);
+      if (card) {
+        card.focus();
+        lastFocusedIndex = i;
       }
-      const cols = calcColumns();
-      function focusAt(i) {
-        if (i < 0 || i >= filtered.length) return;
-        const card = gridEl.querySelector(
-          `.perf-card[data-norm="${filtered[i].norm}"]`
-        );
-        if (card) {
-          card.focus();
-          lastFocusedIndex = i;
-        }
-      }
-      switch (e.key) {
-        case " ":
+    }
+    switch (e.key) {
+      case " ":
         toggleSelect(norm, { anchor: true });
         break;
-        case "Enter":
+      case "Enter":
         renamePrompt(p);
         break;
-        case "Delete":
-        case "Backspace":
+      case "Delete":
+      case "Backspace":
         deleteSelected();
         break;
-        case "a":
+      case "a":
         if (e.metaKey || e.ctrlKey) {
           selected = new Set(filtered.map((x) => x.norm));
           updateSelectionUI();
         }
         break;
-        case "ArrowRight":
+      case "ArrowRight":
         focusAt(index + 1);
         break;
-        case "ArrowLeft":
+      case "ArrowLeft":
         focusAt(index - 1);
         break;
-        case "ArrowDown":
+      case "ArrowDown":
         focusAt(index + cols);
         break;
-        case "ArrowUp":
+      case "ArrowUp":
         focusAt(index - cols);
         break;
-        case "Home":
+      case "Home":
         focusAt(0);
         break;
-        case "End":
+      case "End":
         focusAt(filtered.length - 1);
         break;
-        case "Shift":
+      case "Shift":
         break;
-        default:
+      default:
         return;
-      }
     }
-    function calcColumns() {
-      if (!gridEl) return 1;
-      const style = getComputedStyle(gridEl);
-      const template = style.gridTemplateColumns;
-      if (!template) return 1;
-      return template.split(" ").length;
+  }
+  function calcColumns() {
+    if (!gridEl) return 1;
+    const style = getComputedStyle(gridEl);
+    const template = style.gridTemplateColumns;
+    if (!template) return 1;
+    return template.split(" ").length;
+  }
+  async function addCurrent() {
+    if (!searchTerm) return;
+    try {
+      await fetch("/api/performers/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: searchTerm }),
+      });
+      await fetchPerformers();
     }
-    async function addCurrent() {
-      if (!searchTerm) return;
-      try {
-        await fetch("/api/performers/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: searchTerm }),
-        });
-        await fetchPerformers();
-      } catch (_) {}
-    }
-    async function importPrompt(e) {
-      // Default behavior: open file chooser. Hold Alt/Option to fall back to manual paste prompt.
-      if (e && e.altKey) {
-        const txt = prompt("Paste newline-separated names or JSON array:");
-        if (!txt) return;
-        try {
-          const r = await fetch("/api/performers/import", {
-            method: "POST",
-            headers: { "Content-Type": "text/plain" },
-            body: txt,
-          });
-          if (!r.ok) throw new Error("Import failed");
-          if (window.showToast) window.showToast("Performers imported", "is-success");
-          await fetchPerformers();
-        } catch (err) {
-          if (window.showToast) window.showToast(err.message || "Import failed", "is-error");
-        }
-        return;
-      }
-      if (fileInput) {
-        try {
-          fileInput.click();
-          return;
-        } catch (_) {
-          /* fallback to prompt below */
-        }
-      }
+    catch (_) { }
+  }
+  async function importPrompt(e) {
+    // Default behavior: open file chooser. Hold Alt/Option to fall back to manual paste prompt.
+    if (e && e.altKey) {
       const txt = prompt("Paste newline-separated names or JSON array:");
       if (!txt) return;
       try {
@@ -5567,506 +6356,640 @@ function wireSimplePlayerDrawer() {
         if (!r.ok) throw new Error("Import failed");
         if (window.showToast) window.showToast("Performers imported", "is-success");
         await fetchPerformers();
-      } catch (err) {
+      }
+      catch (err) {
         if (window.showToast) window.showToast(err.message || "Import failed", "is-error");
       }
+      return;
     }
-    async function renamePrompt(p) {
-      const val = prompt("Rename performer:", p.name);
-      if (!val || val === p.name) return;
+    if (fileInput) {
       try {
-        await fetch("/api/performers/rename", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ old: p.name, new: val }),
-        });
-        await fetchPerformers();
-      } catch (_) {}
-    }
-    async function addTagPrompt(p) {
-      const tag = prompt("Add tag for " + p.name + ":");
-      if (!tag) return;
-      try {
-        await fetch("/api/performers/tags/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: p.name, tag }),
-        });
-        await fetchPerformers();
-      } catch (_) {}
-    }
-    async function removeTag(p, tag) {
-      if (!confirm(`Remove tag '${tag}' from ${p.name}?`)) return;
-      try {
-        await fetch("/api/performers/tags/remove", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: p.name, tag }),
-        });
-        await fetchPerformers();
-      } catch (_) {}
-    }
-    async function mergeSelected() {
-      if (selected.size < 2) return;
-      const list = [...selected];
-      const target = prompt("Merge into (target name):", "");
-      if (!target) return;
-      try {
-        await fetch("/api/performers/merge", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            from: list.map(
-              (n) => performers.find((p) => p.norm === n)?.name || n
-            ),
-            to: target,
-          }),
-        });
-        selected.clear();
-        await fetchPerformers();
-      } catch (_) {}
-    }
-    async function deleteSelected() {
-      if (!selected.size) return;
-      if (!confirm(`Delete ${selected.size} performer(s)?`)) return;
-      for (const norm of [...selected]) {
-        const rec = performers.find((p) => p.norm === norm);
-        if (!rec) continue;
-        try {
-          await fetch("/api/performers?name=" + encodeURIComponent(rec.name), {
-            method: "DELETE",
-          });
-        } catch (_) {}
+        fileInput.click();
+        return;
       }
+      catch (_) {
+        /* fallback to prompt below */
+      }
+    }
+    const txt = prompt("Paste newline-separated names or JSON array:");
+    if (!txt) return;
+    try {
+      const r = await fetch("/api/performers/import", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: txt,
+      });
+      if (!r.ok) throw new Error("Import failed");
+      if (window.showToast) window.showToast("Performers imported", "is-success");
+      await fetchPerformers();
+    }
+    catch (err) {
+      if (window.showToast) window.showToast(err.message || "Import failed", "is-error");
+    }
+  }
+  async function renamePrompt(p) {
+    const val = prompt("Rename performer:", p.name);
+    if (!val || val === p.name) return;
+    try {
+      await fetch("/api/performers/rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old: p.name, new: val }),
+      });
+      await fetchPerformers();
+    }
+    catch (_) { }
+  }
+  async function addTagPrompt(p) {
+    const tag = prompt("Add tag for " + p.name + ":");
+    if (!tag) return;
+    try {
+      await fetch("/api/performers/tags/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: p.name, tag }),
+      });
+      await fetchPerformers();
+    }
+    catch (_) { }
+  }
+  async function removeTag(p, tag) {
+    if (!confirm(`Remove tag '${tag}' from ${p.name}?`)) return;
+    try {
+      await fetch("/api/performers/tags/remove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: p.name, tag }),
+      });
+      await fetchPerformers();
+    }
+    catch (_) { }
+  }
+  async function mergeSelected() {
+    if (selected.size < 2) return;
+    const list = [...selected];
+    const target = prompt("Merge into (target name):", "");
+    if (!target) return;
+    try {
+      await fetch("/api/performers/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: list.map(
+            (n) => performers.find((p) => p.norm === n)?.name || n
+          ),
+          to: target,
+        }),
+      });
       selected.clear();
       await fetchPerformers();
     }
-    function wireEvents() {
-      if (searchEl && !searchEl._wired) {
-        searchEl._wired = true;
-        searchEl.addEventListener("input", () => {
-          searchTerm = searchEl.value.trim();
-          debounceSearch();
-        });
-        searchEl.addEventListener("keydown", (e) => {
-          if (e.key === "Escape") {
-            searchEl.value = "";
-            searchTerm = "";
-            fetchPerformers();
-          }
+    catch (_) { }
+  }
+  async function deleteSelected() {
+    if (!selected.size) return;
+    if (!confirm(`Delete ${selected.size} performer(s)?`)) return;
+    for (const norm of [...selected]) {
+      const rec = performers.find((p) => p.norm === norm);
+      if (!rec) continue;
+      try {
+        await fetch("/api/performers?name=" + encodeURIComponent(rec.name), {
+          method: "DELETE",
         });
       }
-      if (addBtn && !addBtn._wired) {
-        addBtn._wired = true;
-        addBtn.addEventListener("click", addCurrent);
-      }
-      if (importBtn && !importBtn._wired) {
-        importBtn._wired = true;
-        importBtn.addEventListener("click", importPrompt);
-      }
-      if (mergeBtn && !mergeBtn._wired) {
-        mergeBtn._wired = true;
-        mergeBtn.addEventListener("click", mergeSelected);
-      }
-      if (deleteBtn && !deleteBtn._wired) {
-        deleteBtn._wired = true;
-        deleteBtn.addEventListener("click", deleteSelected);
-      }
-      if (dropZone && !dropZone._wired) {
-        dropZone._wired = true;
-        wireDropZone();
-      }
-      document.addEventListener("keydown", globalKeyHandler);
+      catch (_) { }
     }
-    // Wire hidden file input fallback
-    const fileInput = document.getElementById("performerFileInput");
-    if (fileInput && !fileInput._wired) {
-      fileInput._wired = true;
-      fileInput.addEventListener("change", async (e) => {
-        const files = [...(fileInput.files || [])];
-        if (!files.length) return;
-        let combined = "";
-        for (const f of files) {
-          try {
-            combined += (await f.text()) + "\n";
-          } catch (_) {}
+    selected.clear();
+    await fetchPerformers();
+  }
+  function wireEvents() {
+    if (searchEl && !searchEl._wired) {
+      searchEl._wired = true;
+      searchEl.addEventListener("input", () => {
+        searchTerm = searchEl.value.trim();
+        debounceSearch();
+      });
+      searchEl.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          searchEl.value = "";
+          searchTerm = "";
+          fetchPerformers();
         }
-        if (!combined.trim()) return;
-        // Parse performer names
-        let rawNames = [];
+      });
+    }
+    if (addBtn && !addBtn._wired) {
+      addBtn._wired = true;
+      addBtn.addEventListener("click", addCurrent);
+    }
+    if (importBtn && !importBtn._wired) {
+      importBtn._wired = true;
+      importBtn.addEventListener("click", importPrompt);
+    }
+    if (mergeBtn && !mergeBtn._wired) {
+      mergeBtn._wired = true;
+      mergeBtn.addEventListener("click", mergeSelected);
+    }
+    if (deleteBtn && !deleteBtn._wired) {
+      deleteBtn._wired = true;
+      deleteBtn.addEventListener("click", deleteSelected);
+    }
+    if (dropZone && !dropZone._wired) {
+      dropZone._wired = true;
+      wireDropZone();
+    }
+    document.addEventListener("keydown", globalKeyHandler);
+  }
+  // Wire hidden file input fallback
+  const fileInput = document.getElementById("performerFileInput");
+  if (fileInput && !fileInput._wired) {
+    fileInput._wired = true;
+    fileInput.addEventListener("change", async (e) => {
+      const files = [...(fileInput.files || [])];
+      if (!files.length) return;
+      let combined = "";
+      for (const f of files) {
         try {
-          const trimmed = combined.trim();
-          if (/^\s*\[/.test(trimmed)) {
-            try { const arr = JSON.parse(trimmed); if (Array.isArray(arr)) rawNames = arr.map(x=>String(x)); } catch(_){ rawNames = []; }
+          combined += (await f.text()) + "\n";
+        }
+        catch (_) { }
+      }
+      if (!combined.trim()) return;
+      // Parse performer names
+      let rawNames = [];
+      try {
+        const trimmed = combined.trim();
+        if (/^\s*\[/.test(trimmed)) {
+          try {
+            const arr = JSON.parse(trimmed);
+            if (Array.isArray(arr)) rawNames = arr.map(x => String(x));
           }
-          if (!rawNames.length) {
-            rawNames = trimmed.split(/\r?\n|,|;|\t/).map(s=>s.trim()).filter(Boolean);
+          catch (_) {
+            rawNames = [];
           }
-          rawNames = Array.from(new Set(rawNames));
-        } catch(_) {}
-        // Show modal with would-be imports
-        const modal = document.getElementById('performerImportPreviewModal');
-        const list = document.getElementById('performerImportPreviewList');
-        const closeBtn = document.getElementById('performerImportPreviewClose');
-        const confirmBtn = document.getElementById('performerImportPreviewConfirm');
-        if (!modal || !list || !confirmBtn || !closeBtn) return;
-        list.innerHTML = '';
-        rawNames.forEach(name => {
-          const div = document.createElement('div');
-          div.className = 'chip';
-          div.textContent = name;
-          list.appendChild(div);
-        });
-        modal.hidden = false;
-        function closeModal(){ modal.hidden = true; fileInput.value = ""; }
-        if (!closeBtn._wired) { closeBtn._wired = true; closeBtn.addEventListener('click', closeModal); }
-        if (!confirmBtn._wired) {
-          confirmBtn._wired = true;
-          confirmBtn.addEventListener('click', async () => {
-            modal.hidden = true;
-            setStatus("Importing…", true);
-            let imported = false, errorMsg = "";
-            // Try text/plain first
-            try {
-              const r = await fetch("/api/performers/import", {
+        }
+        if (!rawNames.length) {
+          rawNames = trimmed.split(/\r?\n|,|;|\t/).map(s => s.trim()).filter(Boolean);
+        }
+        rawNames = Array.from(new Set(rawNames));
+      }
+      catch (_) { }
+      // Show modal with would-be imports
+      const modal = document.getElementById('performerImportPreviewModal');
+      const list = document.getElementById('performerImportPreviewList');
+      const closeBtn = document.getElementById('performerImportPreviewClose');
+      const confirmBtn = document.getElementById('performerImportPreviewConfirm');
+      if (!modal || !list || !confirmBtn || !closeBtn) return;
+      list.innerHTML = '';
+      rawNames.forEach(name => {
+        const div = document.createElement('div');
+        div.className = 'chip';
+        div.textContent = name;
+        list.appendChild(div);
+      });
+      modal.hidden = false;
+      function closeModal() {
+        modal.hidden = true;
+        fileInput.value = "";
+      }
+      if (!closeBtn._wired) {
+        closeBtn._wired = true;
+        closeBtn.addEventListener('click', closeModal);
+      }
+      if (!confirmBtn._wired) {
+        confirmBtn._wired = true;
+        confirmBtn.addEventListener('click', async () => {
+          modal.hidden = true;
+          setStatus("Importing…", true);
+          let imported = false, errorMsg = "";
+          // Try text/plain first
+          try {
+            const r = await fetch("/api/performers/import", {
+              method: "POST",
+              headers: { "Content-Type": "text/plain" },
+              body: rawNames.join("\n")
+            });
+            if (r.ok) {
+              imported = true;
+              if (window.showToast) window.showToast("Performers imported", "is-success");
+              if (window.fetchPerformers) window.fetchPerformers();
+              setStatus("Imported performers", true);
+            }
+            else if (r.status === 422) {
+              // Fallback to JSON
+              const r2 = await fetch("/api/performers/import", {
                 method: "POST",
-                headers: { "Content-Type": "text/plain" },
-                body: rawNames.join("\n")
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ names: rawNames })
               });
-              if (r.ok) {
+              const j2 = await r2.json();
+              if (r2.ok) {
                 imported = true;
                 if (window.showToast) window.showToast("Performers imported", "is-success");
                 if (window.fetchPerformers) window.fetchPerformers();
                 setStatus("Imported performers", true);
-              } else if (r.status === 422) {
-                // Fallback to JSON
-                const r2 = await fetch("/api/performers/import", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ names: rawNames })
-                });
-                const j2 = await r2.json();
-                if (r2.ok) {
-                  imported = true;
-                  if (window.showToast) window.showToast("Performers imported", "is-success");
-                  if (window.fetchPerformers) window.fetchPerformers();
-                  setStatus("Imported performers", true);
-                } else {
-                  errorMsg = j2?.message || "Import failed";
-                }
-              } else {
-                const j = await r.json();
-                errorMsg = j?.message || "Import failed";
               }
-            } catch (err) {
-              errorMsg = err.message || "Import failed";
-            } finally {
-              fileInput.value = "";
-              if (!imported) {
-                setStatus("Import failed", true);
-                if (window.showToast) window.showToast(errorMsg, "is-error");
+              else {
+                errorMsg = j2?.message || "Import failed";
               }
             }
-          });
-          // Observe player title and hide overlay when empty (compat for browsers without :has)
-          (function watchPlayerTitle() {
-            try {
-              const title = document.getElementById('playerTitle');
-              const overlay = document.getElementById('playerOverlayBar');
-              if (!title || !overlay) return;
-              const update = () => {
-                const empty = !title.textContent || title.textContent.trim() === '';
-                overlay.style.display = empty ? 'none' : '';
-              };
-              update();
-              const mo = new MutationObserver(update);
-              mo.observe(title, { childList: true, characterData: true, subtree: true });
-              // also watch for attribute changes that may alter visibility
-              mo.observe(overlay, { attributes: true });
-            } catch (_) {}
-          })();
-        }
-      });
-    }
-    if (dropZone && !dropZone._clickWired) {
-      dropZone._clickWired = true;
-      dropZone.addEventListener("click", () => {
-        if (fileInput) fileInput.click();
-      });
-      dropZone.addEventListener("dblclick", () => {
-        if (fileInput) fileInput.click();
-      });
-      dropZone.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          if (fileInput) fileInput.click();
-        }
-      });
-    }
-    function globalKeyHandler(e) {
-      if (!isPanelActive()) return;
-      if (e.key === "Escape" && selected.size) {
-        selected.clear();
-        updateSelectionUI();
-      }
-    }
-    function isPanelActive() {
-      const panel = document.getElementById("performers-panel");
-      return panel && !panel.hasAttribute("hidden");
-    }
-    function wireDropZone() {
-      if (document._perfDndAttached) return;
-      document._perfDndAttached = true;
-      let over = false;
-      let hoverTimer = null;
-      function panelActive() {
-        return isPanelActive();
-      }
-      function showHover() {
-        if (!dropZone) return;
-        dropZone.classList.add("drag-hover");
-        dropZone.style.background = "rgba(79,140,255,0.18)";
-        dropZone.style.outline = "2px dashed rgba(79,140,255,0.55)";
-      }
-      function clearHover() {
-        if (!dropZone) return;
-        dropZone.classList.remove("drag-hover");
-        dropZone.style.background = "";
-        dropZone.style.outline = "";
-      }
-      async function readPayload(dt) {
-        if (!dt) return "";
-        let out = "";
-        const items = dt.items ? [...dt.items] : [];
-        for (const it of items) {
-          if (it.kind === "string") {
-            try {
-              out = await new Promise((r) => it.getAsString(r));
-            } catch (_) {}
-            if (out) return out;
+            else {
+              const j = await r.json();
+              errorMsg = j?.message || "Import failed";
+            }
           }
-        }
-        if (dt.files && dt.files.length) {
-          for (const f of dt.files) {
-            try {
-              if (
-                f.type.startsWith("text/") ||
-                /\.(txt|csv|json)$/i.test(f.name)
-              ) {
-                out = await f.text();
-                if (out) return out;
-              }
-            } catch (_) {}
+          catch (err) {
+            errorMsg = err.message || "Import failed";
           }
+          finally {
+            fileInput.value = "";
+            if (!imported) {
+              setStatus("Import failed", true);
+              if (window.showToast) window.showToast(errorMsg, "is-error");
+            }
+          }
+        });
+        // Observe player title and hide overlay when empty (compat for browsers without :has)
+        (function watchPlayerTitle() {
           try {
-            if (!out) out = await dt.files[0].text();
-          } catch (_) {}
-        }
-        return out;
+            const title = document.getElementById('playerTitle');
+            const overlay = document.getElementById('playerOverlayBar');
+            if (!title || !overlay) return;
+            const update = () => {
+              const empty = !title.textContent || title.textContent.trim() === '';
+              overlay.style.display = empty ? 'none' : '';
+            };
+            update();
+            const mo = new MutationObserver(update);
+            mo.observe(title, { childList: true, characterData: true, subtree: true });
+            // also watch for attribute changes that may alter visibility
+            mo.observe(overlay, { attributes: true });
+          }
+          catch (_) { }
+        })();
       }
-      function wantsIntercept(dt) {
-        if (!dt) return false;
-        return (
-          dt.types &&
-          (dt.types.includes("Files") ||
+    });
+  }
+  if (dropZone && !dropZone._clickWired) {
+    dropZone._clickWired = true;
+    dropZone.addEventListener("click", () => {
+      if (fileInput) fileInput.click();
+    });
+    dropZone.addEventListener("dblclick", () => {
+      if (fileInput) fileInput.click();
+    });
+    dropZone.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        if (fileInput) fileInput.click();
+      }
+    });
+  }
+  function globalKeyHandler(e) {
+    if (!isPanelActive()) return;
+    if (e.key === "Escape" && selected.size) {
+      selected.clear();
+      updateSelectionUI();
+    }
+  }
+  function isPanelActive() {
+    const panel = document.getElementById("performers-panel");
+    return panel && !panel.hasAttribute("hidden");
+  }
+  function wireDropZone() {
+    if (document._perfDndAttached) return;
+    document._perfDndAttached = true;
+    let over = false;
+    let hoverTimer = null;
+    function panelActive() {
+      return isPanelActive();
+    }
+    function showHover() {
+      if (!dropZone) return;
+      dropZone.classList.add("drag-hover");
+      dropZone.style.background = "rgba(79,140,255,0.18)";
+      dropZone.style.outline = "2px dashed rgba(79,140,255,0.55)";
+    }
+    function clearHover() {
+      if (!dropZone) return;
+      dropZone.classList.remove("drag-hover");
+      dropZone.style.background = "";
+      dropZone.style.outline = "";
+    }
+    async function readPayload(dt) {
+      if (!dt) return "";
+      let out = "";
+      const items = dt.items ? [...dt.items] : [];
+      for (const it of items) {
+        if (it.kind === "string") {
+          try {
+            out = await new Promise((r) => it.getAsString(r));
+          }
+          catch (_) { }
+          if (out) return out;
+        }
+      }
+      if (dt.files && dt.files.length) {
+        for (const f of dt.files) {
+          try {
+            if (
+              f.type.startsWith("text/") ||
+              /\.(txt|csv|json)$/i.test(f.name)
+            ) {
+              out = await f.text();
+              if (out) return out;
+            }
+          }
+          catch (_) { }
+        }
+        try {
+          if (!out) out = await dt.files[0].text();
+        }
+        catch (_) { }
+      }
+      return out;
+    }
+    function wantsIntercept(dt) {
+      if (!dt) return false;
+      return (
+        dt.types &&
+        (dt.types.includes("Files") ||
           dt.types.includes("text/plain") ||
           dt.files?.length)
-        );
-      }
-      document.addEventListener(
-        "dragover",
-        (e) => {
-          if (!panelActive()) return;
-          if (!wantsIntercept(e.dataTransfer)) return;
-          e.preventDefault();
-          e.stopPropagation();
-          if (!over) {
-            over = true;
-            showHover();
-          }
-          if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
-        },
-        true
       );
-      document.addEventListener(
-        "dragenter",
-        (e) => {
-          if (!panelActive()) return;
-          if (!wantsIntercept(e.dataTransfer)) return;
-          e.preventDefault();
-          e.stopPropagation();
+    }
+    document.addEventListener(
+      "dragover",
+      (e) => {
+        if (!panelActive()) return;
+        if (!wantsIntercept(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (!over) {
           over = true;
           showHover();
-        },
-        true
-      );
-      document.addEventListener(
-        "dragleave",
-        (e) => {
-          if (!panelActive()) return;
-          if (!over) return;
-          if (hoverTimer) clearTimeout(hoverTimer);
-          hoverTimer = setTimeout(() => {
-            over = false;
-            clearHover();
-          }, 60);
-        },
-        true
-      );
-      document.addEventListener(
-        "drop",
-        async (e) => {
-          if (!panelActive()) return;
-          if (!wantsIntercept(e.dataTransfer)) return;
-          e.preventDefault();
-          e.stopPropagation();
+        }
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      },
+      true
+    );
+    document.addEventListener(
+      "dragenter",
+      (e) => {
+        if (!panelActive()) return;
+        if (!wantsIntercept(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        over = true;
+        showHover();
+      },
+      true
+    );
+    document.addEventListener(
+      "dragleave",
+      (e) => {
+        if (!panelActive()) return;
+        if (!over) return;
+        if (hoverTimer) clearTimeout(hoverTimer);
+        hoverTimer = setTimeout(() => {
           over = false;
           clearHover();
-          try {
-            const text = await readPayload(e.dataTransfer);
-            if (text) {
-              setStatus("Importing…", true);
-              await fetch("/api/performers/import", {
-                method: "POST",
-                headers: { "Content-Type": "text/plain" },
-                body: text,
-              });
-              await fetchPerformers();
-            }
-          } catch (err) {
-            console.warn("performers drop failed", err);
-            setStatus("Import failed", true);
-            setTimeout(() => setStatus("", false), 1500);
-          }
-        },
-        true
-      );
-    }
-    function show() {
-      const p = fetchPerformers();
-      let attempts = 0;
-      const maxAttempts = 40; // up to ~2s
-      function attemptOpen(){
-        if (window.__openPerfAutoMatch) {
-          try { window.__openPerfAutoMatch(); } catch(_) {}
-          return;
-        }
-        if (++attempts <= maxAttempts) setTimeout(attemptOpen, 50);
-      }
-      setTimeout(attemptOpen, 80);
-    }
-    return { show };
-  })();
-  window.Performers = Performers;
-
-  // Hook tab switch to load performers when opened
-  document.addEventListener("click", (e) => {
-    const btn = e.target.closest && e.target.closest('[data-tab="performers"]');
-    if (btn) {
-      setTimeout(() => {
-        if (window.Performers) window.Performers.show();
-      }, 50);
-    }
-  });
-
-  // Fallback direct wiring: ensure clicking the import drop zone always opens file picker
-  // (In case module wiring hasn't run yet or was interrupted.)
-  (function ensurePerformerDropZoneClick() {
-    function wire() {
-      const dz = document.getElementById('performerDropZone');
-      const fi = document.getElementById('performerFileInput');
-      if (!dz || !fi || dz._directClick) return;
-      dz._directClick = true;
-      dz.addEventListener('click', (ev) => {
-        // Ignore if text selection drag ended here
-        if (fi && typeof fi.click === 'function') {
-          try { fi.click(); } catch(_) {}
-        }
-      });
-      dz.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter' || ev.key === ' ') {
-          ev.preventDefault();
-          if (fi && typeof fi.click === 'function') {
-            try { fi.click(); } catch(_) {}
-          }
-        }
-      });
-    }
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', wire, { once: true });
-
-      // -----------------------------
-      // Performer Auto-Match Modal (Preview + Apply)
-      // -----------------------------
-      (function wirePerformerAutoMatch(){
-        function qs(id){ return document.getElementById(id); }
-        const openBtn = qs('performerAutoMatchBtn');
-        const modal = qs('performerAutoMatchModal');
-        if(!openBtn || !modal || modal._wired) return; modal._wired=true;
-        const closeBtn = qs('perfAutoMatchClose');
-        const cancelBtn = qs('perfAutoCancelBtn');
-        const applyBtn = qs('perfAutoApplyBtn');
-        const applyBtnFooter = qs('perfAutoApplyBtnFooter');
-        const previewBtn = qs('perfAutoPreviewBtn');
-        const statusEl = qs('perfAutoMatchStatus');
-        const tbody = qs('perfAutoMatchTbody');
-        const pathEl = qs('perfAutoPath');
-        const recEl = qs('perfAutoRecursive');
-        const useEl = qs('perfAutoUseRegistry');
-        const extraEl = qs('perfAutoExtra');
-        let lastRows = [];
-
-        function open(){ modal.hidden=false; modal.setAttribute('data-open','1'); pathEl && pathEl.focus(); document.addEventListener('keydown', escListener); }
-        function close(){ modal.hidden=true; modal.removeAttribute('data-open'); document.removeEventListener('keydown', escListener); }
-        function escListener(e){ if(e.key==='Escape'){ close(); } }
-        function setApplying(dis){ if(applyBtn) applyBtn.disabled=dis; if(applyBtnFooter) applyBtnFooter.disabled=dis; }
-        function enableApply(enabled){ setApplying(!enabled); }
-        async function doPreview(){
-          enableApply(false);
-          statusEl.textContent='Previewing…'; tbody.innerHTML=''; lastRows=[];
-          try {
-            const payload={ path: (pathEl.value||'').trim() || undefined, recursive: !!recEl.checked, use_registry_performers: !!useEl.checked, performers: _parseList(extraEl.value), tags:[], limit: 800 };
-            const r = await fetch('/api/autotag/preview', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-            const j = await r.json();
-            if(!r.ok) throw new Error(j?.message||'Preview failed');
-            const rows = j?.data?.candidates || [];
-            lastRows = rows;
-            statusEl.textContent = rows.length ? rows.length + ' match(es)' : 'No matches';
-            rows.forEach(row=>{
-              const tpl = document.getElementById('autotagRowTemplate');
-              const tr = tpl.content.firstElementChild.cloneNode(true);
-              tr.querySelector('.file').textContent = row.file;
-              tr.querySelector('.tags').textContent = (row.performers||[]).join(', ');
-              tbody.appendChild(tr);
+        }, 60);
+      },
+      true
+    );
+    document.addEventListener(
+      "drop",
+      async (e) => {
+        if (!panelActive()) return;
+        if (!wantsIntercept(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        over = false;
+        clearHover();
+        try {
+          const text = await readPayload(e.dataTransfer);
+          if (text) {
+            setStatus("Importing…", true);
+            await fetch("/api/performers/import", {
+              method: "POST",
+              headers: { "Content-Type": "text/plain" },
+              body: text,
             });
-            enableApply(rows.length>0);
-          } catch(err){ statusEl.textContent = err.message || 'Preview failed'; }
+            await fetchPerformers();
+          }
         }
-        async function doApply(){ if(!lastRows.length) return; setApplying(true); statusEl.textContent='Queuing job…'; try { const payload={ path: (pathEl.value||'').trim() || undefined, recursive: !!recEl.checked, use_registry_performers: !!useEl.checked, performers: _parseList(extraEl.value), tags:[] };
-        const r = await fetch('/api/autotag/scan', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        if(!r.ok){ try { const j=await r.json(); throw new Error(j?.message||'Queue failed'); } catch(e){ throw e; } }
-        statusEl.textContent='Job queued'; showToast && showToast('Auto‑match job queued','is-success'); setTimeout(close, 800);
-      } catch(err){ statusEl.textContent= err.message || 'Queue failed'; showToast && showToast(err.message||'Queue failed','is-error'); enableApply(true); }
-    }
-    // Expose programmatic opener that auto-previews only first time per open
-    window.__openPerfAutoMatch = function(){
-      if(!modal || !modal.hidden) return; // already open
-      open();
-      // Trigger preview automatically when opened programmatically
-      if(previewBtn && !previewBtn._autoRan){ previewBtn._autoRan = true; doPreview(); }
-    };
-    if(openBtn) openBtn.addEventListener('click', () => { open(); doPreview(); });
-    if(closeBtn) closeBtn.addEventListener('click', close);
-    if(cancelBtn) cancelBtn.addEventListener('click', close);
-    if(previewBtn) previewBtn.addEventListener('click', doPreview);
-    if(applyBtn) applyBtn.addEventListener('click', doApply);
-    if(applyBtnFooter) applyBtnFooter.addEventListener('click', doApply);
-    modal.addEventListener('click', (e)=>{ if(e.target === modal) close(); });
-  })();
+        catch (err) {
+          console.warn("performers drop failed", err);
+          setStatus("Import failed", true);
+          setTimeout(() => setStatus("", false), 1500);
+        }
+      },
+      true
+    );
+  }
+  function show() {
+    const p = fetchPerformers();
+    let attempts = 0;
+    const maxAttempts = 40;
+    // up to ~2s
+    function attemptOpen() {
+      if (window.__openPerfAutoMatch) {
+        try {
+          window.__openPerfAutoMatch();
 
-} else {
-  wire();
-}
+        }
+        catch (_) { }
+        return;
+      }
+      if (++attempts <= maxAttempts) setTimeout(attemptOpen, 50);
+    }
+    setTimeout(attemptOpen, 80);
+  }
+  return { show };
+})();
+window.Performers = Performers;
+
+// Hook tab switch to load performers when opened
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest && e.target.closest('[data-tab="performers"]');
+  if (btn) {
+    setTimeout(() => {
+      if (window.Performers) window.Performers.show();
+    }, 50);
+  }
+});
+
+// Fallback direct wiring: ensure clicking the import drop zone always opens file picker
+// (In case module wiring hasn't run yet or was interrupted.)
+(function ensurePerformerDropZoneClick() {
+  function wire() {
+    const dz = document.getElementById('performerDropZone');
+    const fi = document.getElementById('performerFileInput');
+    if (!dz || !fi || dz._directClick) return;
+    dz._directClick = true;
+    dz.addEventListener('click', (ev) => {
+      // Ignore if text selection drag ended here
+      if (fi && typeof fi.click === 'function') {
+        try {
+          fi.click();
+
+        }
+        catch (_) { }
+      }
+    });
+    dz.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        if (fi && typeof fi.click === 'function') {
+          try {
+            fi.click();
+
+          }
+          catch (_) { }
+        }
+      }
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire, { once: true });
+
+    // -----------------------------
+    // Performer Auto-Match Modal (Preview + Apply)
+    // -----------------------------
+    (function wirePerformerAutoMatch() {
+      function qs(id) {
+        return document.getElementById(id);
+
+      }
+      const openBtn = qs('performerAutoMatchBtn');
+      const modal = qs('performerAutoMatchModal');
+      if (!openBtn || !modal || modal._wired) return;
+      modal._wired = true;
+      const closeBtn = qs('perfAutoMatchClose');
+      const cancelBtn = qs('perfAutoCancelBtn');
+      const applyBtn = qs('perfAutoApplyBtn');
+      const applyBtnFooter = qs('perfAutoApplyBtnFooter');
+      const previewBtn = qs('perfAutoPreviewBtn');
+      const statusEl = qs('perfAutoMatchStatus');
+      const tbody = qs('perfAutoMatchTbody');
+      const pathEl = qs('perfAutoPath');
+      const recEl = qs('perfAutoRecursive');
+      const useEl = qs('perfAutoUseRegistry');
+      const extraEl = qs('perfAutoExtra');
+      let lastRows = [];
+
+      function open() {
+        modal.hidden = false;
+        modal.setAttribute('data-open', '1');
+        pathEl && pathEl.focus();
+        document.addEventListener('keydown', escListener);
+
+      }
+      function close() {
+        modal.hidden = true;
+        modal.removeAttribute('data-open');
+        document.removeEventListener('keydown', escListener);
+
+      }
+      function escListener(e) {
+        if (e.key === 'Escape') {
+          close();
+
+        }
+      }
+      function setApplying(dis) {
+        if (applyBtn) applyBtn.disabled = dis;
+        if (applyBtnFooter) applyBtnFooter.disabled = dis;
+
+      }
+      function enableApply(enabled) {
+        setApplying(!enabled);
+
+      }
+      async function doPreview() {
+        enableApply(false);
+        statusEl.textContent = 'Previewing…';
+        tbody.innerHTML = '';
+        lastRows = [];
+        try {
+          const payload = { path: (pathEl.value || '').trim() || undefined, recursive: !!recEl.checked, use_registry_performers: !!useEl.checked, performers: _parseList(extraEl.value), tags: [], limit: 800 };
+          const r = await fetch('/api/autotag/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j?.message || 'Preview failed');
+          const rows = j?.data?.candidates || [];
+          lastRows = rows;
+          statusEl.textContent = rows.length ? rows.length + ' match(es)' : 'No matches';
+          rows.forEach(row => {
+            const tpl = document.getElementById('autotagRowTemplate');
+            const tr = tpl.content.firstElementChild.cloneNode(true);
+            tr.querySelector('.file').textContent = row.file;
+            tr.querySelector('.tags').textContent = (row.performers || []).join(', ');
+            tbody.appendChild(tr);
+          });
+          enableApply(rows.length > 0);
+        }
+        catch (err) {
+          statusEl.textContent = err.message || 'Preview failed';
+
+        }
+      }
+      async function doApply() {
+        if (!lastRows.length) return;
+        setApplying(true);
+        statusEl.textContent = 'Queuing job…';
+        try {
+          const payload = { path: (pathEl.value || '').trim() || undefined, recursive: !!recEl.checked, use_registry_performers: !!useEl.checked, performers: _parseList(extraEl.value), tags: [] };
+          const r = await fetch('/api/autotag/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          if (!r.ok) {
+            try {
+              const j = await r.json();
+              throw new Error(j?.message || 'Queue failed');
+
+            }
+            catch (e) {
+              throw e;
+
+            }
+          }
+          statusEl.textContent = 'Job queued';
+          showToast && showToast('Auto‑match job queued', 'is-success');
+          setTimeout(close, 800);
+        }
+        catch (err) {
+          statusEl.textContent = err.message || 'Queue failed';
+          showToast && showToast(err.message || 'Queue failed', 'is-error');
+          enableApply(true);
+        }
+      }
+      // Expose programmatic opener that auto-previews only first time per open
+      window.__openPerfAutoMatch = function () {
+        if (!modal || !modal.hidden) return;
+        // already open
+        open();
+        // Trigger preview automatically when opened programmatically
+        if (previewBtn && !previewBtn._autoRan) {
+          previewBtn._autoRan = true;
+          doPreview();
+        }
+      };
+      if (openBtn) openBtn.addEventListener('click', () => {
+        open();
+        doPreview();
+      });
+      if (closeBtn) closeBtn.addEventListener('click', close);
+      if (cancelBtn) cancelBtn.addEventListener('click', close);
+      if (previewBtn) previewBtn.addEventListener('click', doPreview);
+      if (applyBtn) applyBtn.addEventListener('click', doApply);
+      if (applyBtnFooter) applyBtnFooter.addEventListener('click', doApply);
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) close();
+      });
+    })();
+
+  }
+  else {
+    wire();
+  }
 })();
 
 // Tasks System
@@ -6082,9 +7005,11 @@ class TasksManager {
       subtitles_enabled: true,
       faces_enabled: true,
     };
-    // Multi-select filters: default show queued and running, hide completed/failed
-    this.activeFilters = new Set(["running", "queued"]);
-    this._jobRows = new Map(); // id -> tr element for stable rendering
+    // Multi-select filters: empty set means "no filtering" (show all). User can narrow by toggling cards.
+    // This also ensures completed / failed history is visible immediately on first load.
+    this.activeFilters = new Set();
+    this._jobRows = new Map();
+    // id -> tr element for stable rendering
     this.init();
   }
 
@@ -6092,6 +7017,11 @@ class TasksManager {
     this.initEventListeners();
     // SSE job events deferred until /config confirms capability (prevents 404 noise)
     this.startJobPolling();
+    // Immediate first jobs fetch so table populates without waiting for passive poll interval
+    // (and adjust container height once rows exist)
+    setTimeout(() => {
+      this.refreshJobs()?.then(() => this.ensureJobTableShowsSomeRows());
+    }, 40);
     // Load backend capabilities and apply UI gating
     this.loadConfigAndApplyGates();
     this.loadCoverage();
@@ -6104,6 +7034,48 @@ class TasksManager {
     setTimeout(() => this.loadDefaultsAndHydrate(), 0);
     // Persist changes on any option input change
     setTimeout(() => this.wireOptionPersistence(), 0);
+    // One-shot early jobs fetch: if any active jobs exist, surface Tasks tab immediately
+    this._initialActiveCheck();
+  }
+
+  async _initialActiveCheck() {
+    try {
+      // Small delay to allow freshly queued jobs to persist if init races with job enqueue
+      await new Promise(r => setTimeout(r, 150));
+      const r = await fetch('/api/tasks/jobs', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+      if (!r.ok) return;
+      const j = await r.json();
+      const jobs = j?.data?.jobs || [];
+      let hasActive = false;
+      for (const jb of jobs) {
+        const st = (jb?.state || '').toLowerCase();
+        if (st === 'running' || st === 'queued' || st === 'pending' || st === 'starting') {
+          hasActive = true;
+          break;
+
+        }
+      }
+      if (hasActive && window.tabSystem && window.tabSystem.getActiveTab && window.tabSystem.getActiveTab() !== 'tasks') {
+        // Open tasks tab so queue is visible
+        try {
+          window.tabSystem.switchToTab('tasks');
+
+        }
+        catch (_) { }
+      }
+      // Update display immediately so user sees queue without waiting for first interval tick
+      if (Array.isArray(jobs) && jobs.length) {
+        this.updateJobsDisplay(jobs);
+        const stats = j?.data?.stats;
+        if (stats) this.updateJobStats(stats);
+      }
+      // Kick one immediate poll (non-blocking) to ensure freshness
+      try {
+        this.refreshJobs();
+      }
+      catch (_) { }
+    }
+    catch (_) { /* silent */ }
   }
 
   async loadConfigAndApplyGates() {
@@ -6124,7 +7096,8 @@ class TasksManager {
         // Now that we know if SSE exists, decide whether to attach
         if (window.__JOBS_SSE_ENABLED && feats.jobs_sse && !window.__JOBS_SSE_UNAVAILABLE) {
           this.initJobEvents();
-        } else {
+        }
+        else {
           window.__JOBS_SSE_UNAVAILABLE = true;
         }
         this.capabilities.subtitles_enabled = Boolean(
@@ -6134,9 +7107,11 @@ class TasksManager {
         // Expose for other modules (Player badge actions)
         try {
           window.__capabilities = { ...this.capabilities };
-        } catch (_) {}
+        }
+        catch (_) { }
       }
-    } catch (_) {
+    }
+    catch (_) {
       // Keep defaults if /config fails
     }
     this.applyCapabilityGates();
@@ -6167,31 +7142,36 @@ class TasksManager {
   async loadDefaultsAndHydrate() {
     try {
       const r = await fetch('/api/tasks/defaults');
-      if (!r.ok) throw new Error('HTTP '+r.status);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
       const data = j?.data || j || {};
       this.defaults = data;
       // For each artifact defaults entry, set inputs if not locally overridden
       const LS_KEY = 'mediaPlayer:artifactOptions';
       let saved = {};
-      try { saved = JSON.parse(localStorage.getItem(LS_KEY)||'{}')||{}; } catch(_) {}
+      try {
+        saved = JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {};
+      }
+      catch (_) { }
       const applyVal = (id, val) => {
         const el = document.getElementById(id);
         if (!el) return;
-        if (saved && saved[id] !== undefined) return; // user override
-        if (el.type === 'checkbox') el.checked = !!val; else el.value = val;
+        if (saved && saved[id] !== undefined) return;
+        // user override
+        if (el.type === 'checkbox') el.checked = !!val;
+        else el.value = val;
       };
       // Mapping artifact -> input ids
       const map = {
         thumbnails: { offset: 'thumbnailOffset' },
-        sprites: { interval:'spriteInterval', width:'spriteWidth', cols:'spriteCols', rows:'spriteRows', quality:'spriteQuality' },
-        previews: { segments:'previewSegments', duration:'previewDuration', width:'previewWidth' },
-        phash: { frames:'phashFrames', algorithm:'phashAlgo' },
-        scenes: { threshold:'sceneThreshold', limit:'sceneLimit' },
-        heatmaps: { interval:'heatmapInterval', mode:'heatmapMode', png:'heatmapPng' },
-        subtitles: { model:'subtitleModel', language:'subtitleLang' },
-        faces: { interval:'faceInterval', min_size_frac:'faceMinSize', backend:'faceBackend', scale_factor:'faceScale', min_neighbors:'faceMinNeighbors', sim_thresh:'faceSimThresh' },
-        embed: { interval:'embedInterval', min_size_frac:'embedMinSize', backend:'embedBackend', sim_thresh:'embedSimThresh' }
+        sprites: { interval: 'spriteInterval', width: 'spriteWidth', cols: 'spriteCols', rows: 'spriteRows', quality: 'spriteQuality' },
+        previews: { segments: 'previewSegments', duration: 'previewDuration', width: 'previewWidth' },
+        phash: { frames: 'phashFrames', algorithm: 'phashAlgo' },
+        scenes: { threshold: 'sceneThreshold', limit: 'sceneLimit' },
+        heatmaps: { interval: 'heatmapInterval', mode: 'heatmapMode', png: 'heatmapPng' },
+        subtitles: { model: 'subtitleModel', language: 'subtitleLang' },
+        faces: { interval: 'faceInterval', min_size_frac: 'faceMinSize', backend: 'faceBackend', scale_factor: 'faceScale', min_neighbors: 'faceMinNeighbors', sim_thresh: 'faceSimThresh' },
+        embed: { interval: 'embedInterval', min_size_frac: 'embedMinSize', backend: 'embedBackend', sim_thresh: 'embedSimThresh' }
       };
       Object.entries(map).forEach(([art, fields]) => {
         const def = data[art] || {};
@@ -6203,22 +7183,33 @@ class TasksManager {
       this.applyOptionTooltips();
       // Attach validators to numeric inputs
       this.attachOptionValidators();
-    } catch(_) {
-      // Silently ignore; UI will use baked-in defaults
+    }
+    catch (_) {
+      // Silently ignore;
+      // UI will use baked-in defaults
     }
   }
 
   wireOptionPersistence() {
     const LS_KEY = 'mediaPlayer:artifactOptions';
     let cache = {};
-    try { cache = JSON.parse(localStorage.getItem(LS_KEY)||'{}')||{}; } catch(_) {}
-    const persist = () => { try { localStorage.setItem(LS_KEY, JSON.stringify(cache)); } catch(_) {} };
+    try {
+      cache = JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {};
+    }
+    catch (_) { }
+    const persist = () => {
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify(cache));
+      }
+      catch (_) { }
+    };
     const sel = '#spritesOptions input, #previewsOptions input, #thumbnailsOptions input, #phashOptions select, #phashOptions input, #scenesOptions input, #heatmapsOptions input, #heatmapsOptions select, #subtitlesOptions select, #subtitlesOptions input, #facesOptions input, #facesOptions select, #embedOptions input, #embedOptions select';
     document.querySelectorAll(sel).forEach(el => {
       if (el._persistWired) return;
       el._persistWired = true;
       const handler = () => {
-        const id = el.id; if (!id) return;
+        const id = el.id;
+        if (!id) return;
         cache[id] = (el.type === 'checkbox') ? el.checked : el.value;
         persist();
       };
@@ -6257,7 +7248,7 @@ class TasksManager {
 
   attachOptionValidators() {
     const numericIds = [
-      'spriteInterval','spriteWidth','spriteCols','spriteRows','spriteQuality','previewSegments','previewDuration','previewWidth','phashFrames','sceneThreshold','sceneLimit','heatmapInterval','thumbnailOffset','faceInterval','faceMinSize','faceScale','faceMinNeighbors','faceSimThresh','embedInterval','embedMinSize','embedSimThresh'
+      'spriteInterval', 'spriteWidth', 'spriteCols', 'spriteRows', 'spriteQuality', 'previewSegments', 'previewDuration', 'previewWidth', 'phashFrames', 'sceneThreshold', 'sceneLimit', 'heatmapInterval', 'thumbnailOffset', 'faceInterval', 'faceMinSize', 'faceScale', 'faceMinNeighbors', 'faceSimThresh', 'embedInterval', 'embedMinSize', 'embedSimThresh'
     ];
     numericIds.forEach(id => {
       const el = document.getElementById(id);
@@ -6273,7 +7264,10 @@ class TasksManager {
     const min = (el.min !== '' && !isNaN(parseFloat(el.min))) ? parseFloat(el.min) : null;
     const max = (el.max !== '' && !isNaN(parseFloat(el.max))) ? parseFloat(el.max) : null;
     let val = parseFloat(el.value);
-    if (isNaN(val)) { if (min !== null) val = min; else return; }
+    if (isNaN(val)) {
+      if (min !== null) val = min;
+      else return;
+    }
     if (min !== null && val < min) val = min;
     if (max !== null && val > max) val = max;
     // Enforce integers where step is 1 or original value looked integer
@@ -6376,15 +7370,15 @@ class TasksManager {
     const fb = document.getElementById("facesBrowserBtn");
     if (fb) {
       const hasFD =
-      "FaceDetector" in window && typeof window.FaceDetector === "function";
+        "FaceDetector" in window && typeof window.FaceDetector === "function";
       // We require either FaceDetector availability (client) AND at least one embedding path on server (ffmpeg or faces backend)
       const serverOk = !!caps.ffmpeg || !!caps.faces_enabled;
       fb.disabled = !(hasFD && serverOk);
       fb.title = fb.disabled
-      ? !hasFD
-      ? "Disabled: FaceDetector API not available in this browser"
-      : "Disabled: no server embedding path available"
-      : "Detect faces in your browser and upload";
+        ? !hasFD
+          ? "Disabled: FaceDetector API not available in this browser"
+          : "Disabled: no server embedding path available"
+        : "Detect faces in your browser and upload";
     }
   }
 
@@ -6393,22 +7387,22 @@ class TasksManager {
     const issues = [];
     if (!caps.ffmpeg)
       issues.push(
-      "FFmpeg not detected — thumbnails, previews, sprites, scenes, heatmaps, and pHash are disabled."
-    );
+        "FFmpeg not detected — thumbnails, previews, sprites, scenes, heatmaps, and pHash are disabled."
+      );
     if (!caps.subtitles_enabled)
       issues.push(
-      "Subtitles backend unavailable — subtitles generation is disabled."
-    );
+        "Subtitles backend unavailable — subtitles generation is disabled."
+      );
     if (!caps.faces_enabled)
       issues.push(
-      "Face backends unavailable — face detection and embeddings are disabled."
-    );
+        "Face backends unavailable — face detection and embeddings are disabled."
+      );
     let banner = document.getElementById("capabilityBanner");
     // Where to insert: top of the tasks panel container
     const tasksPanel = document.getElementById("tasks-panel");
     const container = tasksPanel
-    ? tasksPanel.querySelector(".tasks-container")
-    : null;
+      ? tasksPanel.querySelector(".tasks-container")
+      : null;
     if (!container) return;
     if (issues.length === 0) {
       if (banner) banner.remove();
@@ -6429,7 +7423,8 @@ class TasksManager {
   }
 
   initJobEvents() {
-    // New approach: avoid any preflight fetches that can 404. Attempt primary EventSource; on immediate failure, try alias once.
+    // New approach: avoid any preflight fetches that can 404. Attempt primary EventSource;
+    // on immediate failure, try alias once.
     if (window.__JOBS_SSE_UNAVAILABLE) return;
     const primary = "/jobs/events";
     const fallback = "/api/jobs/events";
@@ -6438,7 +7433,8 @@ class TasksManager {
       let es;
       try {
         es = new EventSource(url);
-      } catch (_) {
+      }
+      catch (_) {
         return false;
       }
       this._jobEventsUrl = url;
@@ -6455,7 +7451,8 @@ class TasksManager {
         try {
           const payload = JSON.parse(e.data);
           if (payload.event) doRefresh();
-        } catch (_) { }
+        }
+        catch (_) { }
       };
       [
         "created",
@@ -6466,7 +7463,39 @@ class TasksManager {
         "finished",
         "result",
         "cancel",
-      ].forEach((type) => es.addEventListener(type, () => doRefresh()));
+      ].forEach((type) => es.addEventListener(type, (evt) => {
+        try {
+          if (evt && evt.data) {
+            const payload = JSON.parse(evt.data);
+            const art = (payload.artifact || '').toLowerCase();
+            const file = payload.file || payload.path;
+            if (art && file) {
+              // Register spinner for active states; clear when finished/cancel/error
+              const term = (payload.event === 'finished') || (payload.event === 'cancel');
+              if (!term) {
+                // Only show spinner if this job relates to the currently open file
+                if (file === (window.currentPath || currentPath)) {
+                  window.__activeArtifactSpinners = window.__activeArtifactSpinners || new Map();
+                  const key = `${file}::${art}`;
+                  if (!window.__activeArtifactSpinners.has(key)) {
+                    window.__activeArtifactSpinners.set(key, { path: file, artifact: art, since: Date.now(), manual: false });
+                  }
+                  setArtifactSpinner(art, true);
+                }
+              } else {
+                // Terminal event: remove spinner if it belongs to current file
+                if (file === (window.currentPath || currentPath)) {
+                  setArtifactSpinner(art, false);
+                  try { window.__activeArtifactSpinners?.delete?.(`${file}::${art}`); } catch (_) { }
+                  // Refresh statuses to flip ✓ quickly
+                  try { loadArtifactStatuses?.(); } catch (_) { }
+                }
+              }
+            }
+          }
+        } catch (_) { }
+        doRefresh();
+      }));
       es.onopen = () => {
         if (typeof this._onJobEventsConnected === "function") {
           this._onJobEventsConnected();
@@ -6477,18 +7506,28 @@ class TasksManager {
         // If primary fails very early, attempt fallback exactly once.
         if (!isFallback && !triedFallback && es.readyState === EventSource.CLOSED) {
           triedFallback = true;
-          try { es.close(); } catch (_) {}
+          try {
+            es.close();
+          }
+          catch (_) { }
           attach(fallback, true);
           return;
         }
-        try { es.close(); } catch (_) {}
+        try {
+          es.close();
+        }
+        catch (_) { }
         window.__JOBS_SSE_UNAVAILABLE = true;
-        try { localStorage.setItem("jobs:sse", "off"); } catch (_) {}
+        try {
+          localStorage.setItem("jobs:sse", "off");
+        }
+        catch (_) { }
       };
       this._jobEventSource = es;
       return true;
     };
-    // Try primary; if it throws synchronously, attempt fallback.
+    // Try primary;
+    // if it throws synchronously, attempt fallback.
     if (!attach(primary, false)) {
       attach(fallback, true);
     }
@@ -6509,10 +7548,10 @@ class TasksManager {
 
     // File selection change
     document
-    .querySelectorAll('input[name="fileSelection"]')
-    .forEach((radio) => {
-      radio.addEventListener("change", () => this.updateSelectedFileCount());
-    });
+      .querySelectorAll('input[name="fileSelection"]')
+      .forEach((radio) => {
+        radio.addEventListener("change", () => this.updateSelectedFileCount());
+      });
 
     // Listen for tab changes to update selected file count and load initial data
     window.addEventListener("tabchange", (e) => {
@@ -6527,7 +7566,7 @@ class TasksManager {
         try {
           if (typeof loadStats === 'function') loadStats();
         }
-        catch(_) {}
+        catch (_) { }
       }
     });
 
@@ -6552,21 +7591,18 @@ class TasksManager {
     const toggle = (which) => {
       if (this.activeFilters.has(which)) {
         this.activeFilters.delete(which);
-      } else {
+      }
+      else {
         this.activeFilters.add(which);
       }
       refreshCardStates();
       this.renderJobsTable();
       this.ensureJobTableShowsSomeRows();
     };
-    if (filterActive)
-      filterActive.addEventListener("click", () => toggle("running"));
-    if (filterQueued)
-      filterQueued.addEventListener("click", () => toggle("queued"));
-    if (filterCompleted)
-      filterCompleted.addEventListener("click", () => toggle("completed"));
-    if (filterErrored)
-      filterErrored.addEventListener("click", () => toggle("failed"));
+    if (filterActive) filterActive.addEventListener("click", () => toggle("running"));
+    if (filterQueued) filterQueued.addEventListener("click", () => toggle("queued"));
+    if (filterCompleted) filterCompleted.addEventListener("click", () => toggle("completed"));
+    if (filterErrored) filterErrored.addEventListener("click", () => toggle("failed"));
     // Set initial visual state: running+queued active, completed inactive
     refreshCardStates();
 
@@ -6587,10 +7623,30 @@ class TasksManager {
             `Removed ${data?.data?.removed ?? 0} completed job(s)`,
             "success"
           );
+          // Optimistically purge completed jobs from local cache so UI updates instantly
+          try {
+            if (this && this.jobs instanceof Map) {
+              for (const [id, job] of Array.from(this.jobs.entries())) {
+                const s = this.normalizeStatus(job);
+                if (s === 'completed' || s === 'failed' || s === 'canceled') {
+                  this.jobs.delete(id);
+                  const tr = this._jobRows ? this._jobRows.get(id) : null;
+                  if (tr && tr.parentElement) tr.parentElement.removeChild(tr);
+                  if (this._jobRows) this._jobRows.delete(id);
+                }
+              }
+              // Rerender table & hide button immediately
+              if (typeof this.renderJobsTable === 'function') this.renderJobsTable();
+              if (clearBtn) clearBtn.style.display = 'none';
+            }
+          }
+          catch (_) { }
           await this.refreshJobs();
-        } catch (e) {
+        }
+        catch (e) {
           this.showNotification("Failed to clear completed jobs", "error");
-        } finally {
+        }
+        finally {
           clearBtn.classList.remove("btn-busy");
           clearBtn.disabled = false;
         }
@@ -6611,9 +7667,11 @@ class TasksManager {
           if (!res.ok) throw new Error("HTTP " + res.status);
           this.showNotification("Queued jobs canceled", "success");
           await this.refreshJobs();
-        } catch (e) {
+        }
+        catch (e) {
           this.showNotification("Failed to cancel queued jobs", "error");
-        } finally {
+        }
+        finally {
           cancelQueuedBtn.classList.remove("btn-busy");
           cancelQueuedBtn.disabled = false;
         }
@@ -6635,9 +7693,11 @@ class TasksManager {
             "success"
           );
           await this.refreshJobs();
-        } catch (e) {
+        }
+        catch (e) {
           this.showNotification("Failed to cancel all jobs", "error");
-        } finally {
+        }
+        finally {
           cancelAllBtn.classList.remove("btn-busy");
           cancelAllBtn.disabled = false;
         }
@@ -6653,7 +7713,8 @@ class TasksManager {
     btn.addEventListener("click", async () => {
       try {
         // Switch to player tab if needed so the user can see progress and allow playback controls
-        // Suppress implicit tab switch; user will already be on Player when meaningful.
+        // Suppress implicit tab switch;
+        // user will already be on Player when meaningful.
         // if (window.tabSystem && window.tabSystem.getActiveTab() !== 'player') window.tabSystem.switchToTab('player');
         // Delegate to Player module
         if (
@@ -6661,13 +7722,15 @@ class TasksManager {
           typeof window.Player.detectAndUploadFacesBrowser === "function"
         ) {
           await window.Player.detectAndUploadFacesBrowser();
-        } else {
+        }
+        else {
           this.showNotification(
             "Player not ready for browser detection.",
             "error"
           );
         }
-      } catch (e) {
+      }
+      catch (e) {
         this.showNotification(
           "Browser faces failed: " + (e && e.message ? e.message : "error"),
           "error"
@@ -6692,18 +7755,19 @@ class TasksManager {
       const pl = await r.json();
       const file = (pl?.data?.files || [])[0];
       if (!file || !file.path) {
-        this.showNotification(
-          "No videos found in this folder to preview.",
-          "error"
-        );
+        this.showNotification("No videos found in this folder to preview.", "error");
         return;
       }
       const path = file.path;
-      // Ensure heatmap exists; try a GET probe; if missing, trigger create and poll briefly
+      // Ensure heatmap exists;
+      // try a GET probe;
+      // if missing, trigger create and poll briefly
       const headUrl = new URL("/api/heatmaps/png", window.location.origin);
       headUrl.searchParams.set("path", path);
       let ok = false;
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0;
+        i < 10;
+        i++) {
         // ~10 quick tries
         const h = await fetch(headUrl.toString());
         if (h.ok) {
@@ -6712,27 +7776,15 @@ class TasksManager {
         }
         // Trigger creation once at the beginning
         if (i === 0) {
-          const createUrl = new URL(
-            "/api/heatmaps/create",
-            window.location.origin
-          );
+          const createUrl = new URL("/api/heatmaps/create", window.location.origin);
           createUrl.searchParams.set("path", path);
-          createUrl.searchParams.set(
-            "interval",
-            String(
-              parseFloat(
-                document.getElementById("heatmapInterval")?.value || "5.0"
-              )
-            )
-          );
-          createUrl.searchParams.set(
-            "mode",
-            document.getElementById("heatmapMode")?.value || "both"
-          );
+          createUrl.searchParams.set("interval", String(parseFloat(document.getElementById("heatmapInterval")?.value || "5.0")));
+          createUrl.searchParams.set("mode", document.getElementById("heatmapMode")?.value || "both");
           createUrl.searchParams.set("png", "true");
           try {
             await fetch(createUrl, { method: "POST" });
-          } catch (_) {}
+          }
+          catch (_) { }
         }
         await new Promise((res) => setTimeout(res, 300));
       }
@@ -6745,7 +7797,8 @@ class TasksManager {
       imgUrl.searchParams.set("path", path);
       imgModalImage.src = imgUrl.toString() + `&t=${Date.now()}`;
       imgModal.hidden = false;
-    } catch (e) {
+    }
+    catch (e) {
       this.showNotification("Failed to preview heatmap.", "error");
     }
   }
@@ -6759,10 +7812,12 @@ class TasksManager {
       if (base.endsWith("-missing")) {
         base = base.replace(/-missing$/, "");
         mode = "missing";
-      } else if (base.endsWith("-all")) {
+      }
+      else if (base.endsWith("-all")) {
         base = base.replace(/-all$/, "");
         mode = "all";
-      } else if (base.endsWith("-clear")) {
+      }
+      else if (base.endsWith("-clear")) {
         base = base.replace(/-clear$/, "");
         isClear = true;
         mode = "clear";
@@ -6771,22 +7826,17 @@ class TasksManager {
       // Capability gate (skip for clear which only deletes existing files)
       if (!isClear && !this.canRunOperation(base)) {
         const why =
-        base === "subtitles"
-        ? "No subtitles backend available."
-        : base === "faces" || base === "embed"
-        ? "Face backends unavailable."
-        : "FFmpeg not detected.";
-        this.showNotification(
-          `Cannot start ${base} (${mode}). ${why}`,
-          "error"
-        );
+          base === "subtitles"
+            ? "No subtitles backend available."
+            : base === "faces" || base === "embed"
+              ? "Face backends unavailable."
+              : "FFmpeg not detected.";
+        this.showNotification(`Cannot start ${base} (${mode}). ${why}`, "error");
         return;
       }
 
       // Scope: all vs selected files
-      const selectedRadio = document.querySelector(
-        'input[name="fileSelection"]:checked'
-      );
+      const selectedRadio = document.querySelector('input[name="fileSelection"]:checked');
       const fileSelection = selectedRadio ? selectedRadio.value : "all";
 
       // Folder path (relative to root unless absolute provided)
@@ -6795,20 +7845,30 @@ class TasksManager {
 
       // Collect params for this operation
       if (isClear) {
-        const confirmed = confirm(
-          `Clear all ${base} artifacts? This cannot be undone.`
-        );
-        if (!confirmed) return;
+        if (confirmDeletesEnabled) {
+          const confirmed = confirm(`Clear all ${base} artifacts? This cannot be undone.`);
+          if (!confirmed) return;
+        }
         // Attempt scoped clear if selected-only chosen and supported
         try {
-          const clearUrl = new URL(
-            `/api/artifacts/${base}`,
-            window.location.origin
-          );
+          // Map frontend artifact keys to backend delete endpoints
+          const endpointMap = {
+            thumbnails: "/api/cover/delete", // (if batch not supported this will be per-file later)
+            previews: "/api/hover/delete",
+            sprites: "/api/sprites/delete",
+            phash: "/api/phash/delete",
+            heatmaps: "/api/heatmaps/delete",
+            metadata: "/api/metadata/delete",
+            subtitles: "/api/subtitles/delete/batch", // batch variant
+            scenes: "/api/scenes/delete",
+            faces: "/api/faces/delete",
+            embed: "/api/embed/delete", // may not exist;
+            // backend guard will 404
+          };
+          const mapped = endpointMap[base] || `/api/artifacts/${base}`;
+          const clearUrl = new URL(mapped, window.location.origin);
           const selPaths =
-          fileSelection === "selected"
-          ? Array.from(selectedItems || [])
-          : null;
+            fileSelection === "selected" ? Array.from(selectedItems || []) : null;
           let resp;
           if (selPaths && selPaths.length) {
             resp = await fetch(clearUrl.toString(), {
@@ -6816,20 +7876,21 @@ class TasksManager {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ paths: selPaths }),
             });
-          } else {
+          }
+          else {
             resp = await fetch(clearUrl.toString(), { method: "DELETE" });
           }
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           this.showNotification(`${base} cleared`, "success");
           await this.loadCoverage();
-        } catch (e) {
-          this.showNotification(
-            `Failed to clear ${base}: ${(e && e.message) || e}`,
-            "error"
-          );
         }
-        return; // Done
-      } else {
+        catch (e) {
+          this.showNotification(`Failed to clear ${base}: ${(e && e.message) || e}`, "error");
+        }
+        return;
+        // Done
+      }
+      else {
         const params = this.getOperationParams(base) || {};
         if (mode === "all") {
           params.force = true;
@@ -6847,25 +7908,52 @@ class TasksManager {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const result = await response.json();
+        let result;
+        if (!response.ok) {
+          let detail = '';
+          try {
+            const ct = response.headers.get('content-type') || '';
+            if (ct.includes('application/json')) {
+              const j = await response.json();
+              detail = j.message || j.error || JSON.stringify(j);
+            }
+            else {
+              detail = (await response.text()).slice(0, 4000);
+            }
+          }
+          catch (_) { }
+          throw new Error(`HTTP ${response.status}${detail ? ': ' + detail : ''}`);
+        }
+        else {
+          try {
+            result = await response.json();
+
+          }
+          catch (parseErr) {
+            throw new Error('Invalid JSON response');
+
+          }
+        }
         if (result.status === "success") {
-          this.showNotification(
-            `Started ${base} (${mode}) for ${result.data.fileCount} files`,
-            "success"
-          );
+          this.showNotification(`Started ${base} (${mode}) for ${result.data.fileCount} files`, "success");
+          // Ensure job queue is visible immediately after starting a batch generation
+          try {
+            if (window.tabSystem && window.tabSystem.switchToTab) {
+              window.tabSystem.switchToTab('tasks');
+            }
+          }
+          catch (_) { }
           this.refreshJobs();
           this.loadCoverage();
-        } else {
+        }
+        else {
           throw new Error(result.message || "Operation failed");
         }
       }
-    } catch (error) {
-      console.error("Batch operation failed:", error);
-      this.showNotification(
-        `Failed to start ${operation}: ${error.message}`,
-        "error"
-      );
+    }
+    catch (error) {
+      console.error("Batch operation failed:", { operation, error });
+      this.showNotification(`Failed to start ${operation}: ${error.message}`, "error");
     }
   }
 
@@ -6902,16 +7990,12 @@ class TasksManager {
           await this.handleBatchOperation(op);
           await new Promise((r) => setTimeout(r, 80));
         }
-        this.showNotification(
-          "Queued all missing artifacts (fast-first).",
-          "success"
-        );
-      } catch (e) {
-        this.showNotification(
-          "Failed to queue one or more operations.",
-          "error"
-        );
-      } finally {
+        this.showNotification("Queued all missing artifacts (fast-first).", "success");
+      }
+      catch (e) {
+        this.showNotification("Failed to queue one or more operations.", "error");
+      }
+      finally {
         btn.classList.remove("btn-busy");
         btn.disabled = false;
       }
@@ -6932,12 +8016,8 @@ class TasksManager {
     }
 
     // Update button visibility for 0% coverage
-    const generateBtn = document.querySelector(
-      `[data-operation="${artifactType}-missing"]`
-    );
-    const recomputeBtn = document.querySelector(
-      `[data-operation="${artifactType}-all"]`
-    );
+    const generateBtn = document.querySelector(`[data-operation="${artifactType}-missing"]`);
+    const recomputeBtn = document.querySelector(`[data-operation="${artifactType}-all"]`);
 
     if (generateBtn) generateBtn.style.display = "block";
     if (recomputeBtn) recomputeBtn.style.display = "none";
@@ -6948,68 +8028,61 @@ class TasksManager {
 
     switch (type) {
       case "thumbnails":
-      params.offset = document.getElementById("thumbnailOffset")?.value || 10;
-      break;
+        params.offset = document.getElementById("thumbnailOffset")?.value || 10;
+        break;
       case "phash":
-      params.frames = document.getElementById("phashFrames")?.value || 5;
-      params.algorithm =
-      document.getElementById("phashAlgo")?.value || "ahash";
-      break;
+        params.frames = document.getElementById("phashFrames")?.value || 5;
+        params.algorithm =
+          document.getElementById("phashAlgo")?.value || "ahash";
+        break;
       case "sprites":
-      params.interval =
-      document.getElementById("spriteInterval")?.value || 10;
-      params.width = document.getElementById("spriteWidth")?.value || 320;
-      params.cols = document.getElementById("spriteCols")?.value || 10;
-      params.rows = document.getElementById("spriteRows")?.value || 10;
-      params.quality = document.getElementById("spriteQuality")?.value || 4;
-      break;
+        params.interval = document.getElementById("spriteInterval")?.value || 10;
+        params.width = document.getElementById("spriteWidth")?.value || 320;
+        params.cols = document.getElementById("spriteCols")?.value || 10;
+        params.rows = document.getElementById("spriteRows")?.value || 10;
+        params.quality = document.getElementById("spriteQuality")?.value || 4;
+        break;
       case "previews":
-      params.segments =
-      document.getElementById("previewSegments")?.value || 9;
-      params.duration =
-      document.getElementById("previewDuration")?.value || 1.0;
-      params.width = document.getElementById("previewWidth")?.value || 320;
-      break;
+        params.segments = document.getElementById("previewSegments")?.value || 9;
+        params.duration = document.getElementById("previewDuration")?.value || 1.0;
+        params.width = document.getElementById("previewWidth")?.value || 320;
+        break;
       case "heatmaps":
-      params.interval = parseFloat( document.getElementById("heatmapInterval")?.value || "5.0" );
-      // Accept legacy 'both' plus new modes
-      params.mode = document.getElementById("heatmapMode")?.value || "both";
-      // Use checkbox to control PNG generation (default true)
-      params.png = document.getElementById("heatmapPng")?.checked !== false;
-      break;
+        params.interval = parseFloat(document.getElementById("heatmapInterval")?.value || "5.0");
+        // Accept legacy 'both' plus new modes
+        params.mode = document.getElementById("heatmapMode")?.value || "both";
+        // Use checkbox to control PNG generation (default true)
+        params.png = document.getElementById("heatmapPng")?.checked !== false;
+        break;
       case "subtitles":
-      params.model =
-      document.getElementById("subtitleModel")?.value || "small";
-      {
-        const langVal = (
-          document.getElementById("subtitleLang")?.value || ""
-        ).trim();
+        params.model = document.getElementById("subtitleModel")?.value || "small";
+        const langVal = (document.getElementById("subtitleLang")?.value || "").trim();
         params.language = langVal || "auto";
-      }
-      // translate option not exposed in UI; default false
-      params.translate = false;
-      break;
+        // translate option not exposed in UI;
+        // default false
+        params.translate = false;
+        break;
       case "scenes":
-      params.threshold = parseFloat( document.getElementById("sceneThreshold")?.value || "0.4" );
-      params.limit = parseInt( document.getElementById("sceneLimit")?.value || "0", 10 );
-      break;
+        params.threshold = parseFloat(document.getElementById("sceneThreshold")?.value || "0.4");
+        params.limit = parseInt(document.getElementById("sceneLimit")?.value || "0", 10);
+        break;
       case "faces":
-      params.interval = parseFloat( document.getElementById("faceInterval")?.value || "1.0" );
-      params.min_size_frac = parseFloat( document.getElementById("faceMinSize")?.value || "0.10" );
-      // Advanced tunables (parity with legacy FaceLab)
-      params.backend =
-      document.getElementById("faceBackend")?.value || "auto";
-      // Only some backends use these; harmless to pass through
-      params.scale_factor = parseFloat( document.getElementById("faceScale")?.value || "1.1" );
-      params.min_neighbors = parseInt( document.getElementById("faceMinNeighbors")?.value || "5", 10 );
-      params.sim_thresh = parseFloat( document.getElementById("faceSimThresh")?.value || "0.9" );
-      break;
+        params.interval = parseFloat(document.getElementById("faceInterval")?.value || "1.0");
+        params.min_size_frac = parseFloat(document.getElementById("faceMinSize")?.value || "0.10");
+        // Advanced tunables (parity with legacy FaceLab)
+        params.backend = document.getElementById("faceBackend")?.value || "auto";
+        // Only some backends use these;
+        // harmless to pass through
+        params.scale_factor = parseFloat(document.getElementById("faceScale")?.value || "1.1");
+        params.min_neighbors = parseInt(document.getElementById("faceMinNeighbors")?.value || "5", 10);
+        params.sim_thresh = parseFloat(document.getElementById("faceSimThresh")?.value || "0.9");
+        break;
       case "embed":
-      params.interval = parseFloat( document.getElementById("embedInterval")?.value || "1.0" );
-      params.min_size_frac = parseFloat( document.getElementById("embedMinSize")?.value || "0.10" );
-      params.backend = document.getElementById("embedBackend")?.value || "auto";
-      params.sim_thresh = parseFloat( document.getElementById("embedSimThresh")?.value || "0.9" );
-      break;
+        params.interval = parseFloat(document.getElementById("embedInterval")?.value || "1.0");
+        params.min_size_frac = parseFloat(document.getElementById("embedMinSize")?.value || "0.10");
+        params.backend = document.getElementById("embedBackend")?.value || "auto";
+        params.sim_thresh = parseFloat(document.getElementById("embedSimThresh")?.value || "0.9");
+        break;
     }
 
     return params;
@@ -7033,7 +8106,8 @@ class TasksManager {
         this._coverageLoaded = true;
         this.updateCoverageDisplay();
       }
-    } catch (error) {
+    }
+    catch (error) {
       // Quiet failure during polling
     }
 
@@ -7065,7 +8139,7 @@ class TasksManager {
         total: 0,
       };
       const percentage =
-      data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0;
+        data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0;
 
       // Update percentage
       const percentageEl = document.getElementById(`${artifact}Coverage`);
@@ -7103,7 +8177,8 @@ class TasksManager {
           }
           active.dataset.state = "all";
         }
-      } else if (percentage > 0 && percentage < 100) {
+      }
+      else if (percentage > 0 && percentage < 100) {
         active = genMissingBtn || recomputeAllBtn || clearBtn;
         if (active) {
           active.textContent = "Generate Missing";
@@ -7113,7 +8188,8 @@ class TasksManager {
           }
           active.dataset.state = "missing";
         }
-      } else if (percentage === 100) {
+      }
+      else if (percentage === 100) {
         active = clearBtn || recomputeAllBtn || genMissingBtn;
         if (active) {
           active.textContent = "Clear All";
@@ -7133,10 +8209,7 @@ class TasksManager {
 
     // Mirror faces coverage to embeddings UI (embeddings share faces.json presence)
     const facesData = this.coverage["faces"] || { processed: 0, total: 0 };
-    const embedPct =
-    facesData.total > 0
-    ? Math.round((facesData.processed / facesData.total) * 100)
-    : 0;
+    const embedPct = facesData.total > 0 ? Math.round((facesData.processed / facesData.total) * 100) : 0;
     const embedPctEl = document.getElementById("embedCoverage");
     const embedFillEl = document.getElementById("embedFill");
     if (embedPctEl) embedPctEl.textContent = `${embedPct}%`;
@@ -7144,7 +8217,12 @@ class TasksManager {
     const embedGen = document.querySelector('[data-operation="embed-missing"]');
     const embedRe = document.querySelector('[data-operation="embed-all"]');
     const embedClear = document.querySelector('[data-operation="embed-clear"]');
-    [embedGen, embedRe, embedClear].forEach(b => { if (!b) return; b.classList.add('hidden'); b.classList.remove('btn-danger'); b && b.removeAttribute('data-state'); });
+    [embedGen, embedRe, embedClear].forEach(b => {
+      if (!b) return;
+      b.classList.add('hidden');
+      b.classList.remove('btn-danger');
+      b && b.removeAttribute('data-state');
+    });
     let embedActive = null;
     if (embedPct === 0) {
       embedActive = embedRe || embedGen || embedClear;
@@ -7155,7 +8233,8 @@ class TasksManager {
         }
         embedActive.dataset.state = 'all';
       }
-    } else if (embedPct > 0 && embedPct < 100) {
+    }
+    else if (embedPct > 0 && embedPct < 100) {
       embedActive = embedGen || embedRe || embedClear;
       if (embedActive) {
         embedActive.textContent = 'Generate Missing';
@@ -7164,7 +8243,8 @@ class TasksManager {
         }
         embedActive.dataset.state = 'missing';
       }
-    } else if (embedPct === 100) {
+    }
+    else if (embedPct === 100) {
       embedActive = embedClear || embedRe || embedGen;
       if (embedActive) {
         embedActive.textContent = 'Clear All';
@@ -7191,21 +8271,33 @@ class TasksManager {
       if (data.status === "success") {
         this.updateJobsDisplay(data.data.jobs);
         this.updateJobStats(data.data.stats);
+        return data.data.jobs;
       }
-    } catch (error) {
+    }
+    catch (error) {
       // Quiet failure during polling
     }
+    return null;
   }
 
   updateJobsDisplay(jobs) {
     const tbody = document.getElementById("jobTableBody");
     if (!tbody) return;
+    const activeTab = window.tabSystem && window.tabSystem.getActiveTab ? window.tabSystem.getActiveTab() : null;
+    const tabIsTasks = activeTab === 'tasks';
+    let sawActive = false;
     // Update internal job cache and keep existing rows when possible (reduce thrash)
     const now = Date.now();
     const ids = new Set();
     for (const job of jobs) {
       ids.add(job.id);
       this.jobs.set(job.id, job);
+      if (!tabIsTasks) {
+        const st = (job.state || '').toLowerCase();
+        if (st === 'running' || st === 'queued' || st === 'pending' || st === 'starting') {
+          sawActive = true;
+        }
+      }
     }
     // Remove rows for jobs not present anymore
     for (const [id, tr] of Array.from(this._jobRows.entries())) {
@@ -7217,23 +8309,97 @@ class TasksManager {
     }
     // Render/update visible rows
     this.renderJobsTable();
+    // Ensure container height expands if it was measured before rows existed
+    this.ensureJobTableShowsSomeRows();
 
     // Enable/disable Clear Completed based on whether any completed jobs exist
-    const hasCompleted = jobs.some(
-      (j) => this.normalizeStatus(j) === "completed"
-    );
+    const hasClearable = jobs.some((j) => {
+      const s = this.normalizeStatus(j);
+      return s === 'completed' || s === 'failed' || s === 'canceled';
+    });
     const clearBtn = document.getElementById("clearCompletedBtn");
-    if (clearBtn) clearBtn.style.display = hasCompleted ? "" : "none";
+    if (clearBtn) {
+      clearBtn.style.display = hasClearable ? "" : "none";
+      // Adjust button label depending on composition (pure canceled vs mixed)
+      if (hasClearable) {
+        const hasNonCanceled = jobs.some(j => {
+          const s = this.normalizeStatus(j);
+          return s === 'completed' || s === 'failed';
+        });
+        clearBtn.textContent = hasNonCanceled ? 'Clear Finished' : 'Clear Canceled';
+      }
+    }
     const failedEl = document.getElementById("failedJobsCount");
-    if (failedEl)
-      failedEl.textContent = jobs.filter((j) => j.status === "failed").length;
+    if (failedEl) failedEl.textContent = jobs.filter((j) => j.status === "failed").length;
+    if (sawActive && !tabIsTasks && window.tabSystem && window.tabSystem.switchToTab) {
+      try {
+        window.tabSystem.switchToTab('tasks');
+      }
+      catch (_) { }
+    }
+
+    // Artifact spinner reconciliation: keep sidebar badge spinners active while related jobs are queued/running
+    try {
+      window.__activeArtifactSpinners = window.__activeArtifactSpinners || new Map();
+      // Build quick lookup of active job states by (path, artifact)
+      const activeStates = new Set();
+      for (const job of jobs) {
+        const st = (job.state || '').toLowerCase();
+        const isActive = st === 'running' || st === 'queued' || st === 'pending' || st === 'starting';
+        if (!isActive) continue;
+          // Prefer explicit artifact field from backend; fallback to heuristic only if absent
+          let artifact = (job.artifact || '').toLowerCase() || null;
+          if (!artifact) {
+            const task = (job.task || '').toLowerCase();
+              if (/scene/.test(task)) artifact = 'scenes';
+              else if (/sprite/.test(task)) artifact = 'sprites';
+              else if (/hover/.test(task)) artifact = 'hover';
+              else if (/heatmap/.test(task)) artifact = 'heatmap';
+              else if (/subtitle|caption/.test(task)) artifact = 'subtitles';
+              else if (/face/.test(task)) artifact = 'faces';
+              else if (/phash/.test(task)) artifact = 'phash';
+              else if (/meta/.test(task)) artifact = 'metadata';
+              else if (/cover|thumb/.test(task)) artifact = 'cover';
+          }
+        if (!artifact) continue;
+        const path = job.target || job.file || job.path || '';
+        if (!path) continue;
+        const key = `${path}::${artifact}`;
+        activeStates.add(key);
+        if (!window.__activeArtifactSpinners.has(key)) {
+          window.__activeArtifactSpinners.set(key, { path, artifact, since: Date.now(), manual: false });
+          setArtifactSpinner(artifact, true);
+        } else {
+          // Ensure spinner is shown (in case user reloaded mid-job)
+          setArtifactSpinner(artifact, true);
+        }
+      }
+      // Clear spinners for keys no longer active (job finished) after verifying artifact presence or job terminal state
+      for (const [key, rec] of Array.from(window.__activeArtifactSpinners.entries())) {
+        if (activeStates.has(key)) continue; // still active
+        const { artifact, path } = rec;
+        // Determine if job ended: absence from active set means ended; hide spinner.
+        setArtifactSpinner(artifact, false);
+        window.__activeArtifactSpinners.delete(key);
+        // Optionally refresh statuses lazily (cheap fetch) only for recently ended artifacts
+        try {
+          if (path === (window.currentPath || currentPath)) {
+            // Only refresh statuses for currently open file to reduce noise
+            loadArtifactStatuses?.();
+          }
+        } catch (_) { }
+      }
+    }
+    catch (_) { /* silent spinner reconciliation errors */ }
   }
 
   renderJobsTable() {
     const tbody = document.getElementById("jobTableBody");
     if (!tbody) return;
     const all = Array.from(this.jobs.values());
-    // Filtering: when no filters are active, show no rows (user explicitly hid all)
+    // Filtering policy: when NO toggles are selected, show NO rows.
+    // Selecting any toggle(s) displays only jobs whose normalized status matches a selected toggle.
+    // (Reversed from prior behavior where empty selection meant "show all").
     let visible = [];
     if (this.activeFilters && this.activeFilters.size > 0) {
       visible = all.filter((j) => this.activeFilters.has(this.normalizeStatus(j)));
@@ -7262,18 +8428,21 @@ class TasksManager {
       if (!tr) {
         tr = this.createJobRow(job);
         this._jobRows.set(job.id, tr);
-      } else {
+      }
+      else {
         // Update existing row fields
         this.updateJobRow(tr, job);
       }
-      // Always append in the current sorted order; this moves existing rows
+      // Always append in the current sorted order;
+      // this moves existing rows
       tbody.appendChild(tr);
     }
     // Hide rows that don't match filter
     for (const [id, tr] of this._jobRows.entries()) {
       if (!seen.has(id)) {
         tr.style.display = "none";
-      } else {
+      }
+      else {
         tr.style.display = "";
       }
     }
@@ -7283,13 +8452,18 @@ class TasksManager {
     const cancelQueuedBtn = document.getElementById("cancelQueuedBtn");
     const cancelAllBtn = document.getElementById("cancelAllBtn");
     if (clearBtn) {
-      const hasCompletedOrFailed = Array.from(this.jobs.values()).some(
-        (j) => {
+      const hasFinished = Array.from(this.jobs.values()).some(j => {
+        const s = this.normalizeStatus(j);
+        return s === 'completed' || s === 'failed' || s === 'canceled';
+      });
+      clearBtn.style.display = hasFinished ? "inline-block" : "none";
+      if (hasFinished) {
+        const hasNonCanceled = Array.from(this.jobs.values()).some(j => {
           const s = this.normalizeStatus(j);
-          return s === "completed" || s === "failed";
-        }
-      );
-      clearBtn.style.display = hasCompletedOrFailed ? "inline-block" : "none";
+          return s === 'completed' || s === 'failed';
+        });
+        clearBtn.textContent = hasNonCanceled ? 'Clear Finished' : 'Clear Canceled';
+      }
     }
     if (cancelQueuedBtn) {
       const hasQueued = Array.from(this.jobs.values()).some(
@@ -7304,7 +8478,8 @@ class TasksManager {
           if (!res.ok) throw new Error("HTTP " + res.status);
           this.showNotification("Queued jobs canceled", "success");
           this.refreshJobs();
-        } catch (e) {
+        }
+        catch (e) {
           this.showNotification("Failed to cancel queued jobs", "error");
         }
       };
@@ -7325,7 +8500,8 @@ class TasksManager {
             "success"
           );
           this.refreshJobs();
-        } catch (e) {
+        }
+        catch (e) {
           this.showNotification("Failed to cancel all jobs", "error");
         }
       };
@@ -7336,7 +8512,8 @@ class TasksManager {
     if (container) {
       const table = container.querySelector('table');
       if (table) {
-        const maxContent = table.scrollHeight + 8; // small padding
+        const maxContent = table.scrollHeight + 8;
+        // small padding
         const current = container.getBoundingClientRect().height;
         if (current > maxContent) {
           container.style.height = maxContent + 'px';
@@ -7386,9 +8563,7 @@ class TasksManager {
 
   updateJobRow(row, job) {
     const tstamp = job.startTime || job.createdTime || 0;
-    const startTime = tstamp
-    ? new Date(tstamp * 1000).toLocaleTimeString()
-    : "N/A";
+    const startTime = tstamp ? new Date(tstamp * 1000).toLocaleTimeString() : "N/A";
     const baseName = (p) => (p || "").split("/").filter(Boolean).pop() || "";
     const fileName = baseName(job.target) || baseName(job.file);
     row.querySelector(".cell-time").textContent = startTime;
@@ -7401,7 +8576,8 @@ class TasksManager {
     const statusEl = row.querySelector(".job-status");
     statusEl.className = "job-status " + status;
     statusEl.textContent = this.displayStatusLabel(status);
-    // Progress: prefer server-provided value; only fall back to raw counters when missing
+    // Progress: prefer server-provided value;
+    // only fall back to raw counters when missing
     let pct = 0;
     const totalRaw = job.totalRaw;
     const processedRaw = job.processedRaw;
@@ -7409,45 +8585,29 @@ class TasksManager {
       pct = job.progress;
     }
     // If not completed and server didn't provide a value, derive from raw counters
-    if (
-      status !== "completed" &&
-      status !== "canceled" &&
-      (pct == null || pct <= 0)
-    ) {
-      if (
-        typeof totalRaw === "number" &&
-        totalRaw > 0 &&
-        typeof processedRaw === "number"
-      ) {
-        const calc = Math.max(
-          0,
-          Math.min(100, Math.floor((processedRaw / totalRaw) * 100))
-        );
+    if (status !== "completed" && status !== "canceled" && (pct == null || pct <= 0)) {
+      if (typeof totalRaw === "number" && totalRaw > 0 && typeof processedRaw === "number") {
+        const calc = Math.max(0, Math.min(100, Math.floor((processedRaw / totalRaw) * 100)));
         if (calc > 0) pct = calc;
       }
     }
-    // Queued shows 0%; completed always shows 100%
+    // Queued shows 0%;
+    // completed always shows 100%
     if (status === "queued") pct = 0;
     if (status === "completed") pct = 100;
     const bar = row.querySelector(".job-progress-fill");
     // Canceled explicitly shows 0% and "Canceled"
     if (status === "canceled") {
       bar.style.width = "0%";
-    } else {
+    }
+    else {
       bar.style.width = (status !== "queued" ? pct : 0) + "%";
     }
-    row.querySelector(".pct").textContent =
-    status === "queued"
-    ? "Queued"
-    : status === "completed"
-    ? "100%"
-    : status === "canceled"
-    ? "Canceled"
-    : `${pct}%`;
+    row.querySelector(".pct").textContent = status === "queued" ? "Queued" : status === "completed" ? "100%" : status === "canceled" ? "Canceled" : `${pct}%`;
     const fname = row.querySelector(".fname");
     // Show the target path when available for non-queued states
     const targetPath =
-    job && typeof job.target === "string" && job.target ? job.target : "";
+      job && typeof job.target === "string" && job.target ? job.target : "";
     fname.textContent = status === "queued" ? "" : targetPath || "";
     // Action
     const action = row.querySelector(".cell-action");
@@ -7458,15 +8618,18 @@ class TasksManager {
       btn.textContent = "Cancel";
       btn.addEventListener("click", () => this.cancelJob(job.id));
       action.appendChild(btn);
-    } else if (status === "queued") {
+    }
+    else if (status === "queued") {
       const btn = document.createElement("button");
       btn.className = "btn-secondary";
       btn.textContent = "Cancel";
       btn.addEventListener("click", () => this.cancelJob(job.id));
       action.appendChild(btn);
-    } else if (status === "canceled") {
+    }
+    else if (status === "canceled") {
       // No actions for canceled
-    } else if (status === "failed") {
+    }
+    else if (status === "failed") {
       // Click row to view error details
       const errText = job && job.error ? String(job.error) : "";
       if (errText) {
@@ -7492,7 +8655,8 @@ class TasksManager {
 
     let startY = 0;
     let startHeight = 0;
-    const MIN = 120; // minimum usable height
+    const MIN = 120;
+    // minimum usable height
     const contentMax = () => {
       const table = container.querySelector('table');
       if (!table) return window.innerHeight - 160;
@@ -7519,11 +8683,29 @@ class TasksManager {
       if (e.button !== 0) return;
       startY = e.clientY;
       startHeight = container.getBoundingClientRect().height;
-      container._userResized = true; // mark explicit user intent
+      container._userResized = true;
+      // mark explicit user intent
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
       document.body.classList.add("resizing-job-table");
       e.preventDefault();
+    });
+    // Double-click: auto-fit height to show all current visible rows (up to viewport cap)
+    handle.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      const rows = Array.from(document.querySelectorAll('#jobTableBody tr'))
+        .filter(r => r.style.display !== 'none');
+      const table = container.querySelector('table');
+      if (!rows.length || !table) return;
+      const headerExtra = 42;
+      // header + padding approximation
+      const sample = rows.find(r => r.offsetParent !== null) || rows[0];
+      const rh = sample.getBoundingClientRect().height || 28;
+      const desired = Math.min(window.innerHeight - 160, table.scrollHeight + 8, (rh * rows.length) + headerExtra);
+      container.style.height = desired + 'px';
+      container.style.overflow = 'auto';
+      // Mark as user resized (so auto heuristics stop fighting it)
+      container._userResized = true;
     });
     // Responsive safety: if window shrinks below chosen height, clamp down
     window.addEventListener("resize", () => {
@@ -7547,11 +8729,13 @@ class TasksManager {
     // Respect explicit user resizing unless container is extremely small (<100px)
     if (container._userResized && container.getBoundingClientRect().height > 100) return;
     const rows = Array.from(document.querySelectorAll('#jobTableBody tr'))
-    .filter(r => r.style.display !== 'none');
-    if (!rows.length) return; // nothing to show
+      .filter(r => r.style.display !== 'none');
+    if (!rows.length) return;
+    // nothing to show
     const sample = rows.find(r => r.offsetParent !== null) || rows[0];
     const rh = sample.getBoundingClientRect().height || 28;
-    const wantRows = Math.min(rows.length, 4); // show up to 4 rows if available
+    const wantRows = Math.min(rows.length, 4);
+    // show up to 4 rows if available
     // Extra for header + padding
     const baseExtra = 42;
     const desired = (rh * wantRows) + baseExtra;
@@ -7568,14 +8752,23 @@ class TasksManager {
 
   // Normalize backend status to UI status names
   normalizeStatus(job) {
-    // Map server states directly; do not infer running from progress for queued
-    let s = (job.status || "").toLowerCase();
-    if (s === "completed") return "completed";
-    if (s === "running") return "running";
-    if (s === "queued") return "queued";
-    if (s === "failed") return "failed";
-    if (s === "canceled") return "canceled";
-    return s || "unknown";
+    // Prefer explicit status, fallback to state (backend may expose either)
+    let s = (job.status || job.state || "").toLowerCase();
+    // If backend uses 'done', treat as completed when not actually failed
+    if (s === 'done') s = 'completed';
+    // Surface explicit error field as failed regardless of state label
+    if (job.error) return 'failed';
+    // Hover / other jobs may embed result.status (ok | partial | failed)
+    const resultStatus = (job.result && (job.result.status || job.result.state)) ? (job.result.status || job.result.state).toLowerCase() : null;
+    if (resultStatus === 'failed') return 'failed';
+    // Treat 'partial' as failed for visibility (until/if UI adds distinct styling)
+    if (resultStatus === 'partial') return 'failed';
+    if (s === 'failed') return 'failed';
+    if (s === 'canceled') return 'canceled';
+    if (s === 'running') return 'running';
+    if (s === 'queued' || s === 'pending' || s === 'starting') return 'queued';
+    if (s === 'completed') return 'completed';
+    return s || 'unknown';
   }
 
   showErrorModal(message, job) {
@@ -7594,14 +8787,34 @@ class TasksManager {
       header.style.alignItems = 'center';
       header.style.justifyContent = 'space-between';
       header.style.gap = '12px';
-      const h3 = document.createElement('h3'); h3.style.margin = '0'; h3.textContent = 'Job Error';
-      const closeBtn = document.createElement('button'); closeBtn.className = 'btn'; closeBtn.id = 'errorModalClose'; closeBtn.textContent = 'Close';
-      header.appendChild(h3); header.appendChild(closeBtn);
-      const pre = document.createElement('pre'); pre.id = 'errorModalText'; pre.style.whiteSpace = 'pre-wrap'; pre.style.background = '#111'; pre.style.color = '#f88'; pre.style.padding = '12px'; pre.style.borderRadius = '6px'; pre.style.maxHeight = '50vh'; pre.style.overflow = 'auto';
-      content.appendChild(header); content.appendChild(pre); modal.appendChild(content);
+      const h3 = document.createElement('h3');
+      h3.style.margin = '0';
+      h3.textContent = 'Job Error';
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'btn';
+      closeBtn.id = 'errorModalClose';
+      closeBtn.textContent = 'Close';
+      header.appendChild(h3);
+      header.appendChild(closeBtn);
+      const pre = document.createElement('pre');
+      pre.id = 'errorModalText';
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.style.background = '#111';
+      pre.style.color = '#f88';
+      pre.style.padding = '12px';
+      pre.style.borderRadius = '6px';
+      pre.style.maxHeight = '50vh';
+      pre.style.overflow = 'auto';
+      content.appendChild(header);
+      content.appendChild(pre);
+      modal.appendChild(content);
       document.body.appendChild(modal);
-      const close = () => { modal.hidden = true; };
-      modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+      const close = () => {
+        modal.hidden = true;
+      };
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) close();
+      });
       closeBtn.addEventListener('click', close);
     }
     const pre = modal.querySelector('#errorModalText');
@@ -7643,49 +8856,122 @@ class TasksManager {
           this.showNotification("Job canceled", "success");
           this.refreshJobs();
         }
-      } else {
+      }
+      else {
         throw new Error("Failed to cancel job");
       }
-    } catch (error) {
+    }
+    catch (error) {
       console.error("Failed to cancel job:", error);
       this.showNotification("Failed to cancel job", "error");
     }
   }
 
   updateSelectedFileCount() {
-    const selectedRadio = document.querySelector(
-      'input[name="fileSelection"]:checked'
-    );
+    const selectedRadio = document.querySelector('input[name="fileSelection"]:checked');
     const countEl = document.getElementById("selectedFileCount");
 
     if (selectedRadio && countEl) {
       if (selectedRadio.value === "selected") {
         // Get count from library selection
         countEl.textContent = selectedItems.size;
-      } else {
+      }
+      else {
         countEl.textContent = "0";
       }
     }
   }
 
   startJobPolling() {
-    // Adaptive polling: fast (1s) until SSE (if any) attaches; then slow (15s) fallback.
-    const FAST = 1000;
+    // Adaptive polling with passive mode while tasks tab hidden
+    const FAST = 1500;
+    const PASSIVE = 6000;
     const SLOW = 15000;
+    const MAX_BACKOFF = 60000;
     if (this._jobPollTimer) clearInterval(this._jobPollTimer);
-    let interval = FAST;
-    const tick = () => {
-      if (tabSystem && tabSystem.getActiveTab && tabSystem.getActiveTab() === "tasks") {
-        this.refreshJobs();
-        this.loadCoverage();
+    this._jobPollInFlight = this._jobPollInFlight || { jobs: false, coverage: false };
+    this._jobPollFailures = 0;
+    let passiveMode = true;
+    // until user views tasks or active job causes auto-switch
+    let currentInterval = PASSIVE;
+    const doPoll = async () => {
+      const activeTab = tabSystem && tabSystem.getActiveTab ? tabSystem.getActiveTab() : null;
+      const tabIsTasks = activeTab === 'tasks';
+      // Skip overlap
+      if (this._jobPollInFlight.jobs || this._jobPollInFlight.coverage) return;
+      try {
+        this._jobPollInFlight.jobs = true;
+        const jobs = await this.refreshJobs();
+        if (!tabIsTasks && jobs && Array.isArray(jobs)) {
+          const hasActive = jobs.some(j => {
+            const st = (j.state || '').toLowerCase();
+            return st === 'running' || st === 'queued' || st === 'pending' || st === 'starting';
+          });
+          if (hasActive) {
+            try {
+              tabSystem.switchToTab('tasks');
+              passiveMode = false;
+              currentInterval = FAST;
+
+            }
+            catch (_) { }
+          }
+        }
+      }
+      catch (_) {
+        this._jobPollFailures++;
+      }
+      finally {
+        this._jobPollInFlight.jobs = false;
+      }
+      if (tabIsTasks) {
+        passiveMode = false;
+        try {
+          this._jobPollInFlight.coverage = true;
+          await this.loadCoverage();
+        }
+        catch (_) { /* ignore */ }
+        finally {
+          this._jobPollInFlight.coverage = false;
+
+        }
+      }
+      // Backoff on repeated failures
+      if (this._jobPollFailures >= 2) {
+        currentInterval = Math.min(currentInterval * 2, MAX_BACKOFF);
+        this._jobPollFailures = 0;
+        // apply once per adjustment
+      }
+      else if (!passiveMode && currentInterval !== FAST) {
+        currentInterval = FAST;
       }
     };
-    this._jobPollTimer = setInterval(tick, interval);
-    // If SSE later connects, we expose a hook to downgrade polling frequency
+    const tick = () => {
+      doPoll();
+    };
+    this._jobPollTimer = setInterval(tick, currentInterval);
+    // Wrap refreshJobs to adapt interval dynamically
+    const origRefresh = this.refreshJobs.bind(this);
+    this.refreshJobs = async (...args) => {
+      const result = await origRefresh(...args);
+      // Adjust timer if interval changed
+      const activeTab = tabSystem && tabSystem.getActiveTab ? tabSystem.getActiveTab() : null;
+      if (activeTab === 'tasks' && !passiveMode && currentInterval !== FAST) {
+        currentInterval = FAST;
+        clearInterval(this._jobPollTimer);
+        this._jobPollTimer = setInterval(tick, currentInterval);
+      }
+      return result;
+    };
     this._onJobEventsConnected = () => {
+      // When SSE connected, relax to SLOW but only if user is on tasks tab (otherwise keep passive)
       if (!this._jobPollTimer) return;
-      clearInterval(this._jobPollTimer);
-      this._jobPollTimer = setInterval(tick, SLOW); // keep a light safety net
+      const activeTab = tabSystem && tabSystem.getActiveTab ? tabSystem.getActiveTab() : null;
+      if (activeTab === 'tasks') {
+        clearInterval(this._jobPollTimer);
+        currentInterval = SLOW;
+        this._jobPollTimer = setInterval(tick, currentInterval);
+      }
     };
   }
 
@@ -7729,7 +9015,8 @@ class TasksManager {
       if (data.status === "success") {
         this.updateOrphanDisplay(data.data);
       }
-    } catch (error) {
+    }
+    catch (error) {
       // Quiet failure during polling
       // Reset display on error
       this.updateOrphanDisplay({ orphaned: 0, orphaned_files: [] });
@@ -7760,11 +9047,7 @@ class TasksManager {
     this.orphanFiles = orphanData.orphaned_files || [];
 
     // If preview currently visible, refresh its contents
-    if (
-      orphanDetails &&
-      !orphanDetails.classList.contains("d-none") &&
-      orphanList
-    ) {
+    if (orphanDetails && !orphanDetails.classList.contains("d-none") && orphanList) {
       // Rebuild orphan list using DOM nodes (avoid innerHTML)
       while (orphanList.firstChild) orphanList.removeChild(orphanList.firstChild);
       if (this.orphanFiles && this.orphanFiles.length) {
@@ -7776,7 +9059,8 @@ class TasksManager {
           frag.appendChild(d);
         });
         orphanList.appendChild(frag);
-      } else {
+      }
+      else {
         const d = document.createElement('div');
         d.className = 'orphan-file empty';
         d.textContent = 'No orphaned files';
@@ -7803,7 +9087,8 @@ class TasksManager {
           frag.appendChild(d);
         });
         orphanList.appendChild(frag);
-      } else {
+      }
+      else {
         const d = document.createElement('div');
         d.className = 'orphan-file empty';
         d.textContent = 'No orphaned files';
@@ -7812,7 +9097,8 @@ class TasksManager {
       orphanDetails.classList.remove("d-none");
       orphanDetails.removeAttribute("hidden");
       if (btn) btn.textContent = "Hide";
-    } else {
+    }
+    else {
       // Hide
       orphanDetails.classList.add("d-none");
       if (btn) btn.textContent = "Preview";
@@ -7820,22 +9106,13 @@ class TasksManager {
   }
 
   async cleanupOrphans() {
-    if (
-      !confirm(
-        `Are you sure you want to delete ${this.orphanFiles.length} orphaned artifact files? This action cannot be undone.`
-      )
-    ) {
+    if (!confirm(`Are you sure you want to delete ${this.orphanFiles.length} orphaned artifact files? This action cannot be undone.`)) {
       return;
     }
 
     try {
       // Use empty path to cleanup the current root directory
-      const response = await fetch(
-        "/api/artifacts/cleanup?dry_run=false&keep_orphans=false",
-        {
-          method: "POST",
-        }
-      );
+      const response = await fetch("/api/artifacts/cleanup?dry_run=false&keep_orphans=false", { method: "POST", });
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
@@ -7846,15 +9123,14 @@ class TasksManager {
         this.showNotification("Cleanup started successfully", "success");
         // Refresh orphan data after cleanup starts
         setTimeout(() => this.loadOrphanData(), 2000);
-      } else {
+      }
+      else {
         throw new Error(data.message || "Cleanup failed");
       }
-    } catch (error) {
+    }
+    catch (error) {
       console.error("Failed to start cleanup:", error);
-      this.showNotification(
-        "Failed to start cleanup: " + error.message,
-        "error"
-      );
+      this.showNotification("Failed to start cleanup: " + error.message, "error");
     }
   }
 }
@@ -7866,14 +9142,18 @@ if (document.readyState === "loading") {
     tasksManager = new TasksManager();
     try {
       window.tasksManager = tasksManager;
-    } catch (_) {}
+    }
+    catch (_) { }
   });
-} else {
-  // Script likely loaded with defer, DOM is ready; safe to init now
+}
+else {
+  // Script likely loaded with defer, DOM is ready;
+  // safe to init now
   tasksManager = new TasksManager();
   try {
     window.tasksManager = tasksManager;
-  } catch (_) {}
+  }
+  catch (_) { }
   const previewBtn = document.getElementById("previewOrphansBtn");
   const cleanupBtn = document.getElementById("cleanupOrphansBtn");
 
@@ -7898,29 +9178,39 @@ if (document.readyState === "loading") {
 // -----------------------------
 // Sidebar toggle: non-intrusive handle between sidebar and player
 // -----------------------------
-(function wireSidebarToggle(){
+(function wireSidebarToggle() {
   const toggle = document.getElementById('sidebarToggle');
   const root = document.documentElement || document.body;
   const STORAGE_KEY = 'mediaPlayer:sidebarCollapsed';
 
   function isCollapsed() {
-    try { return localStorage.getItem(STORAGE_KEY) === '1'; } catch(_) { return false; }
+    try {
+      return localStorage.getItem(STORAGE_KEY) === '1';
+    }
+    catch (_) {
+      return false;
+    }
   }
 
   function setCollapsed(v, save = true) {
     if (v) {
       root.classList.add('has-sidebar-collapsed');
-      if (toggle) toggle.setAttribute('aria-expanded','false');
-    } else {
+      if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    }
+    else {
       root.classList.remove('has-sidebar-collapsed');
-      if (toggle) toggle.setAttribute('aria-expanded','true');
+      if (toggle) toggle.setAttribute('aria-expanded', 'true');
     }
     if (save) {
-      try { localStorage.setItem(STORAGE_KEY, v ? '1' : '0'); } catch(_) {}
+      try {
+        localStorage.setItem(STORAGE_KEY, v ? '1' : '0');
+      }
+      catch (_) { }
     }
   }
 
-  if (!toggle) return; // nothing to wire
+  if (!toggle) return;
+  // nothing to wire
 
   // initialize from storage
   setCollapsed(isCollapsed(), false);

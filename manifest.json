@@ -1,0 +1,43 @@
+{{
+
+  "name": "Media Player",  "name": "Media Library",
+
+  "short_name": "MediaPlayer",  "short_name": "Media",
+
+  "start_url": "/",  "description": "Self‑hosted media library player and artifact manager.",
+
+  "display": "standalone",  "start_url": "/?source=pwa",
+
+  "background_color": "#111827",  "scope": "/",
+
+  "theme_color": "#111827",  "display": "standalone",
+
+  "description": "Self-hosted media library player and artifact manager",  "background_color": "#0e1016",
+
+  "icons": [  "theme_color": "#0e1016",
+
+    { "src": "favicon.ico", "sizes": "64x64 32x32 16x16", "type": "image/x-icon" }  "orientation": "any",
+
+  ]  "icons": [
+
+}    { "src": "/favicon-16x16.png", "sizes": "16x16", "type": "image/png" },
+
+    { "src": "/favicon-32x32.png", "sizes": "32x32", "type": "image/png" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "categories": ["entertainment", "video"],
+  "shortcuts": [
+    {
+      "name": "Library",
+      "short_name": "Library",
+      "url": "/#library"
+    },
+    {
+      "name": "Tasks",
+      "short_name": "Tasks",
+      "url": "/#tasks"
+    }
+  ],
+  "id": "/",
+  "prefer_related_applications": false
+}
