@@ -225,9 +225,10 @@ window.addEventListener('DOMContentLoaded', () => {
     let librarySearchTerms = [];
     // plain text search tokens (chips)
     let autoRandomEnabled = false;
+  let lastCardHeight = 230; // updated after first render of cards
     
-    // Simple density configurations: [legacyPageSize, columns]
-    // We ignore legacyPageSize now and compute page size as columns * ROWS_PER_PAGE
+  // Simple density configurations: [legacyPageSize, columns]
+  // We previously forced rows=3; now we restore variable page sizes using legacyPageSize.
     const densityConfigs = [
       [200, 20],
       [180, 18],
@@ -245,7 +246,7 @@ window.addEventListener('DOMContentLoaded', () => {
       [35, 2],
       [30, 1],
     ];
-    const ROWS_PER_PAGE = 3; // fixed number of rows for pagination
+  // Removed ROWS_PER_PAGE fixed row cap.
     
     // Modal elements
     
@@ -866,7 +867,14 @@ window.addEventListener('DOMContentLoaded', () => {
           grid.hidden = false;
           // Dynamic grid: no pruning; page size dictated by densityConfigs/applyColumnsAndComputePageSize.
           // After render, adjust side spacing to eliminate vertical scroll if possible.
-          requestAnimationFrame(() => enforceGridSideSpacing());
+          requestAnimationFrame(() => {
+            const c = grid.querySelector('.card');
+            if (c) {
+              const h = c.getBoundingClientRect().height;
+              if (h && isFinite(h) && h > 50) lastCardHeight = h;
+            }
+            enforceGridSideSpacing();
+          });
         }
         catch (e) {
           console.error("Library loading error:", e);
@@ -1886,10 +1894,26 @@ window.addEventListener('DOMContentLoaded', () => {
       function applyColumnsAndComputePageSize() {
         const cfg = densityConfigs[currentDensity - 1];
         let columns = 4;
-        if (cfg && Array.isArray(cfg)) columns = cfg[1];
-        else columns = Math.max(1, currentDensity);
+        if (cfg && Array.isArray(cfg)) columns = cfg[1]; else columns = Math.max(1, currentDensity);
         document.documentElement.style.setProperty('--columns', String(columns));
-        return columns * ROWS_PER_PAGE;
+        // Estimate rows that fit without vertical scroll (soft limit); allow fallback large page if unknown
+        const gridEl = document.getElementById('grid');
+        let gap = 12;
+        if (gridEl) {
+          const st = window.getComputedStyle(gridEl);
+          const g = parseFloat(st.rowGap || st.gap || '12');
+          if (isFinite(g) && g >= 0) gap = g;
+        }
+        const baseHeight = lastCardHeight || 230;
+        let available = window.innerHeight;
+        if (gridEl) {
+          const rect = gridEl.getBoundingClientRect();
+          available = Math.max(200, window.innerHeight - rect.top - 8);
+        }
+        let rows = Math.max(1, Math.floor((available + gap) / (baseHeight + gap)));
+        if (rows > 20) rows = 20; // hard safety cap
+        const size = columns * rows;
+        return size;
       }
 
       // Dynamically add horizontal spacing (margins) to the grid only until vertical
