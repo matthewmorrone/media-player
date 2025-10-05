@@ -25,8 +25,8 @@ if [ -z "$LAN_IP" ] && command -v hostname >/dev/null 2>&1; then
   LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 fi
 echo "Serving on:"
-echo "  http://localhost:$PORT"
-echo "  http://${LAN_IP:-$HOST}:$PORT"
+echo "http://localhost:$PORT"
+echo "http://${LAN_IP:-$HOST}:$PORT"
 echo "MEDIA_ROOT=$MEDIA_ROOT"
 
 # Auto-enable whisper.cpp subtitles backend if discovered and not explicitly configured
@@ -96,5 +96,25 @@ if [ -z "$RUN_UVICORN" ] || ! probe_runner "$RUN_UVICORN"; then
   exit 1
 fi
 
-# shellcheck disable=SC2086
-exec env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN app:app --reload --host "$HOST" --port "$PORT"
+# Logging: write combined stdout/stderr to a rotating (truncated each start) file while still echoing to console.
+# Override LOG_FILE to change location/name; set LOG_APPEND=1 to append instead of truncate.
+LOG_FILE="${LOG_FILE:-server.log}"
+LOG_APPEND="${LOG_APPEND:-0}"
+
+if [ "$LOG_FILE" = "/dev/null" ]; then
+  # Disable file logging explicitly
+  # shellcheck disable=SC2086
+  exec env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN app:app --reload --host "$HOST" --port "$PORT"
+else
+  # Prepare file (truncate unless append requested)
+  if [ "$LOG_APPEND" != "1" ]; then : >"$LOG_FILE"; fi
+  echo "[serve.sh] Logging to $LOG_FILE (append=$LOG_APPEND)" | tee -a "$LOG_FILE"
+  # Use stdbuf to reduce output buffering if available for near-real-time tee
+  if command -v stdbuf >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    exec stdbuf -oL -eL env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN app:app --reload --host "$HOST" --port "$PORT" 2>&1 | tee -a "$LOG_FILE"
+  else
+    # shellcheck disable=SC2086
+    exec env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN app:app --reload --host "$HOST" --port "$PORT" 2>&1 | tee -a "$LOG_FILE"
+  fi
+fi

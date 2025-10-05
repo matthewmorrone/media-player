@@ -4,6 +4,7 @@ from typing import Any, Dict, Iterator, List, Optional, Callable
 import json
 import copy
 import mimetypes
+from email.utils import formatdate
 import os
 import shutil
 import subprocess
@@ -45,10 +46,20 @@ from fastapi.responses import ( # type: ignore
     StreamingResponse,
 )  # type: ignore
 from fastapi.staticfiles import StaticFiles  # type: ignore
-from fastapi.middleware.cors import CORSMiddleware  # type: ignore
-from fastapi import FastAPI
-from fastapi import APIRouter
-from fastapi.middleware.cors import CORSMiddleware
+try:
+    from fastapi.middleware.cors import CORSMiddleware  # type: ignore
+except Exception:
+    # Fallback stub so the app can still start when fastapi.middleware.cors is unavailable.
+    class CORSMiddleware:  # type: ignore
+        def __init__(self, app, **kwargs):
+            self.app = app
+        async def __call__(self, scope, receive, send):
+            await self.app(scope, receive, send)
+# De-duplicate redundant FastAPI / APIRouter / CORSMiddleware imports
+# (removed duplicate lines that followed)
+# from fastapi import FastAPI
+# from fastapi import APIRouter
+# from fastapi.middleware.cors import CORSMiddleware
 
 # Optional PIL import (used in a few endpoints); tolerate absence
 try:
@@ -403,6 +414,24 @@ def find_subtitles(video: Path) -> Optional[Path]:
     if _file_nonempty(s_side, min_size=2):
         return s_side
     return None
+
+
+def _is_stub_subtitles_file(p: Path) -> bool:
+    """Heuristic: detect a previously generated 'stub' subtitles file (so we can auto-regenerate later).
+
+    When no real whisper backend is installed we fall back to a tiny deterministic subtitle output.
+    If the user later installs a backend the existence check would otherwise skip regeneration and
+    jobs appear to finish instantly. We treat files containing the sentinel phrase as stubs.
+    """
+    try:
+        if not p.exists() or p.stat().st_size > 8_000:  # real SRTs usually get larger quickly
+            return False
+        head = p.read_text(encoding="utf-8", errors="ignore")[:400].lower()
+        if "[no speech engine installed]" in head:
+            return True
+        return False
+    except Exception:
+        return False
 
 # -----------------------------
 # Artifact suffix/constants
@@ -3185,6 +3214,14 @@ def detect_backend(preference: str) -> str:
     return "stub"
 
 
+def _safe_importable(mod: str) -> bool:
+    try:
+        __import__(mod)
+        return True
+    except Exception:
+        return False
+
+
 def _format_srt_segments(segments: List[Dict[str, Any]]) -> str:
     lines: List[str] = []
     for i, s in enumerate(segments, start=1):
@@ -3359,6 +3396,12 @@ def generate_subtitles(
 ) -> None:
     out_file.parent.mkdir(parents=True, exist_ok=True)
     backend = detect_backend("auto")
+    dbg = bool(os.environ.get("SUBTITLES_DEBUG")) or True  # always-on lightweight logging (can tune later)
+    if dbg:
+        try:
+            print(f"[subtitles] start video={video.name} backend={backend} model={model} lang={language or 'auto'} translate={translate} out={out_file.name}")
+        except Exception:
+            pass
     segments = run_whisper_backend(
         video, backend, model, language, translate,
         progress_cb=progress_cb,
@@ -3367,6 +3410,11 @@ def generate_subtitles(
     # Write SRT
     srt = _format_srt_segments(segments)
     out_file.write_text(srt, encoding="utf-8")
+    if dbg:
+        try:
+            print(f"[subtitles] wrote {len(segments)} segments size={out_file.stat().st_size}B backend={backend}")
+        except Exception:
+            pass
     return None
 
 
@@ -6715,7 +6763,17 @@ def cover_get(path: str = Query(...)):
     thumb = thumbs_path(target)
     if not thumb.exists():
         raise_api_error("cover not found", status_code=404)
-    return FileResponse(str(thumb))
+    resp = FileResponse(str(thumb))
+    try:
+        mt = thumb.stat().st_mtime
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        resp.headers["ETag"] = f"\"cover-{int(mt)}\""
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        resp.headers["Last-Modified"] = formatdate(mt, usegmt=True) if 'formatdate' in globals() else resp.headers.get("Last-Modified", "")
+    except Exception:
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 @api.head("/cover/get")
 def cover_head(path: str = Query(...)):
@@ -6766,6 +6824,32 @@ def cover_create(path: str = Query(...), t: Optional[str | float] = Query(defaul
         return _wrap_job("cover", str(video.relative_to(STATE["root"])), _do)
     except Exception as e:  # noqa: BLE001
         raise_api_error(f"cover create failed: {e}", status_code=500)
+
+@api.post("/cover/create_inline")
+def cover_create_inline(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
+    """Synchronously generate a cover thumbnail and return the JPEG directly.
+    Provides immediate bytes so the client can display the new thumbnail without waiting for a job poll.
+    """
+    name, directory = _name_and_dir(path)
+    video = Path(directory) / name
+    if not video.exists() or not video.is_file():
+        raise_api_error("video not found", status_code=404)
+    time_spec = str(t) if t is not None else "middle"
+    try:
+        generate_thumbnail(video, force=bool(overwrite), time_spec=time_spec, quality=int(quality))
+    except Exception as e:  # noqa: BLE001
+        raise_api_error(f"inline cover failed: {e}")
+    thumb = thumbs_path(video)
+    if not thumb.exists():
+        raise_api_error("cover not found after generation", status_code=500)
+    resp = FileResponse(str(thumb), media_type="image/jpeg")
+    try:
+        mt = thumb.stat().st_mtime
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        resp.headers["ETag"] = f"\"cover-inline-{int(mt)}\""
+    except Exception:
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @api.post("/cover/create/batch")
@@ -8285,7 +8369,7 @@ def subtitles_create(
     fp = safe_join(STATE["root"], path)
     out_dir = artifact_dir(fp)
     out_file = out_dir / f"{fp.stem}{SUFFIX_SUBTITLES_SRT}"
-    if out_file.exists() and not overwrite:
+    if out_file.exists() and not overwrite and not _is_stub_subtitles_file(out_file):
         return api_success({"created": False, "reason": "exists"})
     class _Ns:
         subtitles_backend = "auto"
@@ -8315,6 +8399,23 @@ def subtitles_create(
         return _wrap_job("subtitles", str(fp.relative_to(STATE["root"])), _do)
     except Exception as e:
         raise_api_error(f"Subtitle generation failed: {e}", status_code=500)
+
+
+@api.get("/subtitles/backend")
+def subtitles_backend_info():
+    """Return which backend would be used for subtitles plus a few diagnostic flags.
+
+    Helps explain 'instant completion' when the stub backend or FFPROBE_DISABLE shortcut is active.
+    """
+    be = detect_backend("auto")
+    return api_success({
+        "backend": be,
+        "ffprobe_disable": bool(os.environ.get("FFPROBE_DISABLE")),
+        "has_faster_whisper": _safe_importable("faster_whisper"),
+        "has_whisper": _safe_importable("whisper"),
+        "whisper_cpp_bin": os.environ.get("WHISPER_CPP_BIN") or None,
+        "whisper_cpp_model": os.environ.get("WHISPER_CPP_MODEL") or None,
+    })
 
 
 @api.delete("/subtitles/delete")
@@ -8356,7 +8457,7 @@ def subtitles_create_batch(
             def _process(p: Path):
                 try:
                     out_file = artifact_dir(p) / f"{p.stem}{SUFFIX_SUBTITLES_SRT}"
-                    if out_file.exists() and not overwrite:
+                    if out_file.exists() and not overwrite and not _is_stub_subtitles_file(out_file):
                         return
                     jid = _new_job("subtitles", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
@@ -12176,7 +12277,7 @@ def _handle_subtitles_job(jid: str, jr: JobRequest, base: Path) -> None:
             out_file = artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}"
             lk = _file_task_lock(v, "subtitles")
             with lk:
-                if out_file.exists() and not bool(jr.force):
+                if out_file.exists() and not bool(jr.force) and not _is_stub_subtitles_file(out_file):
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
                 else:
@@ -13423,7 +13524,7 @@ def api_system_doctor():
 # Additional legacy vid feature ports: codecs scan & finish
 # -----------------------------
 
-class CodecsScanResult(BaseModel):  # minimal pydantic model for structured response
+class CodecsScanResult(BaseModel):  # type: ignore # minimal pydantic model for structured response
     file: str
     video_codec: str | None = None
     audio_codec: str | None = None
