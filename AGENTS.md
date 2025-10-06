@@ -5,6 +5,42 @@ This file defines explicit rules and guard-rails for any automated or AI-driven 
 Purpose
 - Provide a concise, machine-actionable policy so agents behave safely and predictably.
 - Prevent common anti-patterns (including programmatic DOM construction for repeated UI fragments) that harm maintainability and UX.
+- Serve as the single source of truth for architecture, style, and automation (replaces former `.github/copilot-instructions.md`).
+
+---
+## Architecture Snapshot (Backend & Frontend)
+- Backend: Single FastAPI application (`app.py`, ~14k LOC) serving REST/JSON plus static frontend assets (`index.html`, `index.js`, `index.css`).
+- Global state: `STATE` dict holding root path, config, caches. Media root derived from `MEDIA_ROOT` env var or CWD.
+- Artifacts live beside media inside hidden directories (`.artifacts`, `.jobs`, etc.) to avoid polluting the visible file tree.
+- Artifact sidecars per video (naming centralized via helpers):
+	- `metadata.json`, `thumbnail.jpg`, `preview.webm`, `sprites.{jpg,json}`, `scenes.json`, `heatmaps.{json,png}`, `faces.json`, `phash.json`, `subtitles.*`.
+- Generation model: Some artifacts inline (metadata, thumbnail, preview, phash, faces); others job-queued (sprites, scenes, subtitles). Finish flow: `/finish/plan` → `/finish/run`.
+- Ordering contract: `FINISH_ARTIFACT_ORDER` ensures deterministic generation (metadata → thumbnail → sprites/preview → analysis sidecars).
+- FFmpeg & quality knobs controlled purely by environment variables (never hardcode derived values): `FFMPEG_THREADS`, `FFMPEG_TIMELIMIT`, `THUMBNAIL_QUALITY`, `PREVIEW_CRF_VP9`, etc.
+- Frontend: Monolithic `index.js` for DOM + fetch; pure, side‑effect‑free helpers in `utils.js`; HTML `<template>` tags in `index.html` define repeatable UI (jobs, markers, chips, etc.).
+- Visibility/UI helpers: Centralized show/hide helpers; avoid scattered `style.display` or `.hidden =` toggles.
+- Modals: Required DOM nodes (`#errorModal`, `#messageModal`) must exist at load; no dynamic fallback creation.
+
+### Adding / Extending Artifacts (Guideline)
+1. Add existence check or extend dispatcher.
+2. Use existing path helper patterns (`<stem>.<kind>.<ext>` inside `.artifacts`).
+3. Decide inline vs. job; if job-backed, map the kind to a job name in `/finish/run` logic.
+4. Insert into `FINISH_ARTIFACT_ORDER` respecting logical sequencing.
+5. Surface status anywhere artifact lists are shown (search for other artifact enumerations for parity).
+
+### Frontend Pattern Essentials
+- Always clone from `<template>` for repeated structures (cards, rows, badges) — NEVER assemble multi-node fragments via string concatenation or repeated `createElement` chains.
+- No inline styles; define or reuse CSS classes in `index.css`.
+- Debounce: Use the shared `debounce` in `utils.js`; do not roll custom timers.
+- LocalStorage key naming: Prefix `mediaPlayer:` (e.g., `mediaPlayer:videoAdjust`).
+
+---
+## Style Reference
+Formatting/style enforcement lives only in the ESLint configuration at `.vscode/eslint.config.json` (surfaced via VS Code settings). Agents and contributors should rely on auto-fix (source.fixAll) rather than re‑describing rules here. If a rule change is needed, edit the config—do not duplicate style text in docs.
+
+Key intent (summary, not normative): 2‑space indent, Stroustrup braces, one statement per line, single quotes, semicolons, warning-only lint. Inline styles & manual DOM assembly for repeated UI remain disallowed (see Frontend Pattern Essentials & Agent Rules below).
+
+---
 
 Assistant Quick Guide (short checklist)
 - Do not interact with git unless explicitly requested to do so. When git interaction is required, explain why and include the exact commands or PR flow.

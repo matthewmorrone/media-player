@@ -250,6 +250,23 @@
       <pre id="errorModalText" class="error-pre"></pre>
     </div>
   </div>
+  <!-- Generic message modal (replaces legacy alert usage) -->
+  <div id="messageModal" class="modal" hidden>
+    <div class="modal-content">
+      <div class="modal-header modal-header--spaced">
+        <h3 id="messageModalTitle" class="m-0">Notice</h3>
+        <button id="messageModalClose" class="btn-sm" aria-label="Close">Close</button>
+      </div>
+      <div class="modal-body">
+        <p id="messageModalBody" class="m-0"></p>
+      </div>
+      <footer class="panel-footer--actions mt-12">
+        <div class="flex-row gap-8 jc-end">
+          <button id="messageModalOk" class="btn">OK</button>
+        </div>
+      </footer>
+    </div>
+  </div>
   <header>
     <!-- Tab Navigation only (top bar removed) -->
     <nav class="tab-nav" role="tablist" aria-label="Main navigation">
