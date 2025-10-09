@@ -21,14 +21,14 @@
     <symbol id="icon-placeholder" viewBox="0 0 320 180">
       <defs>
         <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#0e1016"/>
-          <stop offset="100%" stop-color="#1a2030"/>
+          <stop offset="0%" stop-color="#0e1016" />
+          <stop offset="100%" stop-color="#1a2030" />
         </linearGradient>
       </defs>
-      <rect width="320" height="180" fill="url(#g)"/>
+      <rect width="320" height="180" fill="url(#g)" />
       <g fill="#3b4663">
-        <rect x="30" y="40" width="260" height="100" rx="8"/>
-        <polygon points="140,90 140,70 200,90 140,110" fill="#6b7aa6"/>
+        <rect x="30" y="40" width="260" height="100" rx="8" />
+        <polygon points="140,90 140,70 200,90 140,110" fill="#6b7aa6" />
       </g>
     </symbol>
     <symbol id="icon-play" viewBox="0 0 24 24">
@@ -63,14 +63,14 @@
       <path d="M15 6 L9 12 L15 18 Z" fill="currentColor" />
     </symbol>
     <symbol id="icon-jump" viewBox="0 0 24 24">
-      <path d="M4 12a8 8 0 1 1 16 0 8 8 0 0 1-16 0zm5.5-3.5v7l6-3.5-6-3.5z" fill="currentColor"/>
+      <path d="M4 12a8 8 0 1 1 16 0 8 8 0 0 1-16 0zm5.5-3.5v7l6-3.5-6-3.5z" fill="currentColor" />
     </symbol>
     <symbol id="icon-clear" viewBox="0 0 24 24">
-      <path d="M12 10.586 7.757 6.343 6.343 7.757 10.586 12l-4.243 4.243 1.414 1.414L12 13.414l4.243 4.243 1.414-1.414L13.414 12l4.243-4.243-1.414-1.414L12 10.586z" fill="currentColor"/>
+      <path d="M12 10.586 7.757 6.343 6.343 7.757 10.586 12l-4.243 4.243 1.414 1.414L12 13.414l4.243 4.243 1.414-1.414L13.414 12l4.243-4.243-1.414-1.414L12 10.586z" fill="currentColor" />
     </symbol>
     <symbol id="icon-reset" viewBox="0 0 24 24">
       <!-- Circular arrow reset icon -->
-      <path d="M12 5a7 7 0 1 1-6.23 4H8a1 1 0 0 0 0-2H4.5A1.5 1.5 0 0 0 3 8.5V13a1 1 0 0 0 2 0V9.97A9 9 0 1 0 12 3v2z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"/>
+      <path d="M12 5a7 7 0 1 1-6.23 4H8a1 1 0 0 0 0-2H4.5A1.5 1.5 0 0 0 3 8.5V13a1 1 0 0 0 2 0V9.97A9 9 0 1 0 12 3v2z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" />
     </symbol>
     <symbol id="icon-cc" viewBox="0 0 24 24">
       <rect x="2" y="5" width="20" height="14" rx="2" ry="2" fill="none" stroke="currentColor" stroke-width="2" />
@@ -134,14 +134,14 @@
   <!-- Performer Auto-Match Modal (grouped with other modals) -->
   <div id="performerAutoMatchModal" class="modal" hidden>
     <div class="panel panel--wide">
-  <header class="flex items-center justify-between gap-16">
+      <header class="flex items-center justify-between gap-16">
         <strong>Auto‑Match Performers</strong>
-  <div class="flex gap-8">
+        <div class="flex gap-8">
           <button id="perfAutoMatchClose" class="btn-sm" title="Close">Close</button>
         </div>
       </header>
       <div class="body panel-body--tall">
-  <div class="file-selection file-selection-compact mb-12">
+        <div class="file-selection file-selection-compact mb-12">
           <div class="flex-row gap-12 wrap">
             <input type="text" id="perfAutoPath" class="control-input w-240" placeholder="Path (blank=root)" />
             <label class="selection-option m0">
@@ -156,15 +156,20 @@
           </div>
           <div class="hint-sm mt-6">Preview scans filenames and suggests performer assignments. Apply writes to sidecars.</div>
         </div>
-  <div id="perfAutoMatchStatus" class="hint-sm opacity-75">Awaiting preview.</div>
-  <table class="job-table autotag-table mt-8" id="perfAutoMatchTable">
-          <thead><tr><th>File</th><th>Performers</th></tr></thead>
+        <div id="perfAutoMatchStatus" class="hint-sm opacity-75">Awaiting preview.</div>
+        <table class="job-table autotag-table mt-8" id="perfAutoMatchTable">
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>Performers</th>
+            </tr>
+          </thead>
           <tbody id="perfAutoMatchTbody"></tbody>
         </table>
       </div>
       <footer class="panel-footer--actions">
         <span class="hint-sm hint-sm--muted">Esc or Close to dismiss • Changes only written after Apply.</span>
-  <div class="flex-row gap-8">
+        <div class="flex-row gap-8">
           <button id="perfAutoApplyBtnFooter" class="btn-sm" disabled>Apply</button>
           <button id="perfAutoCancelBtn" class="btn-sm">Cancel</button>
         </div>
@@ -218,10 +223,14 @@
             <div class="marker-name-label marker-name-label--editable"></div>
             <div class="marker-time-label marker-time-label--editable"></div>
             <button type="button" class="marker-jump marker-btn-icon" aria-label="Jump to marker" title="Jump">
-              <svg width="14" height="14" aria-hidden="true" focusable="false"><use href="#icon-jump"/></svg>
+              <svg width="14" height="14" aria-hidden="true" focusable="false">
+                <use href="#icon-jump" />
+              </svg>
             </button>
             <button type="button" class="marker-remove marker-btn-icon" aria-label="Remove marker" title="Remove">
-              <svg width="14" height="14" aria-hidden="true" focusable="false"><use href="#icon-clear"/></svg>
+              <svg width="14" height="14" aria-hidden="true" focusable="false">
+                <use href="#icon-clear" />
+              </svg>
             </button>
           </div>
         </template>
@@ -305,14 +314,17 @@
             <div id="sidebarAccordion" class="accordion">
               <div class="acc-item" data-key="file-info">
                 <button class="acc-header" aria-expanded="true">
-                  <svg class="acc-header__icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-caret"></use><path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor"/></svg>
+                  <svg class="acc-header__icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <use href="#icon-caret"></use>
+                    <path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor" />
+                  </svg>
                   File Info
                 </button>
                 <div class="acc-panel">
-                  <div class="fi-thumb-wrap" id="fiThumbWrap">
-                    <div class="fi-thumb-box">
+                  <div class="fi-thumbnail-wrap" id="fiThumbnailWrap">
+                    <div class="fi-thumbnail-box">
                       <img id="fiThumbnail" alt="Thumbnail" />
-                      <button id="fiSetThumbBtn" class="btn btn-xs fi-thumb-set" title="Set thumbnail from current frame">✚</button>
+                      <button id="fiSetThumbnailBtn" class="btn btn-xs fi-thumbnail-set" title="Set thumbnail from current frame">✚</button>
                     </div>
                   </div>
                   <div class="file-info-grid" role="table" aria-label="File metadata">
@@ -363,7 +375,7 @@
                 <button class="acc-header" aria-expanded="false">
                   <svg class="acc-header__icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <use href="#icon-caret"></use>
-                    <path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor"/>
+                    <path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor" />
                   </svg>
                   Markers
                 </button>
@@ -383,49 +395,40 @@
                 <button class="acc-header" aria-expanded="false">
                   <svg class="acc-header__icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <use href="#icon-caret"></use>
-                    <path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor"/>
+                    <path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor" />
                   </svg>
                   Artifacts
                 </button>
                 <div class="acc-panel hidden">
                   <div class="artifact-badges-flat" id="artifactBadgesSidebar">
-                    <div id="badge-cover" class="badge-pill artifact-gen-btn" data-artifact="cover" title="Primary cover / thumbnail">
-                      <span>Cover</span><span id="badge-cover-status" aria-hidden="true">?</span>
-                      <span class="artifact-spinner" hidden></span>
-                    </div>
                     <div id="badge-metadata" class="badge-pill artifact-gen-btn" data-artifact="metadata" title="Metadata">
                       <span>Metadata</span><span id="badge-metadata-status" aria-hidden="true">?</span>
-                      <span class="artifact-spinner" hidden></span>
                     </div>
-                    <div id="badge-heatmap" class="badge-pill artifact-gen-btn" data-artifact="heatmap" title="Heatmap timeline overlay">
-                      <span>Heatmap</span><span id="badge-heatmap-status" aria-hidden="true">?</span>
-                      <span class="artifact-spinner" hidden></span>
-                    </div>
-                    <div id="badge-scenes" class="badge-pill artifact-gen-btn" data-artifact="scenes" title="Scene / chapter markers">
-                      <span>Scenes</span><span id="badge-scenes-status" aria-hidden="true">?</span>
-                      <span class="artifact-spinner" hidden></span>
-                    </div>
-                    <div id="badge-sprites" class="badge-pill artifact-gen-btn" data-artifact="sprites" title="Sprite sheet thumbnails (hover scrub)">
-                      <span>Sprites</span><span id="badge-sprites-status" aria-hidden="true">?</span>
-                      <span class="artifact-spinner" hidden></span>
+                    <div id="badge-thumbnail" class="badge-pill artifact-gen-btn" data-artifact="thumbnail" title="Primary thumbnail">
+                      <span>Thumbnail</span><span id="badge-thumbnail-status" aria-hidden="true">?</span>
                     </div>
                     <div id="badge-hover" class="badge-pill artifact-gen-btn" data-artifact="hover" title="Hover preview video">
                       <span>Hover</span><span id="badge-hover-status" aria-hidden="true">?</span>
-                      <span class="artifact-spinner" hidden></span>
-                    </div>
-                    <div id="badge-subtitles" class="badge-pill artifact-gen-btn" data-artifact="subtitles" title="Subtitles / captions">
-                      <span>Subtitles</span><span id="badge-subtitles-status" aria-hidden="true">?</span>
-                      <span class="artifact-spinner" hidden></span>
-                    </div>
-                    <div id="badge-faces" class="badge-pill artifact-gen-btn" data-artifact="faces" title="Face detections">
-                      <span>Faces</span>
-                      <span id="badge-faces-status" aria-hidden="true">?</span>
-                      <span class="artifact-spinner" hidden></span>
                     </div>
                     <div id="badge-phash" class="badge-pill artifact-gen-btn" data-artifact="phash" title="Perceptual hash">
                       <span>pHash</span>
                       <span id="badge-phash-status" aria-hidden="true">?</span>
-                      <span class="artifact-spinner" hidden></span>
+                    </div>
+                    <div id="badge-sprites" class="badge-pill artifact-gen-btn" data-artifact="sprites" title="Sprite sheet thumbnails (hover scrub)">
+                      <span>Sprites</span><span id="badge-sprites-status" aria-hidden="true">?</span>
+                    </div>
+                    <div id="badge-heatmaps" class="badge-pill artifact-gen-btn" data-artifact="heatmaps" title="Heatmap timeline overlay">
+                      <span>Heatmap</span><span id="badge-heatmaps-status" aria-hidden="true">?</span>
+                    </div>
+                    <div id="badge-subtitles" class="badge-pill artifact-gen-btn" data-artifact="subtitles" title="Subtitles / captions">
+                      <span>Subtitles</span><span id="badge-subtitles-status" aria-hidden="true">?</span>
+                    </div>
+                    <div id="badge-scenes" class="badge-pill artifact-gen-btn" data-artifact="scenes" title="Scene / chapter markers">
+                      <span>Scenes</span><span id="badge-scenes-status" aria-hidden="true">?</span>
+                    </div>
+                    <div id="badge-faces" class="badge-pill artifact-gen-btn" data-artifact="faces" title="Face detections">
+                      <span>Faces</span>
+                      <span id="badge-faces-status" aria-hidden="true">?</span>
                     </div>
                   </div>
                   <div class="hint-sm mt-6 hint-sm--muted line-13">Click a missing badge (✗) or Generate button to start. ✓ indicates the artifact is present. Spinner shows job progress.</div>
@@ -435,7 +438,7 @@
                 <button class="acc-header" aria-expanded="false">
                   <svg class="acc-header__icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <use href="#icon-caret"></use>
-                    <path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor"/>
+                    <path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor" />
                   </svg>
                   Video
                 </button>
@@ -457,7 +460,10 @@
               </div>
               <div class="acc-item" data-key="filters">
                 <button class="acc-header" aria-expanded="false">
-                  <svg class="acc-header__icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-caret"></use><path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor"/></svg>
+                  <svg class="acc-header__icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <use href="#icon-caret"></use>
+                    <path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor" />
+                  </svg>
                   Filters
                 </button>
                 <div class="acc-panel hidden">
@@ -499,859 +505,864 @@
               <!-- primary: reference centralized symbol -->
               <use href="#icon-caret" />
               <!-- fallback: inline path so the caret is visible if <use> isn't applied by the UA -->
-                <path class="sidebar-toggle__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor" />
+              <path class="sidebar-toggle__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor" />
+            </svg>
+          </button>
+          <div class="player-main">
+            <div id="playerOverlayBar" class="player-overlay-bar">
+              <span id="playerTitle" class="player-title"></span>
+            </div>
+            <video id="playerVideo" class="player-video" playsinline preload="metadata"></video>
+            <!-- Subtitle overlay rendered by JS -->
+            <div id="subtitleOverlay" class="subtitle-line bottom" aria-live="polite" hidden></div>
+            <!-- Floating scrubber (timeline) overlay at bottom -->
+            <div id="playerScrubber" class="player-scrubber-bar" aria-hidden="true">
+              <!-- Heatmap band now sits above the scrubber track -->
+              <div class="scrubber-heatmap-band" id="scrubberHeatmapBand">
+                <div id="timelineHeatmap" class="timeline-heatmap" aria-hidden="true"></div>
+                <canvas id="timelineHeatmapCanvas" class="timeline-heatmap-canvas" aria-hidden="true"></canvas>
+              </div>
+              <div class="scrubber-track" id="playerScrubberTrack">
+                <!-- Legacy timeline markers layer expected by JS (renderMarkers) -->
+                <div id="timelineMarkers" class="timeline-markers-layer" aria-hidden="true"></div>
+                <div class="scrubber-buffer" id="playerScrubberBuffer"></div>
+                <div class="scrubber-progress" id="playerScrubberProgress"></div>
+              </div>
+              <div class="scrubber-status-row">
+                <span class="scrubber-time" id="playerScrubberTime">00:00 / 00:00</span>
+                <!-- Playback controls -->
+                <button id="btnPlayPause" class="btn btn-xs" type="button" title="Play / Pause">
+                  <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <use href="#icon-play" class="icon-play"></use>
+                    <use href="#icon-pause" class="icon-pause hidden"></use>
+                  </svg>
+                </button>
+                <button id="btnMute" class="btn btn-xs" type="button" title="Mute / Unmute">
+                  <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <use href="#icon-vol" class="icon-vol"></use>
+                    <use href="#icon-muted" class="icon-muted hidden"></use>
+                  </svg>
+                </button>
+                <input id="volSlider" class="vol-slider" type="range" min="0" max="1" step="0.01" value="1" title="Volume" />
+                <button id="btnCC" class="btn btn-xs" type="button" title="Toggle subtitles" aria-label="Toggle subtitles">
+                  <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <use href="#icon-cc"></use>
+                  </svg>
+                </button>
+                <button id="btnResetPlayer" class="btn btn-xs" type="button" title="Reset player (unload video)" aria-label="Reset player">
+                  <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <use href="#icon-reset"></use>
+                  </svg>
+                </button>
+                <button id="btnFullscreen" class="btn btn-xs" type="button" title="Toggle fullscreen" aria-label="Fullscreen">
+                  <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM6 14v4h4v2H4v-6h2zm12 0h2v6h-6v-2h4v-4z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <!-- Hover sprite preview (dynamically positioned) -->
+            <div id="spritePreview"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Library Tab Panel -->
+      <div class="tab-panel active" role="tabpanel" aria-labelledby="library-tab" id="library-panel">
+        <div class="controls-panel sticky-enabled">
+          <div class="controls-row">
+            <div class="control-group control-group--flex flex-2">
+              <div class="chips-group inline-chips" id="libraryUnifiedFiltersGroup" title="Search: plain text, #tag, @performer (Enter to add chip)">
+                <div class="chips-list" id="libraryUnifiedChips"></div>
+                <input type="text" id="libraryUnifiedInput" class="chips-input" placeholder="Search files, #tag, @performer…" aria-label="Search library" />
+              </div>
+            </div>
+            <div class="control-group">
+              <div class="select">
+                <select id="resSelect" class="control-select" title="Filter by resolution">
+                  <option value="" selected>All resolutions</option>
+                  <option value="2160">2160p+</option>
+                  <option value="1440">1440p+</option>
+                  <option value="1080">1080p+</option>
+                  <option value="720">720p+</option>
+                  <option value="480">480p+</option>
+                </select>
+                <span class="chevron">▾</span>
+              </div>
+            </div>
+            <div class="control-group">
+              <!-- <span class="control-label">Sort</span> -->
+              <div class="select">
+                <select id="sortSelect" class="control-select">
+                  <option value="date">Date</option>
+                  <option value="name">Name</option>
+                  <option value="size">Size</option>
+                  <option value="random">Random</option>
+                </select>
+                <span class="chevron">▾</span>
+              </div>
+              <button id="orderToggle" class="btn-sm order-btn" data-order="desc" title="Toggle sort order">▼</button>
+            </div>
+            <div class="pagination-group">
+              <div class="control-group">
+                <!-- <span class="control-label">Density</span> -->
+                <input id="densitySlider" type="range" min="1" max="15" value="12" step="1" class="control-slider" title="Adjust grid density (columns)" />
+              </div>
+              <div class="pagination">
+                <button id="prevBtn" class="btn-sm" title="Previous page">‹</button>
+                <span id="pageInfo" class="page-info">Page 1 of 1</span>
+                <button id="nextBtn" class="btn-sm" title="Next page">›</button>
+              </div>
+              <button id="randomPlayBtn" class="btn-sm ml-8" title="Play a random video from current filters">Random ▶</button>
+              <button id="randomAutoBtn" class="btn-sm ml-4" title="Toggle auto-random play when the video ends" aria-pressed="false">Auto ⟳</button>
+            </div>
+          </div>
+        </div>
+        <div id="selectionBar" class="selection-bar" hidden>
+          <span id="selectionCount" class="selection-count">0 selected</span>
+          <button id="selectAllBtn" class="btn-sm">Select All</button>
+          <button id="selectNoneBtn" class="btn-sm">Select None</button>
+        </div>
+
+        <div id="spinner" class="spinner"></div>
+        <div id="status"></div>
+
+        <!-- Card template (hidden) -->
+        <template id="cardTemplate">
+          <div class="card">
+            <div class="card-checkbox"></div>
+            <div class="thumbnail-wrap">
+              <div class="quality-badge" aria-hidden="true"></div>
+              <img class="thumbnail-img" loading="lazy" />
+              <!-- Inline placeholder SVG using centralized sprite; shown when no thumbnail present -->
+              <svg class="thumbnail-placeholder" aria-hidden="true">
+                <use href="#icon-placeholder"></use>
               </svg>
-            </button>
-            <div class="player-main">
-              <div id="playerOverlayBar" class="player-overlay-bar">
-                <span id="playerTitle" class="player-title"></span>
+              <!-- Overlay info (resolution only) -->
+              <div class="overlay-info" aria-hidden="true">
+                <span class="overlay-resolution"></span>
               </div>
-              <video id="playerVideo" class="player-video" playsinline preload="metadata"></video>
-              <!-- Subtitle overlay rendered by JS -->
-              <div id="subtitleOverlay" class="subtitle-line bottom" aria-live="polite" hidden></div>
-              <!-- Floating scrubber (timeline) overlay at bottom -->
-              <div id="playerScrubber" class="player-scrubber-bar" aria-hidden="true">
-                <!-- Heatmap band now sits above the scrubber track -->
-                <div class="scrubber-heatmap-band" id="scrubberHeatmapBand">
-                  <div id="timelineHeatmap" class="timeline-heatmap" aria-hidden="true"></div>
-                  <canvas id="timelineHeatmapCanvas" class="timeline-heatmap-canvas" aria-hidden="true"></canvas>
-                </div>
-                <div class="scrubber-track" id="playerScrubberTrack">
-                  <!-- Legacy timeline markers layer expected by JS (renderMarkers) -->
-                  <div id="timelineMarkers" class="timeline-markers-layer" aria-hidden="true"></div>
-                  <div class="scrubber-buffer" id="playerScrubberBuffer"></div>
-                  <div class="scrubber-progress" id="playerScrubberProgress"></div>
-                </div>
-                <div class="scrubber-status-row">
-                  <span class="scrubber-time" id="playerScrubberTime">00:00 / 00:00</span>
-                  <!-- Playback controls -->
-                    <button id="btnPlayPause" class="btn btn-xs" type="button" title="Play / Pause">
-                      <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-play" class="icon-play"></use><use href="#icon-pause" class="icon-pause hidden"></use></svg>
-                    </button>
-                    <button id="btnMute" class="btn btn-xs" type="button" title="Mute / Unmute">
-                      <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-vol" class="icon-vol"></use><use href="#icon-muted" class="icon-muted hidden"></use></svg>
-                    </button>
-                    <input id="volSlider" class="vol-slider" type="range" min="0" max="1" step="0.01" value="1" title="Volume" />
-                    <button id="btnCC" class="btn btn-xs" type="button" title="Toggle subtitles" aria-label="Toggle subtitles">
-                      <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-cc"></use></svg>
-                    </button>
-                    <button id="btnResetPlayer" class="btn btn-xs" type="button" title="Reset player (unload video)" aria-label="Reset player">
-                      <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-reset"></use></svg>
-                    </button>
-                    <button id="btnFullscreen" class="btn btn-xs" type="button" title="Toggle fullscreen" aria-label="Fullscreen">
-                      <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM6 14v4h4v2H4v-6h2zm12 0h2v6h-6v-2h4v-4z"/></svg>
-                    </button>
-                  </div>
-                </div>
-                <!-- Hover sprite preview (dynamically positioned) -->
-                <div id="spritePreview"></div>
+            </div>
+            <div class="meta">
+              <p class="title"></p>
+              <div class="row sub">
+                <span class="duration"></span>
+                <span class="size"></span>
               </div>
             </div>
           </div>
+        </template>
 
-        <!-- Library Tab Panel -->
-        <div class="tab-panel active" role="tabpanel" aria-labelledby="library-tab" id="library-panel">
-          <div class="controls-panel">
-            <div class="controls-row">
-              <div class="control-group control-group--flex flex-2">
-                <div class="chips-group inline-chips" id="libraryUnifiedFiltersGroup" title="Search: plain text, #tag, @performer (Enter to add chip)">
-                  <div class="chips-list" id="libraryUnifiedChips"></div>
-                  <input type="text" id="libraryUnifiedInput" class="chips-input" placeholder="Search files, #tag, @performer…" aria-label="Search library" />
-                </div>
+        <!-- Directory card template (hidden) -->
+        <template id="dirTemplate">
+          <div class="card">
+            <div class="thumbnail-img dir-thumbnail">
+              <div class="dir-thumbnail-inner">
+                <span class="dir-icon"></span>
+                <span class="dir-name"></span>
               </div>
-              <div class="control-group">
-                <div class="select">
-                  <select id="resSelect" class="control-select" title="Filter by resolution">
-                    <option value="" selected>All resolutions</option>
-                    <option value="2160">2160p+</option>
-                    <option value="1440">1440p+</option>
-                    <option value="1080">1080p+</option>
-                    <option value="720">720p+</option>
-                    <option value="480">480p+</option>
-                  </select>
-                  <span class="chevron">▾</span>
-                </div>
-              </div>
-              <div class="control-group">
-                <!-- <span class="control-label">Sort</span> -->
-                <div class="select">
-                  <select id="sortSelect" class="control-select">
-                    <option value="date">Date</option>
-                    <option value="name">Name</option>
-                    <option value="size">Size</option>
-                    <option value="random">Random</option>
-                  </select>
-                  <span class="chevron">▾</span>
-                </div>
-                <button id="orderToggle" class="btn-sm order-btn" data-order="desc" title="Toggle sort order">▼</button>
-              </div>
-              <div class="pagination-group">
-                <div class="control-group">
-                  <!-- <span class="control-label">Density</span> -->
-                  <input id="densitySlider" type="range" min="1" max="15" value="12" step="1" class="control-slider" title="Adjust grid density (columns)" />
-                </div>
-                <div class="pagination">
-                  <button id="prevBtn" class="btn-sm" title="Previous page">‹</button>
-                  <span id="pageInfo" class="page-info">Page 1 of 1</span>
-                  <button id="nextBtn" class="btn-sm" title="Next page">›</button>
-                </div>
-                <button id="randomPlayBtn" class="btn-sm ml-8" title="Play a random video from current filters">Random ▶</button>
-                <button id="randomAutoBtn" class="btn-sm ml-4" title="Toggle auto-random play when the video ends" aria-pressed="false">Auto ⟳</button>
-              </div>
+            </div>
+            <div class="meta">
+              <p class="title"></p>
+              <div class="row sub"><span>Folder</span><span></span></div>
             </div>
           </div>
-          <div id="selectionBar" class="selection-bar" hidden>
-            <span id="selectionCount" class="selection-count">0 selected</span>
-            <button id="selectAllBtn" class="btn-sm">Select All</button>
-            <button id="selectNoneBtn" class="btn-sm">Select None</button>
-          </div>
+        </template>
 
-          <div id="spinner" class="spinner"></div>
-          <div id="status"></div>
+        <div id="grid" class="grid" hidden></div>
+      </div>
 
-          <!-- Card template (hidden) -->
-          <template id="cardTemplate">
-            <div class="card">
-              <div class="card-checkbox"></div>
-              <div class="thumb-wrap">
-                <div class="quality-badge" aria-hidden="true"></div>
-                <img class="thumb" loading="lazy" />
-                <!-- Inline placeholder SVG using centralized sprite; shown when no thumbnail present -->
-                <svg class="thumb-placeholder" aria-hidden="true">
-                  <use href="#icon-placeholder"></use>
-                </svg>
-                <!-- Overlay info (resolution only) -->
-                <div class="overlay-info" aria-hidden="true">
-                  <span class="overlay-resolution"></span>
-                </div>
-              </div>
-              <div class="meta">
-                <p class="title"></p>
-                <div class="row sub">
-                  <span class="duration"></span>
-                  <span class="size"></span>
-                </div>
-              </div>
-            </div>
-          </template>
-
-          <!-- Directory card template (hidden) -->
-          <template id="dirTemplate">
-            <div class="card">
-              <div class="thumb dir-thumb">
-                <div class="dir-thumb-inner">
-                  <span class="dir-icon"></span>
-                  <span class="dir-name"></span>
-                </div>
-              </div>
-              <div class="meta">
-                <p class="title"></p>
-                <div class="row sub"><span>Folder</span><span></span></div>
-              </div>
-            </div>
-          </template>
-
-          <div id="grid" class="grid" hidden></div>
+      <!-- Performers Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="performers-tab" id="performers-panel" hidden>
+        <div class="perf-toolbar">
+          <input id="performerSearch" type="text" placeholder="Search performers…" class="perf-search" />
+          <button id="performerImportBtn" class="btn-sm" title="Import newline or JSON list">Import</button>
+          <button id="performerMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
+          <button id="performerDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
+          <button id="performerAutoMatchBtn" class="btn-sm" title="Auto‑match performers from filenames">Auto‑Match</button>
         </div>
-
-        <!-- Performers Tab Panel -->
-        <div class="tab-panel" role="tabpanel" aria-labelledby="performers-tab" id="performers-panel" hidden>
-          <div class="perf-toolbar">
-            <input id="performerSearch" type="text" placeholder="Search performers…" class="perf-search" />
-            <button id="performerImportBtn" class="btn-sm" title="Import newline or JSON list">Import</button>
-            <button id="performerMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
-            <button id="performerDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
-            <button id="performerAutoMatchBtn" class="btn-sm" title="Auto‑match performers from filenames">Auto‑Match</button>
-          </div>
-          <div id="performerDropZone" role="button" tabindex="0" aria-label="Import performers" class="performer-dropzone">
-            <strong class="pdz-title">Import Performers</strong>
-            <span class="pdz-sub">Click to choose files or drag & drop names / JSON / text list</span>
-          </div>
-          <input id="performerFileInput" type="file" accept=".txt,.csv,.json,text/plain,application/json" multiple class="d-none" />
-          <div id="performersStatus" class="performers-status d-none">Loading…</div>
-          <div id="performersGrid" class="perf-grid performers-grid"></div>
+        <div id="performerDropZone" role="button" tabindex="0" aria-label="Import performers" class="performer-dropzone">
+          <strong class="pdz-title">Import Performers</strong>
+          <span class="pdz-sub">Click to choose files or drag & drop names / JSON / text list</span>
         </div>
+        <input id="performerFileInput" type="file" accept=".txt,.csv,.json,text/plain,application/json" multiple class="d-none" />
+        <div id="performersStatus" class="performers-status d-none">Loading…</div>
+        <div id="performersGrid" class="perf-grid performers-grid"></div>
+      </div>
 
-        <!-- Tags Tab Panel -->
-        <div class="tab-panel" role="tabpanel" aria-labelledby="tags-tab" id="tags-panel" hidden>
+      <!-- Tags Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="tags-tab" id="tags-panel" hidden>
+        <div class="task-section">
+          <div class="section-header">
+            <h2>Tags</h2>
+          </div>
+          <div class="registry-column registry-column--narrow">
+            <div class="registry-toolbar">
+              <input type="text" id="tagsRegistrySearch" placeholder="Search tags…" class="control-input" />
+              <button id="tagsRegistryAddBtn" class="btn-sm" title="Add new tag">Add</button>
+              <button id="tagsRegistryMergeBtn" class="btn-sm" disabled title="Merge selected tags">Merge</button>
+              <button id="tagsRegistryDeleteBtn" class="btn-sm" disabled title="Delete selected tags">Delete</button>
+              <button id="tagsRegistryRewriteBtn" class="btn-sm" title="Rewrite sidecars to canonical names">Rewrite</button>
+            </div>
+            <div id="tagsRegistryStatus" class="hint-sm hint-sm--muted" aria-live="polite">—</div>
+            <div id="tagsRegistryList" class="registry-list" aria-label="Tag registry" tabindex="0"></div>
+            <div class="flex-row gap-12 wrap mt-12">
+              <button id="tagsRegistryExportBtn" class="btn-sm">Export JSON</button>
+              <button id="tagsRegistryImportBtn" class="btn-sm">Import JSON</button>
+              <label class="hint-sm label-inline">
+                <input type="checkbox" id="tagsRegistryImportReplace" /> Replace existing
+              </label>
+              <input type="file" id="tagsRegistryImportFile" class="d-none" accept="application/json,.json" />
+            </div>
+          </div>
+        </div>
+        <div class="task-section mt-24">
+          <div class="section-header">
+            <h2>Auto‑Tag (Tags Focus)</h2>
+          </div>
+          <div class="file-selection file-selection-compact">
+            <div class="flex-row gap-12 wrap">
+              <input type="text" id="autotagPathTags" class="control-input w-240" placeholder="Path (blank=root)" />
+              <label class="selection-option selection-option--no-margin">
+                <input type="checkbox" id="autotagRecursiveTags" /> Recursive
+              </label>
+              <label class="selection-option m0">
+                <input type="checkbox" id="autotagUseRegTagsOnly" /> All Registry Tags
+              </label>
+              <input type="text" id="autotagExtraTags" class="control-input w-200" placeholder="Extra tags (comma)" />
+              <button id="autotagPreviewTagsBtn" class="btn-sm">Preview</button>
+              <button id="autotagScanTagsBtn" class="btn-sm" disabled>Run Job</button>
+            </div>
+            <div class="hint-sm mt-6">Preview suggests tags from filenames; Run Job writes sidecars.</div>
+          </div>
+          <div class="task-section mt-12">
+            <div class="section-header">
+              <h2>Preview Results</h2>
+            </div>
+            <div id="autotagTagResultsStatus" class="hint-sm hint-sm--muted">No preview yet.</div>
+            <table class="job-table autotag-table" id="autotagTagResultsTable">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Tags</th>
+                </tr>
+              </thead>
+              <tbody id="autotagTagResultsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tasks Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="tasks-tab" id="tasks-panel" hidden>
+        <div class="tasks-container">
+
+          <!-- Job Monitor Section -->
           <div class="task-section">
-            <div class="section-header"><h2>Tags</h2></div>
-            <div class="registry-column registry-column--narrow">
-              <div class="registry-toolbar">
-                <input type="text" id="tagsRegistrySearch" placeholder="Search tags…" class="control-input" />
-                <button id="tagsRegistryAddBtn" class="btn-sm" title="Add new tag">Add</button>
-                <button id="tagsRegistryMergeBtn" class="btn-sm" disabled title="Merge selected tags">Merge</button>
-                <button id="tagsRegistryDeleteBtn" class="btn-sm" disabled title="Delete selected tags">Delete</button>
-                <button id="tagsRegistryRewriteBtn" class="btn-sm" title="Rewrite sidecars to canonical names">Rewrite</button>
-              </div>
-              <div id="tagsRegistryStatus" class="hint-sm hint-sm--muted" aria-live="polite">—</div>
-              <div id="tagsRegistryList" class="registry-list" aria-label="Tag registry" tabindex="0"></div>
-              <div class="flex-row gap-12 wrap mt-12">
-                <button id="tagsRegistryExportBtn" class="btn-sm">Export JSON</button>
-                <button id="tagsRegistryImportBtn" class="btn-sm">Import JSON</button>
-                <label class="hint-sm label-inline">
-                  <input type="checkbox" id="tagsRegistryImportReplace" /> Replace existing
-                </label>
-                <input type="file" id="tagsRegistryImportFile" class="d-none" accept="application/json,.json" />
+            <div class="section-header">
+              <h2>Job Monitor</h2>
+              <div class="section-actions">
+                <!-- Buttons hidden initially; JS toggles .d-none -->
+                <button id="cancelAllBtn" class="btn-sm d-none" title="Cancel all queued and running jobs">Cancel All</button>
+                <button id="cancelQueuedBtn" class="btn-sm d-none" title="Cancel all queued jobs">Cancel Queued</button>
+                <button id="clearCompletedBtn" class="btn-sm d-none" title="Remove completed jobs from the list">Clear Completed</button>
               </div>
             </div>
-          </div>
-          <div class="task-section mt-24">
-            <div class="section-header"><h2>Auto‑Tag (Tags Focus)</h2></div>
-            <div class="file-selection file-selection-compact">
-              <div class="flex-row gap-12 wrap">
-                <input type="text" id="autotagPathTags" class="control-input w-240" placeholder="Path (blank=root)" />
-                <label class="selection-option selection-option--no-margin">
-                  <input type="checkbox" id="autotagRecursiveTags" /> Recursive
-                </label>
-                <label class="selection-option m0">
-                  <input type="checkbox" id="autotagUseRegTagsOnly" /> All Registry Tags
-                </label>
-                <input type="text" id="autotagExtraTags" class="control-input w-200" placeholder="Extra tags (comma)" />
-                <button id="autotagPreviewTagsBtn" class="btn-sm">Preview</button>
-                <button id="autotagScanTagsBtn" class="btn-sm" disabled>Run Job</button>
+
+            <div class="job-stats">
+              <div class="stat-card" id="filterQueued" data-filter="queued" title="Show only queued jobs">
+                <span class="stat-label">Queued</span>
+                <span class="stat-value" id="queuedJobsCount">0</span>
               </div>
-              <div class="hint-sm mt-6">Preview suggests tags from filenames; Run Job writes sidecars.</div>
+              <div class="stat-card" id="filterActive" data-filter="running" title="Show only active (running) jobs">
+                <span class="stat-label">Active</span>
+                <span class="stat-value" id="activeJobsCount">0</span>
+              </div>
+              <div class="stat-card" id="filterCompleted" data-filter="completed" title="Show completed jobs">
+                <span class="stat-label">Completed</span>
+                <span class="stat-value" id="completedJobsCount">0</span>
+              </div>
+              <div class="stat-card" id="filterErrored" data-filter="failed" title="Show failed jobs">
+                <span class="stat-label">Errored</span>
+                <span class="stat-value" id="failedJobsCount">0</span>
+              </div>
             </div>
-            <div class="task-section mt-12">
-              <div class="section-header"><h2>Preview Results</h2></div>
-              <div id="autotagTagResultsStatus" class="hint-sm hint-sm--muted">No preview yet.</div>
-              <table class="job-table autotag-table" id="autotagTagResultsTable">
-                <thead><tr><th>File</th><th>Tags</th></tr></thead>
-                <tbody id="autotagTagResultsBody"></tbody>
+
+            <div class="job-table-container" id="jobTableContainer">
+              <table class="job-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Task</th>
+                    <th>File</th>
+                    <th>Status</th>
+                    <th>Progress</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="jobTableBody">
+                  <!-- Jobs will be populated here -->
+                </tbody>
               </table>
+              <div class="resize-handle" id="jobResizeHandle" title="Drag to resize job list"></div>
             </div>
           </div>
-        </div>
 
-        <!-- Tasks Tab Panel -->
-        <div class="tab-panel" role="tabpanel" aria-labelledby="tasks-tab" id="tasks-panel" hidden>
-          <div class="tasks-container">
+          <!-- Artifact Generation Section -->
+          <div class="task-section">
+            <div class="section-header">
+              <h2>Generate Artifacts</h2>
+            </div>
 
-            <!-- Job Monitor Section -->
-            <div class="task-section">
-              <div class="section-header">
-                <h2>Job Monitor</h2>
-                <div class="section-actions">
-                  <!-- Buttons hidden initially; JS toggles .d-none -->
-                  <button id="cancelAllBtn" class="btn-sm d-none" title="Cancel all queued and running jobs">Cancel All</button>
-                  <button id="cancelQueuedBtn" class="btn-sm d-none" title="Cancel all queued jobs">Cancel Queued</button>
-                  <button id="clearCompletedBtn" class="btn-sm d-none" title="Remove completed jobs from the list">Clear Completed</button>
-                </div>
-              </div>
-
-              <div class="job-stats">
-                <div class="stat-card" id="filterQueued" data-filter="queued" title="Show only queued jobs">
-                  <span class="stat-label">Queued</span>
-                  <span class="stat-value" id="queuedJobsCount">0</span>
-                </div>
-                <div class="stat-card" id="filterActive" data-filter="running" title="Show only active (running) jobs">
-                  <span class="stat-label">Active</span>
-                  <span class="stat-value" id="activeJobsCount">0</span>
-                </div>
-                <div class="stat-card" id="filterCompleted" data-filter="completed" title="Show completed jobs">
-                  <span class="stat-label">Completed</span>
-                  <span class="stat-value" id="completedJobsCount">0</span>
-                </div>
-                <div class="stat-card" id="filterErrored" data-filter="failed" title="Show failed jobs">
-                  <span class="stat-label">Errored</span>
-                  <span class="stat-value" id="failedJobsCount">0</span>
-                </div>
-              </div>
-
-              <div class="job-table-container" id="jobTableContainer">
-                <table class="job-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Task</th>
-                      <th>File</th>
-                      <th>Status</th>
-                      <th>Progress</th>
-                      <th>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody id="jobTableBody">
-                    <!-- Jobs will be populated here -->
-                  </tbody>
-                </table>
-                <div class="resize-handle" id="jobResizeHandle" title="Drag to resize job list"></div>
+            <!-- File Selection -->
+            <div class="file-selection">
+              <div class="selection-options">
+                <label class="selection-option">
+                  <input type="radio" name="fileSelection" value="all" checked>
+                  All files in library
+                </label>
+                <label class="selection-option">
+                  <input type="radio" name="fileSelection" value="selected">
+                  Selected files (<span id="selectedFileCount">0</span>)
+                </label>
+                <button id="generateAllBtn" class="btn-sm ml-auto" title="Queue all missing artifacts for the chosen scope">Generate All</button>
               </div>
             </div>
 
-            <!-- Artifact Generation Section -->
-            <div class="task-section">
-              <div class="section-header">
-                <h2>Generate Artifacts</h2>
+            <!-- Artifact Types -->
+            <div class="artifact-grid">
+
+              <div class="artifact-card artifact-card-uniform" data-artifact="metadata">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Metadata</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="metadataCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="metadataFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate hidden" data-operation="metadata-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="metadata-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="metadata-clear" title="Delete all metadata JSON files">Clear</button>
+                  </div>
+                </div>
               </div>
 
-              <!-- File Selection -->
-              <div class="file-selection">
-                <div class="selection-options">
-                  <label class="selection-option">
-                    <input type="radio" name="fileSelection" value="all" checked>
-                    All files in library
+              <div class="artifact-card artifact-card-uniform" data-artifact="thumbnails">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Thumbnails</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="thumbnailsCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="thumbnailsFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate hidden" data-operation="thumbnails-missing" title="Generate missing thumbnails">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="thumbnails-all" title="Recompute all thumbnails">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="thumbnails-clear" title="Delete all generated thumbnails without regenerating">Clear</button>
+                    <button class="btn-options" data-artifact="thumbnails" title="Options" aria-label="Thumbnail options">
+                      <svg width="16" height="16" aria-hidden="true">
+                        <use href="#icon-options" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip d-none" id="thumbnailsOptions">
+                  <label>Offset (seconds): <input type="number" id="thumbnailOffset" value="10" min="1" max="3600"></label>
+                </div>
+              </div>
+
+              <div class="artifact-card artifact-card-uniform" data-artifact="previews">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Hover Previews</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="previewsCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="previewsFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate hidden" data-operation="previews-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="previews-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="previews-clear" title="Delete all hover preview videos">Clear</button>
+                    <button class="btn-options" data-artifact="previews" aria-label="Hover preview options">
+                      <svg width="16" height="16" aria-hidden="true">
+                        <use href="#icon-options" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip d-none" id="previewsOptions">
+                  <label>Segments: <input type="number" id="previewSegments" value="9" min="5" max="20"></label>
+                  <label>Duration (sec): <input type="number" id="previewDuration" value="1.0" min="0.5" max="3.0" step="0.1"></label>
+                  <label>Width (px): <input type="number" id="previewWidth" value="320" min="120" max="1280"></label>
+                </div>
+              </div>
+
+              <div class="artifact-card artifact-card-uniform" data-artifact="sprites">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Sprite Sheets</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="spritesCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="spritesFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate hidden" data-operation="sprites-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="sprites-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="sprites-clear" title="Delete all sprite sheets">Clear</button>
+                    <button class="btn-options" data-artifact="sprites" aria-label="Sprite options">
+                      <svg width="16" height="16" aria-hidden="true">
+                        <use href="#icon-options" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip d-none" id="spritesOptions">
+                  <label>Interval (sec): <input type="number" id="spriteInterval" value="10" min="1" max="60"></label>
+                  <label>Width (px): <input type="number" id="spriteWidth" value="320" min="160" max="1920"></label>
+                  <label>Columns: <input type="number" id="spriteCols" value="10" min="5" max="20"></label>
+                  <label>Rows: <input type="number" id="spriteRows" value="10" min="3" max="40"></label>
+                  <label>Quality (0-8): <input type="number" id="spriteQuality" value="4" min="0" max="8"></label>
+                </div>
+              </div>
+
+              <div class="artifact-card artifact-card-uniform" data-artifact="phash">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Perceptual Hash</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="phashCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="phashFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate hidden" data-operation="phash-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="phash-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="phash-clear" title="Delete all perceptual hash artifacts">Clear</button>
+                    <button class="btn-options" data-artifact="phash">
+                      <svg width="16" height="16" aria-hidden="true">
+                        <use href="#icon-options" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip d-none" id="phashOptions">
+                  <label>Frames: <input type="number" id="phashFrames" value="5" min="3" max="10"></label>
+                  <label>Algorithm:
+                    <div class="select">
+                      <select id="phashAlgo" class="control-select">
+                        <option value="ahash">Average Hash</option>
+                        <option value="phash">Perceptual Hash</option>
+                        <option value="dhash">Difference Hash</option>
+                      </select>
+                      <span class="chevron">▾</span>
+                    </div>
                   </label>
-                  <label class="selection-option">
-                    <input type="radio" name="fileSelection" value="selected">
-                    Selected files (<span id="selectedFileCount">0</span>)
+                </div>
+              </div>
+
+              <div class="artifact-card artifact-card-uniform" data-artifact="scenes">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Scene Detection</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="scenesCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="scenesFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate hidden" data-operation="scenes-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="scenes-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="scenes-clear" title="Delete all scene detection JSON">Clear</button>
+                    <button class="btn-options" data-artifact="scenes">
+                      <svg width="16" height="16" aria-hidden="true">
+                        <use href="#icon-options" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip d-none" id="scenesOptions">
+                  <label>Threshold: <input type="number" id="sceneThreshold" value="0.4" min="0.1" max="1.0" step="0.1"></label>
+                  <label>Limit: <input type="number" id="sceneLimit" value="0" min="0" max="100"></label>
+                </div>
+              </div>
+
+              <div class="artifact-card artifact-card-uniform" data-artifact="heatmaps">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Heatmaps</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="heatmapsCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="heatmapsFill"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate hidden" data-operation="heatmaps-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="heatmaps-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="heatmaps-clear" title="Delete all heatmap PNGs">Clear</button>
+                    <button class="btn-options" data-artifact="heatmaps">
+                      <svg width="16" height="16" aria-hidden="true">
+                        <use href="#icon-options" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="options-tooltip d-none" id="heatmapsOptions">
+                  <label>Interval (sec): <input type="number" id="heatmapInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
+                  <label>Mode:
+                    <div class="select">
+                      <select id="heatmapMode" class="control-select">
+                        <option value="both">Both</option>
+                        <option value="brightness">Brightness</option>
+                        <option value="motion">Motion</option>
+                        <option value="color">Color</option>
+                      </select>
+                      <span class="chevron">▾</span>
+                    </div>
                   </label>
-                  <button id="generateAllBtn" class="btn-sm ml-auto" title="Queue all missing artifacts for the chosen scope">Generate All</button>
+                  <label class="row small items-center gap-6">
+                    <input type="checkbox" id="heatmapPng" checked /> Save PNG
+                  </label>
                 </div>
               </div>
 
-              <!-- Artifact Types -->
-              <div class="artifact-grid">
-
-                <div class="artifact-card artifact-card-uniform" data-artifact="cover">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Cover</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="coverCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="coverFill"></div>
-                        </div>
+              <div class="artifact-card artifact-card-uniform" data-artifact="subtitles">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Subtitles</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="subtitlesCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="subtitlesFill"></div>
                       </div>
                     </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="cover-missing" title="Generate missing cover thumbnails">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="cover-all" title="Recompute all covers">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="cover-clear" title="Delete all cover images">Clear</button>
-                      <button class="btn-options" data-artifact="cover" title="Options" aria-label="Cover options">
-                        <svg width="16" height="16" aria-hidden="true"><use href="#icon-options" /></svg>
-                      </button>
-                    </div>
                   </div>
-                  <div class="options-tooltip d-none" id="coverOptions">
-                    <label>Time (sec): <input type="number" id="coverTime" value="10" min="0" max="3600" step="0.1" /></label>
+                  <div class="artifact-actions">
+                    <button class="btn-generate hidden" data-operation="subtitles-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="subtitles-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="subtitles-clear" title="Delete all subtitle files">Clear</button>
+                    <button class="btn-options" data-artifact="subtitles">
+                      <svg width="16" height="16" aria-hidden="true">
+                        <use href="#icon-options" />
+                      </svg>
+                    </button>
                   </div>
                 </div>
+                <div class="options-tooltip d-none" id="subtitlesOptions">
+                  <label>Model:
+                    <div class="select">
+                      <select id="subtitleModel" class="control-select">
+                        <option value="tiny">Tiny</option>
+                        <option value="base">Base</option>
+                        <option value="small" selected>Small</option>
+                        <option value="medium">Medium</option>
+                        <option value="large">Large</option>
+                      </select>
+                      <span class="chevron">▾</span>
+                    </div>
+                  </label>
+                  <label>Language: <input type="text" id="subtitleLang" placeholder="auto" maxlength="5"></label>
+                </div>
+              </div>
 
-                <div class="artifact-card artifact-card-uniform" data-artifact="metadata">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Metadata</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="metadataCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="metadataFill"></div>
-                        </div>
+              <div class="artifact-card artifact-card-uniform" data-artifact="faces">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Face Detection</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="facesCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="facesFill"></div>
                       </div>
                     </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="metadata-missing">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="metadata-all">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="metadata-clear" title="Delete all metadata JSON files">Clear</button>
-                    </div>
+                  </div>
+                  <div class="artifact-actions">
+                    <button class="btn-generate hidden" data-operation="faces-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="faces-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="faces-clear" title="Delete face detection JSON & embeddings">Clear</button>
+                    <button class="btn-options" data-artifact="faces">
+                      <svg width="16" height="16" aria-hidden="true">
+                        <use href="#icon-options" />
+                      </svg>
+                    </button>
                   </div>
                 </div>
-
-                <div class="artifact-card artifact-card-uniform" data-artifact="thumbnails">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Thumbnails</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="thumbnailsCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="thumbnailsFill"></div>
-                        </div>
-                      </div>
+                <div class="options-tooltip d-none" id="facesOptions">
+                  <label>Interval (sec): <input type="number" id="faceInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
+                  <label>Min Size: <input type="number" id="faceMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
+                  <label>Backend:
+                    <div class="select">
+                      <select id="faceBackend" class="control-select">
+                        <option value="auto" selected>Auto</option>
+                        <option value="opencv">OpenCV</option>
+                        <option value="insightface">InsightFace</option>
+                      </select>
+                      <span class="chevron">▾</span>
                     </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="thumbnails-missing" title="Generate missing thumbnails">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="thumbnails-all" title="Recompute all thumbnails">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="thumbnails-clear" title="Delete all generated thumbnails without regenerating">Clear</button>
-                      <button class="btn-options" data-artifact="thumbnails" title="Options" aria-label="Thumbnail options">
-                        <svg width="16" height="16" aria-hidden="true">
-                          <use href="#icon-options" />
-                        </svg>
-                      </button>
+                  </label>
+                  <label>Scale Factor: <input type="number" id="faceScale" value="1.1" min="1.01" max="2.0" step="0.01"></label>
+                  <label>Min Neighbors: <input type="number" id="faceMinNeighbors" value="5" min="0" max="20" step="1"></label>
+                  <label>Similarity Thresh: <input type="number" id="faceSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
+                  <div class="embed-extra">
+                    <button class="btn-sm" id="facesBrowserBtn" title="Detect faces in your browser and upload the result">
+                      Generate Faces (Browser)
+                    </button>
+                    <div class="hint-sm">
+                      Uses your browser's built-in FaceDetector to find faces and uploads boxes. The server will compute lightweight embeddings for clustering.
                     </div>
-                  </div>
-                  <div class="options-tooltip d-none" id="thumbnailsOptions">
-                    <label>Offset (seconds): <input type="number" id="thumbnailOffset" value="10" min="1" max="3600"></label>
-                  </div>
-                </div>
-
-                <div class="artifact-card artifact-card-uniform" data-artifact="previews">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Hover Previews</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="previewsCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="previewsFill"></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="previews-missing">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="previews-all">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="previews-clear" title="Delete all hover preview videos">Clear</button>
-                      <button class="btn-options" data-artifact="previews" aria-label="Hover preview options">
-                        <svg width="16" height="16" aria-hidden="true">
-                          <use href="#icon-options" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div class="options-tooltip d-none" id="previewsOptions">
-                    <label>Segments: <input type="number" id="previewSegments" value="9" min="5" max="20"></label>
-                    <label>Duration (sec): <input type="number" id="previewDuration" value="1.0" min="0.5" max="3.0" step="0.1"></label>
-                    <label>Width (px): <input type="number" id="previewWidth" value="320" min="120" max="1280"></label>
-                  </div>
-                </div>
-
-                <div class="artifact-card artifact-card-uniform" data-artifact="sprites">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Sprite Sheets</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="spritesCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="spritesFill"></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="sprites-missing">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="sprites-all">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="sprites-clear" title="Delete all sprite sheets">Clear</button>
-                      <button class="btn-options" data-artifact="sprites" aria-label="Sprite options">
-                        <svg width="16" height="16" aria-hidden="true">
-                          <use href="#icon-options" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div class="options-tooltip d-none" id="spritesOptions">
-                    <label>Interval (sec): <input type="number" id="spriteInterval" value="10" min="1" max="60"></label>
-                    <label>Width (px): <input type="number" id="spriteWidth" value="320" min="160" max="1920"></label>
-                    <label>Columns: <input type="number" id="spriteCols" value="10" min="5" max="20"></label>
-                    <label>Rows: <input type="number" id="spriteRows" value="10" min="3" max="40"></label>
-                    <label>Quality (0-8): <input type="number" id="spriteQuality" value="4" min="0" max="8"></label>
-                  </div>
-                </div>
-
-                <div class="artifact-card artifact-card-uniform" data-artifact="phash">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Perceptual Hash</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="phashCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="phashFill"></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="phash-missing">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="phash-all">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="phash-clear" title="Delete all perceptual hash artifacts">Clear</button>
-                      <button class="btn-options" data-artifact="phash">
-                        <svg width="16" height="16" aria-hidden="true">
-                          <use href="#icon-options" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div class="options-tooltip d-none" id="phashOptions">
-                    <label>Frames: <input type="number" id="phashFrames" value="5" min="3" max="10"></label>
-                    <label>Algorithm:
-                      <div class="select">
-                        <select id="phashAlgo" class="control-select">
-                          <option value="ahash">Average Hash</option>
-                          <option value="phash">Perceptual Hash</option>
-                          <option value="dhash">Difference Hash</option>
-                        </select>
-                        <span class="chevron">▾</span>
-                      </div>
-                    </label>
-                  </div>
-                </div>
-
-                <div class="artifact-card artifact-card-uniform" data-artifact="scenes">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Scene Detection</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="scenesCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="scenesFill"></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="scenes-missing">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="scenes-all">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="scenes-clear" title="Delete all scene detection JSON">Clear</button>
-                      <button class="btn-options" data-artifact="scenes">
-                        <svg width="16" height="16" aria-hidden="true">
-                          <use href="#icon-options" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div class="options-tooltip d-none" id="scenesOptions">
-                    <label>Threshold: <input type="number" id="sceneThreshold" value="0.4" min="0.1" max="1.0" step="0.1"></label>
-                    <label>Limit: <input type="number" id="sceneLimit" value="0" min="0" max="100"></label>
-                  </div>
-                </div>
-
-                <div class="artifact-card artifact-card-uniform" data-artifact="heatmaps">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Heatmaps</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="heatmapsCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="heatmapsFill"></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="heatmaps-missing">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="heatmaps-all">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="heatmaps-clear" title="Delete all heatmap PNGs">Clear</button>
-                      <button class="btn-options" data-artifact="heatmaps">
-                        <svg width="16" height="16" aria-hidden="true">
-                          <use href="#icon-options" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div class="options-tooltip d-none" id="heatmapsOptions">
-                    <label>Interval (sec): <input type="number" id="heatmapInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
-                    <label>Mode:
-                      <div class="select">
-                        <select id="heatmapMode" class="control-select">
-                          <option value="both">Both</option>
-                          <option value="brightness">Brightness</option>
-                          <option value="motion">Motion</option>
-                          <option value="color">Color</option>
-                        </select>
-                        <span class="chevron">▾</span>
-                      </div>
-                    </label>
-                    <label class="row small items-center gap-6">
-                      <input type="checkbox" id="heatmapPng" checked /> Save PNG
-                    </label>
-                  </div>
-                </div>
-
-                <div class="artifact-card artifact-card-uniform" data-artifact="subtitles">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Subtitles</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="subtitlesCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="subtitlesFill"></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="subtitles-missing">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="subtitles-all">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="subtitles-clear" title="Delete all subtitle files">Clear</button>
-                      <button class="btn-options" data-artifact="subtitles">
-                        <svg width="16" height="16" aria-hidden="true">
-                          <use href="#icon-options" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div class="options-tooltip d-none" id="subtitlesOptions">
-                    <label>Model:
-                      <div class="select">
-                        <select id="subtitleModel" class="control-select">
-                          <option value="tiny">Tiny</option>
-                          <option value="base">Base</option>
-                          <option value="small" selected>Small</option>
-                          <option value="medium">Medium</option>
-                          <option value="large">Large</option>
-                        </select>
-                        <span class="chevron">▾</span>
-                      </div>
-                    </label>
-                    <label>Language: <input type="text" id="subtitleLang" placeholder="auto" maxlength="5"></label>
-                  </div>
-                </div>
-
-                <div class="artifact-card artifact-card-uniform" data-artifact="faces">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Face Detection</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="facesCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="facesFill"></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="faces-missing">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="faces-all">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="faces-clear" title="Delete face detection JSON & embeddings">Clear</button>
-                      <button class="btn-options" data-artifact="faces">
-                        <svg width="16" height="16" aria-hidden="true">
-                          <use href="#icon-options" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div class="options-tooltip d-none" id="facesOptions">
-                    <label>Interval (sec): <input type="number" id="faceInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
-                    <label>Min Size: <input type="number" id="faceMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
-                    <label>Backend:
-                      <div class="select">
-                        <select id="faceBackend" class="control-select">
-                          <option value="auto" selected>Auto</option>
-                          <option value="opencv">OpenCV</option>
-                          <option value="insightface">InsightFace</option>
-                        </select>
-                        <span class="chevron">▾</span>
-                      </div>
-                    </label>
-                    <label>Scale Factor: <input type="number" id="faceScale" value="1.1" min="1.01" max="2.0" step="0.01"></label>
-                    <label>Min Neighbors: <input type="number" id="faceMinNeighbors" value="5" min="0" max="20" step="1"></label>
-                    <label>Similarity Thresh: <input type="number" id="faceSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
-                    <div class="embed-extra">
-                      <button class="btn-sm" id="facesBrowserBtn" title="Detect faces in your browser and upload the result">
-                        Generate Faces (Browser)
-                      </button>
-                      <div class="hint-sm">
-                        Uses your browser's built-in FaceDetector to find faces and uploads boxes. The server will compute lightweight embeddings for clustering.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Embeddings (recompute embeddings without re-detecting boxes) -->
-                <div class="artifact-card artifact-card-uniform" data-artifact="embed">
-                  <div class="artifact-header">
-                    <div class="artifact-info">
-                      <h3>Embeddings</h3>
-                      <div class="coverage-display">
-                        <span class="coverage-text" id="embedCoverage">0%</span>
-                        <div class="coverage-bar-mini">
-                          <div class="coverage-fill-mini" id="embedFill"></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="artifact-actions">
-                      <button class="btn-generate hidden" data-operation="embed-missing">Generate Missing</button>
-                      <button class="btn-generate d-none hidden" data-operation="embed-all">Recompute All</button>
-                      <button class="btn-generate d-none hidden" data-operation="embed-clear" title="Delete all embedding vectors">Clear</button>
-                      <button class="btn-options" data-artifact="embed" title="Options">
-                        <svg width="16" height="16" aria-hidden="true">
-                          <use href="#icon-options" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div class="options-tooltip d-none" id="embedOptions">
-                    <label>Interval (sec): <input type="number" id="embedInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
-                    <label>Min Size: <input type="number" id="embedMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
-                    <label>Backend:
-                      <div class="select">
-                        <select id="embedBackend" class="control-select">
-                          <option value="auto" selected>Auto</option>
-                          <option value="opencv">OpenCV</option>
-                          <option value="insightface">InsightFace</option>
-                        </select>
-                        <span class="chevron">▾</span>
-                      </div>
-                    </label>
-                    <label>Similarity Thresh: <input type="number" id="embedSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
                   </div>
                 </div>
               </div>
-            </div>
-            <!-- Orphaned Artifacts Section -->
-            <div class="task-section">
-              <div class="section-header">
-                <h2>Orphaned Artifacts</h2>
-              </div>
-              <div class="orphan-card">
-                <div class="orphan-header">
-                  <div class="orphan-info">
-                    <h3>Orphaned Files</h3>
-                    <div class="orphan-stats">
-                      <span class="orphan-count" id="orphanCount">0</span>
-                      <span class="orphan-label">files without corresponding videos</span>
+
+              <!-- Embeddings (recompute embeddings without re-detecting boxes) -->
+              <div class="artifact-card artifact-card-uniform" data-artifact="embed">
+                <div class="artifact-header">
+                  <div class="artifact-info">
+                    <h3>Embeddings</h3>
+                    <div class="coverage-display">
+                      <span class="coverage-text" id="embedCoverage">0%</span>
+                      <div class="coverage-bar-mini">
+                        <div class="coverage-fill-mini" id="embedFill"></div>
+                      </div>
                     </div>
                   </div>
-                  <div class="orphan-actions">
-                    <button class="btn-cleanup" id="cleanupOrphansBtn" disabled>Clean Up</button>
-                    <button class="btn-preview" id="previewOrphansBtn" disabled>Preview</button>
+                  <div class="artifact-actions">
+                    <button class="btn-generate hidden" data-operation="embed-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="embed-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="embed-clear" title="Delete all embedding vectors">Clear</button>
+                    <button class="btn-options" data-artifact="embed" title="Options">
+                      <svg width="16" height="16" aria-hidden="true">
+                        <use href="#icon-options" />
+                      </svg>
+                    </button>
                   </div>
                 </div>
-                <div class="orphan-details d-none" id="orphanDetails">
-                  <div class="orphan-list" id="orphanList">
-                    <!-- Orphan files will be listed here -->
-                  </div>
+                <div class="options-tooltip d-none" id="embedOptions">
+                  <label>Interval (sec): <input type="number" id="embedInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
+                  <label>Min Size: <input type="number" id="embedMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
+                  <label>Backend:
+                    <div class="select">
+                      <select id="embedBackend" class="control-select">
+                        <option value="auto" selected>Auto</option>
+                        <option value="opencv">OpenCV</option>
+                        <option value="insightface">InsightFace</option>
+                      </select>
+                      <span class="chevron">▾</span>
+                    </div>
+                  </label>
+                  <label>Similarity Thresh: <input type="number" id="embedSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-
-        <!-- Stats Tab Panel -->
-        <div class="tab-panel" role="tabpanel" aria-labelledby="stats-tab" id="stats-panel" hidden>
-          <div class="stats-container">
-            <h2>Library Statistics</h2>
-            <div class="stats-row">
-              <div class="stats-item"><strong>Number of Files:</strong> <span id="statsNumFiles">—</span></div>
-              <div class="stats-item"><strong>Total Size:</strong> <span id="statsTotalSize">—</span></div>
-              <div class="stats-item"><strong>Total Duration:</strong> <span id="statsTotalDuration">—</span></div>
-              <div class="stats-item"><strong>Number of Tags:</strong> <span id="statsNumTags">—</span></div>
-              <div class="stats-item"><strong>Number of Performers:</strong> <span id="statsNumPerformers">—</span></div>
+          <!-- Orphaned Artifacts Section -->
+          <div class="task-section">
+            <div class="section-header">
+              <h2>Orphaned Artifacts</h2>
             </div>
-            <div class="stats-charts">
-              <div class="chart-block">
-                <h3>Resolution Distribution</h3>
-                <canvas id="statsResChart" width="320" height="180"></canvas>
-              </div>
-              <div class="chart-block">
-                <h3>Duration Distribution</h3>
-                <canvas id="statsDurationChart" width="320" height="180"></canvas>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Settings Tab Panel -->
-        <div class="tab-panel" role="tabpanel" aria-labelledby="settings-tab" id="settings-panel" hidden>
-          <div class="tab-content">
-            <h2>Settings</h2>
-            <div class="task-section task-section-spaced">
-              <div class="section-header">
-                <h2>Library Root</h2>
-              </div>
-              <div class="file-selection file-selection-root">
-                <div class="root-input-row">
-                  <input id="folderInput" type="text" class="control-input root-input" placeholder="Type relative path (Enter) or absolute path to set root" title="Relative path to browse; absolute path to change root. Enter to apply." />
-                  <button id="refresh" class="btn-sm" title="Reload current listing">Reload</button>
-                  <button id="pickRootBtn" class="btn-sm" title="Open folder picker">Pick…</button>
+            <div class="orphan-card">
+              <div class="orphan-header">
+                <div class="orphan-info">
+                  <h3>Orphaned Files</h3>
+                  <div class="orphan-stats">
+                    <span class="orphan-count" id="orphanCount">0</span>
+                    <span class="orphan-label">files without corresponding videos</span>
+                  </div>
                 </div>
-                <div class="hint-sm">
-                  Enter a relative path within the current root to browse (e.g. <code>Shows/Season 1</code>). Enter an absolute path (e.g. <code>/Volumes/Media</code> or <code>~/Movies</code>) to change the library root. Double‑click the input or click Pick… to open a folder picker.
+                <div class="orphan-actions">
+                  <button class="btn-cleanup" id="cleanupOrphansBtn" disabled>Clean Up</button>
+                  <button class="btn-preview" id="previewOrphansBtn" disabled>Preview</button>
                 </div>
               </div>
-            </div>
-            <div class="task-section task-section-spaced">
-              <div class="section-header">
-                <h2>Player Preferences</h2>
-              </div>
-              <div class="file-selection file-selection-compact">
-                <label class="selection-option selection-option-wide">
-                  <input type="checkbox" id="settingAutoplayResume" />
-                  <div>
-                    <div class="subtitle-icon-label">
-                      Autoplay on load when previously playing
-                      <!-- reference subtitle icon placeholder (from user image) -->
-                      <span aria-hidden="true" title="Subtitle icon reference" class="subtitle-icon">
-                        <span class="subtitle-line top"></span>
-                        <span class="subtitle-line bottom"></span>
-                      </span>
-                    </div>
-                    <div class="hint-sm">
-                      If enabled, the player resumes playback automatically when a video was playing before closing. Default is off.
-                    </div>
-                  </div>
-                </label>
-                <label class="selection-option selection-option-wide mt-12">
-                  <input type="checkbox" id="settingShowHeatmap" />
-                  <div>
-                    <div class="fw-600">Show timeline heatmap</div>
-                    <div class="hint-sm">
-                      Toggle the heatmap overlay on the player timeline. This only affects display; artifacts and badges still load as usual.
-                    </div>
-                  </div>
-                </label>
-                <label class="selection-option selection-option-wide mt-12">
-                  <input type="checkbox" id="settingShowScenes" />
-                  <div>
-                    <div class="fw-600">Show scene boundary markers</div>
-                    <div class="hint-sm">
-                      Toggle the scene boundary ticks on the player timeline. This only affects display; scenes data still loads as usual.
-                    </div>
-                  </div>
-                </label>
-              </div>
-            </div>
-            <div class="task-section task-section-spaced">
-              <div class="section-header">
-                <h2>Library Preferences</h2>
-              </div>
-              <div class="file-selection file-selection-compact">
-                <label class="selection-option selection-option-wide">
-                  <input type="checkbox" id="settingHoverPreviews" />
-                  <div>
-                    <div class="fw-600">Enable hover video previews</div>
-                    <div class="hint-sm">
-                      When enabled, cards will play a small preview on hover. Previews are only played if they already exist; no background generation is triggered automatically.
-                    </div>
-                  </div>
-                </label>
-                <label class="selection-option selection-option-wide mt-12">
-                  <input type="checkbox" id="settingHoverOnDemand" />
-                  <div>
-                    <div class="fw-600">Generate hover previews on demand</div>
-                    <div class="hint-sm">
-                      When enabled, hovering a card will request the server to create a preview if one doesn’t exist yet. This may start background work and use CPU.
-                    </div>
-                  </div>
-                </label>
-                <label class="selection-option selection-option-wide mt-12">
-                  <input type="checkbox" id="settingConfirmDeletes" />
-                  <div>
-                    <div class="fw-600">Require confirmation for deletions</div>
-                    <div class="hint-sm">
-                      When enabled, clearing or deleting artifacts will ask for confirmation. Default is off.
-                    </div>
-                  </div>
-                </label>
-              </div>
-            </div>
-            <div class="task-section task-section-spaced">
-              <div class="section-header">
-                <h2>Job Processing</h2>
-              </div>
-              <div class="file-selection file-selection-compact file-selection-inline">
-                <div class="flex-row gap-16 w-100">
-                  <div class="fw-600">Max concurrent jobs</div>
-                  <input type="number" id="settingConcurrency" min="1" max="16" step="1" value="4" class="w-120" />
+              <div class="orphan-details d-none" id="orphanDetails">
+                <div class="orphan-list" id="orphanList">
+                  <!-- Orphan files will be listed here -->
                 </div>
-              </div>
-              <div class="file-selection file-selection-compact file-selection-inline mt-12">
-                <div class="flex-row gap-16 w-100">
-                  <div class="fw-600">FFmpeg parallel processes</div>
-                  <input type="number" id="settingFfmpegConcurrency" min="1" max="16" step="1" value="4" class="w-120" />
-                </div>
-              </div>
-              <div class="file-selection file-selection-compact file-selection-inline mt-8">
-                <div class="flex-row gap-16 w-100">
-                  <div class="fw-600">FFmpeg threads per process</div>
-                  <input type="number" id="settingFfmpegThreads" min="1" max="32" step="1" value="1" class="w-120" />
-                </div>
-              </div>
-              <div class="file-selection file-selection-compact file-selection-inline mt-8">
-                <div class="flex-row gap-16 w-100">
-                  <div class="fw-600">FFmpeg timelimit (s)</div>
-                  <input type="number" id="settingFfmpegTimelimit" min="0" max="86400" step="10" value="600" class="w-120" />
-                </div>
-              </div>
-              <div class="hint-sm mt-8 max-w-640">
-                FFmpeg settings control low-level media processing. Parallel processes multiply workload across different files; threads apply within a single process. Lower timelimit can fail very long operations; set 0 to disable.
               </div>
             </div>
           </div>
         </div>
       </div>
-    </main>
-  </body>
+
+      <!-- Stats Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="stats-tab" id="stats-panel" hidden>
+        <div class="stats-container">
+          <h2>Library Statistics</h2>
+          <div class="stats-row">
+            <div class="stats-item"><strong>Number of Files:</strong> <span id="statsNumFiles">—</span></div>
+            <div class="stats-item"><strong>Total Size:</strong> <span id="statsTotalSize">—</span></div>
+            <div class="stats-item"><strong>Total Duration:</strong> <span id="statsTotalDuration">—</span></div>
+            <div class="stats-item"><strong>Number of Tags:</strong> <span id="statsNumTags">—</span></div>
+            <div class="stats-item"><strong>Number of Performers:</strong> <span id="statsNumPerformers">—</span></div>
+          </div>
+          <div class="stats-charts">
+            <div class="chart-block">
+              <h3>Resolution Distribution</h3>
+              <canvas id="statsResChart" width="320" height="180"></canvas>
+            </div>
+            <div class="chart-block">
+              <h3>Duration Distribution</h3>
+              <canvas id="statsDurationChart" width="320" height="180"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="settings-tab" id="settings-panel" hidden>
+        <div class="tab-content">
+          <h2>Settings</h2>
+          <div class="task-section task-section-spaced">
+            <div class="section-header">
+              <h2>Library Root</h2>
+            </div>
+            <div class="file-selection file-selection-root">
+              <div class="root-input-row">
+                <input id="folderInput" type="text" class="control-input root-input" placeholder="Type relative path (Enter) or absolute path to set root" title="Relative path to browse; absolute path to change root. Enter to apply." />
+                <button id="refresh" class="btn-sm" title="Reload current listing">Reload</button>
+                <button id="pickRootBtn" class="btn-sm" title="Open folder picker">Pick…</button>
+              </div>
+              <div class="hint-sm">
+                Enter a relative path within the current root to browse (e.g. <code>Shows/Season 1</code>). Enter an absolute path (e.g. <code>/Volumes/Media</code> or <code>~/Movies</code>) to change the library root. Double‑click the input or click Pick… to open a folder picker.
+              </div>
+            </div>
+          </div>
+          <div class="task-section task-section-spaced">
+            <div class="section-header">
+              <h2>Player Preferences</h2>
+            </div>
+            <div class="file-selection file-selection-compact">
+              <label class="selection-option selection-option-wide">
+                <input type="checkbox" id="settingInfiniteScroll" />
+                <div>
+                  <div class="subtitle-icon-label">Infinite Scroll (auto-load next page)</div>
+                  <div class="hint-sm">When enabled, scrolling near the end of the library automatically loads the next page instead of using the pager.</div>
+                </div>
+              </label>
+              <label class="selection-option selection-option-wide">
+                <input type="checkbox" id="settingAutoplayResume" />
+                <div>
+                  <div class="subtitle-icon-label">
+                    Autoplay on load when previously playing
+                    <!-- reference subtitle icon placeholder (from user image) -->
+                    <span aria-hidden="true" title="Subtitle icon reference" class="subtitle-icon">
+                      <span class="subtitle-line top"></span>
+                      <span class="subtitle-line bottom"></span>
+                    </span>
+                  </div>
+                  <div class="hint-sm">
+                    If enabled, the player resumes playback automatically when a video was playing before closing. Default is off.
+                  </div>
+                </div>
+              </label>
+              <label class="selection-option selection-option-wide mt-12">
+                <input type="checkbox" id="settingShowHeatmap" />
+                <div>
+                  <div class="fw-600">Show timeline heatmap</div>
+                  <div class="hint-sm">
+                    Toggle the heatmap overlay on the player timeline. This only affects display; artifacts and badges still load as usual.
+                  </div>
+                </div>
+              </label>
+              <label class="selection-option selection-option-wide mt-12">
+                <input type="checkbox" id="settingShowScenes" />
+                <div>
+                  <div class="fw-600">Show scene boundary markers</div>
+                  <div class="hint-sm">
+                    Toggle the scene boundary ticks on the player timeline. This only affects display; scenes data still loads as usual.
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div class="task-section task-section-spaced">
+            <div class="section-header">
+              <h2>Library Preferences</h2>
+            </div>
+            <div class="file-selection file-selection-compact">
+              <label class="selection-option selection-option-wide">
+                <input type="checkbox" id="settingHoverPreviews" />
+                <div>
+                  <div class="fw-600">Enable hover video previews</div>
+                  <div class="hint-sm">
+                    When enabled, cards will play a small preview on hover. Previews are only played if they already exist; no background generation is triggered automatically.
+                  </div>
+                </div>
+              </label>
+              <label class="selection-option selection-option-wide mt-12">
+                <input type="checkbox" id="settingHoverOnDemand" />
+                <div>
+                  <div class="fw-600">Generate hover previews on demand</div>
+                  <div class="hint-sm">
+                    When enabled, hovering a card will request the server to create a preview if one doesn’t exist yet. This may start background work and use CPU.
+                  </div>
+                </div>
+              </label>
+              <label class="selection-option selection-option-wide mt-12">
+                <input type="checkbox" id="settingConfirmDeletes" />
+                <div>
+                  <div class="fw-600">Require confirmation for deletions</div>
+                  <div class="hint-sm">
+                    When enabled, clearing or deleting artifacts will ask for confirmation. Default is off.
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div class="task-section task-section-spaced">
+            <div class="section-header">
+              <h2>Job Processing</h2>
+            </div>
+            <div class="file-selection file-selection-compact file-selection-inline">
+              <div class="flex-row gap-16 w-100">
+                <div class="fw-600">Max concurrent jobs</div>
+                <input type="number" id="settingConcurrency" min="1" max="16" step="1" value="4" class="w-120" />
+              </div>
+            </div>
+            <div class="file-selection file-selection-compact file-selection-inline mt-12">
+              <div class="flex-row gap-16 w-100">
+                <div class="fw-600">FFmpeg parallel processes</div>
+                <input type="number" id="settingFfmpegConcurrency" min="1" max="16" step="1" value="4" class="w-120" />
+              </div>
+            </div>
+            <div class="file-selection file-selection-compact file-selection-inline mt-8">
+              <div class="flex-row gap-16 w-100">
+                <div class="fw-600">FFmpeg threads per process</div>
+                <input type="number" id="settingFfmpegThreads" min="1" max="32" step="1" value="1" class="w-120" />
+              </div>
+            </div>
+            <div class="file-selection file-selection-compact file-selection-inline mt-8">
+              <div class="flex-row gap-16 w-100">
+                <div class="fw-600">FFmpeg timelimit (s)</div>
+                <input type="number" id="settingFfmpegTimelimit" min="0" max="86400" step="10" value="600" class="w-120" />
+              </div>
+            </div>
+            <div class="hint-sm mt-8 max-w-640">
+              FFmpeg settings control low-level media processing. Parallel processes multiply workload across different files; threads apply within a single process. Lower timelimit can fail very long operations; set 0 to disable.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</body>
 
 </html>

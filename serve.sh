@@ -11,8 +11,8 @@ PORT="${PORT:-9998}"
 
 # MEDIA_ROOT: use existing env, else pick a sensible default
 if [ -z "${MEDIA_ROOT:-}" ]; then
-  if   [ -d "/Volumes/media/PornMin" ]; then export MEDIA_ROOT="/Volumes/media/PornMin";
-  elif [ -d "/mnt/media/PornMin" ];    then export MEDIA_ROOT="/mnt/media/PornMin";
+  if   [ -d "/Volumes/media/Porn" ]; then export MEDIA_ROOT="/Volumes/media/Porn";
+  elif [ -d "/mnt/media/Porn" ];    then export MEDIA_ROOT="/mnt/media/Porn";
   else export MEDIA_ROOT="$PWD"; fi
 fi
 
@@ -25,7 +25,6 @@ if [ -z "$LAN_IP" ] && command -v hostname >/dev/null 2>&1; then
   LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 fi
 echo "Serving on:"
-echo "http://localhost:$PORT"
 echo "http://${LAN_IP:-$HOST}:$PORT"
 echo "MEDIA_ROOT=$MEDIA_ROOT"
 
@@ -96,25 +95,50 @@ if [ -z "$RUN_UVICORN" ] || ! probe_runner "$RUN_UVICORN"; then
   exit 1
 fi
 
-# Logging: write combined stdout/stderr to a rotating (truncated each start) file while still echoing to console.
-# Override LOG_FILE to change location/name; set LOG_APPEND=1 to append instead of truncate.
+# ----------------------------------------------------------------------------
+# Logging / verbosity controls
+#   LOG_FILE   : path ("/dev/null" disables file logging)  (default: server.log)
+#   LOG_APPEND : 1 to append instead of truncate            (default: 0)
+#   LOG_LEVEL  : uvicorn log level (debug, info, warning..) (default: info)
+#   ACCESS_LOG : 1 to enable, 0 to disable access logs      (default: 1)
+#   RELOAD     : 1 enable autoreload, 0 disable             (default: 1)
+#   QUIET      : 1 shortcut → LOG_LEVEL=warning ACCESS_LOG=0 (overrides above)
+# ----------------------------------------------------------------------------
 LOG_FILE="${LOG_FILE:-server.log}"
 LOG_APPEND="${LOG_APPEND:-0}"
+LOG_LEVEL="${LOG_LEVEL:-info}"
+ACCESS_LOG="${ACCESS_LOG:-1}"
+RELOAD="${RELOAD:-1}"
+if [ "${QUIET:-0}" = "1" ]; then
+  LOG_LEVEL="warning"
+  ACCESS_LOG="0"
+fi
+
+# Build uvicorn argument list
+UVICORN_ARGS=(app:app --host "$HOST" --port "$PORT")
+if [ "$RELOAD" = "1" ]; then
+  UVICORN_ARGS+=(--reload)
+fi
+UVICORN_ARGS+=(--log-level "$LOG_LEVEL")
+if [ "$ACCESS_LOG" != "1" ]; then
+  UVICORN_ARGS+=(--no-access-log)
+fi
+
+echo "LOG_LEVEL=$LOG_LEVEL" 1>&2
+echo "ACCESS_LOG=$ACCESS_LOG" 1>&2
+echo "RELOAD=$RELOAD" 1>&2
+echo "QUIET=${QUIET:-0}" 1>&2
 
 if [ "$LOG_FILE" = "/dev/null" ]; then
   # Disable file logging explicitly
-  # shellcheck disable=SC2086
-  exec env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN app:app --reload --host "$HOST" --port "$PORT"
+  exec env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN "${UVICORN_ARGS[@]}"
 else
   # Prepare file (truncate unless append requested)
   if [ "$LOG_APPEND" != "1" ]; then : >"$LOG_FILE"; fi
   echo "[serve.sh] Logging to $LOG_FILE (append=$LOG_APPEND)" | tee -a "$LOG_FILE"
-  # Use stdbuf to reduce output buffering if available for near-real-time tee
   if command -v stdbuf >/dev/null 2>&1; then
-    # shellcheck disable=SC2086
-    exec stdbuf -oL -eL env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN app:app --reload --host "$HOST" --port "$PORT" 2>&1 | tee -a "$LOG_FILE"
+    exec stdbuf -oL -eL env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN "${UVICORN_ARGS[@]}" 2>&1 | tee -a "$LOG_FILE"
   else
-    # shellcheck disable=SC2086
-    exec env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN app:app --reload --host "$HOST" --port "$PORT" 2>&1 | tee -a "$LOG_FILE"
+    exec env MEDIA_ROOT="${MEDIA_ROOT}" $RUN_UVICORN "${UVICORN_ARGS[@]}" 2>&1 | tee -a "$LOG_FILE"
   fi
 fi

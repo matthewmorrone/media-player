@@ -144,6 +144,30 @@ class _UvicornAccessFilter(logging.Filter):
             return True
         # Message usually contains: "\"GET /path?query HTTP/1.1\" 200 OK"
         # We match on the path segment to suppress specific endpoints.
+        try:
+            # Optionally allow GET/HEAD access logs via env; default is to suppress GET/HEAD noise
+            allow_get = str(os.environ.get("ENABLE_GET_ACCESS_LOG", "0")).lower() in ("1", "true", "yes")
+            allow_head = str(os.environ.get("ENABLE_HEAD_ACCESS_LOG", "0")).lower() in ("1", "true", "yes")
+        except Exception:
+            allow_get = False
+            allow_head = False
+        try:
+            method = None
+            # crude parse: first token inside quotes is method
+            q1 = msg.find('"')
+            if q1 != -1:
+                q2 = msg.find('"', q1 + 1)
+                if q2 != -1:
+                    reqline = msg[q1+1:q2]
+                    parts = reqline.split()
+                    if parts:
+                        method = parts[0]
+        except Exception:
+            method = None
+        if method == "GET" and not allow_get:
+            return False
+        if method == "HEAD" and not allow_head:
+            return False
         for p in _POLLING_LOG_PATHS:
             if f" {p} " in msg or f" {p}?" in msg:
                 return False
@@ -722,6 +746,7 @@ def metadata_single(video: Path, *, force: bool = False) -> None:
         return
     # If ffprobe is disabled or not available, write a minimal stub instead of failing
     # @TODO copilot: no want this, should error
+    _log("thumb", f"metadata start path={video}")
     if os.environ.get("FFPROBE_DISABLE") or not ffprobe_available():
         payload = {
             "format": {"duration": "0.0", "bit_rate": "0"},
@@ -731,6 +756,7 @@ def metadata_single(video: Path, *, force: bool = False) -> None:
             ]
         }
         out.write_text(json.dumps(payload, indent=2))
+        _log("thumb", f"metadata end path={video} stub=1 ok=1")
         return
     cmd = [
         "ffprobe", "-v", "error",
@@ -764,6 +790,11 @@ def metadata_single(video: Path, *, force: bool = False) -> None:
             ]
         }
     out.write_text(json.dumps(payload, indent=2))
+    try:
+        dur = extract_duration(payload)
+    except Exception:
+        dur = None
+    _log("thumb", f"metadata end path={video} stub=0 ok=1 dur={dur if dur is not None else 'na'}")
 
 def extract_duration(ffprobe_json: Optional[dict]) -> Optional[float]:
     try:
@@ -853,6 +884,7 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
     if out.exists() and not force:
         return
     out.parent.mkdir(parents=True, exist_ok=True)
+    _log("thumb", f"thumb start path={video} force={int(force)} out={out}")
     # If ffmpeg isn't available, write a valid placeholder JPEG (last resort)
     if not ffmpeg_available():
         try:
@@ -906,7 +938,16 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
     ]
     proc = _run(cmd)
     if proc.returncode != 0:
+        _log("thumb", f"thumb fail path={video} code={proc.returncode}")
         raise RuntimeError(proc.stderr.strip() or "ffmpeg thumbnail failed")
+    else:
+        size = None
+        try:
+            if out.exists():
+                size = out.stat().st_size
+        except Exception:
+            pass
+        _log("thumb", f"thumb end path={video} code=0 size={size if size is not None else 'na'}")
 
 # ----------------------
 # Hover preview generator
@@ -3989,6 +4030,41 @@ JOB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 JOB_MAX_CONCURRENCY = int(os.environ.get("JOB_MAX_CONCURRENCY", "4"))
 JOB_RUN_SEM = threading.Semaphore(JOB_MAX_CONCURRENCY)
 
+# ------------------------------------------------------------
+# Logging categories (coarse grained, opt-in / opt-out)
+#   Set LOG_ALL=0 to disable all unless explicitly enabled.
+#   Set LOG_ALL=1 to enable all unless explicitly disabled.
+#   Per-category env vars override: LOG_JOBS, LOG_FFMPEG, LOG_TASKS, LOG_HOVER, LOG_THUMB
+#   Values: 1 enable, 0 disable. Default: follow LOG_ALL (which defaults to 1).
+# ------------------------------------------------------------
+def _log_enabled(cat: str) -> bool:
+    try:
+        base = os.environ.get("LOG_ALL", "1")
+        base_on = str(base).lower() not in ("0", "false", "no")
+        specific = os.environ.get(f"LOG_{cat.upper()}")
+        if specific is not None:
+            return str(specific).lower() in ("1", "true", "yes")
+        return base_on
+    except Exception:
+        return True
+
+def _log(cat: str, msg: str) -> None:
+    if not _log_enabled(cat):
+        return
+    try:
+        print(msg)
+    except Exception:
+        pass
+
+def _env_on(name: str, default: bool = False) -> bool:
+    try:
+        v = os.environ.get(name)
+        if v is None:
+            return default
+        return str(v).lower() in ("1", "true", "yes")
+    except Exception:
+        return default
+
 def _set_job_concurrency(new_val: int) -> int:
     """
     Adjust the existing JOB_RUN_SEM to match new concurrency immediately.
@@ -4292,11 +4368,13 @@ def _start_job(jid: str):
             j["state"] = "running"
             j["started_at"] = time.time()
             # Diagnostic: print current running count vs max
-            try:
-                running_now = sum(1 for qq in JOBS.values() if str(qq.get("state")) == "running")
-                print(f"[jobs][start] jid={jid} type={j.get('type')} running={running_now}/{JOB_MAX_CONCURRENCY}")
-            except Exception:
-                pass
+            # Only log job starts when explicitly enabled
+            if _env_on("LOG_JOBS_START", False):
+                try:
+                    running_now = sum(1 for qq in JOBS.values() if str(qq.get("state")) == "running")
+                    _log("jobs", f"[jobs] start jid={jid} type={j.get('type')} running={running_now}/{JOB_MAX_CONCURRENCY}")
+                except Exception:
+                    pass
     # Bind thread-local job context if running in current thread
     try:
         JOB_CTX.jid = jid  # type: ignore[name-defined]
@@ -4500,7 +4578,7 @@ def _wrap_job(job_type: str, path: str, fn):
         # On cancellation or failure, mark finished accordingly
         try:
             import traceback, sys
-            print(f"[jobs][error] jid={jid} type={job_type} err={e}\n" + ''.join(traceback.format_exception(*sys.exc_info()))[:1500])
+            _log("jobs", f"[jobs] error jid={jid} type={job_type} err={e}\n" + ''.join(traceback.format_exception(*sys.exc_info()))[:1500])
         except Exception:
             pass
         _finish_job(jid, str(e) if str(e) and str(e).lower() != "canceled" else None)
@@ -4574,6 +4652,13 @@ def _wrap_job_background(job_type: str, path: str, fn):
                     JOBS[jid]["result"] = result if not isinstance(result, JSONResponse) else None
             _finish_job(jid, None)
         except Exception as e:  # noqa: BLE001
+            # Emit a focused error for metadata/thumbnail jobs so failures are visible
+            try:
+                jt = _normalize_job_type(job_type)
+                if jt in ("thumbnail", "metadata"):
+                    _log("thumb", f"{jt} error path={path} err={e}")
+            except Exception:
+                pass
             _finish_job(jid, str(e) if str(e) and str(e).lower() != "canceled" else None)
     t = threading.Thread(target=_runner, name=f"job-{job_type}-{jid}", daemon=True)
     t.start()
@@ -4624,10 +4709,8 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
                     running_now = JOB_MAX_CONCURRENCY
                 if running_now < int(JOB_MAX_CONCURRENCY):
                     # Diagnostic
-                    try:
-                        print(f"[jobs][turn] fast-path start jid={jid} running={running_now}/{JOB_MAX_CONCURRENCY}")
-                    except Exception:
-                        pass
+                    if _log_enabled("jobs"):
+                        _log("jobs", f"[jobs] turn fast-path start jid={jid} running={running_now}/{JOB_MAX_CONCURRENCY}")
                     break
             # Build ordered list of queued jobs
             queued = [
@@ -4648,10 +4731,8 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
             # Collect the first 'window' job ids eligible to start
             eligible_ids = {q[1] for q in queued[:window]}
             if jid in eligible_ids:
-                try:
-                    print(f"[jobs][turn] window-eligible jid={jid} window={window} queue_len={len(queued)}")
-                except Exception:
-                    pass
+                if _log_enabled("jobs"):
+                    _log("jobs", f"[jobs] turn window-eligible jid={jid} window={window} queue_len={len(queued)}")
                 break
         # Periodic diagnostic if still queued
         now_ts = time.time()
@@ -4660,7 +4741,8 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
             try:
                 with JOB_LOCK:
                     q_states = [ (qq.get('id'), qq.get('state')) for qq in JOBS.values() ]
-                print(f"[jobs][turn][waiting] jid={jid} still queued; snapshot states={q_states}")
+                if _log_enabled("jobs"):
+                    _log("jobs", f"[jobs] turn waiting jid={jid} states={q_states}")
             except Exception:
                 pass
         time.sleep(poll_interval)
@@ -5431,16 +5513,15 @@ def _list_dir(root: Path, rel: str):
                 "subtitles": subtitles_exists,
                 "faces": faces_exists,
             }
-            # Cover/hover URLs (served by our endpoints below)
-            # Prefer direct file URL for cover: /files/<relative path to artifact>
+            # Thumbnail/hover URLs (primary thumbnail formerly named 'cover')
             if thumbs_path(entry).exists():
                 try:
-                    cover_rel = thumbs_path(entry).relative_to(STATE["root"]).as_posix()
-                    info["cover"] = f"/files/{cover_rel}"
+                    thumb_rel = thumbs_path(entry).relative_to(STATE["root"]).as_posix()
+                    info["thumbnail"] = f"/files/{thumb_rel}"
                 except Exception:
-                    info["cover"] = f"/api/cover/get?path={info['path']}"
+                    info["thumbnail"] = f"/api/thumbnail/get?path={info['path']}"
             else:
-                info["cover"] = None
+                info["thumbnail"] = None
             # Hover: single-file only
             concat = _hover_concat_path(entry)
             if _file_nonempty(concat):
@@ -5448,6 +5529,116 @@ def _list_dir(root: Path, rel: str):
             files.append(info)
     return {"cwd": rel, "dirs": dirs, "files": files}
 
+
+# Fast-path lightweight scanner (no sidecar/artifact checks) used when there are
+# no tag/performer/extension/search/resolution filters. It only gathers basic
+# file info and (optionally) mtime for date sorting. We then enrich ONLY the
+# paginated slice. This dramatically reduces first-page latency on very large
+# libraries because we avoid thousands of existence/stat/json operations.
+def _list_dir_fast_basic(root: Path, rel: str, need_mtime: bool) -> dict:
+    p = safe_join(root, rel) if rel else root
+    if not p.exists() or not p.is_dir():
+        raise_api_error("Not found", status_code=404)
+    dirs: list[dict] = []
+    files: list[dict] = []
+    try:
+        entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+    except Exception:
+        entries = []
+    for entry in entries:
+        try:
+            if entry.name.startswith("._") or entry.name == ".DS_Store":
+                continue
+            if entry.is_dir() and (entry.name.startswith(".") or entry.name.endswith(".previews")):
+                continue
+            if entry.is_dir():
+                dirs.append({"name": entry.name, "path": str(entry.relative_to(root))})
+            elif entry.is_file() and _is_original_media_file(entry, root):
+                try:
+                    st = entry.stat()
+                except Exception:
+                    continue
+                info = {
+                    "name": entry.name,
+                    "path": str(entry.relative_to(root)),
+                    "size": getattr(st, "st_size", 0) or 0,
+                }
+                if need_mtime:
+                    info["mtime"] = float(getattr(st, "st_mtime", 0.0) or 0.0)
+                files.append(info)
+        except Exception:
+            continue
+    return {"cwd": rel, "dirs": dirs, "files": files}
+
+
+def _enrich_file_basic(entry: dict) -> dict:
+    """Enrich a single file dict with metadata/artifact presence (extracted from legacy _list_dir logic)."""
+    try:
+        rel_path = entry.get("path")
+        if not rel_path:
+            return entry
+        fp = safe_join(STATE["root"], rel_path)
+        if not fp.exists():
+            return entry
+        mime, _ = __import__("mimetypes").guess_type(str(fp))
+        duration_val = None
+        title_val = None
+        width_val = None
+        height_val = None
+        try:
+            duration_val, title_val, width_val, height_val = _meta_summary_cached(fp)
+        except Exception:
+            pass
+        phash_exists = False
+        scenes_exists = False
+        sprites_exists = False
+        heatmaps_exists = False
+        faces_exists = False
+        subtitles_exists = False
+        try: phash_exists = phash_path(fp).exists()
+        except Exception: pass
+        try: scenes_exists = scenes_json_exists(fp)
+        except Exception: pass
+        try:
+            s_sheet, s_json = sprite_sheet_paths(fp)
+            sprites_exists = s_sheet.exists() and s_json.exists()
+        except Exception: pass
+        try: heatmaps_exists = heatmaps_json_exists(fp)
+        except Exception: pass
+        try: faces_exists = faces_exists_check(fp)
+        except Exception: pass
+        try: subtitles_exists = find_subtitles(fp) is not None
+        except Exception: pass
+        # Add enriched fields (only if not already present to avoid overwriting sort keys like mtime)
+        entry.setdefault("type", mime or "application/octet-stream")
+        entry.setdefault("duration", duration_val)
+        entry.setdefault("title", title_val or Path(fp).stem)
+        entry.setdefault("width", width_val)
+        entry.setdefault("height", height_val)
+        entry.setdefault("phash", phash_exists)
+        entry.setdefault("chapters", scenes_exists)
+        entry.setdefault("sprites", sprites_exists)
+        entry.setdefault("heatmaps", heatmaps_exists)
+        entry.setdefault("subtitles", subtitles_exists)
+        entry.setdefault("faces", faces_exists)
+        # Thumbnail / hover
+        try:
+            if thumbs_path(fp).exists():
+                try:
+                    thumb_rel = thumbs_path(fp).relative_to(STATE["root"]).as_posix()
+                    entry["thumbnail"] = f"/files/{thumb_rel}"
+                except Exception:
+                    entry["thumbnail"] = f"/api/thumbnail/get?path={entry['path']}"
+            else:
+                entry.setdefault("thumbnail", None)
+            concat = _hover_concat_path(fp)
+            if _file_nonempty(concat):
+                entry["hoverPreview"] = f"/api/hover/get?path={entry['path']}"
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return entry
 
 @api.get("/library")
 def get_library(
@@ -5466,8 +5657,19 @@ def get_library(
     res_min: Optional[int] = Query(default=None, ge=1, description="Minimum vertical resolution (height) in pixels"),
     res_max: Optional[int] = Query(default=None, ge=1, description="Maximum vertical resolution (height) in pixels"),
 ):
-    data = _list_dir(STATE["root"], path)
-    files = data.get("files", [])
+    # Fast-path determination: only basic page load (no filters that require sidecar/tag scan)
+    fast_path = not any([
+        search, ext, tags, tags_ids, performers, performers_ids, res_min, res_max
+    ])
+    # We'll need mtime only if sorting by date
+    data = None
+    files: list[dict] = []
+    if fast_path and (sort in (None, "date", "name", "size", "random")):
+        data = _list_dir_fast_basic(STATE["root"], path, need_mtime=(sort == "date"))
+        files = data.get("files", [])
+    else:
+        data = _list_dir(STATE["root"], path)
+        files = data.get("files", [])
     # Search / filter
     if search:
         s = (search or "").strip().lower()
@@ -5613,13 +5815,18 @@ def get_library(
     elif sort == "size":
         files.sort(key=lambda f: (int(f.get("size") or 0), str(f.get("path") or "")), reverse=reverse)
     elif sort == "date":
-        for f in files:
-            fp = safe_join(STATE["root"], f["path"])  # type: ignore[arg-type]
-            try:
-                mt = fp.stat().st_mtime if fp.exists() else 0
-            except Exception:
-                mt = 0
-            f["mtime"] = mt
+        # Fast-path already populated mtime; fallback compute if missing
+        missing_mtime = any("mtime" not in f for f in files)
+        if missing_mtime:
+            for f in files:
+                if "mtime" in f:
+                    continue
+                fp = safe_join(STATE["root"], f.get("path", ""))
+                try:
+                    mt = fp.stat().st_mtime if fp.exists() else 0
+                except Exception:
+                    mt = 0
+                f["mtime"] = mt
         files.sort(key=lambda f: (float(f.get("mtime") or 0), str(f.get("path") or "")), reverse=reverse)
     elif sort == "random":
         import random as _r
@@ -5632,7 +5839,14 @@ def get_library(
         page = total_pages
     start = (page - 1) * page_size
     end = start + page_size
-    data["files"] = files[start:end]
+    page_slice = files[start:end]
+    # Enrich only the page slice if we used the fast path (they lack metadata/artifact flags)
+    if fast_path:
+        enriched = []
+        for f in page_slice:
+            enriched.append(_enrich_file_basic(f))
+        page_slice = enriched
+    data["files"] = page_slice
     data["page"] = page
     data["page_size"] = page_size
     data["total_files"] = total_files
@@ -6748,14 +6962,28 @@ def serve_file(full_path: str, request: Request):
     return FileResponse(str(file_path), media_type=mt)
 
 
+@app.head("/files/{full_path:path}")
+def serve_file_head(full_path: str):
+    """Lightweight existence probe for any file under MEDIA_ROOT.
+    Returns 200 if the file exists and is a regular file; 404 otherwise.
+    Avoids 405 noise when clients use HEAD to probe artifacts like thumbnails.
+    """
+    file_path = safe_join(STATE["root"], full_path)
+    if not file_path.exists() or not file_path.is_file():
+        raise_api_error("Not found", status_code=404)
+    # best-effort mime hint
+    mt = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+    return Response(status_code=200, media_type=mt)
+
+
 def _name_and_dir(path: str) -> tuple[str, str]:
     fp = safe_join(STATE["root"], path)
     return fp.name, str(fp.parent)
 
 
-# --- Cover ---
-@api.get("/cover/get")
-def cover_get(path: str = Query(...)):
+# --- Thumbnail (standardized; previously 'cover') ---
+@api.get("/thumbnail/get")
+def thumbnail_get(path: str = Query(...)):
     name, directory = _name_and_dir(path)
     # Prefer artifact thumbs; fallback to alongside JPG
     root = Path(directory)
@@ -6775,8 +7003,8 @@ def cover_get(path: str = Query(...)):
         resp.headers["Cache-Control"] = "no-store"
     return resp
 
-@api.head("/cover/get")
-def cover_head(path: str = Query(...)):
+@api.head("/thumbnail/get")
+def thumbnail_head(path: str = Query(...)):
     """Lightweight existence probe for cover thumbnails.
     Returns 200 if present, 404 if missing. Avoids 405 noise when frontend uses HEAD.
     """
@@ -6789,8 +7017,8 @@ def cover_head(path: str = Query(...)):
     return Response(status_code=200, media_type="image/jpeg")
 
 
-@api.post("/cover/create")
-def cover_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
+@api.post("/thumbnail/create")
+def thumbnail_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
 
@@ -6821,15 +7049,13 @@ def cover_create(path: str = Query(...), t: Optional[str | float] = Query(defaul
                     pass
         return api_success({"file": str(thumbs_path(video))})
     try:
-        return _wrap_job("cover", str(video.relative_to(STATE["root"])), _do)
+        return _wrap_job("thumbnail", str(video.relative_to(STATE["root"])), _do)
     except Exception as e:  # noqa: BLE001
-        raise_api_error(f"cover create failed: {e}", status_code=500)
+        raise_api_error(f"thumbnail create failed: {e}", status_code=500)
 
-@api.post("/cover/create_inline")
-def cover_create_inline(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
-    """Synchronously generate a cover thumbnail and return the JPEG directly.
-    Provides immediate bytes so the client can display the new thumbnail without waiting for a job poll.
-    """
+@api.post("/thumbnail/create_inline")
+def thumbnail_create_inline(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
+    """Synchronously generate a thumbnail and return the JPEG directly."""
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
     if not video.exists() or not video.is_file():
@@ -6838,22 +7064,22 @@ def cover_create_inline(path: str = Query(...), t: Optional[str | float] = Query
     try:
         generate_thumbnail(video, force=bool(overwrite), time_spec=time_spec, quality=int(quality))
     except Exception as e:  # noqa: BLE001
-        raise_api_error(f"inline cover failed: {e}")
+        raise_api_error(f"inline thumbnail failed: {e}")
     thumb = thumbs_path(video)
     if not thumb.exists():
-        raise_api_error("cover not found after generation", status_code=500)
+        raise_api_error("thumbnail not found after generation", status_code=500)
     resp = FileResponse(str(thumb), media_type="image/jpeg")
     try:
         mt = thumb.stat().st_mtime
         resp.headers["Cache-Control"] = "no-store, max-age=0"
-        resp.headers["ETag"] = f"\"cover-inline-{int(mt)}\""
+        resp.headers["ETag"] = f"\"thumbnail-inline-{int(mt)}\""
     except Exception:
         resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
-@api.post("/cover/create/batch")
-def cover_create_batch(
+@api.post("/thumbnail/create/batch")
+def thumbnail_create_batch(
     path: str = Query(default=""),
     recursive: bool = Query(default=True),
     t: Optional[str | float] = Query(default=10),
@@ -6868,7 +7094,7 @@ def cover_create_batch(
     q = int(quality)
     force = bool(overwrite)
 
-    sup_jid = _new_job("cover-batch", str(base))
+    sup_jid = _new_job("thumbnail-batch", str(base))
     _start_job(sup_jid)
 
     def _worker():
@@ -6919,9 +7145,35 @@ def cover_create_batch(
     return api_success({"started": True, "job": sup_jid})
 
 
+# --- Legacy cover endpoints (compatibility shims) ---
+@api.get("/cover/get")
+def cover_get(path: str = Query(...)):
+    return thumbnail_get(path=path)  # type: ignore
+
+
+@api.head("/cover/get")
+def cover_head(path: str = Query(...)):
+    return thumbnail_head(path=path)  # type: ignore
+
+
+@api.post("/cover/create")
+def cover_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
+    return thumbnail_create(path=path, t=t, quality=quality, overwrite=overwrite)  # type: ignore
+
+
+@api.post("/cover/create/batch")
+def cover_create_batch(path: str = Query(default=""), recursive: bool = Query(default=True), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
+    return thumbnail_create_batch(path=path, recursive=recursive, t=t, quality=quality, overwrite=overwrite)  # type: ignore
+
+
 @api.delete("/cover/delete")
 async def cover_delete(request: Request, path: str | None = Query(default=None)):
-    """Delete thumbnail (cover) image(s).
+    return await thumbnail_delete(request, path=path)  # type: ignore
+
+
+@api.delete("/thumbnail/delete")
+async def thumbnail_delete(request: Request, path: str | None = Query(default=None)):
+    """Delete thumbnail image(s).
 
     Modes:
       - Single: supply ?path=relative/file.mp4 (deletes its .thumbnail.jpg)
@@ -8104,10 +8356,7 @@ def metadata_get(path: str = Query(...), force: bool = Query(default=False), vie
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
     mpath = metadata_path(video)
-    try:
-        print(f"[debug] metadata_get: path={path} root={STATE['root']} video={video} mpath={mpath} force={force} FFPROBE_DISABLE={os.environ.get('FFPROBE_DISABLE')}")
-    except Exception:
-        pass
+    _log("meta", f"[meta] get path={path} video={video} mpath={mpath} force={int(bool(force))}")
     if (not mpath.exists()) or force:
         try:
             metadata_single(video, force=True)
@@ -10189,10 +10438,11 @@ def tasks_batch_operation(request: Request):
 
         # Create job request
         task_name = operation
+        # Normalize legacy internal task names: previously 'cover'/'hover'
         if operation == "thumbnails":
-            task_name = "cover"  # Backend uses 'cover' for thumbnails
+            task_name = "thumbnail"  # unified canonical task type
         elif operation == "previews":
-            task_name = "hover"  # Backend uses 'hover' for previews
+            task_name = "hover"
 
         job_params = {}
 
@@ -10489,14 +10739,15 @@ def tasks_jobs():
                 jtype = (job.get("type") or "").lower()
                 # Provide a stable "artifact" key aligning with frontend badge dataset values
                 artifact_map = {
-                    "cover": "cover",
-                    "hover": "hover",
+                    "cover": "thumbnails",      # legacy name maps to canonical
+                    "thumbnail": "thumbnails",  # new internal task type
+                    "hover": "previews",        # hover task produces previews artifact
                     "phash": "phash",
                     "scenes": "scenes",
                     "sprites": "sprites",
-                    "heatmaps": "heatmap",  # singular badge name
+                    "heatmaps": "heatmaps",     # plural canonical
                     "faces": "faces",
-                    "embed": "faces",  # embed updates faces.json; treat as faces artifact for spinner
+                    "embed": "faces",           # embed updates faces.json; reuse faces spinner
                     "metadata": "metadata",
                     "subtitles": "subtitles",
                 }
@@ -10509,7 +10760,9 @@ def tasks_jobs():
                     if not vp.is_absolute():
                         vp = (STATE["root"] / vp).resolve()
                     tp: Optional[Path] = None
-                    if jtype == "cover":
+                    if jtype == "cover":  # legacy jobs still on disk
+                        tp = thumbs_path(vp)
+                    elif jtype == "thumbnail":
                         tp = thumbs_path(vp)
                     elif jtype == "hover":
                         tp = artifact_dir(vp) / f"{vp.stem}{SUFFIX_PREVIEW_WEBM}"

@@ -244,16 +244,17 @@ if (document.readyState === 'loading') {
 }
 else wireAdjustments();
 
-// Hover controls (Settings)
-let hoverPreviewsEnabled = false;
+// Hover controls (Settings) unified naming (was hoverPreviewsEnabled)
+let hoverEnabled = false;
 // playback on hover
 let hoverOnDemandEnabled = false;
 // generation on hover
 let confirmDeletesEnabled = false;
 // user preference for delete confirmations
-// Feature flag: keep on-demand hover generation code present but disabled by default.
-// Flip to true (e.g., via build-time replace or future settings exposure) to allow user toggle to function.
-const FEATURE_HOVER_ON_DEMAND = false;
+// Feature flag for on-demand hover generation. Was previously false which prevented
+// persistence of the "Generate hover previews on demand" checkbox even when the
+// user enabled it. Enable it so the UI state persists across reloads.
+const FEATURE_HOVER_ON_DEMAND = true;
 // Player timeline display toggles (Settings)
 let showHeatmap = true;
 // default ON
@@ -270,6 +271,18 @@ const selectNoneBtn = document.getElementById('selectNoneBtn');
 let currentPage = 1;
 let totalPages = 1;
 let totalFiles = 0;
+let infiniteScrollEnabled = true; // user setting default ON
+let infiniteScrollSentinel = null;
+let infiniteScrollIO = null;
+let infiniteScrollLoading = false;
+let infiniteScrollUserScrolled = false;
+let infiniteScrollPendingInsertion = null; // Promise while new tiles are being inserted
+// Bottom-trigger infinite scroll enhancements
+// Strict mode (requested): ONLY load when user reaches/overscrolls the real bottom.
+// No prefill auto-loading; if first page doesn't create overflow, user must resize or change density.
+const INFINITE_SCROLL_BOTTOM_THRESHOLD = 32; // tighter threshold for "at bottom"
+let infiniteScrollLastTriggerHeight = 0; // scrollHeight at last successful trigger
+let stablePageSize = null; // locked page size for current browsing session (resets when page=1)
 let selectedItems = new Set();
 let currentDensity = 12;
 // Default to 12 (maps to 4 columns)
@@ -490,7 +503,7 @@ function videoCard(v) {
   const template = document.getElementById('cardTemplate');
   const el = template.content.cloneNode(true).querySelector('.card');
 
-  const imgSrc = v.cover || '';
+  const imgSrc = v.thumbnail || '';
   const dur = fmtDuration(Number(v.duration));
   const size = fmtSize(Number(v.size));
   const isSelected = selectedItems.has(v.path);
@@ -521,102 +534,58 @@ function videoCard(v) {
     }
   });
 
-  const img = el.querySelector('.thumb');
-  img.src = imgSrc || '';
+  // Updated naming: template now uses .thumbnail-img instead of legacy .thumb
+  const img = el.querySelector('.thumbnail-img');
+  // Always start with placeholder visible until the image truly loads to avoid blank flashes.
   img.alt = v.title || v.name;
-  // Use the inline placeholder when no thumbnail present or image fails.
-  const placeholderSvg = el.querySelector('svg.thumb-placeholder');
-  function showPlaceholder() {
-    hide(img);
-    show(placeholderSvg);
+  const placeholderSvg = el.querySelector('svg.thumbnail-placeholder');
+  // Placeholder is now absolutely positioned overlay; class toggles handle fade.
+  function markLoaded(success) {
+    if (success) {
+      el.classList.add('loaded');
+    } else {
+      el.classList.remove('loaded');
+    }
   }
-  function hidePlaceholder() {
-    show(img);
-    hide(placeholderSvg);
+  // Start in not-loaded state (placeholder visible via CSS)
+  el.classList.remove('loaded');
+  // Load events: hide placeholder after successful decode
+  img.addEventListener('load', () => {
+    // Guard: if naturalWidth is 0, treat as failure
+    if (!img.naturalWidth) { markLoaded(false); return; }
+    markLoaded(true);
+  });
+  img.addEventListener('error', () => markLoaded(false));
+  // Defer assigning src for non-eager tiles to reduce main thread contention.
+  // We attach data attributes for deferred meta computation as well.
+  el.dataset.w = String(v.width || '');
+  el.dataset.h = String(v.height || '');
+  el.dataset.name = String(v.title || v.name || '');
+  if (imgSrc) {
+    if (window.__TILE_EAGER_COUNT === undefined) window.__TILE_EAGER_COUNT = 0;
+    const eagerLimit = window.__TILE_EAGER_LIMIT || 16; // configurable global
+    const eager = window.__TILE_EAGER_COUNT < eagerLimit;
+    if (eager) {
+      window.__TILE_EAGER_COUNT++;
+      img.src = imgSrc;
+    } else {
+      img.dataset.src = imgSrc;
+      // Will be set when intersecting (observer installed below)
+      if (window.__tileIO) {
+        try { window.__tileIO.observe(img); } catch (_) { /* noop */ }
+      }
+    }
+  } else {
+    markLoaded(false);
   }
-  if (!imgSrc) showPlaceholder();
-  else hidePlaceholder();
-  img.addEventListener('error', () => showPlaceholder());
 
   // Resolution / quality badge: prefer height (common convention)
-  try {
-    const q = el.querySelector('.quality-badge');
-    const overlay = el.querySelector('.overlay-info');
-    const overlayRes = el.querySelector('.overlay-resolution');
-    // duration overlay is removed per request
-    const w = Number(v.width);
-    const h = Number(v.height);
-    let label = '';
-    // Map common tiers by height first, then by width if height missing
-    const pickByHeight = (hh) => {
-      if (!Number.isFinite(hh) || hh <= 0) return '';
-      if (hh >= 2160) return '2160p';
-      if (hh >= 1440) return '1440p';
-      if (hh >= 1080) return '1080p';
-      if (hh >= 720) return '720p';
-      if (hh >= 480) return '480p';
-      if (hh >= 360) return '360p';
-      if (hh >= 240) return '240p';
-      return '';
-    };
-    const pickByWidth = (ww) => {
-      if (!Number.isFinite(ww) || ww <= 0) return '';
-      if (ww >= 3840) return '2160p';
-      if (ww >= 2560) return '1440p';
-      if (ww >= 1920) return '1080p';
-      if (ww >= 1280) return '720p';
-      if (ww >= 854) return '480p';
-      if (ww >= 640) return '360p';
-      if (ww >= 426) return '240p';
-      return '';
-    };
-    label = pickByHeight(h) || pickByWidth(w);
-    // Fallback: guess from filename tokens (e.g., 2160p, 4k, 1080p)
-    if (!label) {
-      const name = String(v.name || v.title || '');
-      const lower = name.toLowerCase();
-      if (/\b(2160p|4k|uhd)\b/.test(lower)) label = '2160p';
-      else if (/\b1440p\b/.test(lower)) label = '1440p';
-      else if (/\b1080p\b/.test(lower)) label = '1080p';
-      else if (/\b720p\b/.test(lower)) label = '720p';
-      else if (/\b480p\b/.test(lower)) label = '480p';
-      else if (/\b360p\b/.test(lower)) label = '360p';
-      else if (/\b240p\b/.test(lower)) label = '240p';
-    }
-    if (q) {
-      // We now prefer the bottom-left overlay; hide the top-right badge to avoid duplication
-      q.textContent = label || '';
-      hide(q);
-      try {
-        q.setAttribute('aria-hidden', label ? 'false' : 'true');
-      }
-      catch (_) { }
-    }
-
-    // Populate Stash-like bottom-left overlay info (resolution + duration)
-    if (overlay) {
-      const hasRes = !!label;
-      if (hasRes) {
-        showAs(overlay, 'inline-flex');
-        try {
-          overlay.setAttribute('aria-hidden', 'false');
-        }
-        catch (_) { }
-      }
-      else {
-        hide(overlay);
-        try {
-          overlay.setAttribute('aria-hidden', 'true');
-        }
-        catch (_) { }
-      }
-    }
-  }
-  catch (_) { }
+  // Defer quality / resolution overlay population until element intersects viewport (reduces synchronous cost).
+  el._needsMeta = true;
 
   // Add video hover preview functionality
   el.addEventListener('mouseenter', async () => {
-    if (!hoverPreviewsEnabled) {
+    if (!hoverEnabled) {
       return;
     }
     // Stop any other tile's hover video before starting this one
@@ -638,7 +607,9 @@ function videoCard(v) {
     stopAllTileHovers(el);
 
     const video = document.createElement('video');
-    video.className = 'thumb hover-video';
+    // Use updated class naming so sizing rules (thumbnail-img) still apply to the hover element.
+    // Keep a distinct marker class for potential styling (.hover-video) without relying on removed .thumb class.
+    video.className = 'thumbnail-img hover-video';
     video.src = url;
     video.muted = true;
     video.autoplay = true;
@@ -653,7 +624,7 @@ function videoCard(v) {
     }
     catch (_) { }
   });
-  function restoreThumb() {
+  function restoreThumbnail() {
     const vid = el.querySelector('video.hover-video');
     if (!vid) {
       return;
@@ -679,14 +650,8 @@ function videoCard(v) {
       vid.remove();
     }
     // Show placeholder if no thumbnail source
-    if (!imgSrc && placeholderSvg) {
-      hide(img);
-      show(placeholderSvg);
-    }
-    else {
-      show(img);
-      hide(placeholderSvg);
-    }
+    if (!imgSrc) el.classList.remove('loaded');
+    else el.classList.add('loaded');
   }
 
   el.addEventListener('mouseleave', () => {
@@ -696,7 +661,7 @@ function videoCard(v) {
       clearTimeout(el._hoverTimer);
       el._hoverTimer = null;
     }
-    restoreThumb();
+    restoreThumbnail();
   });
 
   const title = el.querySelector('.title');
@@ -709,6 +674,90 @@ function videoCard(v) {
     handleCardClick(event, v.path);
   });
   return el;
+}
+
+// -----------------------------
+// Deferred tile metadata & lazy loading observer setup (runs once)
+// -----------------------------
+if (!window.__tileIO) {
+  try {
+    const computeTileMeta = (card) => {
+      if (!card || !card._needsMeta) return;
+      card._needsMeta = false;
+      try {
+        const w = Number(card.dataset.w || '');
+        const h = Number(card.dataset.h || '');
+        const name = String(card.dataset.name || '');
+        const q = card.querySelector('.quality-badge');
+        const overlay = card.querySelector('.overlay-info');
+        const overlayRes = overlay ? overlay.querySelector('.overlay-resolution') : null;
+        let label = '';
+        const pickByHeight = (hh) => {
+          if (!Number.isFinite(hh) || hh <= 0) return '';
+          if (hh >= 2160) return '2160p';
+          if (hh >= 1440) return '1440p';
+          if (hh >= 1080) return '1080p';
+          if (hh >= 720) return '720p';
+          if (hh >= 480) return '480p';
+          if (hh >= 360) return '360p';
+          if (hh >= 240) return '240p';
+          return '';
+        };
+        const pickByWidth = (ww) => {
+          if (!Number.isFinite(ww) || ww <= 0) return '';
+          if (ww >= 3840) return '2160p';
+          if (ww >= 2560) return '1440p';
+          if (ww >= 1920) return '1080p';
+          if (ww >= 1280) return '720p';
+          if (ww >= 854) return '480p';
+          if (ww >= 640) return '360p';
+          if (ww >= 426) return '240p';
+          return '';
+        };
+        label = pickByHeight(h) || pickByWidth(w);
+        if (!label && name) {
+          const lower = name.toLowerCase();
+          if (/\b(2160p|4k|uhd)\b/.test(lower)) label = '2160p';
+          else if (/\b1440p\b/.test(lower)) label = '1440p';
+          else if (/\b1080p\b/.test(lower)) label = '1080p';
+          else if (/\b720p\b/.test(lower)) label = '720p';
+          else if (/\b480p\b/.test(lower)) label = '480p';
+          else if (/\b360p\b/.test(lower)) label = '360p';
+          else if (/\b240p\b/.test(lower)) label = '240p';
+        }
+        if (q) {
+          q.textContent = label || '';
+          hide(q); // prefer overlay variant
+          try { q.setAttribute('aria-hidden', label ? 'false' : 'true'); } catch (_) { }
+        }
+        if (overlay && overlayRes) {
+          if (label) {
+            overlayRes.textContent = label;
+            showAs(overlay, 'inline-flex');
+            try { overlay.setAttribute('aria-hidden', 'false'); } catch (_) { }
+          } else {
+            hide(overlay);
+            try { overlay.setAttribute('aria-hidden', 'true'); } catch (_) { }
+          }
+        }
+        card._metaApplied = true;
+      }
+      catch (_) { }
+    };
+    window.__computeTileMeta = computeTileMeta;
+    window.__tileIO = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        const node = e.target;
+        const card = node.closest('.card');
+        if (card && card._needsMeta) computeTileMeta(card);
+        if (node.dataset && node.dataset.src && !node.src) {
+          node.src = node.dataset.src;
+        }
+        try { window.__tileIO.unobserve(node); } catch (_) { }
+      }
+    }, { root: document.getElementById('library-panel') || null, rootMargin: '200px 0px', threshold: 0.01 });
+  } catch (_) { }
 }
 
 function dirCard(d) {
@@ -747,13 +796,36 @@ function currentPath() {
 
 async function loadLibrary() {
   try {
-    hide(statusEl);
-    showAs(spinner, 'block');
-    hide(grid);
+    const isAppend = infiniteScrollEnabled && currentPage > 1;
+    if (!isAppend) {
+      hide(statusEl);
+      showAs(spinner, 'block');
+      hide(grid);
+      // Reset stable page size snapshot when starting a new sequence
+      stablePageSize = null;
+    } else {
+      // Append mode: keep current tiles visible; show lightweight busy state on sentinel
+      if (infiniteScrollSentinel) {
+        infiniteScrollSentinel.textContent = 'Loading…';
+        infiniteScrollSentinel.style.fontSize = '11px';
+        infiniteScrollSentinel.style.textAlign = 'center';
+        infiniteScrollSentinel.style.color = '#778';
+      }
+    }
 
     const url = new URL('/api/library', window.location.origin);
-    const pageSize = applyColumnsAndComputePageSize();
+    // Lock page size after first computation so subsequent pages add a consistent count
+    let pageSize;
+    if (currentPage === 1 || !stablePageSize) {
+      pageSize = applyColumnsAndComputePageSize();
+      stablePageSize = pageSize;
+    } else {
+      // Still update columns (visual responsiveness) but ignore new dynamic size
+      applyColumnsAndComputePageSize();
+      pageSize = stablePageSize;
+    }
     url.searchParams.set('page', String(currentPage));
+    // In infinite scroll mode, still request page-sized chunks (server handles page param)
     url.searchParams.set('page_size', String(pageSize));
     url.searchParams.set('sort', sortSelect.value || 'date');
     url.searchParams.set('order', orderToggle.dataset.order || 'desc');
@@ -815,12 +887,22 @@ async function loadLibrary() {
       files = files.slice(0, effectivePageSize);
     }
 
-    // Update pagination UI
-    pageInfo.textContent = `Page ${currentPage} of ${totalPages} (${totalFiles} files)`;
-    prevBtn.disabled = currentPage <= 1;
-    nextBtn.disabled = currentPage >= totalPages;
+    // Update pagination / infinite scroll UI
+    if (infiniteScrollEnabled) {
+      const effectiveSize = stablePageSize || applyColumnsAndComputePageSize();
+      const shown = Math.min(totalFiles, currentPage * effectiveSize);
+      pageInfo.textContent = `Showing ${shown} of ${totalFiles}`;
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
+    } else {
+      pageInfo.textContent = `Page ${currentPage} of ${totalPages} (${totalFiles} files)`;
+      prevBtn.disabled = currentPage <= 1;
+      nextBtn.disabled = currentPage >= totalPages;
+    }
 
-    grid.innerHTML = '';
+    if (!infiniteScrollEnabled || currentPage === 1) {
+      grid.innerHTML = '';
+    }
     if (files.length === 0) {
       // When searching, do not auto-fill from subfolders;
       // show no results instead
@@ -911,24 +993,74 @@ async function loadLibrary() {
         return;
       }
     }
-    for (const f of files) {
-      grid.appendChild(videoCard(f));
-    }
-
-    // Always hide status and show grid if we got here without errors
+    // Progressive tile insertion (improves responsiveness for large sets)
+    const nodes = files.map(videoCard);
+    const BATCH = 48;
+    let i = 0;
     hide(statusEl);
-    hide(spinner);
-    show(grid);
-    // Dynamic grid: no pruning; page size dictated by densityConfigs/applyColumnsAndComputePageSize.
-    // After render, adjust side spacing to eliminate vertical scroll if possible.
-    requestAnimationFrame(() => {
-      const c = grid.querySelector('.card');
-      if (c) {
-        const h = c.getBoundingClientRect().height;
-        if (h && isFinite(h) && h > 50) lastCardHeight = h;
+    if (!isAppend) hide(spinner);
+    if (!infiniteScrollEnabled || currentPage === 1) {
+      grid.innerHTML = '';
+    }
+    // Mark insertion pending so infinite scroll won't trigger another page mid-insert
+    if (!infiniteScrollPendingInsertion) {
+      infiniteScrollPendingInsertion = new Promise((resolve) => { grid._resolveInsertion = resolve; });
+    }
+    function finishInsertion() {
+      if (grid._resolveInsertion) {
+        try { grid._resolveInsertion(); } catch (_) { }
+        delete grid._resolveInsertion;
       }
-      enforceGridSideSpacing();
-    });
+      infiniteScrollPendingInsertion = null;
+    }
+    function insertBatch() {
+      const frag = document.createDocumentFragment();
+      const start = i;
+      for (; i < nodes.length && i < start + BATCH; i++) {
+        frag.appendChild(nodes[i]);
+      }
+      grid.appendChild(frag);
+      if (i < nodes.length) {
+        if (window.requestIdleCallback) {
+          requestIdleCallback(insertBatch, { timeout: 120 });
+        } else {
+          requestAnimationFrame(insertBatch);
+        }
+      } else {
+        // Finished
+        requestAnimationFrame(() => {
+          const c = grid.querySelector('.card');
+          if (c) {
+            const h = c.getBoundingClientRect().height;
+            if (h && isFinite(h) && h > 50) lastCardHeight = h;
+          }
+          enforceGridSideSpacing();
+          finishInsertion();
+          // Finished inserting; do not auto-trigger next page. User must reach bottom again.
+        });
+      }
+      if (grid.classList.contains('hidden')) show(grid);
+      if (infiniteScrollEnabled) setupInfiniteScrollSentinel();
+      if (infiniteScrollSentinel) infiniteScrollSentinel.textContent = '';
+      // No eager chain trigger here (strict bottom-only mode).
+    }
+    if (nodes.length <= BATCH) {
+      const frag = document.createDocumentFragment();
+      nodes.forEach(n => frag.appendChild(n));
+      grid.appendChild(frag);
+      show(grid);
+      requestAnimationFrame(() => enforceGridSideSpacing());
+      finishInsertion();
+      // Do not auto-trigger; wait for explicit bottom overscroll.
+    } else {
+      if (window.requestIdleCallback) requestIdleCallback(insertBatch, { timeout: 80 });
+      else requestAnimationFrame(insertBatch);
+    }
+    if (infiniteScrollEnabled) {
+      setupInfiniteScrollSentinel();
+      if (infiniteScrollSentinel) infiniteScrollSentinel.textContent = '';
+      // No consolidated trigger; bottom overscroll only.
+    }
   }
   catch (e) {
     console.error('Library loading error:', e);
@@ -1090,16 +1222,16 @@ if (randomPlayBtn) {
       url.searchParams.set('order', orderToggle.dataset.order || 'desc');
       const resSel = document.getElementById('resSelect');
       const resVal = resSel ? String(resSel.value || '') : '';
-      if (resVal) url.searchParams.set('res_min', resVal);
+      if (resVal) { url.searchParams.set('res_min', resVal); }
       const searchVal = computeSearchVal();
-      if (searchVal) url.searchParams.set('search', searchVal);
+      if (searchVal) { url.searchParams.set('search', searchVal); }
       const val = (folderInput.value || '').trim();
       const p = currentPath();
-      if (val && !isAbsolutePath(val) && p) url.searchParams.set('path', p);
-      if (libraryTagFilters.length) url.searchParams.set('tags', libraryTagFilters.join(','));
-      if (libraryPerformerFilters.length) url.searchParams.set('performers', libraryPerformerFilters.join(','));
+      if (val && !isAbsolutePath(val) && p) { url.searchParams.set('path', p); }
+      if (libraryTagFilters.length) { url.searchParams.set('tags', libraryTagFilters.join(',')); }
+      if (libraryPerformerFilters.length) { url.searchParams.set('performers', libraryPerformerFilters.join(',')); }
       const r = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) { throw new Error(`HTTP ${r.status}`); }
       const pl = await r.json();
       const f = (pl?.data?.files || [])[0];
       if (!f || !f.path) {
@@ -1198,23 +1330,134 @@ function installAutoRandomListener() {
 }
 installAutoRandomListener();
 
+// -----------------------------
+// Infinite Scroll Helpers
+// -----------------------------
+function teardownInfiniteScroll() {
+  try {
+    if (infiniteScrollIO && infiniteScrollSentinel) {
+      infiniteScrollIO.unobserve(infiniteScrollSentinel);
+    }
+  } catch (_) { }
+  if (infiniteScrollSentinel && infiniteScrollSentinel.parentNode) {
+    try { infiniteScrollSentinel.remove(); } catch (_) { }
+  }
+  infiniteScrollSentinel = null;
+  infiniteScrollIO = null;
+}
+
+// If the sentinel was already visible before the user actually scrolled,
+// the original IntersectionObserver callback may have fired while
+// infiniteScrollUserScrolled was still false (thus loading was skipped).
+// When the user does finally scroll (or interacts in a way that implies
+// intent to scroll), we manually re-check visibility and trigger the load.
+function getScrollContainer() {
+  // Library content is inside #library-panel; fallback to documentElement/body.
+  const panel = document.getElementById('library-panel');
+  return panel || document.scrollingElement || document.documentElement || document.body;
+}
+function hasVerticalScroll() {
+  const sc = getScrollContainer();
+  if (!sc) return false;
+  return sc.scrollHeight > sc.clientHeight + 4; // small tolerance
+}
+function isAtBottom() {
+  const sc = getScrollContainer();
+  if (!sc) return false;
+  const remaining = sc.scrollHeight - (sc.scrollTop + sc.clientHeight);
+  return remaining <= INFINITE_SCROLL_BOTTOM_THRESHOLD;
+}
+function maybeTriggerPendingInfiniteScroll() {
+  if (!infiniteScrollEnabled) return;
+  if (infiniteScrollLoading) return;
+  if (currentPage >= totalPages) return;
+  if (infiniteScrollPendingInsertion) return;
+  if (!infiniteScrollUserScrolled) return; // require explicit user interaction
+  if (!isAtBottom()) return; // not actually at bottom
+  const sc = getScrollContainer();
+  if (sc && sc.scrollHeight === infiniteScrollLastTriggerHeight) {
+    // Already triggered at this height; require a scroll height change and another bottom reach.
+    return;
+  }
+  infiniteScrollLastTriggerHeight = sc ? sc.scrollHeight : 0;
+  infiniteScrollLoading = true;
+  currentPage += 1;
+  const done = () => { infiniteScrollLoading = false; };
+  const p = loadLibrary();
+  if (p && typeof p.then === 'function') p.finally(done); else done();
+}
+
+function markUserScrolled() {
+  if (!infiniteScrollEnabled) return;
+  if (!infiniteScrollUserScrolled) infiniteScrollUserScrolled = true;
+  // Do not auto-trigger; bottom overscroll check happens via sentinel/intersection.
+}
+
+function setupInfiniteScrollSentinel() {
+  if (!infiniteScrollEnabled) return;
+  const panel = document.getElementById('library-panel');
+  if (!panel) return;
+  // Mark when user actually scrolls (prevents immediate auto-trigger on load)
+  if (!panel._infiniteScrollScrollWired) {
+    panel._infiniteScrollScrollWired = true;
+    panel.addEventListener('scroll', markUserScrolled, { passive: true });
+    // Also listen on the window/document in case the body (not panel) is the scrolling element.
+    window.addEventListener('scroll', markUserScrolled, { passive: true });
+    window.addEventListener('wheel', markUserScrolled, { passive: true });
+    window.addEventListener('touchmove', markUserScrolled, { passive: true });
+    window.addEventListener('keydown', (e) => {
+      // Keys that commonly initiate scroll/navigation; we can just mark on any keydown for simplicity.
+      // This avoids over-specific logic missing an edge case.
+      markUserScrolled();
+    }, { passive: true });
+  }
+  if (!infiniteScrollSentinel) {
+    infiniteScrollSentinel = document.createElement('div');
+    infiniteScrollSentinel.className = 'infinite-sentinel';
+    infiniteScrollSentinel.setAttribute('aria-hidden', 'true');
+    infiniteScrollSentinel.style.width = '100%';
+    infiniteScrollSentinel.style.height = '1px';
+    infiniteScrollSentinel.style.marginTop = '1px';
+  }
+  const gridParent = grid && grid.parentNode ? grid.parentNode : panel;
+  if (!infiniteScrollSentinel.parentNode) {
+    gridParent.appendChild(infiniteScrollSentinel);
+  } else {
+    // Ensure it is last child
+    try { gridParent.appendChild(infiniteScrollSentinel); } catch (_) { }
+  }
+  if (!infiniteScrollIO) {
+    try {
+      infiniteScrollIO = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          if (!infiniteScrollEnabled) return;
+          // Intersection alone no longer triggers eager load; rely on bottom check.
+          maybeTriggerPendingInfiniteScroll();
+        }
+      }, { root: null, rootMargin: '0px 0px', threshold: 0.01 });
+    } catch (_) { return; }
+  }
+  try { infiniteScrollIO.observe(infiniteScrollSentinel); } catch (_) { }
+}
+
 
 // -----------------------------
 // Unified search + filter chips (#tag, @performer, plain text tokens)
 // -----------------------------
 function persistLibraryFilters() {
   try {
-    localStorage.setItem('filters.tags', JSON.stringify(libraryTagFilters));
-    localStorage.setItem('filters.performers', JSON.stringify(libraryPerformerFilters));
-    localStorage.setItem('filters.searchTerms', JSON.stringify(librarySearchTerms));
+    lsSetJSON('filters.tags', libraryTagFilters);
+    lsSetJSON('filters.performers', libraryPerformerFilters);
+    lsSetJSON('filters.searchTerms', librarySearchTerms);
   }
   catch (_) { }
 }
 function loadLibraryFilters() {
   try {
-    const t = JSON.parse(localStorage.getItem('filters.tags') || '[]');
-    const p = JSON.parse(localStorage.getItem('filters.performers') || '[]');
-    const s = JSON.parse(localStorage.getItem('filters.searchTerms') || '[]');
+    const t = lsGetJSON('filters.tags', []);
+    const p = lsGetJSON('filters.performers', []);
+    const s = lsGetJSON('filters.searchTerms', []);
     if (Array.isArray(t)) libraryTagFilters = t.filter(Boolean);
     if (Array.isArray(p)) libraryPerformerFilters = p.filter(Boolean);
     if (Array.isArray(s)) librarySearchTerms = s.filter(Boolean);
@@ -1247,8 +1490,8 @@ function renderUnifiedFilterChips() {
     }
     el.classList.add(cls);
     const labelEl = el.querySelector('.chip-label');
-    if (labelEl) labelEl.textContent = label;
-    if (title) el.title = title;
+    if (labelEl) { labelEl.textContent = label; }
+    if (title) { el.title = title; }
     const rmBtn = el.querySelector('.remove');
     if (rmBtn) {
       rmBtn.addEventListener('click', () => {
@@ -1272,7 +1515,7 @@ function renderUnifiedFilterChips() {
   }, `Performer: ${p}`));
 }
 function commitUnifiedInputToken(raw) {
-  if (!raw) return false;
+  if (!raw) { return false; }
   let consumed = false;
   if (raw.startsWith('#')) {
     const tag = raw.slice(1).trim();
@@ -1305,20 +1548,20 @@ function commitUnifiedInputToken(raw) {
 function computeSearchVal() {
   const live = (unifiedInput && unifiedInput.value || '').trim();
   const parts = [...librarySearchTerms];
-  if (live && !live.startsWith('#') && !live.startsWith('@')) parts.push(live);
+  if (live && !live.startsWith('#') && !live.startsWith('@')) { parts.push(live); }
   return parts.join(' ');
 }
 if (unifiedInput) {
   unifiedInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       const raw = unifiedInput.value.trim();
-      if (commitUnifiedInputToken(raw)) unifiedInput.value = '';
+      if (commitUnifiedInputToken(raw)) { unifiedInput.value = ''; }
     }
     else if (e.key === 'Backspace' && !unifiedInput.value) {
       // Remove last chip (search -> tag -> performer priority reversed for recency illusions)
-      if (libraryPerformerFilters.length) libraryPerformerFilters.pop();
-      else if (libraryTagFilters.length) libraryTagFilters.pop();
-      else if (librarySearchTerms.length) librarySearchTerms.pop();
+      if (libraryPerformerFilters.length) { libraryPerformerFilters.pop(); }
+      else if (libraryTagFilters.length) { libraryTagFilters.pop(); }
+      else if (librarySearchTerms.length) { librarySearchTerms.pop(); }
       persistLibraryFilters();
       renderUnifiedFilterChips();
       currentPage = 1;
@@ -1401,7 +1644,7 @@ async function loadStats() {
     const d = body.data || {};
     const setText = (id, val) => {
       const el = document.getElementById(id);
-      if (el) el.textContent = (val === null || val === undefined) ? '—' : val;
+      if (el) { el.textContent = (val === null || val === undefined) ? '—' : val; }
     };
     setText('statsNumFiles', d.num_files ?? '—');
     setText('statsTotalSize', (typeof d.total_size === 'number') ? fmtSize(d.total_size) : '—');
@@ -1414,9 +1657,7 @@ async function loadStats() {
     if (resCanvas && d.res_buckets) drawPieChart(resCanvas, d.res_buckets);
     if (durCanvas && d.duration_buckets) drawPieChart(durCanvas, d.duration_buckets);
   }
-  catch (e) {
-    // silent
-  }
+  catch (e) { }
 }
 
 // run on initial load
@@ -1447,29 +1688,12 @@ function getSelectedFilePath() {
 
 function setArtifactSpinner(artifact, spinning) {
   const btn = document.querySelector(`.artifact-gen-btn[data-artifact="${artifact}"]`);
-  if (!btn) {
-    return;
-  }
-  const spinner = btn.querySelector('.artifact-spinner');
-  const label = btn.querySelector('.artifact-btn-label');
+  if (!btn) return;
   if (spinning) {
-    const tpl = document.getElementById('loadingSpinnerTemplate');
-    if (tpl && tpl.content) {
-      while (spinner.firstChild) spinner.removeChild(spinner.firstChild);
-      spinner.appendChild(tpl.content.firstElementChild.cloneNode(true));
-    }
-    else {
-      // Fallback to legacy inline SVG if template missing
-      spinner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="#22c55e" stroke-width="3" fill="none" stroke-dasharray="60" stroke-dashoffset="0"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>';
-    }
-    show(spinner);
-    if (label) label.style.opacity = '0.5';
+    btn.dataset.loading = '1';
     btn.disabled = true;
-  }
-  else {
-    while (spinner.firstChild) spinner.removeChild(spinner.firstChild);
-    hide(spinner);
-    if (label) label.style.opacity = '';
+  } else {
+    delete btn.dataset.loading;
     btn.disabled = false;
   }
 }
@@ -1500,7 +1724,7 @@ async function triggerArtifactJob(artifact) {
   }
   try {
     const res = await fetch(endpoint + params, { method: 'POST' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
     // Do NOT clear spinner here; we now wait for job completion via TasksManager reconciliation.
   }
   catch (e) {
@@ -1565,30 +1789,31 @@ densitySlider.addEventListener('input', () => {
 // Apply density once on startup so initial load uses correct columns
 updateDensity();
 
-// Settings wiring for hover previews
+// Settings wiring for hover video previews (canonical key 'setting.hover')
 function loadHoverSetting() {
   try {
-    const raw = localStorage.getItem('setting.hoverPreviews');
-    hoverPreviewsEnabled = raw ? raw === '1' : false;
+    const raw = lsGet('setting.hover');
+    hoverEnabled = raw === '1';
   }
   catch (_) {
-    hoverPreviewsEnabled = false;
+    hoverEnabled = false;
   }
 }
-
 function saveHoverSetting() {
   try {
-    localStorage.setItem('setting.hoverPreviews', hoverPreviewsEnabled ? '1' : '0');
+    lsSet('setting.hover', hoverEnabled ? '1' : '0');
   }
   catch (_) { }
 }
 
 function loadHoverOnDemandSetting() {
   try {
-    const raw = localStorage.getItem('setting.hoverOnDemand');
-    // Default remains false;
-    // do not auto-enable when feature flag is off.
-    hoverOnDemandEnabled = FEATURE_HOVER_ON_DEMAND && raw ? raw === '1' : false;
+    const raw = lsGet('setting.hoverOnDemand');
+    // Respect stored value when present; default to false when absent.
+    // FEATURE_HOVER_ON_DEMAND controls only whether the UI/behavior is active,
+    // not whether we remember prior intent.
+    const stored = raw ? raw === '1' : false;
+    hoverOnDemandEnabled = FEATURE_HOVER_ON_DEMAND ? stored : false;
   }
   catch (_) {
     hoverOnDemandEnabled = false;
@@ -1597,7 +1822,7 @@ function loadHoverOnDemandSetting() {
 
 function saveHoverOnDemandSetting() {
   try {
-    localStorage.setItem('setting.hoverOnDemand', hoverOnDemandEnabled ? '1' : '0');
+    lsSet('setting.hoverOnDemand', hoverOnDemandEnabled ? '1' : '0');
   }
   catch (_) { }
 }
@@ -1605,7 +1830,7 @@ function saveHoverOnDemandSetting() {
 // Settings for timeline display toggles
 function loadShowHeatmapSetting() {
   try {
-    const raw = localStorage.getItem('setting.showHeatmap');
+    const raw = lsGet('setting.showHeatmap');
     // Default to ON when unset
     showHeatmap = raw == null ? true : raw === '1';
   }
@@ -1615,13 +1840,13 @@ function loadShowHeatmapSetting() {
 }
 function saveShowHeatmapSetting() {
   try {
-    localStorage.setItem('setting.showHeatmap', showHeatmap ? '1' : '0');
+    lsSet('setting.showHeatmap', showHeatmap ? '1' : '0');
   }
   catch (_) { }
 }
 function loadShowScenesSetting() {
   try {
-    const raw = localStorage.getItem('setting.showScenes');
+    const raw = lsGet('setting.showScenes');
     showScenes = raw == null ? true : raw === '1';
   }
   catch (_) {
@@ -1630,13 +1855,14 @@ function loadShowScenesSetting() {
 }
 function saveShowScenesSetting() {
   try {
-    localStorage.setItem('setting.showScenes', showScenes ? '1' : '0');
+    lsSet('setting.showScenes', showScenes ? '1' : '0');
   }
   catch (_) { }
 }
 
 function wireSettings() {
-  const cbPlay = document.getElementById('settingHoverPreviews');
+  // Backward compatibility: JS previously looked for #settingHover while HTML uses #settingHoverPreviews.
+  const cbPlay = document.getElementById('settingHoverPreviews') || document.getElementById('settingHover');
   const cbDemand = document.getElementById('settingHoverOnDemand');
   const cbConfirmDeletes = document.getElementById('settingConfirmDeletes');
   const concurrencyInput = document.getElementById('settingConcurrency');
@@ -1646,6 +1872,7 @@ function wireSettings() {
   const cbAutoplayResume = document.getElementById('settingAutoplayResume');
   const cbShowHeatmap = document.getElementById('settingShowHeatmap');
   const cbShowScenes = document.getElementById('settingShowScenes');
+  const cbInfinite = document.getElementById('settingInfiniteScroll');
   loadHoverSetting();
   loadHoverOnDemandSetting();
   loadShowHeatmapSetting();
@@ -1658,11 +1885,11 @@ function wireSettings() {
     confirmDeletesEnabled = false;
   }
   if (cbPlay) {
-    cbPlay.checked = !!hoverPreviewsEnabled;
+    cbPlay.checked = !!hoverEnabled;
     cbPlay.addEventListener('change', () => {
-      hoverPreviewsEnabled = !!cbPlay.checked;
+      hoverEnabled = !!cbPlay.checked;
       saveHoverSetting();
-      if (!hoverPreviewsEnabled) stopAllTileHovers();
+      if (!hoverEnabled) stopAllTileHovers();
     });
   }
   if (cbDemand) {
@@ -1671,6 +1898,24 @@ function wireSettings() {
       hoverOnDemandEnabled = !!cbDemand.checked;
       saveHoverOnDemandSetting();
     });
+  }
+  // Infinite scroll setting (default ON if unset)
+  try {
+    const rawInf = localStorage.getItem('setting.infiniteScroll');
+    if (rawInf === null) infiniteScrollEnabled = true; else infiniteScrollEnabled = rawInf === '1';
+  } catch (_) { infiniteScrollEnabled = true; }
+  if (cbInfinite) {
+    cbInfinite.checked = !!infiniteScrollEnabled;
+    if (!cbInfinite._wired) {
+      cbInfinite._wired = true;
+      cbInfinite.addEventListener('change', () => {
+        infiniteScrollEnabled = !!cbInfinite.checked;
+        try { localStorage.setItem('setting.infiniteScroll', infiniteScrollEnabled ? '1' : '0'); } catch (_) { }
+        currentPage = 1;
+        teardownInfiniteScroll();
+        loadLibrary();
+      });
+    }
   }
   if (cbConfirmDeletes) {
     cbConfirmDeletes.checked = !!confirmDeletesEnabled;
@@ -1704,7 +1949,7 @@ function wireSettings() {
   // Autoplay resume setting
   const loadAutoplayResume = () => {
     try {
-      return localStorage.getItem('setting.autoplayResume') === '1';
+      return lsGet('setting.autoplayResume') === '1';
     }
     catch (_) {
       return false;
@@ -1712,7 +1957,7 @@ function wireSettings() {
   };
   const saveAutoplayResume = (v) => {
     try {
-      localStorage.setItem('setting.autoplayResume', v ? '1' : '0');
+      lsSet('setting.autoplayResume', v ? '1' : '0');
     }
     catch (_) { }
   };
@@ -1725,7 +1970,7 @@ function wireSettings() {
   const loadStartAtIntro = () => {
     try {
       // default to on if not set
-      const v = localStorage.getItem('setting.startAtIntro');
+      const v = lsGet('setting.startAtIntro');
       if (v === null || v === undefined) return true;
       return v === '1';
     }
@@ -1735,7 +1980,7 @@ function wireSettings() {
   };
   const saveStartAtIntro = (v) => {
     try {
-      localStorage.setItem('setting.startAtIntro', v ? '1' : '0');
+      lsSet('setting.startAtIntro', v ? '1' : '0');
     }
     catch (_) { }
   };
@@ -1752,12 +1997,10 @@ function wireSettings() {
       if (r.ok) {
         const data = await r.json();
         const val = Number(data?.data?.maxConcurrency) || 4;
-        if (concurrencyInput) concurrencyInput.value = String(val);
+        if (concurrencyInput) { concurrencyInput.value = String(val); }
       }
       else if (concurrencyInput) {
-        concurrencyInput.value = String(
-          Number(localStorage.getItem('setting.maxConcurrency')) || 4
-        );
+        concurrencyInput.value = String(Number(localStorage.getItem('setting.maxConcurrency')) || 4);
       }
     }
     catch (_) {
@@ -1778,9 +2021,9 @@ function wireSettings() {
         const c = Number(data?.data?.concurrency) || 4;
         const th = Number(data?.data?.threads) || 1;
         const tl = Number(data?.data?.timelimit);
-        if (ffmpegConcurrencyInput) ffmpegConcurrencyInput.value = String(c);
-        if (ffmpegThreadsInput) ffmpegThreadsInput.value = String(th);
-        if (ffmpegTimelimitInput) ffmpegTimelimitInput.value = String(isNaN(tl) ? 600 : tl);
+        if (ffmpegConcurrencyInput) { ffmpegConcurrencyInput.value = String(c); }
+        if (ffmpegThreadsInput) { ffmpegThreadsInput.value = String(th); }
+        if (ffmpegTimelimitInput) { ffmpegTimelimitInput.value = String(isNaN(tl) ? 600 : tl); }
       }
     }
     catch (e) { }
@@ -1814,9 +2057,9 @@ function wireSettings() {
       const th = ffmpegThreadsInput ? Math.max(1, Math.min(32, Number(ffmpegThreadsInput.value || 1))) : undefined;
       const tl = ffmpegTimelimitInput ? Math.max(0, Math.min(86400, Number(ffmpegTimelimitInput.value || 600))) : undefined;
       const params = new URLSearchParams();
-      if (c !== undefined) params.append('concurrency', String(c));
-      if (th !== undefined) params.append('threads', String(th));
-      if (tl !== undefined) params.append('timelimit', String(tl));
+      if (c !== undefined) { params.append('concurrency', String(c)); }
+      if (th !== undefined) { params.append('threads', String(th)); }
+      if (tl !== undefined) { params.append('timelimit', String(tl)); }
       try {
         const r = await fetch(`/api/settings/ffmpeg?${params.toString()}`, { method: 'POST' });
         if (!r.ok) {
@@ -1824,9 +2067,9 @@ function wireSettings() {
         }
         const data = await r.json();
         const applied = data?.data || {};
-        if (ffmpegConcurrencyInput && applied.concurrency != null) ffmpegConcurrencyInput.value = String(applied.concurrency);
-        if (ffmpegThreadsInput && applied.threads != null) ffmpegThreadsInput.value = String(applied.threads);
-        if (ffmpegTimelimitInput && applied.timelimit != null) ffmpegTimelimitInput.value = String(applied.timelimit);
+        if (ffmpegConcurrencyInput && applied.concurrency != null) { ffmpegConcurrencyInput.value = String(applied.concurrency); }
+        if (ffmpegThreadsInput && applied.threads != null) { ffmpegThreadsInput.value = String(applied.threads); }
+        if (ffmpegTimelimitInput && applied.timelimit != null) { ffmpegTimelimitInput.value = String(applied.timelimit); }
         tasksManager?.showNotification(`FFmpeg settings updated (proc=${applied.concurrency}, threads=${applied.threads}, limit=${applied.timelimit}s)`, 'success');
       }
       catch (_) {
@@ -1851,7 +2094,7 @@ function wireSettings() {
 // replaced below with unified behavior)
 folderInput.addEventListener('dblclick', () => openFolderPicker());
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') loadLibrary();
+  if (document.visibilityState === 'visible') { loadLibrary(); }
 });
 window.addEventListener('load', () => {
   // Initialize density
@@ -1863,8 +2106,8 @@ window.addEventListener('load', () => {
     const sel = document.getElementById('resSelect');
     if (sel) {
       const validValues = ['', '2160', '1440', '1080', '720', '480'];
-      if (savedRes && validValues.includes(savedRes)) sel.value = savedRes;
-      else if (!savedRes) sel.value = '';
+      if (savedRes && validValues.includes(savedRes)) { sel.value = savedRes; }
+      else if (!savedRes) { sel.value = ''; }
     }
   }
   catch (_) { }
@@ -1990,6 +2233,9 @@ function enforceGridSideSpacing() {
   if (!grid || grid.hidden) {
     return;
   }
+  // When infinite scroll is enabled we keep card width stable to prevent perceptible size shifts
+  // as new batches append. So skip dynamic margin adjustments in that mode.
+  if (infiniteScrollEnabled) return;
   // Only operate when library panel is active
   const libPanel = document.getElementById('library-panel');
   if (libPanel && libPanel.hasAttribute('hidden')) return;
@@ -2663,7 +2909,7 @@ class TabRouter {
     // Persist last active tab across reloads;
     // fall back to library.
     try {
-      const saved = localStorage.getItem('activeTab');
+      const saved = lsGet('activeTab');
       this.defaultTab = saved || 'library';
     }
     catch (e) {
@@ -2874,7 +3120,7 @@ class TabSystem {
 
     // Persist active tab (ignore failures in private modes)
     try {
-      localStorage.setItem('activeTab', tabId);
+      lsSet('activeTab', tabId);
     }
     catch (e) {
       /* ignore */
@@ -2988,8 +3234,15 @@ function setupViewportFitPlayer() {
   }
 
   function recompute() {
+    // If panel is hidden (inactive tab), defer sizing until it's shown to avoid 0 height measurements
+    if (playerPanel.hasAttribute('hidden') || playerPanel.classList.contains('hidden')) {
+      return;
+    }
     // Panel height already excludes header (sticky header outside main scroll)
     const panelH = playerPanel.getBoundingClientRect().height;
+    if (!panelH) {
+      return; // guard against transient 0-height during layout passes
+    }
     // Overlay bar sits over video;
     // treat bar height negligible for layout
     const spare = 20;
@@ -3003,9 +3256,23 @@ function setupViewportFitPlayer() {
   }
   ['resize', 'orientationchange'].forEach((ev) => window.addEventListener(ev, recompute));
   vid.addEventListener('loadedmetadata', recompute);
+  // Recompute when the player tab becomes active (after it is shown)
+  window.addEventListener('tabchange', (e) => {
+    try {
+      if (e && e.detail && e.detail.activeTab === 'player') {
+        // run twice (immediate + after potential layout/scrollbars settle)
+        setTimeout(recompute, 0);
+        setTimeout(recompute, 120);
+      }
+    }
+    catch (_) { /* ignore */ }
+  });
   // Slight delay to allow fonts/layout settle
-  setTimeout(recompute, 0);
-  setTimeout(recompute, 150);
+  // Only attempt initial measurements if the player tab is already active (rare on first load)
+  if (!(playerPanel.hasAttribute('hidden') || playerPanel.classList.contains('hidden'))) {
+    setTimeout(recompute, 0);
+    setTimeout(recompute, 150);
+  }
 }
 
 // -----------------------------
@@ -3110,7 +3377,7 @@ const Player = (() => {
     badgeHoverStatus,
     badgePhashStatus;
   // Marker / overlay control buttons (grouped for clarity)
-  let btnSetThumb = null;
+  let btnSetThumbnail = null;
   let btnAddMarker = null;
   let btnSetIntroEnd = null;
   let btnSetOutroBegin = null;
@@ -3393,7 +3660,7 @@ const Player = (() => {
     badgeFacesStatus = pick('badge-faces-status', 'badgeFacesStatus');
     badgeHoverStatus = pick('badge-hover-status', 'badgeHoverStatus');
     badgePhashStatus = pick('badge-phash-status', 'badgePhashStatus');
-    btnSetThumb = qs('btnSetThumb');
+    btnSetThumbnail = qs('btnSetThumbnail');
     btnAddMarker = qs('btnAddMarker');
     btnSetIntroEnd = qs('btnSetIntroEnd');
     btnSetOutroBegin = qs('btnSetOutroBegin');
@@ -3721,7 +3988,7 @@ const Player = (() => {
                 // prefer localStorage per-path key first, then server-provided introEnd
                 try {
                   const key = `${LS_PREFIX}:introEnd:${currentPath}`;
-                  const raw = localStorage.getItem(key);
+                  const raw = lsGet(key);
                   let applied = false;
                   if (raw) {
                     const it = Number(raw);
@@ -3815,9 +4082,9 @@ const Player = (() => {
       });
       (timelineEl || scrubberTrackEl).addEventListener('mousemove', (e) => handleSpriteHover(e));
     }
-    if (btnSetThumb && !btnSetThumb._wired) {
-      btnSetThumb._wired = true;
-      btnSetThumb.addEventListener('click', async () => {
+    if (btnSetThumbnail && !btnSetThumbnail._wired) {
+      btnSetThumbnail._wired = true;
+      btnSetThumbnail.addEventListener('click', async () => {
         // THUMBNAIL_ASYNC: PLAYER BUTTON HANDLER start – triggers thumbnail generation (inline attempt + fallback) and initiates refresh logic
         const activePath = (window.Player && typeof window.Player.getPath === 'function') ? window.Player.getPath() : (typeof currentPath === 'function' ? currentPath() : currentPath);
         if (!videoEl || !activePath) {
@@ -3827,7 +4094,7 @@ const Player = (() => {
           const t = Math.max(0, videoEl.currentTime || 0);
           let immediateShown = false;
           try {
-            const iu = new URL('/api/cover/create_inline', window.location.origin);
+            const iu = new URL('/api/thumbnail/create_inline', window.location.origin);
             iu.searchParams.set('path', activePath);
             iu.searchParams.set('t', t.toFixed(3));
             iu.searchParams.set('overwrite', 'true');
@@ -3836,10 +4103,10 @@ const Player = (() => {
               const blob = await ir.blob();
               const obj = URL.createObjectURL(blob);
               try {
-                if (fiThumbImg) fiThumbImg.src = obj;
+                if (fiThumbnailImg) fiThumbnailImg.src = obj;
                 const card = document.querySelector(`.card[data-path="${activePath.replace(/"/g, '\\"')}"]`);
                 if (card) {
-                  const img = card.querySelector('img.thumb');
+                  const img = card.querySelector('img.thumbnail-img');
                   if (img) img.src = obj;
                 }
               }
@@ -3850,7 +4117,7 @@ const Player = (() => {
           }
           catch (_) { }
           if (!immediateShown) {
-            const u = new URL('/api/cover/create', window.location.origin);
+            const u = new URL('/api/thumbnail/create', window.location.origin);
             u.searchParams.set('path', activePath);
             u.searchParams.set('t', t.toFixed(3));
             u.searchParams.set('overwrite', 'true');
@@ -3862,12 +4129,12 @@ const Player = (() => {
             // Optimistic: assign a unique-busted cover URL immediately (old-index behavior)
             try {
               const bust = Date.now() + Math.floor(Math.random() * 10000);
-              const fresh = `/api/cover/get?path=${encodeURIComponent(activePath)}&cb=${bust}`;
+              const fresh = `/api/thumbnail/get?path=${encodeURIComponent(activePath)}&cb=${bust}`;
               const fi = document.getElementById('fiThumbnail');
               if (fi) fi.src = fresh;
               const card = document.querySelector(`.card[data-path="${activePath.replace(/"/g, '\\"')}"]`);
               if (card) {
-                const img = card.querySelector('img.thumb');
+                const img = card.querySelector('img.thumbnail-img');
                 if (img) img.src = fresh;
               }
             }
@@ -3877,18 +4144,18 @@ const Player = (() => {
               const deadline = Date.now() + 4000; // up to 4s
               let delay = 120;
               while (Date.now() < deadline) {
-                const headUrl = new URL('/api/cover/get', window.location.origin);
+                const headUrl = new URL('/api/thumbnail/get', window.location.origin);
                 headUrl.searchParams.set('path', activePath);
                 headUrl.searchParams.set('cb', Date.now().toString());
                 const hr = await fetch(headUrl.toString(), { method: 'HEAD', cache: 'no-store' });
                 if (hr.ok) {
                   const bust2 = Date.now() + Math.floor(Math.random() * 10000);
-                  const finalUrl = `/api/cover/get?path=${encodeURIComponent(activePath)}&cb=${bust2}`;
+                  const finalUrl = `/api/thumbnail/get?path=${encodeURIComponent(activePath)}&cb=${bust2}`;
                   const fi = document.getElementById('fiThumbnail');
                   if (fi) fi.src = finalUrl;
                   const card = document.querySelector(`.card[data-path="${activePath.replace(/"/g, '\\"')}"]`);
                   if (card) {
-                    const img = card.querySelector('img.thumb'); if (img) img.src = finalUrl;
+                    const img = card.querySelector('img.thumbnail-img'); if (img) img.src = finalUrl;
                   }
                   break;
                 }
@@ -3899,12 +4166,12 @@ const Player = (() => {
             catch (_) { }
             try {
               const bust = Date.now() + Math.floor(Math.random() * 10000);
-              const fresh = `/api/cover/get?path=${encodeURIComponent(activePath)}&cb=${bust}`;
-              if (fiThumbImg) fiThumbImg.src = fresh;
+              const fresh = `/api/thumbnail/get?path=${encodeURIComponent(activePath)}&cb=${bust}`;
+              if (fiThumbnailImg) { fiThumbnailImg.src = fresh; }
               const card = document.querySelector(`.card[data-path="${activePath.replace(/"/g, '\\"')}"]`);
               if (card) {
-                const img = card.querySelector('img.thumb');
-                if (img) img.src = fresh;
+                const img = card.querySelector('img.thumbnail-img');
+                if (img) { img.src = fresh; }
               }
             }
             catch (_) { }
@@ -3923,9 +4190,9 @@ const Player = (() => {
           if (got) {
             try {
               const card = document.querySelector(`.card[data-path="${activePath.replace(/"/g, '\\"')}"]`);
-              if (card) card.classList.add('thumb-updated');
+              if (card) card.classList.add('thumbnail-updated');
               setTimeout(() => {
-                if (card) card.classList.remove('thumb-updated');
+                if (card) { card.classList.remove('thumbnail-updated'); }
               }, 1200);
             }
             catch (_) { }
@@ -4135,11 +4402,11 @@ const Player = (() => {
         // Remove any lingering last keys and per-video progress stored during the previous session
         try {
           // remove exact last keys
-          localStorage.removeItem(keyLastVideoObj());
+          lsRemove(keyLastVideoObj());
         }
         catch (_) { }
         try {
-          localStorage.removeItem(keyLastVideoPathLegacy());
+          lsRemove(keyLastVideoPathLegacy());
         }
         catch (_) { }
         try {
@@ -4155,7 +4422,7 @@ const Player = (() => {
           }
           toRemove.forEach((k) => {
             try {
-              localStorage.removeItem(k);
+              lsRemove(k);
             }
             catch (_) { }
           });
@@ -4165,7 +4432,7 @@ const Player = (() => {
     }
     catch (_) { }
     try {
-      localStorage.removeItem('mediaPlayer:skipSaveOnUnload');
+      lsRemove('mediaPlayer:skipSaveOnUnload');
     }
     catch (_) { }
     setTimeout(tryAutoResumeLast, 800);
@@ -4277,14 +4544,14 @@ const Player = (() => {
   }
 
   // Sidebar File Info thumbnail handling
-  const fiThumbWrap = document.getElementById('fiThumbWrap');
-  const fiThumbImg = document.getElementById('fiThumbnail');
-  const fiSetThumbBtn = document.getElementById('fiSetThumbBtn');
+  const fiThumbnailWrap = document.getElementById('fiThumbnailWrap');
+  const fiThumbnailImg = document.getElementById('fiThumbnail');
+  const fiSetThumbnailBtn = document.getElementById('fiSetThumbnailBtn');
 
   async function refreshSidebarThumbnail(path) {
     try {
       // THUMBNAIL_ASYNC: REFRESH FUNCTION start – attempts to resolve & load latest cover image for sidebar + grid
-      if (!fiThumbWrap || !fiThumbImg || !path) {
+      if (!fiThumbnailWrap || !fiThumbnailImg || !path) {
         return;
       }
       let updated = false;
@@ -4292,10 +4559,10 @@ const Player = (() => {
       try {
         const card = document.querySelector(`.card[data-path="${path.replace(/"/g, '\\"')}"]`);
         if (card) {
-          const cardImg = card.querySelector('img.thumb');
+          const cardImg = card.querySelector('img.thumbnail-img');
           if (cardImg && cardImg.src) {
-            fiThumbImg.src = cardImg.src;
-            show(fiThumbWrap);
+            fiThumbnailImg.src = cardImg.src;
+            show(fiThumbnailWrap);
             return true; // done (already in sync with grid)
           }
         }
@@ -4309,7 +4576,7 @@ const Player = (() => {
       }
       const parent = parts.join('/');
       const stem = fname.replace(/\.[^.]+$/, '');
-      const coverAPI = `/api/cover/get?path=${encodeURIComponent(path)}&cb=${Date.now()}`;
+      const coverAPI = `/api/thumbnail/get?path=${encodeURIComponent(path)}&cb=${Date.now()}`;
       const enc = (p) => p.split('/').filter(Boolean).map(encodeURIComponent).join('/');
       const parentEnc = enc(parent);
       const artPath = ['/files', parentEnc, '.artifacts', stem + '.thumbnail.jpg'].filter(Boolean).join('/');
@@ -4337,7 +4604,7 @@ const Player = (() => {
           base += (base.includes('?') ? '&' : '?') + 'cb=' + Date.now();
         }
         // Optionally probe existence with HEAD for non-API paths to avoid transient 404 image flashes.
-        if (!c.startsWith('/api/cover/get')) {
+        if (!c.startsWith('/api/thumbnail/get')) {
           try {
             const head = await fetch(base.replace(/\?(?=[^?]*$).*/, (m) => m), { method: 'HEAD', cache: 'no-store' });
             if (!head.ok) {
@@ -4352,21 +4619,21 @@ const Player = (() => {
         await new Promise((resolve) => {
           const img = new Image();
           img.onload = () => {
-            fiThumbImg.classList.add('_updating');
-            fiThumbImg.src = url;
-            show(fiThumbWrap);
+            fiThumbnailImg.classList.add('_updating');
+            fiThumbnailImg.src = url;
+            show(fiThumbnailWrap);
             // Also update any grid card image for this path so library view reflects change immediately
             try {
               const card = document.querySelector(`.card[data-path="${path.replace(/"/g, '\\"')}"]`);
               if (card) {
-                const cardImg = card.querySelector('img.thumb');
+                const cardImg = card.querySelector('img.thumbnail-img');
                 if (cardImg) cardImg.src = url;
               }
             }
             catch (_) { }
             loaded = true;
             updated = true;
-            setTimeout(() => fiThumbImg.classList.remove('_updating'), 40);
+            setTimeout(() => fiThumbnailImg.classList.remove('_updating'), 40);
             resolve();
           };
           img.onerror = () => resolve();
@@ -4374,10 +4641,10 @@ const Player = (() => {
         });
       }
       if (!loaded) {
-        if (!fiThumbImg.src) {
-          fiThumbImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+        if (!fiThumbnailImg.src) {
+          fiThumbnailImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
         }
-        show(fiThumbWrap);
+        show(fiThumbnailWrap);
       }
       // THUMBNAIL_ASYNC: REFRESH FUNCTION end – returns whether an update occurred
       return updated;
@@ -4390,16 +4657,16 @@ const Player = (() => {
   }
   catch (_) { }
 
-  if (fiSetThumbBtn && !fiSetThumbBtn._wired) {
-    fiSetThumbBtn._wired = true;
-    fiSetThumbBtn.addEventListener('click', async () => {
+  if (fiSetThumbnailBtn && !fiSetThumbnailBtn._wired) {
+    fiSetThumbnailBtn._wired = true;
+    fiSetThumbnailBtn.addEventListener('click', async () => {
       // THUMBNAIL_ASYNC: SIDEBAR BUTTON HANDLER start – generates cover then polls refreshSidebarThumbnail
       if (!videoEl || !currentPath) {
         return;
       }
       try {
         const t = Math.max(0, videoEl.currentTime || 0);
-        const u = new URL('/api/cover/create', window.location.origin);
+        const u = new URL('/api/thumbnail/create', window.location.origin);
         u.searchParams.set('path', currentPath);
         u.searchParams.set('t', t.toFixed(3));
         u.searchParams.set('overwrite', 'true');
@@ -4423,9 +4690,9 @@ const Player = (() => {
         if (got) {
           try { /* optional: mark card as freshly updated */
             const card = document.querySelector(`.card[data-path="${currentPath.replace(/"/g, '\\"')}"]`);
-            if (card) card.classList.add('thumb-updated');
+            if (card) card.classList.add('thumbnail-updated');
             setTimeout(() => {
-              if (card) card.classList.remove('thumb-updated');
+              if (card) card.classList.remove('thumbnail-updated');
             }, 1200);
           }
           catch (_) { }
@@ -4727,7 +4994,7 @@ const Player = (() => {
               }
               // prefer localStorage per-path key first
               const key = `${LS_PREFIX}:introEnd:${path}`;
-              const raw = localStorage.getItem(key);
+              const raw = lsGet(key);
               let t = null;
               if (raw && Number.isFinite(Number(raw))) t = Number(raw);
               else if (typeof introEnd !== 'undefined' && introEnd && Number.isFinite(Number(introEnd))) t = Number(introEnd);
@@ -4855,7 +5122,7 @@ const Player = (() => {
       }
       catch (_) { }
       // Now that cache is warm, only invoke loaders that might need full data
-      loadHeatmap();
+      loadHeatmaps();
       loadSprites();
       loadScenes();
       loadSubtitles();
@@ -5181,15 +5448,14 @@ const Player = (() => {
     }
   }
 
-  async function loadHeatmap() {
+  async function loadHeatmaps() {
     if (!currentPath) {
       return;
     }
     try {
       try {
-        const st =
-          window.__artifactStatus && window.__artifactStatus[currentPath];
-        if (st && st.heatmap === false) {
+        const st = window.__artifactStatus && window.__artifactStatus[currentPath];
+        if (st && st.heatmaps === false) {
           if (badgeHeatmapStatus) badgeHeatmapStatus.textContent = '✗';
           if (badgeHeatmap) badgeHeatmap.dataset.present = '0';
           applyTimelineDisplayToggles();
@@ -5259,6 +5525,8 @@ const Player = (() => {
       applyTimelineDisplayToggles();
     }
   }
+
+  // (No legacy singular alias retained)
 
   function heatColor(v) {
     // Map 0..1 to a pleasing gradient
@@ -5605,7 +5873,7 @@ const Player = (() => {
       }
       else {
         const introKey = `${LS_PREFIX}:introEnd:${currentPath}`;
-        const rawIntro = currentPath ? localStorage.getItem(introKey) : null;
+        const rawIntro = currentPath ? lsGet(introKey) : null;
         if (rawIntro && Number.isFinite(Number(rawIntro))) it = Number(rawIntro);
       }
       if (it !== null && Number.isFinite(it)) {
@@ -5634,7 +5902,7 @@ const Player = (() => {
           try {
             try {
 
-              localStorage.removeItem(`${LS_PREFIX}:introEnd:${currentPath}`);
+              lsRemove(`${LS_PREFIX}:introEnd:${currentPath}`);
             }
             catch (_) { }
             // also remove server-side
@@ -5665,7 +5933,7 @@ const Player = (() => {
       }
       else {
         const outroKey = `${LS_PREFIX}:outroBegin:${currentPath}`;
-        const rawOutro = currentPath ? localStorage.getItem(outroKey) : null;
+        const rawOutro = currentPath ? lsGet(outroKey) : null;
         if (rawOutro && Number.isFinite(Number(rawOutro))) ot = Number(rawOutro);
       }
       if (ot !== null && Number.isFinite(ot)) {
@@ -5696,7 +5964,7 @@ const Player = (() => {
           try {
             try {
 
-              localStorage.removeItem(`${LS_PREFIX}:outroBegin:${currentPath}`);
+              lsRemove(`${LS_PREFIX}:outroBegin:${currentPath}`);
             }
             catch (_) { }
             notify('Outro begin cleared', 'success');
@@ -6037,8 +6305,8 @@ const Player = (() => {
       return;
     }
     // Lazy acquire (in case of markup changes) without assuming globals exist
-    const badgeCover = window.badgeCover || document.getElementById('badge-cover');
-    const badgeCoverStatus = window.badgeCoverStatus || document.getElementById('badge-cover-status');
+    const badgeThumbnail = window.badgeThumbnail || document.getElementById('badge-thumbnail');
+    const badgeThumbnailStatus = window.badgeThumbnailStatus || document.getElementById('badge-thumbnail-status');
     const badgeHover = window.badgeHover || document.getElementById('badge-hover');
     const badgeHoverStatus = window.badgeHoverStatus || document.getElementById('badge-hover-status');
     const badgeSprites = window.badgeSprites || document.getElementById('badge-sprites');
@@ -6051,8 +6319,8 @@ const Player = (() => {
     const badgeFacesStatus = window.badgeFacesStatus || document.getElementById('badge-faces-status');
     const badgePhash = window.badgePhash || document.getElementById('badge-phash');
     const badgePhashStatus = window.badgePhashStatus || document.getElementById('badge-phash-status');
-    const badgeHeatmap = window.badgeHeatmap || document.getElementById('badge-heatmap');
-    const badgeHeatmapStatus = window.badgeHeatmapStatus || document.getElementById('badge-heatmap-status');
+    const badgeHeatmap = window.badgeHeatmap || document.getElementById('badge-heatmaps');
+    const badgeHeatmapStatus = window.badgeHeatmapStatus || document.getElementById('badge-heatmaps-status');
     const badgeMeta = window.badgeMeta || document.getElementById('badge-metadata');
     const badgeMetaStatus = window.badgeMetaStatus || document.getElementById('badge-metadata-status');
     try {
@@ -6071,20 +6339,20 @@ const Player = (() => {
         if (statusEl) statusEl.textContent = present ? '✓' : '✗';
         if (badgeEl) badgeEl.dataset.present = present ? '1' : '0';
       };
-      set(!!d.cover, badgeCover, badgeCoverStatus);
+      set(!!d.thumbnail, badgeThumbnail, badgeThumbnailStatus);
       set(!!d.hover, badgeHover, badgeHoverStatus);
       set(!!d.sprites, badgeSprites, badgeSpritesStatus);
       set(!!d.scenes, badgeScenes, badgeScenesStatus);
       set(!!d.subtitles, badgeSubtitles, badgeSubtitlesStatus);
       set(!!d.faces, badgeFaces, badgeFacesStatus);
       set(!!d.phash, badgePhash, badgePhashStatus);
-      set(!!d.heatmap, badgeHeatmap, badgeHeatmapStatus);
+      set(!!d.heatmaps, badgeHeatmap, badgeHeatmapStatus);
       set(!!d.metadata, badgeMeta, badgeMetaStatus);
     }
     catch (_) {
       // On failure, mark unknowns as missing (do not spam console)
       const badges = [
-        [badgeCover, badgeCoverStatus],
+        [badgeThumbnail, badgeThumbnailStatus],
         [badgeHover, badgeHoverStatus],
         [badgeSprites, badgeSpritesStatus],
         [badgeScenes, badgeScenesStatus],
@@ -6110,7 +6378,7 @@ const Player = (() => {
       try {
         const caps = (window.tasksManager && window.tasksManager.capabilities) || window.__capabilities || {};
         const needsFfmpeg = new Set([
-          'heatmap',
+          'heatmaps',
           'scenes',
           'sprites',
           'hover',
@@ -6132,7 +6400,7 @@ const Player = (() => {
       catch (_) { }
       try {
         let url;
-        if (kind === 'heatmap') url = new URL('/api/heatmaps/create', window.location.origin);
+        if (kind === 'heatmaps') url = new URL('/api/heatmaps/create', window.location.origin);
         else if (kind === 'scenes') url = new URL('/api/scenes/create', window.location.origin);
         else if (kind === 'subtitles') url = new URL('/api/subtitles/create', window.location.origin);
         else if (kind === 'sprites') url = new URL('/api/sprites/create', window.location.origin);
@@ -6165,7 +6433,7 @@ const Player = (() => {
             const st = window.__artifactStatus && window.__artifactStatus[currentPath];
             let present = false;
             if (st) {
-              if (kind === 'heatmap') present = !!st.heatmap;
+              if (kind === 'heatmaps') present = !!st.heatmaps;
               else if (kind === 'scenes') present = !!st.scenes;
               else if (kind === 'subtitles') present = !!st.subtitles;
               else if (kind === 'sprites') present = !!st.sprites;
@@ -6175,7 +6443,7 @@ const Player = (() => {
             }
             if (present) {
               // Load any richer data renderers once present
-              if (kind === 'heatmap') await loadHeatmap();
+              if (kind === 'heatmaps') await loadHeatmaps();
               else if (kind === 'scenes') await loadScenes();
               else if (kind === 'sprites') await loadSprites();
               else if (kind === 'subtitles') await loadSubtitles();
@@ -6210,14 +6478,14 @@ const Player = (() => {
       });
     };
     // Resolve current badge elements (hyphenated IDs preferred)
-    const bHeat = document.getElementById('badge-heatmap') || badgeHeatmap;
+    const bHeat = document.getElementById('badge-heatmaps') || badgeHeatmap;
     const bScenes = document.getElementById('badge-scenes') || badgeScenes;
     const bSubs = document.getElementById('badge-subtitles') || badgeSubtitles;
     const bSprites = document.getElementById('badge-sprites') || badgeSprites;
     const bFaces = document.getElementById('badge-faces') || badgeFaces;
     const bHover = document.getElementById('badge-hover') || badgeHover;
     const bPhash = document.getElementById('badge-phash') || badgePhash;
-    attach(bHeat, 'heatmap');
+    attach(bHeat, 'heatmaps');
     attach(bScenes, 'scenes');
     attach(bSubs, 'subtitles');
     attach(bSprites, 'sprites');
@@ -6291,11 +6559,30 @@ const Player = (() => {
       const idx = sprites.index;
       const cols = Number(idx.cols || (idx.grid && idx.grid[0]) || 0);
       const rows = Number(idx.rows || (idx.grid && idx.grid[1]) || 0);
-      const interval = Number(idx.interval || 10);
+      const interval = Number(idx.interval || 0);
       // tw/th already computed above for placement
       const totalFrames = Math.max(1, Number(idx.frames || cols * rows));
-      // Choose the nearest frame rather than always floor for a tighter temporal match
-      const frame = Math.min(totalFrames - 1, Math.round(t / Math.max(0.1, interval)));
+      // Derive frame index:
+      // 1. If a sane interval (>0) exists, prefer interval-based mapping.
+      // 2. Otherwise (or if interval * frames undershoots duration badly), fallback to proportional mapping across duration.
+      let frame;
+      if (interval > 0) {
+        frame = Math.round(t / interval);
+        // If metadata duration exists, verify interval mapping reasonably covers it; otherwise fallback
+        const metaDur = Number(idx.duration || idx.video_duration || 0);
+        if (metaDur && interval * (totalFrames - 1) < metaDur * 0.6) {
+          // Interval underestimates coverage; fallback to proportional
+          frame = Math.round((t / metaDur) * (totalFrames - 1));
+        }
+      } else {
+        const metaDur = Number(idx.duration || idx.video_duration || vidDur || 0);
+        if (metaDur > 0) {
+          frame = Math.round((t / metaDur) * (totalFrames - 1));
+        } else {
+          frame = Math.round((t / Math.max(0.1, vidDur)) * (totalFrames - 1));
+        }
+      }
+      frame = Math.min(totalFrames - 1, Math.max(0, frame));
       const col = frame % cols;
       const row = Math.floor(frame / cols);
       const xOff = -(col * tw) * scale;
@@ -6498,8 +6785,8 @@ function initPlayerEnhancements() {
   }
   // Auto-collapse on first load for narrower viewports (no stored preference)
   try {
-    if (!localStorage.getItem(LS_KEY_SIDEBAR) && window.innerWidth < 1500) {
-      localStorage.setItem(LS_KEY_SIDEBAR, '1');
+    if (!lsGet(LS_KEY_SIDEBAR) && window.innerWidth < 1500) {
+      lsSet(LS_KEY_SIDEBAR, '1');
     }
   }
   catch (_) { }
@@ -6515,7 +6802,7 @@ function initPlayerEnhancements() {
 
   function loadState() {
     try {
-      const saved = JSON.parse(localStorage.getItem(LS_KEY_EFFECTS) || '{}');
+      const saved = JSON.parse(lsGet(LS_KEY_EFFECTS) || '{}');
       if (saved && typeof saved === 'object') {
         // Only apply known keys;
         // ignore corruption
@@ -6534,7 +6821,7 @@ function initPlayerEnhancements() {
   }
   function saveState() {
     try {
-      localStorage.setItem(LS_KEY_EFFECTS, JSON.stringify(state));
+      lsSet(LS_KEY_EFFECTS, JSON.stringify(state));
     }
     catch (_) { }
   }
@@ -6646,7 +6933,7 @@ function initPlayerEnhancements() {
     const collapsed = sidebar.getAttribute('data-collapsed') === 'true';
     const next = !collapsed;
     try {
-      localStorage.setItem(LS_KEY_SIDEBAR, next ? '1' : '0');
+      lsSet(LS_KEY_SIDEBAR, next ? '1' : '0');
     }
     catch (_) { }
     applySidebarCollapsed();
@@ -8252,8 +8539,8 @@ class TasksManager {
                     loadArtifactStatuses?.();
                   }
                   catch (_) { }
-                  // If a cover thumbnail job just finished for the currently open file, refresh sidebar thumbnail immediately.
-                  if (art === 'cover') {
+                  // If a thumbnail job just finished for the currently open file, refresh sidebar thumbnail immediately.
+                  if (art === 'thumbnail') {
                     (async () => {
                       try {
                         if (typeof refreshSidebarThumbnail === 'function') {
@@ -8492,10 +8779,7 @@ class TasksManager {
         // user will already be on Player when meaningful.
         // if (window.tabSystem && window.tabSystem.getActiveTab() !== 'player') window.tabSystem.switchToTab('player');
         // Delegate to Player module
-        if (
-          window.Player &&
-          typeof window.Player.detectAndUploadFacesBrowser === 'function'
-        ) {
+        if (window.Player && typeof window.Player.detectAndUploadFacesBrowser === 'function') {
           await window.Player.detectAndUploadFacesBrowser();
         }
         else {
@@ -8506,10 +8790,7 @@ class TasksManager {
         }
       }
       catch (e) {
-        this.showNotification(
-          'Browser faces failed: ' + (e && e.message ? e.message : 'error'),
-          'error'
-        );
+        this.showNotification('Browser faces failed: ' + (e && e.message ? e.message : 'error'), 'error');
       }
     });
   }
@@ -8598,12 +8879,7 @@ class TasksManager {
 
       // Capability gate (skip for clear which only deletes existing files)
       if (!isClear && !this.canRunOperation(base)) {
-        const why =
-          base === 'subtitles'
-            ? 'No subtitles backend available.'
-            : base === 'faces' || base === 'embed'
-              ? 'Face backends unavailable.'
-              : 'FFmpeg not detected.';
+        const why = base === 'subtitles' ? 'No subtitles backend available.' : base === 'faces' || base === 'embed' ? 'Face backends unavailable.' : 'FFmpeg not detected.';
         this.showNotification(`Cannot start ${base} (${mode}). ${why}`, 'error');
         return;
       }
@@ -8628,7 +8904,7 @@ class TasksManager {
         try {
           // Map frontend artifact keys to backend delete endpoints
           const endpointMap = {
-            thumbnails: '/api/cover/delete', // (if batch not supported this will be per-file later)
+            thumbnails: '/api/thumbnail/delete', // (if batch not supported this will be per-file later)
             previews: '/api/hover/delete',
             sprites: '/api/sprites/delete',
             phash: '/api/phash/delete',
@@ -8807,10 +9083,6 @@ class TasksManager {
       case 'thumbnails':
         params.offset = document.getElementById('thumbnailOffset')?.value || 10;
         break;
-      case 'cover':
-        // Use coverTime input (fallback to 10s)
-        params.t = parseFloat(document.getElementById('coverTime')?.value || '10');
-        break;
       case 'phash':
         params.frames = document.getElementById('phashFrames')?.value || 5;
         params.algorithm =
@@ -8908,7 +9180,6 @@ class TasksManager {
     const artifacts = [
       'metadata',
       'thumbnails',
-      'cover',
       'sprites',
       'previews',
       'phash',
@@ -8916,7 +9187,6 @@ class TasksManager {
       'heatmaps',
       'subtitles',
       'faces',
-      'cover',
     ];
 
     artifacts.forEach((artifact) => {
@@ -8931,7 +9201,21 @@ class TasksManager {
       // Update percentage
       const percentageEl = document.getElementById(`${artifact}Coverage`);
       if (percentageEl) {
-        percentageEl.textContent = `${percentage}%`;
+        // Show actual ratio (processed/total) plus percentage for clarity
+        const processed = data.processed || 0;
+        const total = data.total || 0;
+        const ratio = `${processed}/${total}`;
+        // Format: "X/Y (Z%)"; if total is 0 keep previous style
+        if (total > 0) {
+          percentageEl.textContent = `${ratio} (${percentage}%)`;
+        }
+        else {
+          percentageEl.textContent = `${ratio} (0%)`;
+        }
+        // Add attributes for potential future styling / tooltips
+        percentageEl.dataset.processed = String(processed);
+        percentageEl.dataset.total = String(total);
+        percentageEl.title = `Processed ${processed} of ${total} (${percentage}%)`;
       }
 
       // Update progress bar
