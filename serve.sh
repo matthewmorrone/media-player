@@ -24,9 +24,9 @@ fi
 if [ -z "$LAN_IP" ] && command -v hostname >/dev/null 2>&1; then
   LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 fi
-echo "Serving on:"
-echo "http://${LAN_IP:-$HOST}:$PORT"
-echo "MEDIA_ROOT=$MEDIA_ROOT"
+echo "[serve.sh] Serving on:"
+echo "[serve.sh] http://${LAN_IP:-$HOST}:$PORT"
+echo "[serve.sh] MEDIA_ROOT=$MEDIA_ROOT"
 
 # Auto-enable whisper.cpp subtitles backend if discovered and not explicitly configured
 if [ -z "${WHISPER_CPP_BIN:-}" ]; then
@@ -124,10 +124,10 @@ if [ "$ACCESS_LOG" != "1" ]; then
   UVICORN_ARGS+=(--no-access-log)
 fi
 
-echo "LOG_LEVEL=$LOG_LEVEL" 1>&2
-echo "ACCESS_LOG=$ACCESS_LOG" 1>&2
-echo "RELOAD=$RELOAD" 1>&2
-echo "QUIET=${QUIET:-0}" 1>&2
+echo "[serve.sh] LOG_LEVEL=$LOG_LEVEL" 1>&2
+echo "[serve.sh] ACCESS_LOG=$ACCESS_LOG" 1>&2
+echo "[serve.sh] RELOAD=$RELOAD" 1>&2
+echo "[serve.sh] QUIET=${QUIET:-0}" 1>&2
 
 if [ "$LOG_FILE" = "/dev/null" ]; then
   # Disable file logging explicitly

@@ -67,6 +67,23 @@ try:
 except Exception:  # pragma: no cover
     Image = None  # type: ignore
 
+# -----------------------------
+# Artifact suffix/constants
+# -----------------------------
+SUFFIX_METADATA_JSON = ".metadata.json"
+SUFFIX_THUMBNAIL_JPG = ".thumbnail.jpg"
+SUFFIX_PHASH_JSON = ".phash.json"
+SUFFIX_SCENES_JSON = ".scenes.json"
+SUFFIX_SPRITES_JPG = ".sprites.jpg"
+SUFFIX_SPRITES_JSON = ".sprites.json"
+SUFFIX_HEATMAPS_JSON = ".heatmaps.json"
+SUFFIX_HEATMAPS_PNG = ".heatmaps.png"
+SUFFIX_FACES_JSON = ".faces.json"
+SUFFIX_PREVIEW_WEBM = ".preview.webm"
+SUFFIX_PREVIEW_JSON = ".preview.json"
+SUFFIX_WAVEFORM_PNG = ".waveform.png"
+SUFFIX_MOTION_JSON = ".motion.json"
+
 # Global server state
 # Initialize root from MEDIA_ROOT if provided and valid; otherwise fall back to CWD
 def _init_media_root() -> Path:
@@ -135,7 +152,6 @@ _POLLING_LOG_PATHS: tuple[str, ...] = (
     "/api/jobs/events",
 )
 
-
 class _UvicornAccessFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
         try:
@@ -151,6 +167,13 @@ class _UvicornAccessFilter(logging.Filter):
         except Exception:
             allow_get = False
             allow_head = False
+        # Global escape hatch: disable all access logs if requested
+        try:
+            disable_all = str(os.environ.get("DISABLE_ACCESS_LOG", "0")).lower() in ("1", "true", "yes")
+        except Exception:
+            disable_all = False
+        if disable_all:
+            return False
         try:
             method = None
             # crude parse: first token inside quotes is method
@@ -173,7 +196,6 @@ class _UvicornAccessFilter(logging.Filter):
                 return False
         return True
 
-
 def _install_uvicorn_access_filter_once() -> None:
     try:
         logger = logging.getLogger("uvicorn.access")
@@ -184,17 +206,14 @@ def _install_uvicorn_access_filter_once() -> None:
         # Non-fatal if logging isn't configured yet
         pass
 
-
 # Install filter at import time so it applies to subsequent requests
 _install_uvicorn_access_filter_once()
-
 
 def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 def ffprobe_available() -> bool:
     return shutil.which("ffprobe") is not None
-
 
 def _ffmpeg_threads_flags() -> list[str]:
     """
@@ -225,7 +244,6 @@ def _ffmpeg_threads_flags() -> list[str]:
         flags += ["-timelimit", str(tl)]
     return flags
 
-
 def _ffmpeg_hwaccel_flags() -> list[str]:
     """
     Optional decoder hwaccel hint before -i via FFMPEG_HWACCEL env (e.g., 'auto', 'videotoolbox', 'vaapi').
@@ -235,7 +253,6 @@ def _ffmpeg_hwaccel_flags() -> list[str]:
     if v:
         return ["-hwaccel", str(v)]
     return []
-
 
 def _vp9_realtime_flags() -> list[str]:
     """
@@ -297,7 +314,6 @@ def artifact_dir(video: Path) -> Path:
     d = video.parent / ".artifacts"
     d.mkdir(parents=True, exist_ok=True)
     return d
-
 
 def _has_module(name: str) -> bool:
     try:
@@ -439,7 +455,6 @@ def find_subtitles(video: Path) -> Optional[Path]:
         return s_side
     return None
 
-
 def _is_stub_subtitles_file(p: Path) -> bool:
     """Heuristic: detect a previously generated 'stub' subtitles file (so we can auto-regenerate later).
 
@@ -456,23 +471,6 @@ def _is_stub_subtitles_file(p: Path) -> bool:
         return False
     except Exception:
         return False
-
-# -----------------------------
-# Artifact suffix/constants
-# -----------------------------
-SUFFIX_METADATA_JSON = ".metadata.json"
-SUFFIX_THUMBNAIL_JPG = ".thumbnail.jpg"
-SUFFIX_PHASH_JSON = ".phash.json"
-SUFFIX_SCENES_JSON = ".scenes.json"
-SUFFIX_SPRITES_JPG = ".sprites.jpg"
-SUFFIX_SPRITES_JSON = ".sprites.json"
-SUFFIX_HEATMAPS_JSON = ".heatmaps.json"
-SUFFIX_HEATMAPS_PNG = ".heatmaps.png"
-SUFFIX_FACES_JSON = ".faces.json"
-SUFFIX_PREVIEW_WEBM = ".preview.webm"
-SUFFIX_PREVIEW_JSON = ".preview.json"
-SUFFIX_WAVEFORM_PNG = ".waveform.png"
-SUFFIX_MOTION_JSON = ".motion.json"
 
 def preview_json_path(video: Path) -> Path:
     return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}"
@@ -501,13 +499,11 @@ class _JobContext(threading.local):
         super().__init__()
         self.jid: Optional[str] = None
 
-
 JOB_CTX = _JobContext()
 
 # Track live subprocesses per job so we can terminate on cancel
 JOB_PROCS: dict[str, set[subprocess.Popen]] = {}
 JOB_HEARTBEATS: dict[str, float] = {}
-
 
 def _register_job_proc(jid: str, proc: subprocess.Popen) -> None:
     with JOB_LOCK:
@@ -517,7 +513,6 @@ def _register_job_proc(jid: str, proc: subprocess.Popen) -> None:
             JOB_PROCS[jid] = s
         s.add(proc)
 
-
 def _unregister_job_proc(jid: str, proc: subprocess.Popen) -> None:
     with JOB_LOCK:
         s = JOB_PROCS.get(jid)
@@ -525,7 +520,6 @@ def _unregister_job_proc(jid: str, proc: subprocess.Popen) -> None:
             s.remove(proc)
             if not s:
                 JOB_PROCS.pop(jid, None)
-
 
 def _terminate_job_processes(jid: str, grace_seconds: float = 2.0) -> int:
     """Signal all tracked processes for a job. TERM first, then KILL after grace.
@@ -566,7 +560,6 @@ def _terminate_job_processes(jid: str, grace_seconds: float = 2.0) -> int:
             except Exception:
                 pass
     return count
-
 
 # -----------------------------
 # Global ffmpeg concurrency gate
@@ -647,7 +640,6 @@ def _run_inner(cmd: list[str]) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
     finally:
         _unregister_job_proc(jid, proc)
-
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     """
@@ -882,15 +874,21 @@ def parse_time_spec(spec: str | float | int | None, duration: Optional[float]) -
 def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int = "middle", quality: int = 2) -> None:
     out = thumbs_path(video)
     if out.exists() and not force:
+        try:
+            size0 = out.stat().st_size if out.exists() else None
+        except Exception:
+            size0 = None
+        _log("thumb", f"thumb skip path={video} reason=exists size={size0 if size0 is not None else 'na'} out={out}")
         return
     out.parent.mkdir(parents=True, exist_ok=True)
-    _log("thumb", f"thumb start path={video} force={int(force)} out={out}")
+    _log("thumb", f"thumb start path={video} force={int(force)} out={out} time_spec={time_spec} q_in={quality}")
     # If ffmpeg isn't available, write a valid placeholder JPEG (last resort)
     if not ffmpeg_available():
         try:
             from PIL import Image  # type: ignore
             img = Image.new("RGB", (320, 180), color=(17, 17, 17))
             img.save(out, format="JPEG", quality=max(2, min(95, int(quality)*10)))
+            _log("thumb", f"thumb placeholder written (ffmpeg missing) path={video} size={out.stat().st_size if out.exists() else 'na'}")
             return
         except Exception:
             # Last resort: write a tiny valid JPEG byte sequence
@@ -906,26 +904,39 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
                 out.write_bytes(stub)
             except Exception:
                 pass
+            _log("thumb", f"thumb stub written (ffmpeg missing) path={video}")
             return
 
     duration = None
     try:
-        if metadata_path(video).exists():
+        mpath = metadata_path(video)
+        if mpath.exists():
             duration = extract_duration(json.loads(metadata_path(video).read_text()))
         else:
             metadata_single(video, force=False)
             duration = extract_duration(json.loads(metadata_path(video).read_text()))
     except Exception:
         duration = None
+    _log("thumb", f"thumb meta path={video} dur={duration if duration is not None else 'na'} source={'cached' if 'mpath' in locals() and mpath.exists() else 'generated'}")
     t = parse_time_spec(time_spec, duration)
+    _log("thumb", f"thumb time_spec_resolved path={video} time={t:.3f}s from={time_spec}")
     # Use mjpeg to write jpg
     # Allow env override when API callers pass default quality (2)
     if int(quality) == 2:
         # Default to more compressed thumbnails unless overridden via env
         quality = _env_int("THUMBNAIL_QUALITY", 8)
+    # Capture ffmpeg runtime flags for visibility
+    try:
+        hw = _ffmpeg_hwaccel_flags()
+    except Exception:
+        hw = []
+    try:
+        th_flags = _ffmpeg_threads_flags()
+    except Exception:
+        th_flags = []
     cmd = [
         "ffmpeg", "-y",
-        *(_ffmpeg_hwaccel_flags()),
+        *(hw),
         "-noaccurate_seek",
         "-ss", f"{t:.3f}",
         "-i", str(video),
@@ -933,12 +944,29 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
         # Ensure even dimensions for broad encoder/player compatibility
         "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-q:v", str(max(2, min(31, int(quality)))),
-        *(_ffmpeg_threads_flags()),
+        *(th_flags),
         str(out),
     ]
+    try:
+        tl = int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600)
+    except Exception:
+        tl = 600
+    try:
+        _log("thumb", f"thumb exec path={video} hw={','.join(hw) if hw else 'none'} threads_flags={' '.join(th_flags) if th_flags else 'none'} timelimit={tl}s cmd={' '.join(cmd)}")
+    except Exception:
+        pass
+    t0 = time.time()
     proc = _run(cmd)
+    elapsed = time.time() - t0
     if proc.returncode != 0:
-        _log("thumb", f"thumb fail path={video} code={proc.returncode}")
+        # Log a trimmed stderr for inspection
+        try:
+            err = (proc.stderr or "").strip()
+            if len(err) > 1200:
+                err = err[:1200] + "…"
+        except Exception:
+            err = ""
+        _log("thumb", f"thumb fail path={video} code={proc.returncode} elapsed={elapsed:.3f}s stderr={err!r}")
         raise RuntimeError(proc.stderr.strip() or "ffmpeg thumbnail failed")
     else:
         size = None
@@ -947,7 +975,7 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
                 size = out.stat().st_size
         except Exception:
             pass
-        _log("thumb", f"thumb end path={video} code=0 size={size if size is not None else 'na'}")
+        _log("thumb", f"thumb end path={video} code=0 size={size if size is not None else 'na'} elapsed={elapsed:.3f}s out={out}")
 
 # ----------------------
 # Hover preview generator
@@ -4218,7 +4246,10 @@ def _restore_jobs_on_start() -> None:
             # Decide target state based on previous state and auto-restore setting
             prev = str(data.get("state") or "").lower()
             auto_restore = not bool(os.environ.get("JOB_AUTORESTORE_DISABLE"))
-            if prev in ("done", "failed", "canceled"):
+            # Treat cancel_requested as canceled on restore to avoid resurrecting them
+            if prev == "cancel_requested":
+                target_state = "canceled"
+            elif prev in ("done", "failed", "canceled"):
                 target_state = prev
             elif prev in ("queued", "running"):
                 target_state = "queued" if auto_restore else "restored"
@@ -4276,29 +4307,39 @@ def _normalize_job_type(job_type: str) -> str:
     """
     Normalize backend job-type variants to base types for the UI and tests."""
     s = (job_type or "").strip().lower()
+    # Legacy aliases
     if s == "hover-concat":
         return "hover"
+    if s == "cover":
+        return "thumbnail"
+    if s == "heatmap":
+        return "heatmaps"
+    # Batch suffix normalization
     if s.endswith("-batch"):
-        return s[: -len("-batch")]
+        s = s[: -len("-batch")]
     return s
 
 def _artifact_from_type(job_type: Optional[str]) -> Optional[str]:
     """Map job type to canonical artifact identifier used by the frontend badges."""
     if not job_type:
         return None
-    t = job_type.lower()
+    t = _normalize_job_type(job_type)
     mapping = {
-        "cover": "cover",
-        "hover": "hover",
+        # Canonical, pluralized where UI expects plural
+        "thumbnail": "thumbnails",
+        "hover": "previews",
         "phash": "phash",
         "scenes": "scenes",
         "sprites": "sprites",
-        "heatmaps": "heatmap",  # badge uses singular form
+        "heatmaps": "heatmaps",
         "faces": "faces",
         "embed": "faces",      # embed updates faces vectors / faces.json
         "metadata": "metadata",
         "subtitles": "subtitles",
     }
+    # Support legacy alias transparently
+    if t == "cover":
+        return "thumbnails"
     return mapping.get(t)
 
 
@@ -4777,7 +4818,7 @@ async def no_cache_middleware(request, call_next):
     resp = await call_next(request)
     path = request.url.path
     # Apply no-cache headers to all static files served from root directory and /static
-    if (path in {"/", "/index.css", "/index.js", "/old-index.html", "/favicon.ico"} or
+    if (path in {"/", "/index.css", "/index.js", "/favicon.ico"} or
         path.startswith("/static") or
         (not path.startswith("/api") and "." in path.split("/")[-1])):
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -4836,12 +4877,8 @@ def apple_touch_icon():
     return Response(status_code=404)
 
 
-@app.get("/old-index.html", include_in_schema=False)
-def old_index_html():
-    old_idx = _STATIC / "old-index.html"
-    if old_idx.exists():
-        return HTMLResponse(old_idx.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>Old index not found</h1>")
+# Note: legacy /old-index.html route removed; existing bookmarks will 404.
+# If a redirect is desired, re-add a handler returning a RedirectResponse("/").
 
 # Also serve any static assets placed here (optional)
 if (_BASE / "static").exists():
@@ -4874,7 +4911,6 @@ app.router.lifespan_context = lifespan  # type: ignore[attr-defined]
 
 
 # API under /api - mount BEFORE catch-all static handler
-api = APIRouter(prefix="/api")
 
 def _media_exts() -> set[str]:
     """
@@ -7021,6 +7057,7 @@ def thumbnail_head(path: str = Query(...)):
 def thumbnail_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
+    _log("thumb", f"thumb api.create start path={path} t={t} q={quality} ow={int(bool(overwrite))}")
 
     def _do():
         time_spec = str(t) if t is not None else "middle"
@@ -7047,10 +7084,18 @@ def thumbnail_create(path: str = Query(...), t: Optional[str | float] = Query(de
                     out.write_bytes(stub)
                 except Exception:
                     pass
-        return api_success({"file": str(thumbs_path(video))})
+        # Successful (or stub) write reached here
+        try:
+            _log("thumb", f"thumb api.create end path={path} out={thumbs_path(video)}")
+        except Exception:
+            pass
+        return {"file": str(thumbs_path(video))}
+
     try:
-        return _wrap_job("thumbnail", str(video.relative_to(STATE["root"])), _do)
+        # Run as a background job so the HTTP request returns quickly; progress appears in Jobs UI
+        return _wrap_job_background("thumbnail", str(video.relative_to(STATE["root"])), _do)
     except Exception as e:  # noqa: BLE001
+        _log("thumb", f"thumb api.create fail path={path} err={e}")
         raise_api_error(f"thumbnail create failed: {e}", status_code=500)
 
 @api.post("/thumbnail/create_inline")
@@ -7060,10 +7105,12 @@ def thumbnail_create_inline(path: str = Query(...), t: Optional[str | float] = Q
     video = Path(directory) / name
     if not video.exists() or not video.is_file():
         raise_api_error("video not found", status_code=404)
+    _log("thumb", f"thumb api.inline start path={path} t={t} q={quality} ow={int(bool(overwrite))}")
     time_spec = str(t) if t is not None else "middle"
     try:
         generate_thumbnail(video, force=bool(overwrite), time_spec=time_spec, quality=int(quality))
     except Exception as e:  # noqa: BLE001
+        _log("thumb", f"thumb api.inline fail path={path} err={e}")
         raise_api_error(f"inline thumbnail failed: {e}")
     thumb = thumbs_path(video)
     if not thumb.exists():
@@ -7075,6 +7122,7 @@ def thumbnail_create_inline(path: str = Query(...), t: Optional[str | float] = Q
         resp.headers["ETag"] = f"\"thumbnail-inline-{int(mt)}\""
     except Exception:
         resp.headers["Cache-Control"] = "no-store"
+    _log("thumb", f"thumb api.inline end path={path} out={thumb}")
     return resp
 
 
@@ -7089,6 +7137,7 @@ def thumbnail_create_batch(
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
+    _log("thumb", f"thumb api.batch start base={base} recursive={int(bool(recursive))} t={t} q={quality} ow={int(bool(overwrite))}")
 
     time_spec = str(t) if t is not None else "middle"
     q = int(quality)
@@ -7138,7 +7187,9 @@ def thumbnail_create_batch(
             for t in threads:
                 t.join()
             _finish_job(sup_jid, None)
+            _log("thumb", f"thumb api.batch end base={base} count={len(vids)} job={sup_jid}")
         except Exception as e:
+            _log("thumb", f"thumb api.batch fail base={base} err={e}")
             _finish_job(sup_jid, str(e))
 
     threading.Thread(target=_worker, daemon=True).start()
@@ -8215,7 +8266,9 @@ def heatmaps_json(path: str = Query(...)):
     fp = safe_join(STATE["root"], path)
     j = heatmaps_json_path(fp)
     if not j.exists():
-        raise_api_error("Heatmaps not found", status_code=404)
+        # Do not emit 404s for missing heatmaps; return an empty structure
+        # so clients can gracefully fall back without error spam.
+        return api_success({"heatmaps": {"samples": []}})
     try:
         data = json.loads(j.read_text())
     except Exception:
@@ -8228,7 +8281,8 @@ def heatmaps_png(path: str = Query(...)):
     fp = safe_join(STATE["root"], path)
     p = heatmaps_png_path(fp)
     if not p.exists():
-        raise_api_error("Heatmaps PNG not found", status_code=404)
+        # Suppress 404s for missing PNG; indicate no content.
+        return Response(status_code=204, media_type="image/png")
     return FileResponse(str(p), media_type="image/png")
 
 @api.head("/heatmaps/png")
@@ -8236,7 +8290,8 @@ def heatmaps_png_head(path: str = Query(...)):
     fp = safe_join(STATE["root"], path)
     p = heatmaps_png_path(fp)
     if not p.exists():
-        raise_api_error("Heatmaps PNG not found", status_code=404)
+        # Suppress 404s for missing PNG; indicate no content.
+        return Response(status_code=204, media_type="image/png")
     # No body for HEAD
     return Response(status_code=200, media_type="image/png")
 
@@ -8356,7 +8411,7 @@ def metadata_get(path: str = Query(...), force: bool = Query(default=False), vie
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
     mpath = metadata_path(video)
-    _log("meta", f"[meta] get path={path} video={video} mpath={mpath} force={int(bool(force))}")
+    _log("metadata", f"[metadata] get path={path} video={video} mpath={mpath} force={int(bool(force))}")
     if (not mpath.exists()) or force:
         try:
             metadata_single(video, force=True)
@@ -9002,123 +9057,6 @@ def test_path(path: str = Query(...)):
 
 # TODO @copilot v2 reference, unnecessary backwards compatibility
 # --- Stats --- map v2 -> v1 shape
-@api.get("/stats")
-def stats(path: str = Query(default=""), recursive: bool = Query(default=True), fast: bool = Query(default=False)):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    # Simple TTL cache to avoid repeated full scans
-    try:
-        cache = STATE.setdefault("_stats_cache", {})
-    except Exception:
-        cache = {}
-    key = (str(base), bool(recursive), bool(fast))
-    now = time.time()
-    entry = cache.get(key)
-    if entry and isinstance(entry, dict) and (now - entry.get("ts", 0) < 2.0):
-        return api_success(entry.get("data", {}))
-    total_files = total_size = total_duration = 0.0
-    c_thumbs = c_previews = c_subs = c_meta = c_faces = c_phash = c_scenes = c_sprites = c_heatmaps = 0
-    duration_files_count = 0
-    it = base.rglob("*") if recursive else base.iterdir()
-    for p in it:
-        if _is_original_media_file(p, base):
-            total_files += 1
-            if not fast:
-                try:
-                    total_size += p.stat().st_size
-                except Exception:
-                    pass
-            if thumbs_path(p).exists():
-                c_thumbs += 1
-            if _file_nonempty(_hover_concat_path(p)):
-                c_previews += 1
-            try:
-                if phash_path(p).exists():
-                    c_phash += 1
-            except Exception:
-                pass
-            try:
-                if scenes_json_exists(p):
-                    c_scenes += 1
-            except Exception:
-                pass
-            try:
-                s_sheet, s_json = sprite_sheet_paths(p)
-                if s_sheet.exists() and s_json.exists():
-                    c_sprites += 1
-            except Exception:
-                pass
-            try:
-                if heatmaps_json_exists(p):
-                    c_heatmaps += 1
-            except Exception:
-                pass
-            if find_subtitles(p):
-                c_subs += 1
-            if faces_exists_check(p):
-                c_faces += 1
-            m = metadata_path(p)
-            if m.exists():
-                c_meta += 1
-                if not fast:
-                    try:
-                        d = (extract_duration(json.loads(m.read_text())) or 0.0)
-                        if d:
-                            total_duration += d
-                            duration_files_count += 1
-                    except Exception:
-                        pass
-    # Aggregate artifact presence counts (DRY with report)
-    def _artifact_flags(v: Path) -> dict[str, bool]:
-        s_sheet, s_json = sprite_sheet_paths(v)
-        return {
-            "covers": thumbs_path(v).exists(),
-            "hovers": _hover_concat_path(v).exists(),
-            "subtitles": bool(find_subtitles(v)),
-            "metadata": metadata_path(v).exists(),
-            "faces": faces_exists_check(v),
-            "phash": phash_path(v).exists(),
-            "scenes": scenes_json_exists(v),
-            "sprites": s_sheet.exists() and s_json.exists(),
-            "heatmaps": heatmaps_json_exists(v),
-        }
-    # Recompute counts from files list for consistency
-    agg = {
-        "covers": c_thumbs,
-        "hovers": c_previews,
-        "subtitles": c_subs,
-        "metadata": c_meta,
-        "faces": c_faces,
-        "phash": c_phash,
-        "scenes": c_scenes,
-        "sprites": c_sprites,
-        "heatmaps": c_heatmaps,
-    }
-    # If we built a file list earlier, we could recompute strictly; otherwise keep prior counters
-    # For now, we use the counted values but the helper is available for future DRY refactors
-    data = {
-        "path": path,
-        "total_files": total_files,
-        "total_size_bytes": total_size if not fast else None,
-        "total_duration_seconds": int(total_duration) if not fast else None,
-        "duration_files_count": duration_files_count if not fast else None,
-        "covers": agg["covers"],
-        "hovers": agg["hovers"],
-        "subtitles": agg["subtitles"],
-        "metadata": agg["metadata"],
-        "faces": agg["faces"],
-        "phash": agg["phash"],
-        "scenes": agg["scenes"],
-        "sprites": agg["sprites"],
-        "heatmaps": agg["heatmaps"],
-    }
-    try:
-        cache[key] = {"ts": now, "data": data}
-        STATE["_stats_cache"] = cache
-    except Exception:
-        pass
-    return api_success(data)
 
 
 # --- Faces API ---
@@ -10363,6 +10301,7 @@ def tasks_batch_operation(request: Request):
         fileSelection = body.get("fileSelection")  # 'all' or 'selected'
         params = body.get("params", {})
         path = body.get("path", "")
+        selected_paths = body.get("selectedPaths") or []
 
         base = safe_join(STATE["root"], path) if path else STATE["root"]
         if not base.exists() or not base.is_dir():
@@ -10370,16 +10309,35 @@ def tasks_batch_operation(request: Request):
 
         # Get list of videos to process
         all_videos = _find_mp4s(base, recursive=True)
+        try:
+            _log("jobs", f"[batch] op={operation} mode={mode} base={base} found_videos={len(all_videos)}")
+        except Exception:
+            pass
 
         # Filter based on file selection
         if fileSelection == "selected":
-            # For now, process all files since we don't have selection context
-            # In a real implementation, you'd pass selected file paths
-            videos_to_process = all_videos
+            # If explicit selectedPaths provided by the frontend, filter to those
+            videos_to_process: list[Path] = []
+            if isinstance(selected_paths, list) and selected_paths:
+                vids: list[Path] = []
+                for rel in selected_paths:
+                    try:
+                        rel_str = str(rel)
+                        # Normalize and ensure relative to root
+                        p = safe_join(STATE["root"], rel_str)
+                        vids.append(p)
+                    except Exception:
+                        continue
+                # Constrain to existing and video files
+                videos_to_process = [v for v in vids if v.exists() and v.is_file() and _is_original_media_file(v, base)]
+            else:
+                # Fallback: no selection provided; default to all (legacy behavior)
+                videos_to_process = all_videos
         else:
             videos_to_process = all_videos
 
         # Filter based on mode (missing vs all)
+        initial_count = len(videos_to_process)
         if mode == "missing":
             filtered_videos = []
             for video in videos_to_process:
@@ -10415,6 +10373,10 @@ def tasks_batch_operation(request: Request):
                     filtered_videos.append(video)
 
             videos_to_process = filtered_videos
+            try:
+                _log("jobs", f"[batch] op={operation} mode=missing filtered_missing={len(videos_to_process)} (from {initial_count})")
+            except Exception:
+                pass
 
         if not videos_to_process:
             return api_success({
@@ -10608,10 +10570,148 @@ def tasks_batch_operation(request: Request):
                 job_params["targets"] = filtered_targets
             else:
                 job_params.pop("targets", None)
+            try:
+                _log("jobs", f"[batch] op={operation} deduped_active targets={len(job_params.get('targets') or [])} remaining_files={len(videos_to_process)} active_hits={initial_count - len(videos_to_process)}")
+            except Exception:
+                pass
 
         # If multiple files, spawn per-file jobs (default concurrency capped globally).
+        # Special-cases: metadata and thumbnails should enqueue a single aggregated job that iterates
+        # all targets so the user doesn't have to enqueue multiple times to cover a large set.
         created_jobs: list[str] = []
-        if len(videos_to_process) <= 1:
+        if operation == "metadata":
+            # Build a single-job request that covers all targets.
+            agg_params = dict(job_params)
+            if mode == "missing":
+                # Ensure explicit targets list is passed so progress reflects the exact work set.
+                if not agg_params.get("targets"):
+                    tgt_list: list[str] = []
+                    for v in videos_to_process:
+                        try:
+                            tgt_list.append(str(v.relative_to(STATE["root"])))
+                        except Exception:
+                            continue
+                    if tgt_list:
+                        agg_params["targets"] = tgt_list
+            elif fileSelection == "selected":
+                # Honor selected scope for all-mode by passing explicit targets
+                if not agg_params.get("targets"):
+                    tgt_list2: list[str] = []
+                    for v in videos_to_process:
+                        try:
+                            tgt_list2.append(str(v.relative_to(STATE["root"])))
+                        except Exception:
+                            continue
+                    if tgt_list2:
+                        agg_params["targets"] = tgt_list2
+            req = JobRequest(
+                task="metadata",
+                directory=str(base),
+                recursive=(mode == "all" and not bool(agg_params.get("targets"))),
+                force=(mode == "all"),
+                params=agg_params,
+            )
+            jid = _new_job(req.task, req.directory or str(STATE["root"]))
+            try:
+                with JOB_LOCK:
+                    if jid in JOBS:
+                        JOBS[jid]["request"] = req.dict()
+                _persist_job(jid)
+            except Exception:
+                pass
+            def _agg_runner():
+                with JOB_RUN_SEM:
+                    _run_job_worker(jid, req)
+            threading.Thread(target=_agg_runner, daemon=True).start()
+            created_jobs.append(jid)
+        elif operation == "thumbnails":
+            # Single aggregated thumbnails job (maps to internal 'thumbnail' task)
+            agg_params = dict(job_params)
+            if mode == "missing":
+                if not agg_params.get("targets"):
+                    tgt_list: list[str] = []
+                    for v in videos_to_process:
+                        try:
+                            tgt_list.append(str(v.relative_to(STATE["root"])))
+                        except Exception:
+                            continue
+                    if tgt_list:
+                        agg_params["targets"] = tgt_list
+            elif fileSelection == "selected":
+                # Honor selected scope for all-mode by passing explicit targets
+                if not agg_params.get("targets"):
+                    tgt_list2: list[str] = []
+                    for v in videos_to_process:
+                        try:
+                            tgt_list2.append(str(v.relative_to(STATE["root"])))
+                        except Exception:
+                            continue
+                    if tgt_list2:
+                        agg_params["targets"] = tgt_list2
+            req = JobRequest(
+                task="thumbnail",
+                directory=str(base),
+                recursive=(mode == "all" and not bool(agg_params.get("targets"))),
+                force=(mode == "all"),
+                params=agg_params,
+            )
+            jid = _new_job(req.task, req.directory or str(STATE["root"]))
+            try:
+                with JOB_LOCK:
+                    if jid in JOBS:
+                        JOBS[jid]["request"] = req.dict()
+                _persist_job(jid)
+            except Exception:
+                pass
+            def _thumbs_runner():
+                with JOB_RUN_SEM:
+                    _run_job_worker(jid, req)
+            threading.Thread(target=_thumbs_runner, daemon=True).start()
+            created_jobs.append(jid)
+        elif operation == "previews":
+            # Single aggregated hover previews job (internal task 'hover')
+            agg_params = dict(job_params)
+            if mode == "missing":
+                if not agg_params.get("targets"):
+                    tgt_list: list[str] = []
+                    for v in videos_to_process:
+                        try:
+                            tgt_list.append(str(v.relative_to(STATE["root"])))
+                        except Exception:
+                            continue
+                    if tgt_list:
+                        agg_params["targets"] = tgt_list
+            elif fileSelection == "selected":
+                if not agg_params.get("targets"):
+                    tgt_list2: list[str] = []
+                    for v in videos_to_process:
+                        try:
+                            tgt_list2.append(str(v.relative_to(STATE["root"])))
+                        except Exception:
+                            continue
+                    if tgt_list2:
+                        agg_params["targets"] = tgt_list2
+            req = JobRequest(
+                task="hover",
+                directory=str(base),
+                recursive=(mode == "all" and not bool(agg_params.get("targets"))),
+                force=(mode == "all"),
+                params=agg_params,
+            )
+            jid = _new_job(req.task, req.directory or str(STATE["root"]))
+            try:
+                with JOB_LOCK:
+                    if jid in JOBS:
+                        JOBS[jid]["request"] = req.dict()
+                _persist_job(jid)
+            except Exception:
+                pass
+            def _hover_runner():
+                with JOB_RUN_SEM:
+                    _run_job_worker(jid, req)
+            threading.Thread(target=_hover_runner, daemon=True).start()
+            created_jobs.append(jid)
+        elif len(videos_to_process) <= 1:
             # Single job path for 0 or 1 file
             # If 1 file and it's already active, short-circuit with a friendly message
             if len(videos_to_process) == 1 and mode == "missing":
@@ -10647,19 +10747,20 @@ def tasks_batch_operation(request: Request):
             threading.Thread(target=_single_runner, daemon=True).start()
             created_jobs.append(jid)
         else:
-            # Per-file jobs: one JobRequest per video
+            # Per-file jobs: one JobRequest per video, but avoid spawning thousands of threads at once.
+            # Strategy: create all job rows immediately, then use a single starter thread to
+            # launch workers in bounded waves. This keeps separate queue rows while preventing
+            # "can't start new thread" errors for large batches.
             seen_targets: set[tuple[str, str]] = set()
+            to_start: list[tuple[str, JobRequest]] = []
             for v in videos_to_process:
                 try:
                     rel = str(v.relative_to(STATE["root"]))
                 except Exception:
                     continue
                 per_params = dict(job_params)
-                # Narrow down to a single target for this job
                 per_params["targets"] = [rel]
-                # Deduplicate by (task, target)
                 dedup_key = (task_name, rel)
-                # Skip if already queued/running globally or already seen in this request
                 if dedup_key in seen_targets or dedup_key in active_targets:
                     continue
                 seen_targets.add(dedup_key)
@@ -10671,22 +10772,96 @@ def tasks_batch_operation(request: Request):
                     params=per_params,
                 )
                 jid = _new_job(req.task, req.directory or str(STATE["root"]))
-                # Store a user-friendly label (target file) for queued state display
                 try:
                     with JOB_LOCK:
                         if jid in JOBS:
                             JOBS[jid]["label"] = rel
-                            # Persist originating request for restore/resume
                             JOBS[jid]["request"] = req.dict()
                 except Exception:
                     pass
                 _persist_job(jid)
-                def _runner(jid=jid, req=req):
-                    with JOB_RUN_SEM:
-                        _run_job_worker(jid, req)
-                threading.Thread(target=_runner, daemon=True).start()
                 created_jobs.append(jid)
+                to_start.append((jid, req))
 
+            # Staggered starter: launches up to a bounded window of worker threads at a time
+            def _staggered_start(pairs: list[tuple[str, JobRequest]], task_type: str):
+                try:
+                    import time as _time
+                except Exception:
+                    # Fallback shim
+                    class _T:  # type: ignore
+                        @staticmethod
+                        def sleep(x):
+                            pass
+                    _time = _T()  # type: ignore
+                try:
+                    # Window defaults: 2x job concurrency, min 6, max 32 (configurable via env)
+                    wnd_env = os.environ.get("BATCH_START_WINDOW")
+                    if wnd_env is not None:
+                        window = max(1, int(wnd_env))
+                    else:
+                        window = max(6, min(32, JOB_MAX_CONCURRENCY * 2))  # type: ignore[name-defined]
+                except Exception:
+                    window = 12
+
+                idx = 0
+                total = len(pairs)
+                started: set[str] = set()
+                while idx < total:
+                    # Launch up to 'window' new workers
+                    upper = min(total, idx + window)
+                    for k in range(idx, upper):
+                        jid_k, req_k = pairs[k]
+                        def _runner(jid=jid_k, req=req_k):
+                            with JOB_RUN_SEM:
+                                _run_job_worker(jid, req)
+                        try:
+                            threading.Thread(target=_runner, name=f"job-{task_type}-{jid_k}", daemon=True).start()
+                            started.add(jid_k)
+                        except Exception:
+                            # If thread creation fails, break to avoid tight loop
+                            break
+                    idx = upper
+                    if idx >= total:
+                        break
+                    # Wait until number of active-started jobs (queued/running) among those we started
+                    # drops below half the window before starting next wave. This bounds total worker
+                    # threads and avoids starting a thread per file at once.
+                    while True:
+                        try:
+                            with JOB_LOCK:
+                                active = 0
+                                for jid_s in list(started):
+                                    j = JOBS.get(jid_s)
+                                    if not j:
+                                        continue
+                                    st = str(j.get("state") or "").lower()
+                                    if st in ("queued", "running", "cancel_requested"):
+                                        active += 1
+                        except Exception:
+                            active = 0
+                        if active <= max(1, window // 2):
+                            break
+                        _time.sleep(0.35)
+
+            # Kick off the starter thread (returns immediately)
+            try:
+                threading.Thread(target=_staggered_start, args=(to_start, task_name), name=f"batch-starter-{task_name}", daemon=True).start()
+            except Exception:
+                # As a fallback, start sequentially (still avoids massive thread fan-out)
+                for jid_k, req_k in to_start:
+                    def _runner(jid=jid_k, req=req_k):
+                        with JOB_RUN_SEM:
+                            _run_job_worker(jid, req)
+                    try:
+                        threading.Thread(target=_runner, name=f"job-{task_name}-{jid_k}", daemon=True).start()
+                    except Exception:
+                        break
+
+        try:
+            _log("jobs", f"[batch] op={operation} enqueued_jobs={len(created_jobs)} file_count={len(videos_to_process)}")
+        except Exception:
+            pass
         return api_success({
             "jobs": created_jobs,
             "fileCount": len(videos_to_process),
@@ -10738,14 +10913,15 @@ def tasks_jobs():
             try:
                 jtype = (job.get("type") or "").lower()
                 # Provide a stable "artifact" key aligning with frontend badge dataset values
+                # Badge keys (sidebar): metadata, thumbnail, hover, phash, sprites, heatmaps, subtitles, scenes, faces
                 artifact_map = {
-                    "cover": "thumbnails",      # legacy name maps to canonical
-                    "thumbnail": "thumbnails",  # new internal task type
-                    "hover": "previews",        # hover task produces previews artifact
+                    "cover": "thumbnail",        # legacy name maps to canonical badge key
+                    "thumbnail": "thumbnail",
+                    "hover": "hover",
                     "phash": "phash",
                     "scenes": "scenes",
                     "sprites": "sprites",
-                    "heatmaps": "heatmaps",     # plural canonical
+                    "heatmaps": "heatmaps",
                     "faces": "faces",
                     "embed": "faces",           # embed updates faces.json; reuse faces spinner
                     "metadata": "metadata",
@@ -10862,6 +11038,55 @@ def tasks_jobs():
         raise_api_error(f"Failed to get job status: {str(e)}")
 
 
+@api.get("/tasks/diag")
+def tasks_diag():
+    """
+    Return a lightweight diagnostics snapshot for job scheduling/concurrency.
+    Helps identify why only one job might be running when higher caps are set.
+    """
+    try:
+        with JOB_LOCK:
+            all_jobs = list(JOBS.values())
+        running = [j for j in all_jobs if str(j.get("state") or "").lower() == "running"]
+        queued = [j for j in all_jobs if str(j.get("state") or "").lower() == "queued"]
+        def by_type(lst):
+            out: dict[str, int] = {}
+            for j in lst:
+                t = _normalize_job_type(str(j.get("type") or ""))
+                out[t] = out.get(t, 0) + 1
+            return out
+        # Env flags that influence starting behavior
+        strict_fifo = str(os.environ.get("STRICT_FIFO_START", "0")).lower() in ("1","true","yes")
+        fair_strict = str(os.environ.get("JOB_FAIR_START_STRICT", "0")).lower() in ("1","true","yes")
+        raw_light = os.environ.get("LIGHT_SLOT_TYPES")
+        if raw_light is not None:
+            light_types = {s.strip().lower() for s in raw_light.split(',') if s.strip()}
+        else:
+            light_types = {"scenes", "hover", "sprites", "phash", "faces", "heatmaps"}
+        light_all = str(os.environ.get("LIGHT_SLOT_ALL", "0")).lower() in ("1","true","yes")
+        resp = {
+            "jobMaxConcurrency": int(JOB_MAX_CONCURRENCY),
+            "ffmpegConcurrency": int(_FFMPEG_CONCURRENCY),  # type: ignore[name-defined]
+            "env": {
+                "STRICT_FIFO_START": strict_fifo,
+                "JOB_FAIR_START_STRICT": fair_strict,
+                "LIGHT_SLOT_ALL": light_all,
+                "LIGHT_SLOT_TYPES": sorted(light_types),
+            },
+            "running": {
+                "total": len(running),
+                "byType": by_type(running),
+            },
+            "queued": {
+                "total": len(queued),
+                "byType": by_type(queued),
+            },
+        }
+        return api_success(resp)
+    except Exception as e:
+        raise_api_error(f"Failed to get diagnostics: {str(e)}")
+
+
 @api.post("/tasks/jobs/{job_id}/cancel")
 def tasks_cancel_job(job_id: str):
     """
@@ -10881,7 +11106,18 @@ def tasks_cancel_job(job_id: str):
         with JOB_LOCK:
             j = JOBS.get(job_id)
             if j and j.get("state") in ("queued", "running"):
-                j["state"] = "cancel_requested"
+                # If still queued, mark as canceled immediately; if running, mark as cancel_requested
+                st = str(j.get("state") or "").lower()
+                if st == "queued":
+                    j["state"] = "canceled"
+                    j["ended_at"] = time.time()
+                else:
+                    j["state"] = "cancel_requested"
+        # Persist updated state so restarts do not auto-restore
+        try:
+            _persist_job(job_id)
+        except Exception:
+            pass
 
         _publish_job_event({"event": "cancel", "id": job_id})
 
@@ -10903,15 +11139,20 @@ def tasks_cancel_all_queued():
             ev = JOB_CANCEL_EVENTS.get(jid)
             if ev and not ev.is_set():
                 ev.set()
-                try:
-                    _terminate_job_processes(jid)  # type: ignore[name-defined]
-                except Exception:
-                    pass
-                count += 1
-                with JOB_LOCK:
-                    j = JOBS.get(jid)
-                    if j and j.get("state") == "queued":
-                        j["state"] = "cancel_requested"
+            try:
+                _terminate_job_processes(jid)  # type: ignore[name-defined]
+            except Exception:
+                pass
+            with JOB_LOCK:
+                j = JOBS.get(jid)
+                if j and j.get("state") == "queued":
+                    j["state"] = "canceled"
+                    j["ended_at"] = time.time()
+            try:
+                _persist_job(jid)
+            except Exception:
+                pass
+            count += 1
         _publish_job_event({"event": "cancel_all", "count": count})
         return api_success({"canceled": count})
     except Exception as e:
@@ -10925,22 +11166,43 @@ def tasks_cancel_all():
     Running jobs will attempt to stop gracefully at their next cancellation check.
     """
     try:
-        count = 0
+        # Phase 1: snapshot and persist state transitions up front to minimize race with process termination
         with JOB_LOCK:
-            ids = [jid for jid, j in JOBS.items() if j.get("state") in ("queued", "running")]
-        for jid in ids:
-            ev = JOB_CANCEL_EVENTS.get(jid)
-            if ev and not ev.is_set():
-                ev.set()
-                try:
-                    _terminate_job_processes(jid)  # type: ignore[name-defined]
-                except Exception:
-                    pass
-                count += 1
+            queued_ids = [jid for jid, j in JOBS.items() if str(j.get("state") or "").lower() == "queued"]
+            running_ids = [jid for jid, j in JOBS.items() if str(j.get("state") or "").lower() == "running"]
+        # Mark queued as canceled immediately (with ended_at) and running as cancel_requested
+        now_ts = time.time()
+        for jid in queued_ids:
+            try:
                 with JOB_LOCK:
                     j = JOBS.get(jid)
-                    if j and j.get("state") in ("queued", "running"):
+                    if j and str(j.get("state") or "").lower() == "queued":
+                        j["state"] = "canceled"
+                        j["ended_at"] = now_ts
+                _persist_job(jid)
+            except Exception:
+                pass
+        for jid in running_ids:
+            try:
+                with JOB_LOCK:
+                    j = JOBS.get(jid)
+                    if j and str(j.get("state") or "").lower() == "running":
                         j["state"] = "cancel_requested"
+                _persist_job(jid)
+            except Exception:
+                pass
+
+        # Phase 2: signal cancel events and terminate any active subprocesses (best-effort)
+        for jid in queued_ids + running_ids:
+            try:
+                ev = JOB_CANCEL_EVENTS.get(jid)
+                if ev and not ev.is_set():
+                    ev.set()
+                _terminate_job_processes(jid)  # type: ignore[name-defined]
+            except Exception:
+                pass
+
+        count = len(queued_ids) + len(running_ids)
         _publish_job_event({"event": "cancel_all", "count": count})
         return api_success({"canceled": count})
     except Exception as e:
@@ -12444,10 +12706,9 @@ def _handle_hover_job(jid: str, jr: JobRequest, base: Path) -> None:
     duration = float(prm.get("duration", 1.0))
     width = int(prm.get("width", 320))
     single_file = len(vids) == 1
-    if single_file:
-        _set_job_progress(jid, total=max(1, segments), processed_set=0)
-    else:
-        _set_job_progress(jid, total=max(0, len(vids)), processed_set=0)
+    # Use total steps as files*segments so progress advances smoothly per segment
+    total_steps = max(1, max(1, len(vids)) * max(1, segments))
+    _set_job_progress(jid, total=total_steps, processed_set=0)
     done_files = 0
     for v in vids:
         if _job_check_canceled(jid):
@@ -12459,21 +12720,19 @@ def _handle_hover_job(jid: str, jr: JobRequest, base: Path) -> None:
             lk = _file_task_lock(v, "hover")
             with lk:
                 if _file_nonempty(out_path) and not bool(jr.force):
+                    # Treat as fully done for this file
                     done_files += 1
-                    if single_file:
-                        _set_job_progress(jid, processed_set=segments)
-                    else:
-                        _set_job_progress(jid, processed_set=done_files)
+                    _set_job_progress(jid, processed_set=min(total_steps, done_files * max(1, segments)))
                 else:
                     def _cc() -> bool:
                         return _job_check_canceled(jid)
                     def _pcb(i: int, n: int):
-                        if not single_file:
-                            return
+                        # Update progress within this file using segments-based steps
                         try:
                             ni = max(1, int(n))
                             ii = max(0, min(int(i), ni))
-                            _set_job_progress(jid, total=ni, processed_set=ii)
+                            base = done_files * ni
+                            _set_job_progress(jid, processed_set=min(total_steps, base + ii))
                         except Exception:
                             pass
                     generate_hover_preview(
@@ -12483,20 +12742,14 @@ def _handle_hover_job(jid: str, jr: JobRequest, base: Path) -> None:
                         width=width,
                         fmt="webm",
                         out=out_path,
-                        progress_cb=_pcb if single_file else None,
+                        progress_cb=_pcb,
                         cancel_check=_cc,
                     )
                     done_files += 1
-                    if single_file:
-                        _set_job_progress(jid, processed_set=segments)
-                    else:
-                        _set_job_progress(jid, processed_set=done_files)
+                    _set_job_progress(jid, processed_set=min(total_steps, done_files * max(1, segments)))
         except Exception:
             done_files += 1
-            if single_file:
-                _set_job_progress(jid, processed_set=segments)
-            else:
-                _set_job_progress(jid, processed_set=done_files)
+            _set_job_progress(jid, processed_set=min(total_steps, done_files * max(1, segments)))
     _set_job_current(jid, None)
     _job_set_result(jid, {"processed": len(vids)})
     _finish_job(jid)
@@ -13252,6 +13505,8 @@ def _run_job_worker(jid: str, jr: JobRequest):
             "transcode": _handle_transcode_job,
             "autotag": _handle_autotag_job,
             "cover": _handle_cover_job,
+            # Canonicalize: batch operations use task "thumbnail"; treat identical to legacy "cover"
+            "thumbnail": _handle_cover_job,
             # Newly added: generate metadata sidecar JSON (was previously missing, causing 'unknown task')
             "metadata": _handle_metadata_job,
             "embed": _handle_embed_job,
@@ -13485,12 +13740,7 @@ def jobs_cancel(job_id: str):
 
 
 
-# Ensure the alias is registered even if defined after the router was included
-try:
-    app.add_api_route("/api/jobs/events", jobs_events, methods=["GET"])
-except Exception:
-    # If already registered or during import-time constraints, ignore
-    pass
+# jobs_events is exposed via @api.get("/jobs/events"); no extra alias needed
 
 # Proper /api endpoints that resolve paths relative to MEDIA_ROOT
 @api.get("/videos/{name}/tags")

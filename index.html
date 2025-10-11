@@ -85,6 +85,49 @@
     </filter>
   </svg>
 
+  <!-- Templates: Image (FaceLab) Tab -->
+  <template id="imageTabTemplate">
+    <section class="facelab-panel">
+      <div class="facelab-controls">
+        <strong>FaceLab</strong>
+        <div class="ml-auto"></div>
+        <button id="imageRefreshBtn" class="btn-sm" title="Refresh faces for current file">Refresh</button>
+        <button id="imageComputeBtn" class="btn-sm" title="Compute faces for current file">Compute faces</button>
+        <span id="imageStatus" class="hint-sm"></span>
+      </div>
+      <div id="imageFacesList" class="facelab-grid" aria-live="polite"></div>
+    </section>
+  </template>
+  <template id="faceTileTemplate">
+    <div class="facelab-tile" role="group">
+      <img class="facelab-img" alt="face" />
+      <input class="facelab-name" type="text" placeholder="Name" />
+      <div class="facelab-meta hint-sm"></div>
+    </div>
+  </template>
+
+  <!-- Templates: Settings JSON panels (Health, Config) -->
+  <template id="settingsHealthTemplate">
+    <section class="settings-block">
+      <header class="flex-row gap-10">
+        <strong>Server Health</strong>
+        <div class="ml-auto"></div>
+        <button class="btn-sm health-refresh" title="Refresh health">Refresh</button>
+      </header>
+      <pre class="json-pre health-pre" aria-live="polite"></pre>
+    </section>
+  </template>
+  <template id="settingsConfigTemplate">
+    <section class="settings-block">
+      <header class="flex-row gap-10">
+        <strong>Server Config</strong>
+        <div class="ml-auto"></div>
+        <button class="btn-sm config-refresh" title="Refresh config">Refresh</button>
+      </header>
+      <pre class="json-pre config-pre" aria-live="polite"></pre>
+    </section>
+  </template>
+
   <!-- Performer Import Preview Modal (moved inside <body> and grouped with other modals) -->
   <div id="performerImportPreviewModal" class="modal" hidden>
     <div class="panel panel--narrow">
@@ -254,6 +297,70 @@
             </circle>
           </svg>
         </template>
+
+        <!-- List tab: panel skeleton template -->
+        <template id="listTabTemplate">
+          <div class="list-panel">
+            <div class="list-controls">
+              <div class="flex-row gap-8">
+                <button id="listColumnsBtn" class="btn-sm" aria-controls="listColumnsPanel" aria-expanded="false">Columns</button>
+                <button id="listRotateHeadersToggle" class="btn-sm" aria-pressed="false" title="Rotate column headers 90° for compact view">Rotate headers: Off</button>
+                <div class="list-pager">
+                  <button id="listPrevBtn" class="btn-sm" aria-label="Previous page">Prev</button>
+                  <span id="listPageInfo" class="hint-sm">Page 1</span>
+                  <button id="listNextBtn" class="btn-sm" aria-label="Next page">Next</button>
+                </div>
+              </div>
+            </div>
+            <div id="listColumnsPanel" class="list-columns-panel hidden" role="region" aria-label="Column settings">
+              <div class="panel-header--spaced">
+                <strong>Columns</strong>
+                <button id="listRotateHeadersTogglePanel" class="btn-sm" aria-pressed="false" title="Rotate column headers 90° for compact view">Rotate headers: Off</button>
+                <button id="listColumnsClose" class="btn-sm" aria-label="Close">Close</button>
+              </div>
+              <div id="listColumnsBody" class="list-columns-body"></div>
+              <div class="hint-sm hint-sm--muted mt-12">Drag to reorder • Toggle to show/hide • Resize using header grips in the table</div>
+            </div>
+            <div class="list-wrap">
+              <table id="listTable" class="list-table" role="table" aria-label="Files list">
+                <thead>
+                  <tr id="listHeadRow"></tr>
+                </thead>
+                <tbody id="listTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </template>
+
+        <!-- List tab: table cell template -->
+        <template id="listCellTemplate">
+          <td class="list-cell"></td>
+        </template>
+
+        <!-- List tab: table row template -->
+        <template id="listRowTemplate">
+          <tr class="list-row" data-selected="0" data-path=""></tr>
+        </template>
+
+        <!-- List tab: head cell template -->
+        <template id="listHeadCellTemplate">
+          <th>
+            <span class="col-drag-handle" title="Drag to reorder" draggable="true">⋮⋮</span>
+            <div class="list-head-cell"></div>
+            <div class="col-resizer"></div>
+          </th>
+        </template>
+
+        <!-- List tab: column settings item template -->
+        <template id="listColumnItemTemplate">
+          <div class="list-col-item" draggable="true">
+            <span class="drag-handle" title="Drag to reorder" aria-hidden="true">⋮⋮</span>
+            <label>
+              <input type="checkbox" class="list-col-visible" checked />
+              <span class="list-col-label">Column</span>
+            </label>
+          </div>
+        </template>
         <button class="btn" id="errorModalClose">Close</button>
       </div>
       <pre id="errorModalText" class="error-pre"></pre>
@@ -296,9 +403,6 @@
       </button>
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="stats-panel" id="stats-tab" data-tab="stats">
         Stats
-      </button>
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="settings-panel" id="settings-tab" data-tab="settings">
-        Settings
       </button>
     </nav>
   </header>
@@ -431,6 +535,15 @@
                       <span id="badge-faces-status" aria-hidden="true">?</span>
                     </div>
                   </div>
+                  <!-- Sidebar artifact previews (compact) -->
+                  <div id="sidebarSpritePreview" class="mt-12 hidden" aria-live="polite">
+                    <div class="hint-sm hint-sm--muted mb-4">Sprite Sheet</div>
+                    <img id="sidebarSpriteImage" alt="Sprites" style="max-width:100%; height:auto; display:block; border-radius:4px; opacity:0.95;" />
+                  </div>
+                  <div id="sidebarHeatmapPreview" class="mt-12 hidden" aria-live="polite">
+                    <div class="hint-sm hint-sm--muted mb-4">Heatmap</div>
+                    <img id="sidebarHeatmapImage" alt="Heatmap" style="max-width:100%; height:auto; display:block; border-radius:4px; opacity:0.95;" />
+                  </div>
                   <div class="hint-sm mt-6 hint-sm--muted line-13">Click a missing badge (✗) or Generate button to start. ✓ indicates the artifact is present. Spinner shows job progress.</div>
                 </div>
               </div>
@@ -455,6 +568,22 @@
                       <input type="text" id="videoTagInput" class="chips-input" placeholder="Add tag…" aria-label="Add tag" />
                     </div>
                     <div class="chips-hint hint-sm hint-sm--muted mt-4">Enter to add · Click a chip to remove</div>
+                    <!-- Rating (5-star) -->
+                    <div class="chips-group" id="videoRatingGroup">
+                      <div class="chips-label">Rating</div>
+                      <div class="rating-stars" id="videoRating" role="radiogroup" aria-label="Rating (1 to 5)">
+                        <span class="star" role="radio" tabindex="0" data-value="1" aria-label="1 star" aria-checked="false">☆</span>
+                        <span class="star" role="radio" tabindex="0" data-value="2" aria-label="2 stars" aria-checked="false">☆</span>
+                        <span class="star" role="radio" tabindex="0" data-value="3" aria-label="3 stars" aria-checked="false">☆</span>
+                        <span class="star" role="radio" tabindex="0" data-value="4" aria-label="4 stars" aria-checked="false">☆</span>
+                        <span class="star" role="radio" tabindex="0" data-value="5" aria-label="5 stars" aria-checked="false">☆</span>
+                      </div>
+                    </div>
+                    <!-- Description -->
+                    <div class="chips-group" id="videoDescriptionGroup">
+                      <div class="chips-label">Description</div>
+                      <div id="videoDescription" class="desc-input" role="textbox" aria-label="Video description" tabindex="0" data-placeholder="Add a description…"></div>
+                    </div>
                   </div>
                 </div>
               </div>

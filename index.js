@@ -1677,8 +1677,14 @@ sortSelect.addEventListener('change', () => {
 });
 // Wire up sidebar artifact generation buttons
 function getSelectedFilePath() {
-  // Use the currently selected file in the grid, or fallback to the first file
-  if (selectedItems.size > 0) {
+  // Prefer the actively playing path from the Player, if available
+  try {
+    const p = (window.Player && typeof window.Player.getPath === 'function') ? window.Player.getPath() : null;
+    if (p) return p;
+  }
+  catch (_) { }
+  // Otherwise use the currently selected file in the grid
+  if (selectedItems && selectedItems.size > 0) {
     return Array.from(selectedItems)[0];
   }
   // Fallback: try to get the first card in the grid
@@ -1738,6 +1744,8 @@ async function triggerArtifactJob(artifact) {
 }
 
 document.querySelectorAll('.artifact-gen-btn[data-artifact]').forEach((btn) => {
+  if (btn._wired) return;
+  btn._wired = true;
   btn.addEventListener('click', () => {
     const artifact = btn.getAttribute('data-artifact');
     triggerArtifactJob(artifact);
@@ -2088,6 +2096,85 @@ function wireSettings() {
     attach(ffmpegThreadsInput);
     attach(ffmpegTimelimitInput);
   }
+
+  // Insert Health/Config read-only JSON panels
+  try {
+    const settingsPanel = document.getElementById('settings-panel');
+    if (settingsPanel) {
+      // Only add once
+      if (!settingsPanel._jsonPanelsAdded) {
+        settingsPanel._jsonPanelsAdded = true;
+        const healthTpl = document.getElementById('settingsHealthTemplate');
+        const configTpl = document.getElementById('settingsConfigTemplate');
+        const frag = document.createDocumentFragment();
+        if (healthTpl && healthTpl.tagName === 'TEMPLATE') frag.appendChild(healthTpl.content.cloneNode(true));
+        if (configTpl && configTpl.tagName === 'TEMPLATE') frag.appendChild(configTpl.content.cloneNode(true));
+        settingsPanel.appendChild(frag);
+
+        const healthPre = settingsPanel.querySelector('.health-pre');
+        const configPre = settingsPanel.querySelector('.config-pre');
+        const healthBtn = settingsPanel.querySelector('.health-refresh');
+        const configBtn = settingsPanel.querySelector('.config-refresh');
+
+        const fmt = (obj) => {
+          try { return JSON.stringify(obj, null, 2); } catch (_) { return String(obj); }
+        };
+
+        async function loadHealth() {
+          if (!healthPre) return;
+          healthPre.textContent = 'Loading…';
+          try {
+            // Prefer /api/health if router mounted, else fallback to /health
+            let r = await fetch('/api/health');
+            if (!r.ok) r = await fetch('/health');
+            const j = await r.json();
+            const data = j && j.data ? j.data : j;
+            healthPre.textContent = fmt(data);
+          }
+          catch (e) {
+            healthPre.textContent = 'Failed to load health';
+          }
+        }
+
+        async function loadConfig() {
+          if (!configPre) return;
+          configPre.textContent = 'Loading…';
+          try {
+            // Prefer /api/config if present in legacy setups; otherwise /config
+            let r = await fetch('/api/config');
+            if (!r.ok) r = await fetch('/config');
+            const j = await r.json();
+            const data = j && j.data ? j.data : j;
+            configPre.textContent = fmt(data);
+          }
+          catch (e) {
+            configPre.textContent = 'Failed to load config';
+          }
+        }
+
+        if (healthBtn && !healthBtn._wired) { healthBtn._wired = true; healthBtn.addEventListener('click', loadHealth); }
+        if (configBtn && !configBtn._wired) { configBtn._wired = true; configBtn.addEventListener('click', loadConfig); }
+
+        // Lazy-load when the Settings tab becomes active to avoid wasted requests
+        const maybeInit = (tabId) => {
+          if (tabId !== 'settings') return;
+          loadHealth();
+          loadConfig();
+        };
+        // If settings already visible, load now
+        try {
+          if (!(settingsPanel.hasAttribute('hidden') || settingsPanel.classList.contains('hidden'))) {
+            maybeInit('settings');
+          }
+        } catch (_) { }
+        // Also react to tab changes
+        window.addEventListener('tabchange', (e) => {
+          try { maybeInit(e?.detail?.activeTab); } catch (_) { }
+        });
+      }
+    }
+  }
+  catch (_) { /* ignore */ }
 }
 
 // (Removed: simple Enter handler;
@@ -2135,6 +2222,67 @@ window.addEventListener('load', () => {
     const el = document.getElementById(id);
     if (el && el.classList.contains('d-none')) el.classList.remove('d-none');
   });
+
+  // Wire job action buttons early so clicks always work, independent of table renders
+  const clearBtn = document.getElementById('clearCompletedBtn');
+  if (clearBtn && !clearBtn._wired) {
+    clearBtn._wired = true;
+    clearBtn.addEventListener('click', async () => {
+      try {
+        clearBtn.disabled = true; clearBtn.classList.add('btn-busy');
+        const r = await fetch('/api/tasks/jobs/clear-completed', { method: 'POST' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        const removed = data?.data?.removed ?? 0;
+        (window.tasksManager?.showNotification || notify)(`Removed ${removed} completed job(s)`, 'success');
+        await (window.tasksManager?.refreshJobs?.() || Promise.resolve());
+      }
+      catch (e) {
+        (window.tasksManager?.showNotification || notify)('Failed to clear completed jobs', 'error');
+      }
+      finally {
+        clearBtn.classList.remove('btn-busy'); clearBtn.disabled = false;
+      }
+    });
+  }
+  const cancelQueuedBtn = document.getElementById('cancelQueuedBtn');
+  if (cancelQueuedBtn && !cancelQueuedBtn._wired) {
+    cancelQueuedBtn._wired = true;
+    cancelQueuedBtn.addEventListener('click', async () => {
+      try {
+        cancelQueuedBtn.disabled = true; cancelQueuedBtn.classList.add('btn-busy');
+        const res = await fetch('/api/tasks/jobs/cancel-queued', { method: 'POST' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        (window.tasksManager?.showNotification || notify)('Queued jobs canceled', 'success');
+        await (window.tasksManager?.refreshJobs?.() || Promise.resolve());
+      }
+      catch (e) {
+        (window.tasksManager?.showNotification || notify)('Failed to cancel queued jobs', 'error');
+      }
+      finally {
+        cancelQueuedBtn.classList.remove('btn-busy'); cancelQueuedBtn.disabled = false;
+      }
+    });
+  }
+  const cancelAllBtn = document.getElementById('cancelAllBtn');
+  if (cancelAllBtn && !cancelAllBtn._wired) {
+    cancelAllBtn._wired = true;
+    cancelAllBtn.addEventListener('click', async () => {
+      try {
+        cancelAllBtn.disabled = true; cancelAllBtn.classList.add('btn-busy');
+        const res = await fetch('/api/tasks/jobs/cancel-all', { method: 'POST' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        (window.tasksManager?.showNotification || notify)('All pending and running jobs asked to cancel', 'success');
+        await (window.tasksManager?.refreshJobs?.() || Promise.resolve());
+      }
+      catch (e) {
+        (window.tasksManager?.showNotification || notify)('Failed to cancel all jobs', 'error');
+      }
+      finally {
+        cancelAllBtn.classList.remove('btn-busy'); cancelAllBtn.disabled = false;
+      }
+    });
+  }
 
   // Initialize per-artifact options menus
   initArtifactOptionsMenus();
@@ -3275,6 +3423,540 @@ function setupViewportFitPlayer() {
   }
 }
 
+// --- List Tab (compact table view) ---
+(function setupListTab() {
+  const COL_LS_KEY = 'mediaPlayer:list:columns';
+  // Default column definitions (id, label, width px, visible, accessor)
+  const DEFAULT_COLS = [
+    { id: 'name', label: 'Name', width: 260, visible: true, get: (f) => f.name || f.title || '' },
+    { id: 'path', label: 'Path', width: 320, visible: true, get: (f) => f.path || '' },
+    { id: 'duration', label: 'Duration', width: 90, visible: true, get: (f) => fmtDuration(Number(f.duration)) },
+    { id: 'size', label: 'Size', width: 90, visible: true, get: (f) => fmtSize(Number(f.size)) },
+    { id: 'res', label: 'Resolution', width: 110, visible: true, get: (f) => (f.width && f.height) ? `${f.width}×${f.height}` : '' },
+    { id: 'mtime', label: 'Modified', width: 140, visible: true, get: (f) => f.mtime ? new Date(f.mtime * 1000).toLocaleString() : '' },
+    { id: 'codec', label: 'Video Codec', width: 130, visible: false, get: (f) => f.video_codec || '' },
+    { id: 'acodec', label: 'Audio Codec', width: 130, visible: false, get: (f) => f.audio_codec || '' }
+  ];
+
+  function loadCols() {
+    try {
+      const raw = lsGet(COL_LS_KEY, { type: 'json', fallback: null });
+      if (!raw) return DEFAULT_COLS.map((c) => ({ ...c }));
+      // Merge to keep future default additions
+      const map = new Map(raw.map((c) => [c.id, c]));
+      return DEFAULT_COLS.map((d) => ({ ...d, ...(map.get(d.id) || {}) }));
+    } catch (_) { return DEFAULT_COLS.map((c) => ({ ...c })); }
+  }
+  function saveCols(cols) {
+    try { lsSet('' + COL_LS_KEY, cols, { type: 'json' }); } catch (_) { }
+  }
+
+  function addListTab(ts) {
+    const tpl = document.getElementById('listTabTemplate');
+    const { panel } = ts.addTab('list', 'List', tpl || '#listTabTemplate');
+    const headRow = panel.querySelector('#listHeadRow');
+    const tbody = panel.querySelector('#listTbody');
+    const table = panel.querySelector('#listTable');
+    const pagerPrev = panel.querySelector('#listPrevBtn');
+    const pagerNext = panel.querySelector('#listNextBtn');
+    const pageInfo = panel.querySelector('#listPageInfo');
+    const colsBtn = panel.querySelector('#listColumnsBtn');
+    const rotateBtn = panel.querySelector('#listRotateHeadersToggle');
+    const colsPanel = panel.querySelector('#listColumnsPanel');
+    const rotateBtnPanel = panel.querySelector('#listRotateHeadersTogglePanel');
+    const colsClose = panel.querySelector('#listColumnsClose');
+    const colsBody = panel.querySelector('#listColumnsBody');
+    const cellTpl = document.getElementById('listCellTemplate');
+    const itemTpl = document.getElementById('listColumnItemTemplate');
+
+    let cols = loadCols();
+    let page = 1;
+    let total = 0;
+    let pageSize = 100; // compact list view default
+    let filesCache = [];
+    let draggingCol = null;
+
+    function renderHead() {
+      headRow.innerHTML = '';
+      const headTpl = document.getElementById('listHeadCellTemplate');
+      cols.filter((c) => c.visible).forEach((c) => {
+        let th;
+        if (headTpl && headTpl.content) th = headTpl.content.firstElementChild.cloneNode(true);
+        else {
+          th = document.createElement('th');
+          const wrap = document.createElement('div'); wrap.className = 'list-head-cell'; th.appendChild(wrap);
+          const rz = document.createElement('div'); rz.className = 'col-resizer'; th.appendChild(rz);
+        }
+        const wrapEl = th.querySelector('.list-head-cell');
+        const rz = th.querySelector('.col-resizer');
+        if (wrapEl) wrapEl.textContent = c.label;
+        th.style.width = (c.width || 120) + 'px';
+        th.dataset.colId = c.id;
+        let startX = 0; let startW = c.width || 120;
+        const onMove = (ev) => {
+          const dx = ev.clientX - startX; const nw = Math.max(60, startW + dx);
+          th.style.width = nw + 'px';
+        };
+        const onUp = (ev) => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          const rect = th.getBoundingClientRect();
+          const nw = Math.max(60, Math.round(rect.width));
+          const idx = cols.findIndex((x) => x.id === c.id);
+          if (idx >= 0) { cols[idx] = { ...cols[idx], width: nw }; saveCols(cols); }
+        };
+        rz && rz.addEventListener('mousedown', (ev) => { startX = ev.clientX; startW = th.getBoundingClientRect().width; document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp); ev.preventDefault(); });
+        headRow.appendChild(th);
+      });
+
+      // Header-level drag-over drop indicators (for future header dragging support)
+      // We still manage the actual ordering in the columns panel; this is visual affordance.
+      const headers = Array.from(headRow.querySelectorAll('th'));
+      headers.forEach((th) => {
+        th.addEventListener('dragover', (e) => {
+          if (!draggingCol) return;
+          e.preventDefault();
+          const rect = th.getBoundingClientRect();
+          const mid = rect.left + rect.width / 2;
+          th.classList.toggle('drop-left', (e.clientX || 0) < mid);
+          th.classList.toggle('drop-right', (e.clientX || 0) >= mid);
+        });
+        th.addEventListener('dragleave', () => {
+          th.classList.remove('drop-left');
+          th.classList.remove('drop-right');
+        });
+        th.addEventListener('drop', (e) => {
+          if (!draggingCol) return;
+          e.preventDefault();
+          const src = draggingCol;
+          const dst = th.dataset.colId;
+          if (!src || !dst || src === dst) return;
+          const sIdx = cols.findIndex((x) => x.id === src);
+          const dIdx = cols.findIndex((x) => x.id === dst);
+          if (sIdx < 0 || dIdx < 0) return;
+          const before = th.classList.contains('drop-left');
+          const [moved] = cols.splice(sIdx, 1);
+          const insertAt = before ? dIdx : dIdx + 1;
+          cols.splice(insertAt, 0, moved);
+          saveCols(cols);
+          renderHead();
+          renderBody(filesCache);
+        });
+
+        // Optional: enable direct header dragging via the handle span
+        const handle = th.querySelector('.col-drag-handle');
+        if (handle) {
+          handle.addEventListener('dragstart', () => {
+            draggingCol = th.dataset.colId || null;
+            th.classList.add('drag-hover');
+          });
+          handle.addEventListener('dragend', () => {
+            draggingCol = null;
+            th.classList.remove('drag-hover');
+            th.classList.remove('drop-left');
+            th.classList.remove('drop-right');
+          });
+        }
+      });
+    }
+
+    function renderBody(files) {
+      tbody.innerHTML = '';
+      const visible = cols.filter((c) => c.visible);
+      const frag = document.createDocumentFragment();
+      const rowTpl = document.getElementById('listRowTemplate');
+      files.forEach((f) => {
+        let tr;
+        if (rowTpl && rowTpl.content) tr = rowTpl.content.firstElementChild.cloneNode(true);
+        else tr = document.createElement('tr');
+        tr.dataset.path = f.path || '';
+        tr.addEventListener('click', (e) => {
+          // selection toggle with meta/ctrl, or single-select row
+          const sel = tr.getAttribute('data-selected') === '1';
+          const nextSel = e.metaKey || e.ctrlKey ? !sel : true;
+          // clear other selections if not multi
+          if (!(e.metaKey || e.ctrlKey)) {
+            tbody.querySelectorAll('tr[data-selected="1"]').forEach((r) => r.setAttribute('data-selected', '0'));
+          }
+          tr.setAttribute('data-selected', nextSel ? '1' : '0');
+          if (!e.metaKey && !e.ctrlKey && e.detail === 2) {
+            // double click open
+            try { if (window.tabSystem) window.tabSystem.switchToTab('player'); } catch (_) { }
+            try { if (window.Player?.open) window.Player.open(f.path); } catch (_) { }
+          }
+        });
+        visible.forEach((c) => {
+          let td;
+          if (cellTpl && cellTpl.content) td = cellTpl.content.firstElementChild.cloneNode(true);
+          else { td = document.createElement('td'); td.className = 'list-cell'; }
+          td.textContent = (c.get && typeof c.get === 'function') ? (c.get(f) ?? '') : String(f[c.id] ?? '');
+          tr.appendChild(td);
+        });
+        frag.appendChild(tr);
+      });
+      tbody.appendChild(frag);
+    }
+
+    function renderColumnsPanel() {
+      colsBody.innerHTML = '';
+      cols.forEach((c, idx) => {
+        let item;
+        if (itemTpl && itemTpl.content) item = itemTpl.content.firstElementChild.cloneNode(true);
+        else {
+          item = document.createElement('div'); item.className = 'list-col-item';
+          const h = document.createElement('span'); h.className = 'drag-handle'; h.textContent = '⋮⋮'; item.appendChild(h);
+          const lab = document.createElement('label');
+          const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'list-col-visible'; cb.checked = !!c.visible;
+          const sp = document.createElement('span'); sp.className = 'list-col-label'; sp.textContent = c.label;
+          lab.appendChild(cb); lab.appendChild(sp); item.appendChild(lab);
+        }
+        item.dataset.colId = c.id;
+        const cb = item.querySelector('.list-col-visible');
+        const lab = item.querySelector('.list-col-label');
+        if (cb) {
+          cb.checked = !!c.visible;
+          cb.addEventListener('change', () => { c.visible = !!cb.checked; saveCols(cols); renderHead(); renderBody(filesCache); });
+        }
+        if (lab) lab.textContent = c.label;
+        // drag to reorder
+        item.addEventListener('dragstart', () => { draggingCol = c.id; item.classList.add('dragging'); });
+        item.addEventListener('dragend', () => { draggingCol = null; item.classList.remove('dragging'); });
+        item.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          if (!draggingCol) return;
+          const rect = item.getBoundingClientRect();
+          const mid = rect.left + rect.width / 2;
+          item.classList.toggle('drop-before', (e.clientX || 0) < mid);
+          item.classList.toggle('drop-after', (e.clientX || 0) >= mid);
+        });
+        item.addEventListener('dragleave', () => {
+          item.classList.remove('drop-before');
+          item.classList.remove('drop-after');
+        });
+        item.addEventListener('drop', (e) => {
+          e.preventDefault();
+          const src = draggingCol; const dst = c.id; if (!src || src === dst) return;
+          const sIdx = cols.findIndex((x) => x.id === src); const dIdx = cols.findIndex((x) => x.id === dst);
+          if (sIdx < 0 || dIdx < 0) return;
+          const before = item.classList.contains('drop-before');
+          const [moved] = cols.splice(sIdx, 1);
+          const insertAt = before ? dIdx : dIdx + 1;
+          cols.splice(insertAt, 0, moved);
+          saveCols(cols); renderColumnsPanel(); renderHead(); renderBody(filesCache);
+        });
+        colsBody.appendChild(item);
+      });
+    }
+
+    async function loadPage() {
+      // Build request from current library filters to stay consistent
+      const url = new URL('/api/library', window.location.origin);
+      url.searchParams.set('page', String(page));
+      url.searchParams.set('page_size', String(pageSize));
+      url.searchParams.set('sort', sortSelect?.value || 'date');
+      url.searchParams.set('order', orderToggle?.dataset?.order || 'desc');
+      const resSel = document.getElementById('resSelect');
+      const resVal = resSel ? String(resSel.value || '') : '';
+      if (resVal) url.searchParams.set('res_min', resVal);
+      const searchVal = computeSearchVal();
+      if (searchVal) url.searchParams.set('search', searchVal);
+      const val = (folderInput?.value || '').trim();
+      const p = currentPath();
+      if (val && !isAbsolutePath(val) && p) url.searchParams.set('path', p);
+      if (libraryTagFilters.length) url.searchParams.set('tags', libraryTagFilters.join(','));
+      if (libraryPerformerFilters.length) url.searchParams.set('performers', libraryPerformerFilters.join(','));
+
+      const r = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+      if (!r.ok) { tbody.innerHTML = ''; pageInfo.textContent = 'Failed'; return; }
+      const payload = await r.json();
+      const data = payload?.data || {};
+      filesCache = Array.isArray(data.files) ? data.files : [];
+      total = Number(data.total_files || filesCache.length || 0);
+      renderHead();
+      renderBody(filesCache);
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      pageInfo.textContent = `Page ${Math.min(page, totalPages)} of ${totalPages} (${total} files)`;
+      pagerPrev.disabled = page <= 1; pagerNext.disabled = page >= totalPages;
+    }
+
+    // Wire controls
+    pagerPrev.addEventListener('click', () => { if (page > 1) { page--; loadPage(); } });
+    pagerNext.addEventListener('click', () => { page++; loadPage(); });
+    colsBtn.addEventListener('click', () => {
+      const open = isHidden(colsPanel);
+      if (open) { renderColumnsPanel(); showAs(colsPanel, 'block'); colsBtn.setAttribute('aria-expanded', 'true'); }
+      else { hide(colsPanel); colsBtn.setAttribute('aria-expanded', 'false'); }
+    });
+    colsClose.addEventListener('click', () => { hide(colsPanel); colsBtn.setAttribute('aria-expanded', 'false'); });
+    document.addEventListener('click', (e) => {
+      if (!colsPanel.contains(e.target) && e.target !== colsBtn) { hide(colsPanel); colsBtn.setAttribute('aria-expanded', 'false'); }
+    });
+
+    // Rotate headers toggle
+    function applyRotateHeadersUI() {
+      const on = localStorage.getItem('mediaPlayer:list:rotateHeaders') === '1';
+      if (rotateBtn) {
+        rotateBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        rotateBtn.textContent = `Rotate headers: ${on ? 'On' : 'Off'}`;
+      }
+      if (rotateBtnPanel) {
+        rotateBtnPanel.setAttribute('aria-pressed', on ? 'true' : 'false');
+        rotateBtnPanel.textContent = `Rotate headers: ${on ? 'On' : 'Off'}`;
+      }
+      if (table) table.classList.toggle('rotate-headers', on);
+    }
+    if (rotateBtn) {
+      applyRotateHeadersUI();
+      rotateBtn.addEventListener('click', () => {
+        const cur = localStorage.getItem('mediaPlayer:list:rotateHeaders') === '1';
+        localStorage.setItem('mediaPlayer:list:rotateHeaders', cur ? '0' : '1');
+        applyRotateHeadersUI();
+      });
+    }
+    if (rotateBtnPanel) {
+      applyRotateHeadersUI();
+      rotateBtnPanel.addEventListener('click', () => {
+        const cur = localStorage.getItem('mediaPlayer:list:rotateHeaders') === '1';
+        localStorage.setItem('mediaPlayer:list:rotateHeaders', cur ? '0' : '1');
+        applyRotateHeadersUI();
+      });
+    }
+
+    // Auto-load when the tab becomes active
+    window.addEventListener('tabchange', (ev) => { if (ev?.detail?.activeTab === 'list') { loadPage(); } });
+    // If user deep-linked
+    if ((window.location.hash || '').replace(/^#/, '') === 'list') { setTimeout(() => loadPage(), 0); }
+    return { panel };
+  }
+
+  const tryInstall = () => {
+    const ts = window.tabSystem;
+    if (!ts || typeof ts.addTab !== 'function') return false;
+    addListTab(ts); return true;
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { tryInstall(); }, { once: true });
+  else if (!tryInstall()) setTimeout(tryInstall, 0);
+})();
+
+// --- Similar Tab (pHash duplicates) ---
+// Minimal tab that lists similar pairs from /api/duplicates/list with quick Play A/B
+(function setupSimilarTab() {
+  const controlsHTML = (
+    '<div class="task-section">'
+    + '  <div class="section-header">'
+    + '    <h2>Similar (pHash)</h2>'
+    + '    <div class="section-actions">'
+    + '      <label class="hint-sm">Threshold <input id="similarThresh" type="number" min="0" max="1" step="0.01" value="0.90" class="w-120" /></label>'
+    + '      <label class="hint-sm">Limit <input id="similarLimit" type="number" min="1" step="1" value="50" class="w-120" /></label>'
+    + '      <label class="hint-sm"><input id="similarRecursive" type="checkbox" /> Recursive</label>'
+    + '      <button id="similarRefreshBtn" class="btn-sm">Refresh</button>'
+    + '    </div>'
+    + '  </div>'
+    + '  <div id="similarStatus" class="hint-sm hint-sm--muted">—</div>'
+    + '  <div id="similarResults" class="mt-12"></div>'
+    + '</div>'
+  );
+
+  function install(ts) {
+    if (!ts || typeof ts.addTab !== 'function') return null;
+    const { panel } = ts.addTab('similar', 'Similar', controlsHTML);
+    function persistSettings(thresh, limit, rec) {
+      try { lsSet('similar:thresh', String(thresh)); } catch (_) { }
+      try { lsSet('similar:limit', String(limit)); } catch (_) { }
+      try { lsSet('similar:rec', rec ? '1' : '0'); } catch (_) { }
+    }
+    function restoreSettings() {
+      const tEl = document.getElementById('similarThresh');
+      const lEl = document.getElementById('similarLimit');
+      const rEl = document.getElementById('similarRecursive');
+      if (tEl) {
+        const raw = lsGet('similar:thresh');
+        if (raw != null && raw !== '') tEl.value = raw;
+      }
+      if (lEl) {
+        const raw = lsGet('similar:limit');
+        if (raw != null && raw !== '') lEl.value = raw;
+      }
+      if (rEl) {
+        const raw = lsGet('similar:rec');
+        rEl.checked = raw === '1';
+      }
+    }
+
+    async function loadSimilar() {
+      const statusEl = document.getElementById('similarStatus');
+      const resultsEl = document.getElementById('similarResults');
+      const tEl = document.getElementById('similarThresh');
+      const lEl = document.getElementById('similarLimit');
+      const rEl = document.getElementById('similarRecursive');
+      if (!statusEl || !resultsEl || !tEl || !lEl || !rEl) return;
+
+      const thr = Math.max(0, Math.min(1, parseFloat(tEl.value || '0.90')));
+      const limit = Math.max(1, parseInt(lEl.value || '50', 10) || 50);
+      const rec = !!rEl.checked;
+      persistSettings(thr, limit, rec);
+
+      resultsEl.innerHTML = '';
+      statusEl.textContent = 'Loading…';
+      statusEl.style.color = '';
+
+      // Determine directory from Library folder input (relative path only)
+      let directory = '';
+      try {
+        const val = (folderInput && folderInput.value || '').trim();
+        if (!isAbsolutePath(val)) {
+          // Use currentPath() helper which normalizes leading/trailing slashes
+          directory = (typeof currentPath === 'function') ? (currentPath() || '') : '';
+        }
+      } catch (_) { directory = ''; }
+
+      const qs = new URLSearchParams();
+      qs.set('phash_threshold', String(thr));
+      if (directory) qs.set('directory', directory);
+      qs.set('recursive', rec ? 'true' : 'false');
+      qs.set('page_size', String(limit));
+
+      try {
+        const res = await fetch('/api/duplicates/list?' + qs.toString(), { headers: { Accept: 'application/json' } });
+        if (!res.ok) {
+          statusEl.textContent = 'Failed to load';
+          statusEl.style.color = 'var(--danger-400, red)';
+          return;
+        }
+        const j = await res.json();
+        const data = j && (j.data || j) || {};
+        const pairs = Array.isArray(data.pairs) ? data.pairs : [];
+        const total = Number.isFinite(data.total_pairs) ? data.total_pairs : pairs.length;
+        if (!pairs.length) {
+          statusEl.textContent = 'No similar pairs at this threshold.';
+          statusEl.style.color = 'var(--muted-500, #778)';
+          return;
+        }
+        statusEl.textContent = `${total} pairs ≥ ${(thr * 100).toFixed(0)}%`;
+        statusEl.style.color = '';
+
+        // Render results
+        const frag = document.createDocumentFragment();
+        pairs.forEach((p) => {
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.style.padding = '12px';
+          card.style.marginBottom = '8px';
+
+          const row = document.createElement('div');
+          row.className = 'row';
+          row.style.justifyContent = 'space-between';
+          row.style.alignItems = 'center';
+          const title = document.createElement('strong');
+          title.textContent = `${Math.round(((p && p.similarity) || 0) * 100)}% similar`;
+          const actions = document.createElement('div');
+          actions.className = 'row gap-10';
+          const mkBtn = (label, path) => {
+            const b = document.createElement('button');
+            b.className = 'btn-sm';
+            b.textContent = label;
+            b.addEventListener('click', () => {
+              try { ts.switchToTab('player'); } catch (_) { }
+              try {
+                if (window.Player && typeof window.Player.open === 'function') window.Player.open(path);
+                else if (typeof Player !== 'undefined' && Player && typeof Player.open === 'function') Player.open(path);
+              } catch (_) { }
+            });
+            return b;
+          };
+          actions.appendChild(mkBtn('Play A', p && p.a));
+          actions.appendChild(mkBtn('Play B', p && p.b));
+          row.appendChild(title);
+          row.appendChild(actions);
+          card.appendChild(row);
+
+          const paths = document.createElement('div');
+          paths.className = 'hint-sm';
+          paths.style.marginTop = '6px';
+          const pa = document.createElement('div'); pa.textContent = p && p.a ? p.a : '';
+          const pb = document.createElement('div'); pb.textContent = p && p.b ? p.b : '';
+          paths.appendChild(pa); paths.appendChild(pb);
+          card.appendChild(paths);
+
+          frag.appendChild(card);
+        });
+        resultsEl.appendChild(frag);
+      }
+      catch (_) {
+        statusEl.textContent = 'Error loading';
+        statusEl.style.color = 'var(--danger-400, red)';
+      }
+    }
+
+    // Wire controls
+    panel.addEventListener('click', (e) => {
+      const btn = e.target && e.target.closest && e.target.closest('#similarRefreshBtn');
+      if (btn) {
+        e.preventDefault();
+        loadSimilar();
+      }
+    });
+    panel.addEventListener('change', (e) => {
+      const id = (e.target && e.target.id) || '';
+      if (id === 'similarThresh' || id === 'similarLimit' || id === 'similarRecursive') {
+        // Do not auto-load to avoid spamming; but persist user choice
+        const tEl = document.getElementById('similarThresh');
+        const lEl = document.getElementById('similarLimit');
+        const rEl = document.getElementById('similarRecursive');
+        const thr = parseFloat(tEl && tEl.value || '0.90');
+        const lim = parseInt(lEl && lEl.value || '50', 10) || 50;
+        const rec = !!(rEl && rEl.checked);
+        persistSettings(thr, lim, rec);
+      }
+    });
+    panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const t = e.target && e.target.id;
+        if (t === 'similarThresh' || t === 'similarLimit') {
+          e.preventDefault();
+          loadSimilar();
+        }
+      }
+    });
+
+    // Load on tab activation
+    window.addEventListener('tabchange', (ev) => {
+      if (ev && ev.detail && ev.detail.activeTab === 'similar') {
+        restoreSettings();
+        loadSimilar();
+      }
+    });
+
+    // If user navigated directly to #similar before we added the tab, honor it
+    try {
+      const hash = (window.location.hash || '').replace(/^#/, '');
+      if (hash === 'similar') {
+        restoreSettings();
+        ts.switchToTab('similar');
+        loadSimilar();
+      }
+    }
+    catch (_) { /* noop */ }
+    return { panel };
+  }
+
+  const tryInstall = () => {
+    const ts = window.tabSystem;
+    if (!ts || typeof ts.addTab !== 'function') return false;
+    const res = install(ts);
+    return !!res;
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => { tryInstall(); }, { once: true });
+  } else {
+    if (!tryInstall()) {
+      // In case tabSystem is assigned slightly later, retry once on next tick
+      setTimeout(tryInstall, 0);
+    }
+  }
+})();
+
 // -----------------------------
 // Player Manager
 // -----------------------------
@@ -4082,6 +4764,17 @@ const Player = (() => {
       });
       (timelineEl || scrubberTrackEl).addEventListener('mousemove', (e) => handleSpriteHover(e));
     }
+    // Also enable sprite hover when moving across the detached heatmap band area
+    try {
+      const heatBand = document.getElementById('scrubberHeatmapBand');
+      if (heatBand && !heatBand._hoverWired) {
+        heatBand._hoverWired = true;
+        heatBand.addEventListener('mouseenter', () => { spriteHoverEnabled = true; });
+        heatBand.addEventListener('mouseleave', () => { spriteHoverEnabled = false; hideSprite(); });
+        heatBand.addEventListener('mousemove', (e) => handleSpriteHover(e));
+      }
+    }
+    catch (_) { }
     if (btnSetThumbnail && !btnSetThumbnail._wired) {
       btnSetThumbnail._wired = true;
       btnSetThumbnail.addEventListener('click', async () => {
@@ -4547,6 +5240,9 @@ const Player = (() => {
   const fiThumbnailWrap = document.getElementById('fiThumbnailWrap');
   const fiThumbnailImg = document.getElementById('fiThumbnail');
   const fiSetThumbnailBtn = document.getElementById('fiSetThumbnailBtn');
+  // Sidebar Rating/Description elements
+  const ratingGroup = document.getElementById('videoRating');
+  const descInput = document.getElementById('videoDescription');
 
   async function refreshSidebarThumbnail(path) {
     try {
@@ -4657,6 +5353,284 @@ const Player = (() => {
   }
   catch (_) { }
 
+  // Clicking the sidebar thumbnail should asynchronously reload it (cache-busted)
+  if (fiThumbnailImg && !fiThumbnailImg._reloadWired) {
+    fiThumbnailImg._reloadWired = true;
+    fiThumbnailImg.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (!currentPath) return;
+      // attempt refresh with new cache-buster
+      try { await refreshSidebarThumbnail(currentPath); } catch (_) { }
+    });
+  }
+
+  // -----------------------------
+  // Rating (1..5) and Description (text) wiring
+  // -----------------------------
+  const RD_LS_PREFIX = 'mediaPlayer:meta:'; // fallback persistence
+  function keyRating(p) { return `${RD_LS_PREFIX}rating:${p}`; }
+  function keyDesc(p) { return `${RD_LS_PREFIX}desc:${p}`; }
+
+  function setStarsVisual(ratingVal = 0) {
+    const group = document.getElementById('videoRating');
+    if (!group) return;
+    const stars = Array.from(group.querySelectorAll('.star'));
+    stars.forEach((b) => {
+      const val = Number(b.dataset.value || '0');
+      const on = Number.isFinite(val) && val > 0 && val <= ratingVal;
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.setAttribute('aria-checked', on ? 'true' : 'false'); // assistive tech
+      b.classList.toggle('active', on);
+      try { b.textContent = on ? '★' : '☆'; } catch (_) { }
+    });
+  }
+
+  async function loadRatingAndDescription() {
+    if (!currentPath) return;
+    // Resolve elements each call (script loads before DOM)
+    const group = document.getElementById('videoRating');
+    const desc = document.getElementById('videoDescription');
+    // Reset UI defaults
+    if (group) setStarsVisual(0);
+    if (desc) {
+      try { desc.textContent = ' '; desc.setAttribute('data-empty', '1'); } catch (_) { }
+    }
+    // Try backend unified info and local fallback; prefer localStorage if present
+    let ratingServer = null, ratingLocal = null, description = null;
+    try {
+      const u = new URL('/api/media/info', window.location.origin);
+      u.searchParams.set('path', currentPath);
+      const r = await fetch(u.toString());
+      if (r.ok) {
+        const j = await r.json();
+        const d = j?.data || j || {};
+        const nr = Number(d.rating);
+        if (Number.isFinite(nr) && nr >= 0 && nr <= 5) ratingServer = nr;
+        if (typeof d.description === 'string') description = d.description;
+      }
+    }
+    catch (_) { }
+    // Also check localStorage (client preference wins if present)
+    try {
+      const v = Number(localStorage.getItem(keyRating(currentPath)));
+      if (Number.isFinite(v) && v >= 0 && v <= 5) ratingLocal = v;
+    }
+    catch (_) { }
+    if (description == null) {
+      try { const v = localStorage.getItem(keyDesc(currentPath)); if (typeof v === 'string') description = v; } catch (_) { }
+    }
+    // Apply UI (allow 0 rating explicitly)
+    try {
+      if (group) {
+        const chosen = (ratingLocal != null ? ratingLocal : ratingServer);
+        const rv = Number.isFinite(chosen) ? Number(chosen) : 0;
+        group._currentRating = rv;
+        setStarsVisual(rv);
+      }
+      if (desc && typeof description === 'string') {
+        try {
+          const trimmed = (description || '').trim();
+          const empty = trimmed.length === 0;
+          desc.textContent = empty ? ' ' : description;
+          desc.setAttribute('data-empty', empty ? '1' : '0');
+        } catch (_) { }
+      }
+    }
+    catch (_) { }
+  }
+
+  async function saveRating(r) {
+    if (!currentPath || !Number.isFinite(r)) return;
+    // Special case: 0 means "clear/unset" — persist locally and skip server if unsupported
+    if (r === 0) {
+      try { localStorage.removeItem(keyRating(currentPath)); } catch (_) { }
+      // Update UI immediately (already done by caller via setStarsVisual)
+      return;
+    }
+    let saved = false;
+    try {
+      const u = new URL('/api/media/rating', window.location.origin);
+      u.searchParams.set('path', currentPath);
+      u.searchParams.set('rating', String(Math.max(1, Math.min(5, r))));
+      const resp = await fetch(u.toString(), { method: 'POST' });
+      if (resp.ok) saved = true;
+    }
+    catch (_) { }
+    if (!saved) {
+      try { localStorage.setItem(keyRating(currentPath), String(r)); } catch (_) { }
+    }
+  }
+
+  async function saveDescription(text) {
+    if (!currentPath) return;
+    let saved = false;
+    try {
+      const u = new URL('/api/media/description', window.location.origin);
+      u.searchParams.set('path', currentPath);
+      const resp = await fetch(u.toString(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description: text || '' }) });
+      if (resp.ok) saved = true;
+    }
+    catch (_) { }
+    if (!saved) {
+      try { localStorage.setItem(keyDesc(currentPath), text || ''); } catch (_) { }
+    }
+  }
+
+  // Wire rating UI (hover preview, keyboard, click commit)
+  if (ratingGroup && !ratingGroup._wired) {
+    ratingGroup._wired = true;
+    // Ensure basic ARIA roles on child stars
+    Array.from(ratingGroup.querySelectorAll('.star')).forEach((b) => {
+      try { b.setAttribute('role', 'radio'); } catch (_) { }
+      try { if (!b.hasAttribute('tabindex')) b.setAttribute('tabindex', '0'); } catch (_) { }
+      // Initialize with outline until load applies actual rating
+      if (!b.textContent || /[^★☆]/.test(b.textContent)) {
+        try { b.textContent = '☆'; } catch (_) { }
+      }
+    });
+    // Click to commit (clicking the same selected star toggles off → 0)
+    ratingGroup.addEventListener('click', (e) => {
+      const btn = e.target && e.target.closest('.star');
+      if (!btn) return;
+      const val = Number(btn.dataset.value || '0');
+      if (!Number.isFinite(val) || val <= 0) return;
+      const current = Number(ratingGroup._currentRating || 0);
+      const next = (current === val) ? 0 : val;
+      ratingGroup._currentRating = next;
+      setStarsVisual(next);
+      saveRating(next);
+    });
+    // No hover/focus preview: hovering should not change the displayed rating
+    // Keyboard: Left/Right/Home/End to adjust rating; Enter/Space to commit current preview
+    ratingGroup.addEventListener('keydown', (e) => {
+      const max = 5;
+      let cur = Number(ratingGroup._currentRating || 0);
+      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); cur = Math.min(max, cur + 1); setStarsVisual(cur); ratingGroup._currentRating = cur; saveRating(cur); }
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); cur = Math.max(0, cur - 1); setStarsVisual(cur); ratingGroup._currentRating = cur; saveRating(cur); }
+      else if (e.key === 'Home') { e.preventDefault(); cur = 0; setStarsVisual(cur); ratingGroup._currentRating = cur; saveRating(cur); }
+      else if (e.key === 'End') { e.preventDefault(); cur = max; setStarsVisual(cur); ratingGroup._currentRating = cur; saveRating(cur); }
+    });
+  }
+  // Wire description input (contenteditable div)
+  if (descInput && !descInput._wired) {
+    descInput._wired = true;
+    // Start read-only (contenteditable=false); double-click to edit; blur to exit edit mode
+    try { if (!descInput.hasAttribute('contenteditable')) descInput.setAttribute('contenteditable', 'false'); } catch (_) { }
+    try { descInput.title = 'Double-click to edit'; } catch (_) { }
+    // Ensure a visible click target even when empty
+    const ensureSpace = () => {
+      try {
+        const empty = !descInput.textContent || descInput.textContent.trim().length === 0;
+        if (empty) { descInput.textContent = ' '; descInput.setAttribute('data-empty', '1'); }
+        else descInput.setAttribute('data-empty', '0');
+      } catch (_) { }
+    };
+    ensureSpace();
+    const getDesc = () => (descInput.textContent || '').replace(/\s+/g, ' ').trim();
+    const persist = debounce(() => saveDescription(getDesc()), 500);
+    const placeCaretEnd = (el) => {
+      try {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      catch (_) { }
+    };
+    const beginEdit = () => {
+      try { descInput.setAttribute('contenteditable', 'true'); } catch (_) { }
+      try { descInput.focus(); placeCaretEnd(descInput); } catch (_) { }
+    };
+    const endEdit = () => {
+      try { descInput.setAttribute('contenteditable', 'false'); } catch (_) { }
+      saveDescription(getDesc());
+      ensureSpace();
+    };
+    descInput.addEventListener('dblclick', beginEdit);
+    descInput.addEventListener('blur', endEdit);
+    // Prevent Enter from creating multi-line; commit instead
+    descInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); descInput.blur(); }
+    });
+    // While editing, still debounce-save on input
+    descInput.addEventListener('input', () => { try { descInput.setAttribute('data-empty', getDesc().length ? '0' : '1'); } catch (_) { } persist(); });
+  }
+
+  // If the DOM wasn't ready when this module executed, wire up once it's loaded
+  document.addEventListener('DOMContentLoaded', () => {
+    try {
+      const group = document.getElementById('videoRating');
+      if (group && !group._wired) {
+        group._wired = true;
+        Array.from(group.querySelectorAll('.star')).forEach((b) => {
+          try { b.setAttribute('role', 'radio'); } catch (_) { }
+          try { if (!b.hasAttribute('tabindex')) b.setAttribute('tabindex', '0'); } catch (_) { }
+          if (!b.textContent || /[^★☆]/.test(b.textContent)) {
+            try { b.textContent = '☆'; } catch (_) { }
+          }
+        });
+        group.addEventListener('click', (e) => {
+          const btn = e.target && e.target.closest('.star');
+          if (!btn) return;
+          const val = Number(btn.dataset.value || '0');
+          if (!Number.isFinite(val) || val <= 0) return;
+          const current = Number(group._currentRating || 0);
+          const next = (current === val) ? 0 : val;
+          group._currentRating = next;
+          setStarsVisual(next);
+          saveRating(next);
+        });
+        group.addEventListener('keydown', (e) => {
+          const max = 5;
+          let cur = Number(group._currentRating || 0);
+          if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); cur = Math.min(max, cur + 1); setStarsVisual(cur); group._currentRating = cur; saveRating(cur); }
+          else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); cur = Math.max(0, cur - 1); setStarsVisual(cur); group._currentRating = cur; saveRating(cur); }
+          else if (e.key === 'Home') { e.preventDefault(); cur = 0; setStarsVisual(cur); group._currentRating = cur; saveRating(cur); }
+          else if (e.key === 'End') { e.preventDefault(); cur = max; setStarsVisual(cur); group._currentRating = cur; saveRating(cur); }
+        });
+      }
+    }
+    catch (_) { }
+    try {
+      const di = document.getElementById('videoDescription');
+      if (di && !di._wired) {
+        di._wired = true;
+        try { if (!di.hasAttribute('contenteditable')) di.setAttribute('contenteditable', 'false'); } catch (_) { }
+        try { di.title = 'Double-click to edit'; } catch (_) { }
+        const ensureSpace = () => {
+          try {
+            const empty = !di.textContent || di.textContent.trim().length === 0;
+            if (empty) { di.textContent = ' '; di.setAttribute('data-empty', '1'); }
+            else di.setAttribute('data-empty', '0');
+          } catch (_) { }
+        };
+        ensureSpace();
+        const getDesc = () => (di.textContent || '').replace(/\s+/g, ' ').trim();
+        const persist = debounce(() => saveDescription(getDesc()), 500);
+        const placeCaretEnd = (el) => {
+          try {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            range.collapse(false);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+          catch (_) { }
+        };
+        const beginEdit = () => { try { di.setAttribute('contenteditable', 'true'); di.focus(); placeCaretEnd(di); } catch (_) { } };
+        const endEdit = () => { try { di.setAttribute('contenteditable', 'false'); } catch (_) { } saveDescription(getDesc()); ensureSpace(); };
+        di.addEventListener('dblclick', beginEdit);
+        di.addEventListener('blur', endEdit);
+        di.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); di.blur(); } });
+        di.addEventListener('input', () => { try { di.setAttribute('data-empty', getDesc().length ? '0' : '1'); } catch (_) { } persist(); });
+      }
+    }
+    catch (_) { }
+  });
+
   if (fiSetThumbnailBtn && !fiSetThumbnailBtn._wired) {
     fiSetThumbnailBtn._wired = true;
     fiSetThumbnailBtn.addEventListener('click', async () => {
@@ -4757,7 +5731,7 @@ const Player = (() => {
         return;
       }
       const main = videoEl.parentElement;
-      // .player-main
+      // Click to commit
       if (!main || main._overlayWired) {
         return;
       }
@@ -4769,22 +5743,17 @@ const Player = (() => {
         if (!el) {
           return;
         }
-        el.addEventListener('mouseenter', () => {
-          if (overlayHideTimer) {
-            clearTimeout(overlayHideTimer);
-            overlayHideTimer = null;
-          }
-          overlayBarEl && overlayBarEl.classList.remove('fading');
-          scrubberEl && scrubberEl.classList.remove('fading');
-        });
-        el.addEventListener('mouseleave', () => {
-          if (!scrubberDragging) showOverlayBar();
-        });
+        // Keep overlay visible while interacting with controls/scrubber
+        try {
+          el.addEventListener('mouseenter', () => showOverlayBar(), { passive: true });
+          el.addEventListener('mousemove', () => showOverlayBar(), { passive: true });
+          el.addEventListener('mouseleave', () => showOverlayBar(), { passive: true });
+        }
+        catch (_) { }
       });
-      // Initial show on first wire
-      showOverlayBar();
     }
     catch (_) { }
+    // End wireOverlayInteractions
   }
 
   // -----------------------------
@@ -4864,6 +5833,7 @@ const Player = (() => {
       if (!videoEl) {
         return;
       }
+      try { e.preventDefault(); } catch (_) { }
       showOverlayBar();
       scrubberDragging = true;
       scrubberWasPaused = videoEl.paused;
@@ -4875,7 +5845,7 @@ const Player = (() => {
       }
       seekToClientX(e.touches ? e.touches[0].clientX : e.clientX);
       window.addEventListener('mousemove', onMove);
-      window.addEventListener('touchmove', onMove, { passive: true });
+      window.addEventListener('touchmove', onMove, { passive: false });
       window.addEventListener('mouseup', onUp, { once: true });
       window.addEventListener('touchend', onUp, { once: true });
       e.preventDefault();
@@ -4884,6 +5854,7 @@ const Player = (() => {
       if (!scrubberDragging) {
         return;
       }
+      try { if (e.cancelable) e.preventDefault(); } catch (_) { }
       seekToClientX(e.touches ? e.touches[0].clientX : e.clientX);
     };
     const onUp = async () => {
@@ -4952,6 +5923,8 @@ const Player = (() => {
       if (typeof refreshSidebarThumbnail === 'function') refreshSidebarThumbnail(currentPath);
     }
     catch (_) { }
+    // Load rating/description for this file (non-blocking)
+    try { if (typeof loadRatingAndDescription === 'function') loadRatingAndDescription(); } catch (_) { }
     // Switch to Player tab only when user explicitly opens a video via a card click (handled upstream).
     // Avoid forcing tab switch here to respect persisted tab preference.
     if (window.tabSystem && window.tabSystem.getActiveTab() !== 'player') {
@@ -4960,9 +5933,17 @@ const Player = (() => {
     }
     // Load video source
     if (videoEl) {
-      const src = new URL('/files/' + path, window.location.origin);
+      // Encode path segments to handle spaces/special characters
+      const encPath = (typeof path === 'string' ? path.split('/') : []).map(encodeURIComponent).join('/');
+      const src = new URL('/files/' + encPath, window.location.origin);
       // Cache-bust on change
       videoEl.src = src.toString() + `?t=${Date.now()}`;
+      if (!videoEl._errWired) {
+        videoEl._errWired = true;
+        videoEl.addEventListener('error', () => {
+          try { console.error('Video failed to load:', videoEl.currentSrc || videoEl.src); } catch (_) { }
+        });
+      }
       // Defer autoplay decision to loadedmetadata restore
       // Attempt to keep lastVideo reference for convenience
       saveProgress(path, { t: 0, d: 0, paused: true, rate: 1 });
@@ -5501,12 +6482,23 @@ const Player = (() => {
           heatmapEl.style.backgroundImage = `url('${url}')`;
           if (heatmapCanvasEl) clearHeatmapCanvas();
           hasHeatmap = true;
-          if (sbHeatmapImg) sbHeatmapImg.src = url;
+          // Sidebar heatmap preview
+          try {
+            const img = document.getElementById('sidebarHeatmapImage');
+            const box = document.getElementById('sidebarHeatmapPreview');
+            if (img && box) { img.src = url; box.classList.remove('hidden'); }
+          }
+          catch (_) { }
         }
         else {
           heatmapEl.style.backgroundImage = '';
           if (heatmapCanvasEl) clearHeatmapCanvas();
           hasHeatmap = false;
+          try {
+            const box = document.getElementById('sidebarHeatmapPreview');
+            if (box) box.classList.add('hidden');
+          }
+          catch (_) { }
         }
       }
 
@@ -5522,6 +6514,11 @@ const Player = (() => {
       hasHeatmap = false;
       if (badgeHeatmapStatus) badgeHeatmapStatus.textContent = '✗';
       if (badgeHeatmap) badgeHeatmap.dataset.present = '0';
+      try {
+        const box = document.getElementById('sidebarHeatmapPreview');
+        if (box) box.classList.add('hidden');
+      }
+      catch (_) { }
       applyTimelineDisplayToggles();
     }
   }
@@ -5567,26 +6564,122 @@ const Player = (() => {
       const h = heatmapCanvasEl.height = heatmapCanvasEl.clientHeight || heatmapCanvasEl.offsetHeight || 24;
       ctx.clearRect(0, 0, w, h);
       if (!Array.isArray(samples) || !samples.length) return;
-      // Determine bar width;
-      // ensure we cover entire width even if samples fewer than pixels.
-      const n = samples.length;
-      const barW = Math.max(1, Math.floor(w / n));
-      for (let i = 0; i < n; i++) {
-        const v = Number(samples[i]);
-        if (!Number.isFinite(v)) continue;
-        ctx.fillStyle = heatColor(v);
-        const x = Math.floor(i / (n - 1) * (w - barW));
-        ctx.fillRect(x, 0, barW + 1, h);
-        // +1 to avoid gaps
+      // Normalize samples: accept [number] or [{ v, t? }] or mixed
+      const values = samples.map((s) => {
+        if (typeof s === 'number') return s;
+        if (s && typeof s === 'object') {
+          // prefer 'v'; fallback to common aliases
+          const cand = (s.v != null ? s.v : (s.value != null ? s.value : s.y));
+          const num = Number(cand);
+          return Number.isFinite(num) ? num : NaN;
+        }
+        return NaN;
+      });
+      // Build a smooth, white area graph across the width
+      const n = values.length;
+      const padTop = 1;
+      const padBottom = 1;
+      // Resample to at most one sample per horizontal pixel for smoother curves
+      const m = Math.max(1, Math.min(w, n));
+      const resampled = new Array(m);
+      if (n <= m) {
+        // spread original points across width
+        for (let i = 0; i < m; i++) {
+          const srcIdx = Math.min(n - 1, Math.round((i / Math.max(1, m - 1)) * (n - 1)));
+          const v = Number(values[srcIdx]);
+          resampled[i] = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+        }
       }
-      // Optional subtle top/bottom fade overlay for aesthetics
-      const grad = ctx.createLinearGradient(0, 0, 0, h);
-      grad.addColorStop(0, 'rgba(0,0,0,0.35)');
-      grad.addColorStop(0.15, 'rgba(0,0,0,0)');
-      grad.addColorStop(0.85, 'rgba(0,0,0,0)');
-      grad.addColorStop(1, 'rgba(0,0,0,0.35)');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, w, h);
+      else {
+        // bucket-average when there are more samples than pixels
+        for (let i = 0; i < m; i++) {
+          const start = Math.floor((i / m) * n);
+          const end = Math.floor(((i + 1) / m) * n);
+          let sum = 0, cnt = 0;
+          for (let j = start; j < Math.max(start + 1, end); j++) {
+            const v = Number(values[j]);
+            if (Number.isFinite(v)) { sum += v; cnt++; }
+          }
+          const avg = cnt ? (sum / cnt) : 0;
+          resampled[i] = Math.max(0, Math.min(1, avg));
+        }
+      }
+
+      // Dynamic normalization: robust percentile scaling + gentle gamma to reveal detail
+      const norm = (() => {
+        try {
+          const copy = resampled.slice().filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+          if (!copy.length) return resampled;
+          const q = (p) => copy[Math.max(0, Math.min(copy.length - 1, Math.round(p * (copy.length - 1))))];
+          let lo = q(0.05);
+          let hi = q(0.95);
+          if (!(hi > lo)) {
+            lo = copy[0];
+            hi = copy[copy.length - 1];
+          }
+          const rng = Math.max(1e-6, hi - lo);
+          const gamma = 0.75; // <1 brightens mid-tones to boost subtle peaks
+          return resampled.map((v) => {
+            let x = (v - lo) / rng;
+            x = x < 0 ? 0 : x > 1 ? 1 : x;
+            return Math.pow(x, gamma);
+          });
+        }
+        catch (_) {
+          return resampled;
+        }
+      })();
+
+      // Convert to canvas coordinates
+      const xs = new Array(m);
+      const ys = new Array(m);
+      for (let i = 0; i < m; i++) {
+        xs[i] = m === 1 ? 0 : (i / (m - 1)) * (w - 1);
+        const v = norm[i];
+        // invert Y so higher values are taller
+        ys[i] = padTop + (1 - v) * Math.max(1, (h - padTop - padBottom));
+      }
+
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+
+      if (m === 1) {
+        // Single sample: draw a flat area proportional to value
+        const y = ys[0];
+        ctx.beginPath();
+        ctx.moveTo(0, h - padBottom);
+        ctx.lineTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.lineTo(w, h - padBottom);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,1)';
+        ctx.lineWidth = 1.25;
+        ctx.stroke();
+      }
+      else {
+        // Smooth curve via quadratic midpoints
+        ctx.beginPath();
+        ctx.moveTo(0, h - padBottom);
+        ctx.lineTo(xs[0], ys[0]);
+        for (let i = 1; i < m; i++) {
+          const xc = (xs[i - 1] + xs[i]) / 2;
+          const yc = (ys[i - 1] + ys[i]) / 2;
+          ctx.quadraticCurveTo(xs[i - 1], ys[i - 1], xc, yc);
+        }
+        // last segment to the last point
+        ctx.lineTo(xs[m - 1], ys[m - 1]);
+        // close the area to the bottom
+        ctx.lineTo(xs[m - 1], h - padBottom);
+        ctx.closePath();
+        // Fill and stroke in white
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,1)';
+        ctx.lineWidth = 1.25;
+        ctx.stroke();
+      }
     }
     catch (_) { }
   }
@@ -5635,6 +6728,17 @@ const Player = (() => {
         sprites = { index, sheet };
         if (badgeSpritesStatus) badgeSpritesStatus.textContent = '✓';
         if (badgeSprites) badgeSprites.dataset.present = '1';
+        // Sidebar sprite sheet preview
+        try {
+          const img = document.getElementById('sidebarSpriteImage');
+          const box = document.getElementById('sidebarSpritePreview');
+          const sheetUrl = typeof sheet === 'string' ? sheet : (sheet?.url || sheet?.path || '');
+          if (img && box && sheetUrl) {
+            img.src = sheetUrl + (sheetUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
+            box.classList.remove('hidden');
+          }
+        }
+        catch (_) { }
       }
     }
     catch (_) {
@@ -5643,6 +6747,11 @@ const Player = (() => {
     if (!sprites) {
       if (badgeSpritesStatus) badgeSpritesStatus.textContent = '✗';
       if (badgeSprites) badgeSprites.dataset.present = '0';
+      try {
+        const box = document.getElementById('sidebarSpritePreview');
+        if (box) box.classList.add('hidden');
+      }
+      catch (_) { }
     }
   }
 
@@ -5788,7 +6897,6 @@ const Player = (() => {
             // store reference to remove later if needed
             track._cueHandler = onCueChange;
             try {
-
               tt.addEventListener('cuechange', onCueChange);
             }
             catch (_) { }
@@ -5816,7 +6924,6 @@ const Player = (() => {
     const haveScenes = Array.isArray(scenes) && scenes.length > 0;
     // Always refresh sidebar list even before metadata duration is known
     try {
-
       renderMarkersList();
     }
     catch (_) { }
@@ -5865,6 +6972,8 @@ const Player = (() => {
       return;
     }
     list.innerHTML = '';
+    // Reuse shared row template so icon buttons (jump/remove) match regular markers
+    const tpl = document.getElementById('markerRowTemplate');
     // Show intro-end and outro-begin markers if set for this file
     try {
       let it = null;
@@ -5877,54 +6986,113 @@ const Player = (() => {
         if (rawIntro && Number.isFinite(Number(rawIntro))) it = Number(rawIntro);
       }
       if (it !== null && Number.isFinite(it)) {
-        const introRow = document.createElement('div');
-        introRow.className = 'marker-row marker-row--intro';
-        const label = document.createElement('div');
-        label.textContent = 'Intro';
-        label.style.flex = '1';
-        label.style.fontWeight = '700';
-        const timeLabel = document.createElement('div');
-        timeLabel.textContent = fmtTime(it);
-        timeLabel.className = 'marker-time-label';
-        timeLabel.style.marginRight = '8px';
-        const jump = document.createElement('button');
-        jump.type = 'button';
-        jump.className = 'marker-jump';
-        jump.textContent = 'Jump';
-        jump.addEventListener('click', () => {
-          if (videoEl) videoEl.currentTime = Math.min(duration, Math.max(0, it));
-        });
-        const clr = document.createElement('button');
-        clr.type = 'button';
-        clr.className = 'marker-remove';
-        clr.textContent = 'Clear';
-        clr.addEventListener('click', async () => {
-          try {
-            try {
-
-              lsRemove(`${LS_PREFIX}:introEnd:${currentPath}`);
+        if (tpl && tpl.content) {
+          const frag = tpl.content.cloneNode(true);
+          const row = frag.querySelector('.marker-row');
+          if (row) {
+            row.classList.add('marker-row--intro');
+            const nameLabel = row.querySelector('.marker-name-label');
+            const timeEl = row.querySelector('.marker-time-label');
+            const jumpBtn = row.querySelector('.marker-jump');
+            const delBtn = row.querySelector('.marker-remove');
+            if (nameLabel) {
+              nameLabel.textContent = 'Intro';
+              nameLabel.title = '';
+              nameLabel.removeAttribute('tabindex');
+              nameLabel.classList.remove('marker-name-label--editable');
+              nameLabel.style.fontWeight = '700';
+              nameLabel.style.flex = '1';
             }
-            catch (_) { }
-            // also remove server-side
-            try {
-              const mu = new URL('/api/scenes/intro', window.location.origin);
-              mu.searchParams.set('path', currentPath);
-              await fetch(mu.toString(), { method: 'DELETE' });
+            if (timeEl) {
+              timeEl.textContent = fmtTime(it);
+              timeEl.title = '';
+              timeEl.removeAttribute('tabindex');
+              timeEl.classList.remove('marker-time-label--editable');
             }
-            catch (_) { }
-            notify('Intro end cleared', 'success');
-            await loadScenes();
-            renderMarkersList();
+            if (jumpBtn) {
+              jumpBtn.classList.add('marker-btn-icon');
+              jumpBtn.addEventListener('click', () => {
+                if (videoEl) videoEl.currentTime = Math.min(duration, Math.max(0, it));
+              });
+            }
+            if (delBtn) {
+              delBtn.classList.add('marker-btn-icon');
+              delBtn.title = 'Clear';
+              delBtn.addEventListener('click', async () => {
+                try {
+                  try {
+                    lsRemove(`${LS_PREFIX}:introEnd:${currentPath}`);
+                  }
+                  catch (_) { }
+                  // also remove server-side
+                  try {
+                    const mu = new URL('/api/scenes/intro', window.location.origin);
+                    mu.searchParams.set('path', currentPath);
+                    await fetch(mu.toString(), { method: 'DELETE' });
+                  }
+                  catch (_) { }
+                  notify('Intro end cleared', 'success');
+                  await loadScenes();
+                  renderMarkersList();
+                }
+                catch (_) {
+                  notify('Failed to clear intro end', 'error');
+                }
+              });
+            }
+            list.appendChild(frag);
           }
-          catch (_) {
-            notify('Failed to clear intro end', 'error');
-          }
-        });
-        introRow.appendChild(label);
-        introRow.appendChild(timeLabel);
-        introRow.appendChild(jump);
-        introRow.appendChild(clr);
-        list.appendChild(introRow);
+        }
+        else {
+          // Fallback (no template): text-only row
+          const introRow = document.createElement('div');
+          introRow.className = 'marker-row marker-row--intro';
+          const label = document.createElement('div');
+          label.textContent = 'Intro';
+          label.style.flex = '1';
+          label.style.fontWeight = '700';
+          const timeLabel = document.createElement('div');
+          timeLabel.textContent = fmtTime(it);
+          timeLabel.className = 'marker-time-label';
+          timeLabel.style.marginRight = '8px';
+          const jump = document.createElement('button');
+          jump.type = 'button';
+          jump.className = 'marker-jump';
+          jump.textContent = 'Jump';
+          jump.addEventListener('click', () => {
+            if (videoEl) videoEl.currentTime = Math.min(duration, Math.max(0, it));
+          });
+          const clr = document.createElement('button');
+          clr.type = 'button';
+          clr.className = 'marker-remove';
+          clr.textContent = 'Clear';
+          clr.addEventListener('click', async () => {
+            try {
+              try {
+                lsRemove(`${LS_PREFIX}:introEnd:${currentPath}`);
+              }
+              catch (_) { }
+              // also remove server-side
+              try {
+                const mu = new URL('/api/scenes/intro', window.location.origin);
+                mu.searchParams.set('path', currentPath);
+                await fetch(mu.toString(), { method: 'DELETE' });
+              }
+              catch (_) { }
+              notify('Intro end cleared', 'success');
+              await loadScenes();
+              renderMarkersList();
+            }
+            catch (_) {
+              notify('Failed to clear intro end', 'error');
+            }
+          });
+          introRow.appendChild(label);
+          introRow.appendChild(timeLabel);
+          introRow.appendChild(jump);
+          introRow.appendChild(clr);
+          list.appendChild(introRow);
+        }
       }
       // Outro begin
       let ot = null;
@@ -5937,50 +7105,105 @@ const Player = (() => {
         if (rawOutro && Number.isFinite(Number(rawOutro))) ot = Number(rawOutro);
       }
       if (ot !== null && Number.isFinite(ot)) {
-        const outroRow = document.createElement('div');
-        outroRow.className = 'marker-row marker-row--outro';
-        const label = document.createElement('div');
-        label.textContent = 'Outro';
-        label.style.flex = '1';
-        label.style.fontWeight = '700';
-        const timeLabel = document.createElement('div');
-        timeLabel.textContent = fmtTime(ot);
-        timeLabel.className = 'marker-time-label';
-        timeLabel.style.marginRight = '8px';
-        const jump = document.createElement('button');
-        jump.type = 'button';
-        jump.className = 'marker-jump';
-        jump.textContent = 'Jump';
-        jump.addEventListener('click', () => {
-          if (videoEl) {
-            videoEl.currentTime = Math.min(duration, Math.max(0, ot));
-          }
-        });
-        const clr = document.createElement('button');
-        clr.type = 'button';
-        clr.className = 'marker-remove';
-        clr.textContent = 'Clear';
-        clr.addEventListener('click', async () => {
-          try {
-            try {
-
-              lsRemove(`${LS_PREFIX}:outroBegin:${currentPath}`);
+        if (tpl && tpl.content) {
+          const frag = tpl.content.cloneNode(true);
+          const row = frag.querySelector('.marker-row');
+          if (row) {
+            row.classList.add('marker-row--outro');
+            const nameLabel = row.querySelector('.marker-name-label');
+            const timeEl = row.querySelector('.marker-time-label');
+            const jumpBtn = row.querySelector('.marker-jump');
+            const delBtn = row.querySelector('.marker-remove');
+            if (nameLabel) {
+              nameLabel.textContent = 'Outro';
+              nameLabel.title = '';
+              nameLabel.removeAttribute('tabindex');
+              nameLabel.classList.remove('marker-name-label--editable');
+              nameLabel.style.fontWeight = '700';
+              nameLabel.style.flex = '1';
             }
-            catch (_) { }
-            notify('Outro begin cleared', 'success');
-            outroBegin = null;
-            renderMarkers();
-            renderMarkersList();
+            if (timeEl) {
+              timeEl.textContent = fmtTime(ot);
+              timeEl.title = '';
+              timeEl.removeAttribute('tabindex');
+              timeEl.classList.remove('marker-time-label--editable');
+            }
+            if (jumpBtn) {
+              jumpBtn.classList.add('marker-btn-icon');
+              jumpBtn.addEventListener('click', () => {
+                if (videoEl) {
+                  videoEl.currentTime = Math.min(duration, Math.max(0, ot));
+                }
+              });
+            }
+            if (delBtn) {
+              delBtn.classList.add('marker-btn-icon');
+              delBtn.title = 'Clear';
+              delBtn.addEventListener('click', async () => {
+                try {
+                  try {
+                    lsRemove(`${LS_PREFIX}:outroBegin:${currentPath}`);
+                  }
+                  catch (_) { }
+                  notify('Outro begin cleared', 'success');
+                  outroBegin = null;
+                  renderMarkers();
+                  renderMarkersList();
+                }
+                catch (_) {
+                  notify('Failed to clear outro begin', 'error');
+                }
+              });
+            }
+            list.appendChild(frag);
           }
-          catch (_) {
-            notify('Failed to clear outro begin', 'error');
-          }
-        });
-        outroRow.appendChild(label);
-        outroRow.appendChild(timeLabel);
-        outroRow.appendChild(jump);
-        outroRow.appendChild(clr);
-        list.appendChild(outroRow);
+        }
+        else {
+          // Fallback (no template): text-only row
+          const outroRow = document.createElement('div');
+          outroRow.className = 'marker-row marker-row--outro';
+          const label = document.createElement('div');
+          label.textContent = 'Outro';
+          label.style.flex = '1';
+          label.style.fontWeight = '700';
+          const timeLabel = document.createElement('div');
+          timeLabel.textContent = fmtTime(ot);
+          timeLabel.className = 'marker-time-label';
+          timeLabel.style.marginRight = '8px';
+          const jump = document.createElement('button');
+          jump.type = 'button';
+          jump.className = 'marker-jump';
+          jump.textContent = 'Jump';
+          jump.addEventListener('click', () => {
+            if (videoEl) {
+              videoEl.currentTime = Math.min(duration, Math.max(0, ot));
+            }
+          });
+          const clr = document.createElement('button');
+          clr.type = 'button';
+          clr.className = 'marker-remove';
+          clr.textContent = 'Clear';
+          clr.addEventListener('click', async () => {
+            try {
+              try {
+                lsRemove(`${LS_PREFIX}:outroBegin:${currentPath}`);
+              }
+              catch (_) { }
+              notify('Outro begin cleared', 'success');
+              outroBegin = null;
+              renderMarkers();
+              renderMarkersList();
+            }
+            catch (_) {
+              notify('Failed to clear outro begin', 'error');
+            }
+          });
+          outroRow.appendChild(label);
+          outroRow.appendChild(timeLabel);
+          outroRow.appendChild(jump);
+          outroRow.appendChild(clr);
+          list.appendChild(outroRow);
+        }
       }
     }
     catch (_) { }
@@ -5993,7 +7216,6 @@ const Player = (() => {
     }
     // Sort by time
     const sorted = scenes.slice().sort((a, b) => (a.time || 0) - (b.time || 0));
-    const tpl = document.getElementById('markerRowTemplate');
     sorted.forEach((sc, idx) => {
       if (!tpl) {
         return;
@@ -6339,14 +7561,15 @@ const Player = (() => {
         if (statusEl) statusEl.textContent = present ? '✓' : '✗';
         if (badgeEl) badgeEl.dataset.present = present ? '1' : '0';
       };
-      set(!!d.thumbnail, badgeThumbnail, badgeThumbnailStatus);
+      // Backend returns `cover` (thumbnail) and `heatmap` (singular). Support both shapes.
+      set(!!(d.thumbnail ?? d.cover), badgeThumbnail, badgeThumbnailStatus);
       set(!!d.hover, badgeHover, badgeHoverStatus);
       set(!!d.sprites, badgeSprites, badgeSpritesStatus);
       set(!!d.scenes, badgeScenes, badgeScenesStatus);
       set(!!d.subtitles, badgeSubtitles, badgeSubtitlesStatus);
       set(!!d.faces, badgeFaces, badgeFacesStatus);
       set(!!d.phash, badgePhash, badgePhashStatus);
-      set(!!d.heatmaps, badgeHeatmap, badgeHeatmapStatus);
+      set(!!(d.heatmaps ?? d.heatmap), badgeHeatmap, badgeHeatmapStatus);
       set(!!d.metadata, badgeMeta, badgeMetaStatus);
     }
     catch (_) {
@@ -6508,7 +7731,9 @@ const Player = (() => {
       hideSprite();
       return;
     }
-    const rect = targetTrack.getBoundingClientRect();
+    // Prefer the element actually under the cursor (heatmap band or scrubber track)
+    const srcEl = (evt && evt.currentTarget && typeof evt.currentTarget.getBoundingClientRect === 'function') ? evt.currentTarget : targetTrack;
+    const rect = srcEl.getBoundingClientRect();
     // Tooltip now lives under the controls container below the video
     const container = spriteTooltipEl && spriteTooltipEl.parentElement ? spriteTooltipEl.parentElement : videoEl && videoEl.parentElement ? videoEl.parentElement : document.body;
     const containerRect = container.getBoundingClientRect();
@@ -6559,40 +7784,62 @@ const Player = (() => {
       const idx = sprites.index;
       const cols = Number(idx.cols || (idx.grid && idx.grid[0]) || 0);
       const rows = Number(idx.rows || (idx.grid && idx.grid[1]) || 0);
+      if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) {
+        hideSprite();
+        return;
+      }
       const interval = Number(idx.interval || 0);
-      // tw/th already computed above for placement
-      const totalFrames = Math.max(1, Number(idx.frames || cols * rows));
-      // Derive frame index:
-      // 1. If a sane interval (>0) exists, prefer interval-based mapping.
-      // 2. Otherwise (or if interval * frames undershoots duration badly), fallback to proportional mapping across duration.
-      let frame;
-      if (interval > 0) {
-        frame = Math.round(t / interval);
-        // If metadata duration exists, verify interval mapping reasonably covers it; otherwise fallback
-        const metaDur = Number(idx.duration || idx.video_duration || 0);
+      // Support both numeric frame count and array of frame metadata with timestamps
+      const framesMeta = Array.isArray(idx.frames) ? idx.frames : null;
+      let totalFrames = cols * rows;
+      if (framesMeta && framesMeta.length) {
+        totalFrames = framesMeta.length;
+      } else if (Number.isFinite(Number(idx.frames))) {
+        totalFrames = Math.max(1, Number(idx.frames));
+      }
+      const metaDur = Number(idx.duration || idx.video_duration || (framesMeta && framesMeta.length ? (Number(framesMeta[framesMeta.length - 1]?.t ?? framesMeta[framesMeta.length - 1]?.time ?? 0) || 0) : 0) || vidDur || 0);
+      // Choose a frame index based on available metadata
+      let frame = 0;
+      if (framesMeta && framesMeta.length) {
+        // framesMeta is usually small (<= 100). Linear search for nearest is fine and avoids per-move allocations.
+        let nearest = 0;
+        let bestDiff = Infinity;
+        for (let i = 0; i < framesMeta.length; i++) {
+          const ft = Number(framesMeta[i]?.t ?? framesMeta[i]?.time ?? (i * (metaDur / Math.max(1, framesMeta.length - 1))));
+          const d = Math.abs(ft - t);
+          if (d < bestDiff) { bestDiff = d; nearest = i; if (d === 0) break; }
+        }
+        frame = nearest;
+      } else if (interval > 0 && Number.isFinite(interval)) {
+        frame = Math.floor(t / interval);
+        // If interval-based mapping badly undershoots coverage, fallback to proportional mapping
         if (metaDur && interval * (totalFrames - 1) < metaDur * 0.6) {
-          // Interval underestimates coverage; fallback to proportional
-          frame = Math.round((t / metaDur) * (totalFrames - 1));
+          frame = Math.floor((t / metaDur) * (totalFrames - 1));
         }
+      } else if (metaDur > 0) {
+        frame = Math.floor((t / metaDur) * (totalFrames - 1));
       } else {
-        const metaDur = Number(idx.duration || idx.video_duration || vidDur || 0);
-        if (metaDur > 0) {
-          frame = Math.round((t / metaDur) * (totalFrames - 1));
-        } else {
-          frame = Math.round((t / Math.max(0.1, vidDur)) * (totalFrames - 1));
-        }
+        frame = Math.floor((t / Math.max(0.1, vidDur)) * (totalFrames - 1));
       }
       frame = Math.min(totalFrames - 1, Math.max(0, frame));
       const col = frame % cols;
       const row = Math.floor(frame / cols);
-      const xOff = -(col * tw) * scale;
-      const yOff = -(row * th) * scale;
+      // Use integer-scaled tile dimensions to avoid subpixel rounding artifacts
+      const xOff = -(col * twS);
+      const yOff = -(row * thS);
       spriteTooltipEl.style.width = twS + 'px';
       spriteTooltipEl.style.height = thS + 'px';
-      spriteTooltipEl.style.backgroundImage = `url('${sprites.sheet}')`;
+      // Cache-bust sheet URL lightly in case a new sheet was generated while hovering
+      const sheetUrl = `${sprites.sheet}${sprites.sheet.includes('?') ? '&' : '?'}t=${Date.now()}`;
+      spriteTooltipEl.style.backgroundImage = `url('${sheetUrl}')`;
       spriteTooltipEl.style.backgroundPosition = `${xOff}px ${yOff}px`;
-      spriteTooltipEl.style.backgroundSize = `${tw * cols * scale}px ${th * rows * scale
-        }px`;
+      // Set both shorthand and axis-specific positions for robustness across browsers
+      try { spriteTooltipEl.style.backgroundPositionX = `${xOff}px`; } catch (_) { }
+      try { spriteTooltipEl.style.backgroundPositionY = `${yOff}px`; } catch (_) { }
+      // Scale the full sheet using integer tile sizes to align exactly
+      const sheetW = twS * cols;
+      const sheetH = thS * rows;
+      spriteTooltipEl.style.backgroundSize = `${sheetW}px ${sheetH}px`;
       spriteTooltipEl.style.opacity = '0.8';
     }
     catch (_) {
@@ -8107,6 +9354,7 @@ class TasksManager {
         const data = j?.data || j || {};
         const deps = data.deps || {};
         const caps = data.capabilities || {};
+        const feats = data.features || {};
         // Normalize booleans, fallback to /health-style top-level if present
         this.capabilities.ffmpeg = Boolean(deps.ffmpeg ?? data.ffmpeg ?? true);
         this.capabilities.ffprobe = Boolean(
@@ -8420,6 +9668,8 @@ class TasksManager {
   updateCapabilityBanner() {
     const caps = this.capabilities || {};
     const issues = [];
+    const facesMsg =
+      'Face backends unavailable — face detection and embeddings are disabled.';
     if (!caps.ffmpeg) {
       issues.push(
         'FFmpeg not detected — thumbnails, previews, sprites, scenes, heatmaps, and pHash are disabled.'
@@ -8431,9 +9681,7 @@ class TasksManager {
       );
     }
     if (!caps.faces_enabled) {
-      issues.push(
-        'Face backends unavailable — face detection and embeddings are disabled.'
-      );
+      issues.push(facesMsg);
     }
     let banner = document.getElementById('capabilityBanner');
     // Where to insert: top of the tasks panel container
@@ -8444,6 +9692,14 @@ class TasksManager {
     if (!container) {
       return;
     }
+    // If the only issue is faces, suppress the banner entirely (we still gate actions);
+    // advanced users can enable faces later without being nagged.
+    const facesOnly = issues.length === 1 && issues[0] === facesMsg;
+    if (facesOnly) {
+      if (banner) banner.remove();
+      return;
+    }
+
     if (issues.length === 0) {
       if (banner) banner.remove();
       return;
@@ -8460,6 +9716,21 @@ class TasksManager {
     strong.textContent = 'Tools notice:';
     banner.appendChild(strong);
     banner.appendChild(document.createTextNode(' ' + issues.join(' ')));
+
+    // Add a small dismiss control. If only faces warning, persist the dismissal; otherwise hide once.
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'btn btn-link btn-dismiss';
+    dismiss.textContent = 'Dismiss';
+    dismiss.style.marginLeft = '0.5rem';
+    dismiss.addEventListener('click', () => {
+      try {
+        if (facesOnly) localStorage.setItem('mediaPlayer:dismissFacesNotice', '1');
+      }
+      catch (_) { /* ignore */ }
+      banner.remove();
+    });
+    banner.appendChild(dismiss);
   }
 
   initJobEvents() {
@@ -8695,7 +9966,16 @@ class TasksManager {
           const removed = data?.data?.removed ?? 0;
           this.showNotification(`Removed ${removed} completed job(s)`, 'success');
           // Refresh jobs table; hide button if nothing left to clear
-          await this.refreshJobs();
+          const jobs = await this.refreshJobs();
+          // Force immediate stats recompute to avoid stale failed count until next poll
+          if (jobs && Array.isArray(jobs)) {
+            // Replace internal cache before recompute
+            this.jobs = new Map(jobs.map((j) => [j.id, j]));
+            if (typeof this.updateJobStats === 'function') {
+              // Stats will be derived from this.jobs
+              this.updateJobStats({});
+            }
+          }
           if (removed > 0 && typeof this.renderJobsTable === 'function') this.renderJobsTable();
           if (removed === 0) hide(clearBtn);
         }
@@ -8823,8 +10103,8 @@ class TasksManager {
       let ok = false;
       for (let i = 0; i < 10; i++) {
         // ~10 quick tries
-        const h = await fetch(headUrl.toString());
-        if (h.ok) {
+        const h = await fetch(headUrl.toString(), { method: 'HEAD' });
+        if (h.status === 200) {
           ok = true;
           break;
         }
@@ -8913,8 +10193,8 @@ class TasksManager {
             subtitles: '/api/subtitles/delete/batch', // batch variant
             scenes: '/api/scenes/delete',
             faces: '/api/faces/delete',
-            embed: '/api/embed/delete', // may not exist;
-            // backend guard will 404
+            // embeddings live in faces.json; reuse faces delete endpoint for clear
+            embed: '/api/faces/delete',
           };
           const mapped = endpointMap[base] || `/api/artifacts/${base}`;
           const clearUrl = new URL(mapped, window.location.origin);
@@ -8954,6 +10234,13 @@ class TasksManager {
           params,
           path: rel,
         };
+        // When scoping to selected files, include explicit selected paths so the server can filter
+        if (fileSelection === 'selected' && selectedItems && selectedItems.size) {
+          try {
+            payload.selectedPaths = Array.from(selectedItems);
+          }
+          catch (_) { /* ignore */ }
+        }
         const response = await fetch('/api/tasks/batch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -9155,9 +10442,18 @@ class TasksManager {
 
       const data = await response.json();
       if (data.status === 'success') {
+        // Single source of truth for both the tiles and the jobs table
         this.coverage = data.data.coverage;
         this._coverageLoaded = true;
+        // Update tiles first, then ensure jobs table re-renders so the synthetic metadata row
+        // reflects the same percentage concurrently.
         this.updateCoverageDisplay();
+        try {
+          if (typeof this.renderJobsTable === 'function') {
+            this.renderJobsTable();
+          }
+        }
+        catch (_) { }
         try {
           if (currentPath) refreshSidebarThumbnail(currentPath);
         }
@@ -9240,7 +10536,9 @@ class TasksManager {
       });
 
       let active = null;
-      if (percentage === 0) {
+      const processed = data.processed || 0;
+      const total = data.total || 0;
+      if (total === 0 || processed === 0) {
         active = recomputeAllBtn || genMissingBtn || clearBtn;
         if (active) {
           active.textContent = 'Generate All';
@@ -9251,7 +10549,7 @@ class TasksManager {
           active.dataset.state = 'all';
         }
       }
-      else if (percentage > 0 && percentage < 100) {
+      else if (processed > 0 && processed < total) {
         active = genMissingBtn || recomputeAllBtn || clearBtn;
         if (active) {
           active.textContent = 'Generate Missing';
@@ -9262,7 +10560,7 @@ class TasksManager {
           active.dataset.state = 'missing';
         }
       }
-      else if (percentage === 100) {
+      else if (processed >= total) {
         active = clearBtn || recomputeAllBtn || genMissingBtn;
         if (active) {
           active.textContent = 'Clear All';
@@ -9282,7 +10580,9 @@ class TasksManager {
 
     // Mirror faces coverage to embeddings UI (embeddings share faces.json presence)
     const facesData = this.coverage['faces'] || { processed: 0, total: 0 };
-    const embedPct = facesData.total > 0 ? Math.round((facesData.processed / facesData.total) * 100) : 0;
+    const embedProcessed = facesData.processed || 0;
+    const embedTotal = facesData.total || 0;
+    const embedPct = embedTotal > 0 ? Math.round((embedProcessed / embedTotal) * 100) : 0;
     const embedPctEl = document.getElementById('embedCoverage');
     const embedFillEl = document.getElementById('embedFill');
     if (embedPctEl) embedPctEl.textContent = `${embedPct}%`;
@@ -9299,7 +10599,7 @@ class TasksManager {
       b && b.removeAttribute('data-state');
     });
     let embedActive = null;
-    if (embedPct === 0) {
+    if (embedTotal === 0 || embedProcessed === 0) {
       embedActive = embedRe || embedGen || embedClear;
       if (embedActive) {
         embedActive.textContent = 'Generate All';
@@ -9309,7 +10609,7 @@ class TasksManager {
         embedActive.dataset.state = 'all';
       }
     }
-    else if (embedPct > 0 && embedPct < 100) {
+    else if (embedProcessed > 0 && embedProcessed < embedTotal) {
       embedActive = embedGen || embedRe || embedClear;
       if (embedActive) {
         embedActive.textContent = 'Generate Missing';
@@ -9319,7 +10619,7 @@ class TasksManager {
         embedActive.dataset.state = 'missing';
       }
     }
-    else if (embedPct === 100) {
+    else if (embedProcessed >= embedTotal) {
       embedActive = embedClear || embedRe || embedGen;
       if (embedActive) {
         embedActive.textContent = 'Clear All';
@@ -9376,11 +10676,21 @@ class TasksManager {
         }
       }
     }
-    // Remove rows for jobs not present anymore
+    // Remove rows for jobs not present anymore (skip synthetic rows)
     for (const [id, tr] of Array.from(this._jobRows.entries())) {
       if (!ids.has(id)) {
+        if (tr && tr.dataset && tr.dataset.synthetic === '1') {
+          continue;
+        }
         if (tr && tr.parentElement) tr.parentElement.removeChild(tr);
         this._jobRows.delete(id);
+        this.jobs.delete(id);
+      }
+    }
+    // Also purge any stale entries in the jobs map that never had rows (e.g., filtered out),
+    // so stats like Errored count reflect the current server state immediately.
+    for (const id of Array.from(this.jobs.keys())) {
+      if (!ids.has(id)) {
         this.jobs.delete(id);
       }
     }
@@ -9485,12 +10795,50 @@ class TasksManager {
       return;
     }
     const all = Array.from(this.jobs.values());
+    // Aggregate metadata jobs into a single synthetic row with progress based on coverage
+    let forRender = all;
+    try {
+      const metaJobs = all.filter((j) => (j.artifact || '').toLowerCase() === 'metadata' || /meta/.test((j.task || '').toLowerCase()));
+      if (metaJobs && metaJobs.length) {
+        const anyRunning = metaJobs.some((j) => this.normalizeStatus(j) === 'running');
+        const anyQueued = metaJobs.some((j) => this.normalizeStatus(j) === 'queued');
+        const active = anyRunning || anyQueued;
+        if (active) {
+          // Compute progress from coverage if available
+          const cov = (this.coverage && this.coverage.metadata) ? this.coverage.metadata : { processed: 0, total: 0 };
+          const processed = Number(cov.processed || 0);
+          const total = Number(cov.total || 0);
+          const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((processed / total) * 100))) : 0;
+          const createdTime = metaJobs.reduce((acc, j) => Math.min(acc || Infinity, j.createdTime || Infinity), Infinity);
+          const startTime = metaJobs.reduce((acc, j) => Math.min(acc || Infinity, j.startTime || Infinity), Infinity);
+          const synthetic = {
+            id: '__meta_aggregate',
+            task: 'Metadata (batch)',
+            file: '',
+            status: anyRunning ? 'running' : 'queued',
+            progress: pct,
+            createdTime: Number.isFinite(createdTime) ? createdTime : 0,
+            startTime: Number.isFinite(startTime) ? startTime : 0,
+            totalRaw: total,
+            processedRaw: processed,
+            artifact: 'metadata',
+            _synthetic: true,
+          };
+          forRender = all.filter((j) => !metaJobs.includes(j)).concat([synthetic]);
+        }
+        else {
+          // When not active, hide metadata per-file rows (they tend to be noisy)
+          forRender = all.filter((j) => !metaJobs.includes(j));
+        }
+      }
+    }
+    catch (_) { /* ignore aggregation errors */ }
     // Filtering policy: when NO toggles are selected, show NO rows.
     // Selecting any toggle(s) displays only jobs whose normalized status matches a selected toggle.
     // (Reversed from prior behavior where empty selection meant "show all").
     let visible = [];
     if (this.activeFilters && this.activeFilters.size > 0) {
-      visible = all.filter((j) => this.activeFilters.has(this.normalizeStatus(j)));
+      visible = forRender.filter((j) => this.activeFilters.has(this.normalizeStatus(j)));
     }
     // Sort with explicit priority: running > queued > others, then by time desc
     const prio = (j) => {
@@ -9515,6 +10863,9 @@ class TasksManager {
       let tr = this._jobRows.get(job.id);
       if (!tr) {
         tr = this.createJobRow(job);
+        if (job._synthetic) {
+          tr.dataset.synthetic = '1';
+        }
         this._jobRows.set(job.id, tr);
       }
       else {
@@ -9556,21 +10907,6 @@ class TasksManager {
       );
       if (hasQueued) showAs(cancelQueuedBtn, 'inline-block');
       else hide(cancelQueuedBtn);
-      cancelQueuedBtn.onclick = async () => {
-        try {
-          const res = await fetch('/api/tasks/jobs/cancel-queued', {
-            method: 'POST',
-          });
-          if (!res.ok) {
-            throw new Error('HTTP ' + res.status);
-          }
-          this.showNotification('Queued jobs canceled', 'success');
-          this.refreshJobs();
-        }
-        catch (e) {
-          this.showNotification('Failed to cancel queued jobs', 'error');
-        }
-      };
     }
     if (cancelAllBtn) {
       const hasAny = Array.from(this.jobs.values()).some(
@@ -9578,24 +10914,6 @@ class TasksManager {
       );
       if (hasAny) showAs(cancelAllBtn, 'inline-block');
       else hide(cancelAllBtn);
-      cancelAllBtn.onclick = async () => {
-        try {
-          const res = await fetch('/api/tasks/jobs/cancel-all', {
-            method: 'POST',
-          });
-          if (!res.ok) {
-            throw new Error('HTTP ' + res.status);
-          }
-          this.showNotification(
-            'All pending and running jobs asked to cancel',
-            'success'
-          );
-          this.refreshJobs();
-        }
-        catch (e) {
-          this.showNotification('Failed to cancel all jobs', 'error');
-        }
-      };
     }
 
     // Clamp container height to content so it never grows beyond the table needs
@@ -9682,9 +11000,8 @@ class TasksManager {
         if (calc > 0) pct = calc;
       }
     }
-    // Queued shows 0%;
-    // completed always shows 100%
-    if (status === 'queued') pct = 0;
+    // Queued shows 0% normally; allow synthetic rows to display their computed pct
+    if (status === 'queued' && !job._synthetic) pct = 0;
     if (status === 'completed') pct = 100;
     const bar = row.querySelector('.job-progress-fill');
     // Canceled explicitly shows 0% and "Canceled"
@@ -9692,9 +11009,17 @@ class TasksManager {
       bar.style.width = '0%';
     }
     else {
-      bar.style.width = (status !== 'queued' ? pct : 0) + '%';
+      // For synthetic rows, always reflect computed pct; otherwise keep queued at 0%
+      bar.style.width = ((status !== 'queued' || job._synthetic) ? pct : 0) + '%';
     }
-    row.querySelector('.pct').textContent = status === 'queued' ? 'Queued' : status === 'completed' ? '100%' : status === 'canceled' ? 'Canceled' : `${pct}%`;
+    // For synthetic rows, prefer percentage text even when queued
+    const pctEl = row.querySelector('.pct');
+    if (job._synthetic) {
+      pctEl.textContent = status === 'canceled' ? 'Canceled' : `${pct}%`;
+    }
+    else {
+      pctEl.textContent = status === 'queued' ? 'Queued' : status === 'completed' ? '100%' : status === 'canceled' ? 'Canceled' : `${pct}%`;
+    }
     /*
     const fname = row.querySelector(".fname");
     // Show the target path when available for non-queued states
@@ -9962,6 +11287,13 @@ class TasksManager {
     let passiveMode = true;
     // until user views tasks or active job causes auto-switch
     let currentInterval = PASSIVE;
+    const restartTimer = (ms) => {
+      if (!Number.isFinite(ms) || ms <= 0) return;
+      if (ms === currentInterval && this._jobPollTimer) return;
+      currentInterval = ms;
+      if (this._jobPollTimer) clearInterval(this._jobPollTimer);
+      this._jobPollTimer = setInterval(tick, currentInterval);
+    };
     const doPoll = async () => {
       const activeTab = tabSystem && tabSystem.getActiveTab ? tabSystem.getActiveTab() : null;
       const tabIsTasks = activeTab === 'tasks';
@@ -9981,7 +11313,7 @@ class TasksManager {
             try {
               tabSystem.switchToTab('tasks');
               passiveMode = false;
-              currentInterval = FAST;
+              restartTimer(FAST);
             }
             catch (_) { }
           }
@@ -10003,15 +11335,18 @@ class TasksManager {
         finally {
           this._jobPollInFlight.coverage = false;
         }
+        // Ensure we are in FAST mode while viewing tasks
+        restartTimer(FAST);
       }
       // Backoff on repeated failures
       if (this._jobPollFailures >= 2) {
-        currentInterval = Math.min(currentInterval * 2, MAX_BACKOFF);
+        const next = Math.min(currentInterval * 2, MAX_BACKOFF);
+        restartTimer(next);
         this._jobPollFailures = 0;
         // apply once per adjustment
       }
       else if (!passiveMode && currentInterval !== FAST) {
-        currentInterval = FAST;
+        restartTimer(FAST);
       }
     };
     const tick = () => {
@@ -10025,9 +11360,7 @@ class TasksManager {
       // Adjust timer if interval changed
       const activeTab = tabSystem && tabSystem.getActiveTab ? tabSystem.getActiveTab() : null;
       if (activeTab === 'tasks' && !passiveMode && currentInterval !== FAST) {
-        currentInterval = FAST;
-        clearInterval(this._jobPollTimer);
-        this._jobPollTimer = setInterval(tick, currentInterval);
+        restartTimer(FAST);
       }
       return result;
     };
@@ -10038,9 +11371,7 @@ class TasksManager {
       }
       const activeTab = tabSystem && tabSystem.getActiveTab ? tabSystem.getActiveTab() : null;
       if (activeTab === 'tasks') {
-        clearInterval(this._jobPollTimer);
-        currentInterval = SLOW;
-        this._jobPollTimer = setInterval(tick, currentInterval);
+        restartTimer(SLOW);
       }
     };
   }

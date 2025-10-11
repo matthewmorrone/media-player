@@ -188,7 +188,8 @@ def main(argv: list[str]) -> int:
         "all", "thumb", "hover", "sprites", "scenes", "heatmaps", "phash", "metadata"
     ], help="Which artifact(s) to generate")
     ap.add_argument("--force", action="store_true", help="Force overwrite where applicable")
-    ap.add_argument("--concurrency", type=int, default=int(os.environ.get("JOB_MAX_CONCURRENCY", 1)), help="Max parallel workers")
+    # Align with server default JOB_MAX_CONCURRENCY=4 (overridable via env)
+    ap.add_argument("--concurrency", type=int, default=int(os.environ.get("JOB_MAX_CONCURRENCY", "4")), help="Max parallel workers")
     ap.add_argument("--scene-thumbs", action="store_true", help="For scenes: write thumbnail JPEGs")
     ap.add_argument("--scene-clips", action="store_true", help="For scenes: write MP4 clips")
     ap.add_argument("--heatmaps-png", action="store_true", help="For heatmaps: also write PNG strip")
@@ -197,7 +198,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--hover-fmt", default=os.environ.get("HOVER_FMT", "webm"), choices=["webm", "mp4"], help="Container for hover previews (webm/libvpx-vp9 or mp4/h264)")
     ap.add_argument("--ffmpeg-verbose", action="store_true", help="Print ffmpeg commands (sets FFMPEG_DEBUG=1)")
     ap.add_argument("--ffmpeg-loglevel", default=os.environ.get("FFMPEG_LOGLEVEL", "error"), choices=["quiet", "panic", "fatal", "error", "warning", "info"], help="ffmpeg -loglevel (default: error)")
-    ap.add_argument("--hover-single-pass", action="store_true", help="Use single-pass filter graph for hover (no per-segment progress; avoids concat demuxer)")
+    # Hover generation strategy: by default the server attempts single-pass and can parse progress.
+    # Expose parity flags that map to PREVIEW_SINGLE_PASS env while preserving progress reporting.
+    ap.add_argument("--hover-single-pass", action="store_true", help="Prefer single-pass hover encoding (sets PREVIEW_SINGLE_PASS=1; progress still reported)")
+    ap.add_argument("--hover-multi-step", action="store_true", help="Force multi-step hover encoding (sets PREVIEW_SINGLE_PASS=0)")
     ap.add_argument("--venv-status", action="store_true", help="Print the Python interpreter path in use and exit")
     # Default behavior: only-missing. Users can override with --recompute-all.
     ap.add_argument("--only-missing", action="store_true", default=None, help="Skip steps whose artifact already exists (default). Use --recompute-all to force regeneration.")
@@ -229,6 +233,12 @@ def main(argv: list[str]) -> int:
         os.environ["FFMPEG_LOGLEVEL"] = str(args.ffmpeg_loglevel)
 
     m = import_app_module()
+    # Honor hover single-pass/multi-step flags via env to match server behavior
+    if args.hover_single_pass:
+        os.environ["PREVIEW_SINGLE_PASS"] = "1"
+    if args.hover_multi_step:
+        os.environ["PREVIEW_SINGLE_PASS"] = "0"
+
     videos = find_videos(m, root, args.recursive)
     if not videos:
         try:
@@ -262,12 +272,13 @@ def main(argv: list[str]) -> int:
     def steps_for_job() -> list[str]:
         if args.what == "all":
             return [
-                "metadata", 
-                "thumb", 
-                "hover", 
-                "sprites", 
-                "scenes", 
-                "heatmaps", 
+                "metadata",
+                "thumb",
+                # Keep sprites and hover adjacent; server runs them in the same phase
+                "sprites",
+                "hover",
+                "scenes",
+                "heatmaps",
                 "phash"
             ]
         return [args.what]
@@ -319,7 +330,11 @@ def main(argv: list[str]) -> int:
                 return m.thumbs_path(v).exists()
             if task == "hover":
                 fmt = args.hover_fmt
-                return (m.artifact_dir(v) / f"{v.stem}.preview.{fmt}").exists()
+                p = (m.artifact_dir(v) / f"{v.stem}.preview.{fmt}")
+                try:
+                    return p.exists() and p.stat().st_size > 0
+                except Exception:
+                    return p.exists()
             if task == "sprites":
                 try:
                     sheet, jpath = m.sprite_sheet_paths(v)
@@ -327,9 +342,16 @@ def main(argv: list[str]) -> int:
                 except Exception:
                     return False
             if task == "scenes":
-                return m.scenes_json_path(v).exists()
+                try:
+                    # Prefer strict server helper when available
+                    return bool(getattr(m, "scenes_json_exists")(v))  # type: ignore[misc]
+                except Exception:
+                    return m.scenes_json_path(v).exists()
             if task == "heatmaps":
-                return m.heatmaps_json_path(v).exists()
+                try:
+                    return bool(getattr(m, "heatmaps_json_exists")(v))  # type: ignore[misc]
+                except Exception:
+                    return m.heatmaps_json_path(v).exists()
             if task == "phash":
                 return m.phash_path(v).exists()
         except Exception:
@@ -406,11 +428,8 @@ def main(argv: list[str]) -> int:
                 else:
                     starting("hover")
                     try:
-                        # Single-pass avoids multi-step concat demuxer; disable progress in that mode
-                        if args.hover_single_pass:
-                            task_hover(m, v, progress=None, cancel=cancel_event.is_set, fmt=args.hover_fmt)
-                        else:
-                            task_hover(m, v, progress=_hover_progress, cancel=cancel_event.is_set, fmt=args.hover_fmt)
+                        # Always provide progress; server handles single-pass progress internally when enabled
+                        task_hover(m, v, progress=_hover_progress, cancel=cancel_event.is_set, fmt=args.hover_fmt)
                     except Exception as e:
                         # If webm fails, retry once with mp4 as a fallback
                         if args.hover_fmt == "webm":
@@ -419,11 +438,7 @@ def main(argv: list[str]) -> int:
                                 sys.stderr.flush()
                             except Exception:
                                 pass
-                            # In single-pass mode, keep progress=None; else pass progress
-                            if args.hover_single_pass:
-                                task_hover(m, v, progress=None, cancel=cancel_event.is_set, fmt="mp4")
-                            else:
-                                task_hover(m, v, progress=_hover_progress, cancel=cancel_event.is_set, fmt="mp4")
+                            task_hover(m, v, progress=_hover_progress, cancel=cancel_event.is_set, fmt="mp4")
                         else:
                             raise
                     advance("hover")
@@ -479,10 +494,7 @@ def main(argv: list[str]) -> int:
                                 pass
                     starting("hover")
                     try:
-                        if args.hover_single_pass:
-                            task_hover(m, v, progress=None, cancel=cancel_event.is_set, fmt=args.hover_fmt)
-                        else:
-                            task_hover(m, v, progress=_hover_progress2, cancel=cancel_event.is_set, fmt=args.hover_fmt)
+                        task_hover(m, v, progress=_hover_progress2, cancel=cancel_event.is_set, fmt=args.hover_fmt)
                     except Exception as e:
                         if args.hover_fmt == "webm":
                             try:
@@ -490,10 +502,7 @@ def main(argv: list[str]) -> int:
                                 sys.stderr.flush()
                             except Exception:
                                 pass
-                            if args.hover_single_pass:
-                                task_hover(m, v, progress=None, cancel=cancel_event.is_set, fmt="mp4")
-                            else:
-                                task_hover(m, v, progress=_hover_progress2, cancel=cancel_event.is_set, fmt="mp4")
+                            task_hover(m, v, progress=_hover_progress2, cancel=cancel_event.is_set, fmt="mp4")
                         else:
                             raise
                     advance("hover")
