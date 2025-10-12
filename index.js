@@ -836,7 +836,8 @@ async function loadLibrary() {
       }
     }
 
-    const url = new URL('/api/library', window.location.origin);
+    // Build endpoint robustly without depending on window.location.origin (which can be 'null' under file://)
+    const params = new URLSearchParams();
     // Lock page size after first computation so subsequent pages add a consistent count
     let pageSize;
     if (currentPage === 1 || !stablePageSize) {
@@ -847,35 +848,35 @@ async function loadLibrary() {
       applyColumnsAndComputePageSize();
       pageSize = stablePageSize;
     }
-    url.searchParams.set('page', String(currentPage));
+    params.set('page', String(currentPage));
     // In infinite scroll mode, still request page-sized chunks (server handles page param)
-    url.searchParams.set('page_size', String(pageSize));
-    url.searchParams.set('sort', sortSelect.value || 'date');
-    url.searchParams.set('order', orderToggle.dataset.order || 'desc');
+    params.set('page_size', String(pageSize));
+    params.set('sort', sortSelect.value || 'date');
+    params.set('order', orderToggle.dataset.order || 'desc');
     // Resolution filter
     const resSel = document.getElementById('resSelect');
     const resVal = resSel ? String(resSel.value || '') : '';
-    if (resVal) url.searchParams.set('res_min', resVal);
+    if (resVal) params.set('res_min', resVal);
 
     // Add search and filter parameters
     const searchVal = computeSearchVal();
-    if (searchVal) url.searchParams.set('search', searchVal);
+    if (searchVal) params.set('search', searchVal);
 
     const val = (folderInput.value || '').trim();
     const p = currentPath();
-    // Only set a relative path;
-    // ignore absolute values (those represent the root itself)
-    if (val && !isAbsolutePath(val) && p) url.searchParams.set('path', p);
+    // Only set a relative path; ignore absolute values (those represent the root itself)
+    if (val && !isAbsolutePath(val) && p) params.set('path', p);
 
     // Tag / performer filter chips
     if (libraryTagFilters.length) {
-      url.searchParams.set('tags', libraryTagFilters.join(','));
+      params.set('tags', libraryTagFilters.join(','));
     }
     if (libraryPerformerFilters.length) {
-      url.searchParams.set('performers', libraryPerformerFilters.join(','));
+      params.set('performers', libraryPerformerFilters.join(','));
     }
 
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    const endpoint = '/api/library' + (params.toString() ? ('?' + params.toString()) : '');
+    const res = await fetch(endpoint, { headers: { Accept: 'application/json' } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const payload = await res.json();
     if (payload?.status !== 'success') {

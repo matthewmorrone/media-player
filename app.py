@@ -44,6 +44,7 @@ from fastapi.responses import ( # type: ignore
     HTMLResponse,
     JSONResponse,
     StreamingResponse,
+    RedirectResponse,
 )  # type: ignore
 from fastapi.staticfiles import StaticFiles  # type: ignore
 try:
@@ -4039,6 +4040,8 @@ def _cors_origins() -> list[str]:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
+    # Allow any origin including 'null' (file://) and IPs/hosts not explicitly listed
+    allow_origin_regex=r".*",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -5023,12 +5026,6 @@ def _media_exts() -> set[str]:
 MEDIA_EXTS = _media_exts()
 
 
-# Provide an /api/health alias for convenience
-@api.get("/health")
-def api_health():
-    return health()
-
-
 def _is_hidden_path(p: Path, base: Path) -> bool:
     """
     Return True if any directory component under base starts with '.' or ends with '.previews'.
@@ -5155,7 +5152,7 @@ class PerformerDelete(PerformerUpdate):
 # Core API
 ############################
 
-@app.get("/health")
+@api.get("/health")
 def health():
     uptime = None
     try:
@@ -5182,6 +5179,15 @@ def health():
         "version": app.version,
         "pid": os.getpid(),
     }
+
+
+@app.get("/health")
+def health_redirect():
+    """Compatibility alias: redirect root /health to canonical /api/health.
+
+    Using 307 preserves method if clients ever POST (unlikely for health) and avoids caching confusion.
+    """
+    return RedirectResponse(url="/api/health", status_code=307)
 
 
 @app.get("/config")
@@ -10408,6 +10414,12 @@ def artifacts_orphans_status_api(path: str = Query(default="")):
 @app.get("/api/tasks/coverage", include_in_schema=False)
 def tasks_coverage_api(path: str = Query(default="")):
     return tasks_coverage(path=path)  # type: ignore
+
+# Ensure /api/stats exists even if the router was included before this endpoint
+# This avoids 404s when app.include_router(api) is executed earlier in the file.
+@app.get("/api/stats", include_in_schema=False)
+def api_stats_api(path: str = Query(default=""), recursive: bool = Query(default=True)):
+    return api_stats(path=path, recursive=recursive)  # type: ignore
 
 
 @api.post("/tasks/batch")

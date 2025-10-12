@@ -2477,8 +2477,9 @@ keep only z-index here */
 }
 
 /* In collapsed mode, don't stretch the sidebar toggle to full height */
+/* Keep the toggle full-height even when the sidebar is collapsed */
 .has-sidebar-collapsed .sidebar-toggle {
-  align-self: center;
+  align-self: stretch;
 }
 
 /* Full-height opt-in modifier: add class to #player-panel if needed */
