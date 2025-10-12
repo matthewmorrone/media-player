@@ -4057,6 +4057,7 @@ JOB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 # Default to 4 unless overridden by env JOB_MAX_CONCURRENCY
 JOB_MAX_CONCURRENCY = int(os.environ.get("JOB_MAX_CONCURRENCY", "4"))
 JOB_RUN_SEM = threading.Semaphore(JOB_MAX_CONCURRENCY)
+JOB_QUEUE_PAUSED = False
 
 # ------------------------------------------------------------
 # Logging categories (coarse grained, opt-in / opt-out)
@@ -4444,22 +4445,43 @@ def _finish_job(jid: str, error: Optional[str] = None):
     with JOB_LOCK:
         j = JOBS.get(jid)
         if j:
-            # Honor cancel flag if set
-            if error:
-                j["state"] = "failed"
-            elif JOB_CANCEL_EVENTS.get(jid) and JOB_CANCEL_EVENTS[jid].is_set():
-                j["state"] = "canceled"
-            else:
-                j["state"] = "done"
-                # If we know totals, snap processed to total on successful completion
+            # If pause requested a cooperative requeue, move job back to queued
+            pause_requeue = bool(j.get("pause_requeue"))
+            if pause_requeue:
+                j["state"] = "queued"
+                j["paused"] = True
+                # Reset runtime fields
+                j["started_at"] = None
+                j["ended_at"] = None
+                # Clear any transient error so UI doesn't show a failure from pause
                 try:
-                    t = j.get("total")
-                    if t is not None:
-                        j["processed"] = int(t)
+                    j.pop("error", None)
                 except Exception:
                     pass
-            j["ended_at"] = time.time()
-            j["error"] = error
+                # Reset cancel event for next run
+                try:
+                    ev = JOB_CANCEL_EVENTS.get(jid)
+                    if ev:
+                        ev.clear()
+                except Exception:
+                    pass
+            else:
+                # Honor cancel flag if set
+                if error:
+                    j["state"] = "failed"
+                elif JOB_CANCEL_EVENTS.get(jid) and JOB_CANCEL_EVENTS[jid].is_set():
+                    j["state"] = "canceled"
+                else:
+                    j["state"] = "done"
+                    # If we know totals, snap processed to total on successful completion
+                    try:
+                        t = j.get("total")
+                        if t is not None:
+                            j["processed"] = int(t)
+                    except Exception:
+                        pass
+                j["ended_at"] = time.time()
+                j["error"] = error
     _persist_job(jid)
     # Update heartbeat on finish to indicate recent terminal activity
     try:
@@ -4723,6 +4745,10 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
     start_ts = time.time()
     last_diag = 0.0
     while True:
+        # Global pause gate: while paused, do not let queued jobs become eligible
+        if JOB_QUEUE_PAUSED:
+            time.sleep(poll_interval)
+            continue
         # Timeout (best-effort safety)
         if timeout is not None and (time.time() - start_ts) > timeout:
             break
@@ -4757,7 +4783,7 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
             queued = [
                 (float(qq.get("created_at") or 0), str(qq.get("id") or ""))
                 for qq in JOBS.values()
-                if str(qq.get("state") or "") == "queued"
+                if str(qq.get("state") or "") == "queued" and not bool(qq.get("paused"))
             ]
             # Note: jobs in state 'restored' are paused and intentionally ignored here
             queued.sort(key=lambda x: (x[0], x[1]))
@@ -4787,6 +4813,68 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
             except Exception:
                 pass
         time.sleep(poll_interval)
+
+@api.get("/tasks/pause")
+def tasks_get_pause():
+    """Return whether the job queue is paused."""
+    try:
+        return api_success({"paused": bool(JOB_QUEUE_PAUSED)})
+    except Exception as e:
+        raise_api_error(f"Failed to get pause state: {str(e)}")
+
+
+@api.post("/tasks/pause")
+def tasks_set_pause(paused: bool = Query(...)):
+    """Pause or resume the job queue.
+
+    When pausing (paused=true):
+    - Prevent new jobs from starting.
+    - Ask all running jobs to yield and be re-queued (not canceled).
+
+    When resuming (paused=false):
+    - Clear paused markers so queued jobs can proceed normally.
+    """
+    try:
+        global JOB_QUEUE_PAUSED
+        want_pause = bool(paused)
+        JOB_QUEUE_PAUSED = want_pause
+        if want_pause:
+            # For all running jobs, request a cooperative stop and mark to requeue on exit
+            with JOB_LOCK:
+                running_ids = [jid for jid, j in JOBS.items() if str(j.get("state")) == "running"]
+                for jid in running_ids:
+                    try:
+                        JOBS[jid]["pause_requeue"] = True
+                        JOBS[jid]["paused"] = True
+                        ev = JOB_CANCEL_EVENTS.get(jid)
+                        if ev:
+                            ev.set()
+                    except Exception:
+                        continue
+                # Also mark currently queued jobs as paused so UI reflects the state and scheduler skips them
+                try:
+                    for j in JOBS.values():
+                        if str(j.get("state") or "") == "queued":
+                            j["paused"] = True
+                except Exception:
+                    pass
+        else:
+            # Clear paused markers on any queued jobs so UI and scheduler treat them as normal
+            with JOB_LOCK:
+                for j in JOBS.values():
+                    try:
+                        if j.get("state") == "queued" and j.get("paused"):
+                            j["paused"] = False
+                            j.pop("pause_requeue", None)
+                    except Exception:
+                        continue
+        try:
+            _publish_job_event({"event": "pause", "paused": JOB_QUEUE_PAUSED})
+        except Exception:
+            pass
+        return api_success({"paused": bool(JOB_QUEUE_PAUSED)})
+    except Exception as e:
+        raise_api_error(f"Failed to set pause state: {str(e)}")
 
 
 def _safe_int(x):
@@ -6928,6 +7016,10 @@ def api_compare(
 
 
 def _serve_range(request: Request, file_path: Path, media_type: str):
+    try:
+        print(f"[range][in] path={file_path} exists={file_path.exists()} mt={media_type} range={request.headers.get('range') or request.headers.get('Range')}")
+    except Exception:
+        pass
     if not file_path.exists() or not file_path.is_file():
         raise_api_error("Not found", status_code=404)
     file_size = file_path.stat().st_size
@@ -6964,6 +7056,10 @@ def _serve_range(request: Request, file_path: Path, media_type: str):
             "Content-Length": str(end - start + 1),
             "Content-Type": media_type,
         }
+        try:
+            print(f"[range][206] path={file_path.name} {start}-{end}/{file_size} ct={media_type}")
+        except Exception:
+            pass
         return StreamingResponse(file_chunk(start, end), status_code=206, headers=headers)
     else:
         headers = {
@@ -6971,6 +7067,10 @@ def _serve_range(request: Request, file_path: Path, media_type: str):
             "Content-Type": media_type,
             "Content-Length": str(file_size),
         }
+        try:
+            print(f"[range][200] path={file_path.name} full bytes ct={media_type} size={file_size}")
+        except Exception:
+            pass
         return StreamingResponse(file_chunk(0, file_size - 1), status_code=200, headers=headers)
 
 
@@ -6981,6 +7081,10 @@ def stream_media(request: Request, path: str = Query(...)):
     import mimetypes
 
     content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+    try:
+        print(f"[stream] GET /stream path={path} fp={file_path} ct={content_type}")
+    except Exception:
+        pass
     return _serve_range(request, file_path, content_type)
 
 
@@ -6994,7 +7098,15 @@ def serve_file(full_path: str, request: Request):
     mt = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
     # If media type is video/audio, support Range
     if mt.startswith("video/") or mt.startswith("audio/"):
+        try:
+            print(f"[files][GET] /files/{full_path} mt={mt} range={request.headers.get('range') or request.headers.get('Range')}")
+        except Exception:
+            pass
         return _serve_range(request, file_path, mt)
+    try:
+        print(f"[files][GET] /files/{full_path} mt={mt} (non-media)")
+    except Exception:
+        pass
     return FileResponse(str(file_path), media_type=mt)
 
 
@@ -7009,6 +7121,10 @@ def serve_file_head(full_path: str):
         raise_api_error("Not found", status_code=404)
     # best-effort mime hint
     mt = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+    try:
+        print(f"[files][HEAD] /files/{full_path} mt={mt} status=200")
+    except Exception:
+        pass
     return Response(status_code=200, media_type=mt)
 
 
@@ -7025,6 +7141,11 @@ def thumbnail_get(path: str = Query(...)):
     root = Path(directory)
     target = root / name
     thumb = thumbs_path(target)
+    # Fallback: legacy sibling thumbnail next to the video (e.g., "<stem>.thumbnail.jpg")
+    if not thumb.exists():
+        sibling = target.parent / f"{target.stem}.thumbnail.jpg"
+        if sibling.exists():
+            thumb = sibling
     if not thumb.exists():
         raise_api_error("cover not found", status_code=404)
     resp = FileResponse(str(thumb))
@@ -7048,6 +7169,10 @@ def thumbnail_head(path: str = Query(...)):
     root = Path(directory)
     target = root / name
     thumb = thumbs_path(target)
+    if not thumb.exists():
+        sibling = target.parent / f"{target.stem}.thumbnail.jpg"
+        if sibling.exists():
+            thumb = sibling
     if not thumb.exists():
         raise_api_error("cover not found", status_code=404)
     return Response(status_code=200, media_type="image/jpeg")
@@ -7735,7 +7860,7 @@ def artifacts_status(path: str = Query(...)):
             return bool(f())
         except Exception:
             return False
-    cover = _safe(lambda: thumbs_path(video).exists())
+    cover = _safe(lambda: thumbs_path(video).exists() or (video.parent / f"{video.stem}.thumbnail.jpg").exists())
     hover = _safe(lambda: _file_nonempty(_hover_concat_path(video)))
     sprites = _safe(lambda: all(p.exists() for p in sprite_sheet_paths(video)))
     scenes_flag = _safe(lambda: scenes_json_path(video).exists() or (artifact_dir(video) / f"{video.stem}.markers.json").exists())
@@ -10899,6 +11024,7 @@ def tasks_jobs():
                 # Prefer current active file if available, else a queued label, else base path
                 "file": job.get("current") or job.get("label") or job.get("path", ""),
                 "status": job.get("state", "unknown"),
+                "paused": bool(job.get("paused")),
                 "progress": 0,
                 "createdTime": job.get("created_at"),
                 "startTime": job.get("started_at"),

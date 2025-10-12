@@ -131,6 +131,29 @@ const randomPlayBtn = document.getElementById('randomPlayBtn');
 const randomAutoBtn = document.getElementById('randomAutoBtn');
 const sortSelect = document.getElementById('sortSelect');
 const orderToggle = document.getElementById('orderToggle');
+
+// Sorting order helpers: default to ASC for name, DESC otherwise
+function syncOrderToggleArrow() {
+  if (!orderToggle) return;
+  const isAsc = (orderToggle.dataset.order || '').toLowerCase() === 'asc';
+  orderToggle.textContent = isAsc ? '▲' : '▼';
+}
+function applyDefaultOrderForSort(force = false) {
+  if (!orderToggle || !sortSelect) return;
+  // If user explicitly toggled the order, don't override unless force=true
+  if (!force && orderToggle.dataset.userSet === '1') {
+    syncOrderToggleArrow();
+    return;
+  }
+  const s = (sortSelect.value || 'date').toLowerCase();
+  const def = s === 'name' ? 'asc' : 'desc';
+  orderToggle.dataset.order = def;
+  syncOrderToggleArrow();
+}
+// Initialize default order once on load if not already set
+if (orderToggle && !orderToggle.dataset.order) {
+  applyDefaultOrderForSort(true);
+}
 const densitySlider = document.getElementById('densitySlider');
 const prevBtn = document.getElementById('prevBtn');
 const nextBtn = document.getElementById('nextBtn');
@@ -1672,6 +1695,8 @@ if (unifiedInput) {
   });
 }
 sortSelect.addEventListener('change', () => {
+  // Reset to sensible default per sort (ASC for name, DESC otherwise)
+  applyDefaultOrderForSort(false);
   currentPage = 1;
   loadLibrary();
 });
@@ -1752,6 +1777,8 @@ document.querySelectorAll('.artifact-gen-btn[data-artifact]').forEach((btn) => {
   });
 });
 orderToggle.addEventListener('click', () => {
+  // Mark that the user explicitly chose an order; future sort changes won't auto-reset it
+  orderToggle.dataset.userSet = '1';
   const isDesc = orderToggle.dataset.order === 'desc';
   orderToggle.dataset.order = isDesc ? 'asc' : 'desc';
   orderToggle.textContent = isDesc ? '▲' : '▼';
@@ -5080,8 +5107,6 @@ const Player = (() => {
       else if (typeof Player !== 'undefined' && Player && typeof Player.open === 'function') {
         Player.open(p);
       }
-      // Do NOT auto-switch tab here;
-      // resume should be passive unless user opted in explicitly.
     }
     catch (_) { }
   }
@@ -5931,17 +5956,53 @@ const Player = (() => {
       // (Intentionally NOT auto-switching to prevent unexpected delayed jumps)
       // window.tabSystem.switchToTab('player');
     }
-    // Load video source
+    // Load video source (with lightweight debugging)
     if (videoEl) {
       // Encode path segments to handle spaces/special characters
       const encPath = (typeof path === 'string' ? path.split('/') : []).map(encodeURIComponent).join('/');
       const src = new URL('/files/' + encPath, window.location.origin);
       // Cache-bust on change
-      videoEl.src = src.toString() + `?t=${Date.now()}`;
+      const finalUrl = src.toString() + `?t=${Date.now()}`;
+      try { console.info('[player] setting video src', { path, encPath, url: finalUrl }); } catch (_) { }
+      videoEl.src = finalUrl;
+      // Fire a HEAD probe (non-blocking) to validate existence/MIME and surface status in logs
+      try {
+        const urlNoBust = src.toString();
+        fetch(urlNoBust, { method: 'HEAD' })
+          .then(r => { try { console.info('[player] HEAD /files status', r.status, r.headers.get('content-type')); } catch (_) { } })
+          .catch(e => { try { console.error('[player] HEAD /files failed', e); } catch (_) { } });
+      }
+      catch (_) { }
+      // Debug media lifecycle once
+      if (!videoEl._dbgWired) {
+        videoEl._dbgWired = true;
+        const logEvt = (evt) => {
+          try {
+            console.debug('[player:event]', evt.type, {
+              readyState: videoEl.readyState,
+              networkState: videoEl.networkState,
+              currentSrc: videoEl.currentSrc || videoEl.src || ''
+            });
+          }
+          catch (_) { }
+        };
+        ['loadedmetadata', 'canplay', 'playing', 'pause', 'stalled', 'suspend', 'abort', 'emptied', 'waiting', 'seeking', 'seeked', 'ended'].forEach(t => {
+          videoEl.addEventListener(t, logEvt);
+        });
+      }
       if (!videoEl._errWired) {
         videoEl._errWired = true;
-        videoEl.addEventListener('error', () => {
-          try { console.error('Video failed to load:', videoEl.currentSrc || videoEl.src); } catch (_) { }
+        videoEl.addEventListener('error', (e) => {
+          try {
+            const err = (videoEl.error ? { code: videoEl.error.code, message: videoEl.error.message } : null);
+            console.error('[player:error] Video failed to load', {
+              currentSrc: videoEl.currentSrc || videoEl.src,
+              readyState: videoEl.readyState,
+              networkState: videoEl.networkState,
+              error: err
+            });
+          }
+          catch (_) { }
         });
       }
       // Defer autoplay decision to loadedmetadata restore
@@ -6968,245 +7029,153 @@ const Player = (() => {
   // Sidebar Markers List DOM rendering
   function renderMarkersList() {
     const list = document.getElementById('markersList');
-    if (!list) {
+    if (!list) { return; }
+    list.innerHTML = '';
+
+    const tpl = document.getElementById('markerRowTemplate');
+    if (!tpl || !tpl.content) {
+      // Template is required by repo policy; if missing, show a simple notice and bail
+      const n = document.createElement('div');
+      n.className = 'markers-empty';
+      n.textContent = 'Markers unavailable (template missing)';
+      list.appendChild(n);
       return;
     }
-    list.innerHTML = '';
-    // Reuse shared row template so icon buttons (jump/remove) match regular markers
-    const tpl = document.getElementById('markerRowTemplate');
-    // Show intro-end and outro-begin markers if set for this file
+
+    // Small helper to clone the row template and fill fields
+    function buildRow(options) {
+      const { label, timeSec, variantClass, editableName, editableTime, onJump, onDelete, strongLabel } = options;
+      const frag = tpl.content.cloneNode(true);
+      const row = frag.querySelector('.marker-row');
+      if (!row) { return null; }
+      if (variantClass) { row.classList.add(variantClass); }
+      const nameLabel = row.querySelector('.marker-name-label');
+      const timeLabel = row.querySelector('.marker-time-label');
+      const jumpBtn = row.querySelector('.marker-jump');
+      const delBtn = row.querySelector('.marker-remove');
+
+      if (nameLabel) {
+        nameLabel.textContent = label;
+        if (strongLabel) { nameLabel.classList.add('marker-label-strong', 'flex-1'); }
+        if (editableName) {
+          nameLabel.title = 'Click to edit marker name';
+          nameLabel.tabIndex = 0;
+          nameLabel.addEventListener('click', () => startMarkerNameEdit(nameLabel, editableName));
+          nameLabel.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startMarkerNameEdit(nameLabel, editableName); }
+          });
+        }
+        else {
+          nameLabel.title = '';
+          nameLabel.removeAttribute('tabindex');
+          nameLabel.classList.remove('marker-name-label--editable');
+        }
+      }
+
+      if (timeLabel) {
+        timeLabel.textContent = fmtTime(Number(timeSec) || 0);
+        if (editableTime) {
+          timeLabel.title = 'Click to edit time';
+          timeLabel.tabIndex = 0;
+          timeLabel.addEventListener('click', () => startMarkerTimeEdit(timeLabel, editableTime));
+          timeLabel.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startMarkerTimeEdit(timeLabel, editableTime); }
+          });
+        }
+        else {
+          timeLabel.title = '';
+          timeLabel.removeAttribute('tabindex');
+          timeLabel.classList.remove('marker-time-label--editable');
+        }
+      }
+
+      if (jumpBtn && typeof onJump === 'function') {
+        jumpBtn.addEventListener('click', onJump);
+      }
+      if (delBtn && typeof onDelete === 'function') {
+        delBtn.addEventListener('click', onDelete);
+      }
+
+      return frag;
+    }
+
+    // Special markers: Intro end
     try {
       let it = null;
-      if (introEnd && Number.isFinite(Number(introEnd))) {
-        it = Number(introEnd);
-      }
+      if (introEnd && Number.isFinite(Number(introEnd))) { it = Number(introEnd); }
       else {
         const introKey = `${LS_PREFIX}:introEnd:${currentPath}`;
         const rawIntro = currentPath ? lsGet(introKey) : null;
         if (rawIntro && Number.isFinite(Number(rawIntro))) it = Number(rawIntro);
       }
       if (it !== null && Number.isFinite(it)) {
-        if (tpl && tpl.content) {
-          const frag = tpl.content.cloneNode(true);
-          const row = frag.querySelector('.marker-row');
-          if (row) {
-            row.classList.add('marker-row--intro');
-            const nameLabel = row.querySelector('.marker-name-label');
-            const timeEl = row.querySelector('.marker-time-label');
-            const jumpBtn = row.querySelector('.marker-jump');
-            const delBtn = row.querySelector('.marker-remove');
-            if (nameLabel) {
-              nameLabel.textContent = 'Intro';
-              nameLabel.title = '';
-              nameLabel.removeAttribute('tabindex');
-              nameLabel.classList.remove('marker-name-label--editable');
-              nameLabel.style.fontWeight = '700';
-              nameLabel.style.flex = '1';
-            }
-            if (timeEl) {
-              timeEl.textContent = fmtTime(it);
-              timeEl.title = '';
-              timeEl.removeAttribute('tabindex');
-              timeEl.classList.remove('marker-time-label--editable');
-            }
-            if (jumpBtn) {
-              jumpBtn.classList.add('marker-btn-icon');
-              jumpBtn.addEventListener('click', () => {
-                if (videoEl) videoEl.currentTime = Math.min(duration, Math.max(0, it));
-              });
-            }
-            if (delBtn) {
-              delBtn.classList.add('marker-btn-icon');
-              delBtn.title = 'Clear';
-              delBtn.addEventListener('click', async () => {
-                try {
-                  try {
-                    lsRemove(`${LS_PREFIX}:introEnd:${currentPath}`);
-                  }
-                  catch (_) { }
-                  // also remove server-side
-                  try {
-                    const mu = new URL('/api/scenes/intro', window.location.origin);
-                    mu.searchParams.set('path', currentPath);
-                    await fetch(mu.toString(), { method: 'DELETE' });
-                  }
-                  catch (_) { }
-                  notify('Intro end cleared', 'success');
-                  await loadScenes();
-                  renderMarkersList();
-                }
-                catch (_) {
-                  notify('Failed to clear intro end', 'error');
-                }
-              });
-            }
-            list.appendChild(frag);
-          }
-        }
-        else {
-          // Fallback (no template): text-only row
-          const introRow = document.createElement('div');
-          introRow.className = 'marker-row marker-row--intro';
-          const label = document.createElement('div');
-          label.textContent = 'Intro';
-          label.style.flex = '1';
-          label.style.fontWeight = '700';
-          const timeLabel = document.createElement('div');
-          timeLabel.textContent = fmtTime(it);
-          timeLabel.className = 'marker-time-label';
-          timeLabel.style.marginRight = '8px';
-          const jump = document.createElement('button');
-          jump.type = 'button';
-          jump.className = 'marker-jump';
-          jump.textContent = 'Jump';
-          jump.addEventListener('click', () => {
-            if (videoEl) videoEl.currentTime = Math.min(duration, Math.max(0, it));
-          });
-          const clr = document.createElement('button');
-          clr.type = 'button';
-          clr.className = 'marker-remove';
-          clr.textContent = 'Clear';
-          clr.addEventListener('click', async () => {
+        const frag = buildRow({
+          label: 'Intro',
+          timeSec: it,
+          variantClass: 'marker-row--intro',
+          editableName: null,
+          editableTime: null,
+          strongLabel: true,
+          onJump: () => { if (videoEl) videoEl.currentTime = Math.min(duration, Math.max(0, it)); },
+          onDelete: async () => {
             try {
-              try {
-                lsRemove(`${LS_PREFIX}:introEnd:${currentPath}`);
-              }
-              catch (_) { }
+              try { lsRemove(`${LS_PREFIX}:introEnd:${currentPath}`); } catch (_) { }
               // also remove server-side
               try {
                 const mu = new URL('/api/scenes/intro', window.location.origin);
                 mu.searchParams.set('path', currentPath);
                 await fetch(mu.toString(), { method: 'DELETE' });
-              }
-              catch (_) { }
+              } catch (_) { }
               notify('Intro end cleared', 'success');
               await loadScenes();
               renderMarkersList();
-            }
-            catch (_) {
-              notify('Failed to clear intro end', 'error');
-            }
-          });
-          introRow.appendChild(label);
-          introRow.appendChild(timeLabel);
-          introRow.appendChild(jump);
-          introRow.appendChild(clr);
-          list.appendChild(introRow);
+            } catch (_) { notify('Failed to clear intro end', 'error'); }
+          }
+        });
+        if (frag) {
+          // style icon buttons for special markers
+          const tmp = frag.querySelector('.marker-jump'); if (tmp) tmp.classList.add('marker-btn-icon');
+          const tmp2 = frag.querySelector('.marker-remove'); if (tmp2) { tmp2.classList.add('marker-btn-icon'); tmp2.title = 'Clear'; }
+          list.appendChild(frag);
         }
       }
+
       // Outro begin
       let ot = null;
-      if (outroBegin && Number.isFinite(Number(outroBegin))) {
-        ot = Number(outroBegin);
-      }
+      if (outroBegin && Number.isFinite(Number(outroBegin))) { ot = Number(outroBegin); }
       else {
         const outroKey = `${LS_PREFIX}:outroBegin:${currentPath}`;
         const rawOutro = currentPath ? lsGet(outroKey) : null;
         if (rawOutro && Number.isFinite(Number(rawOutro))) ot = Number(rawOutro);
       }
       if (ot !== null && Number.isFinite(ot)) {
-        if (tpl && tpl.content) {
-          const frag = tpl.content.cloneNode(true);
-          const row = frag.querySelector('.marker-row');
-          if (row) {
-            row.classList.add('marker-row--outro');
-            const nameLabel = row.querySelector('.marker-name-label');
-            const timeEl = row.querySelector('.marker-time-label');
-            const jumpBtn = row.querySelector('.marker-jump');
-            const delBtn = row.querySelector('.marker-remove');
-            if (nameLabel) {
-              nameLabel.textContent = 'Outro';
-              nameLabel.title = '';
-              nameLabel.removeAttribute('tabindex');
-              nameLabel.classList.remove('marker-name-label--editable');
-              nameLabel.style.fontWeight = '700';
-              nameLabel.style.flex = '1';
-            }
-            if (timeEl) {
-              timeEl.textContent = fmtTime(ot);
-              timeEl.title = '';
-              timeEl.removeAttribute('tabindex');
-              timeEl.classList.remove('marker-time-label--editable');
-            }
-            if (jumpBtn) {
-              jumpBtn.classList.add('marker-btn-icon');
-              jumpBtn.addEventListener('click', () => {
-                if (videoEl) {
-                  videoEl.currentTime = Math.min(duration, Math.max(0, ot));
-                }
-              });
-            }
-            if (delBtn) {
-              delBtn.classList.add('marker-btn-icon');
-              delBtn.title = 'Clear';
-              delBtn.addEventListener('click', async () => {
-                try {
-                  try {
-                    lsRemove(`${LS_PREFIX}:outroBegin:${currentPath}`);
-                  }
-                  catch (_) { }
-                  notify('Outro begin cleared', 'success');
-                  outroBegin = null;
-                  renderMarkers();
-                  renderMarkersList();
-                }
-                catch (_) {
-                  notify('Failed to clear outro begin', 'error');
-                }
-              });
-            }
-            list.appendChild(frag);
-          }
-        }
-        else {
-          // Fallback (no template): text-only row
-          const outroRow = document.createElement('div');
-          outroRow.className = 'marker-row marker-row--outro';
-          const label = document.createElement('div');
-          label.textContent = 'Outro';
-          label.style.flex = '1';
-          label.style.fontWeight = '700';
-          const timeLabel = document.createElement('div');
-          timeLabel.textContent = fmtTime(ot);
-          timeLabel.className = 'marker-time-label';
-          timeLabel.style.marginRight = '8px';
-          const jump = document.createElement('button');
-          jump.type = 'button';
-          jump.className = 'marker-jump';
-          jump.textContent = 'Jump';
-          jump.addEventListener('click', () => {
-            if (videoEl) {
-              videoEl.currentTime = Math.min(duration, Math.max(0, ot));
-            }
-          });
-          const clr = document.createElement('button');
-          clr.type = 'button';
-          clr.className = 'marker-remove';
-          clr.textContent = 'Clear';
-          clr.addEventListener('click', async () => {
+        const frag = buildRow({
+          label: 'Outro',
+          timeSec: ot,
+          variantClass: 'marker-row--outro',
+          editableName: null,
+          editableTime: null,
+          strongLabel: true,
+          onJump: () => { if (videoEl) videoEl.currentTime = Math.min(duration, Math.max(0, ot)); },
+          onDelete: async () => {
             try {
-              try {
-                lsRemove(`${LS_PREFIX}:outroBegin:${currentPath}`);
-              }
-              catch (_) { }
+              try { lsRemove(`${LS_PREFIX}:outroBegin:${currentPath}`); } catch (_) { }
               notify('Outro begin cleared', 'success');
               outroBegin = null;
               renderMarkers();
               renderMarkersList();
-            }
-            catch (_) {
-              notify('Failed to clear outro begin', 'error');
-            }
-          });
-          outroRow.appendChild(label);
-          outroRow.appendChild(timeLabel);
-          outroRow.appendChild(jump);
-          outroRow.appendChild(clr);
-          list.appendChild(outroRow);
+            } catch (_) { notify('Failed to clear outro begin', 'error'); }
+          }
+        });
+        if (frag) {
+          const tmp = frag.querySelector('.marker-jump'); if (tmp) tmp.classList.add('marker-btn-icon');
+          const tmp2 = frag.querySelector('.marker-remove'); if (tmp2) { tmp2.classList.add('marker-btn-icon'); tmp2.title = 'Clear'; }
+          list.appendChild(frag);
         }
       }
     }
-    catch (_) { }
+    catch (_) { /* no-op */ }
+
     if (!Array.isArray(scenes) || scenes.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'markers-empty';
@@ -7214,58 +7183,23 @@ const Player = (() => {
       list.appendChild(empty);
       return;
     }
-    // Sort by time
+
+    // Regular markers (sorted by time)
     const sorted = scenes.slice().sort((a, b) => (a.time || 0) - (b.time || 0));
     sorted.forEach((sc, idx) => {
-      if (!tpl) {
-        return;
-      }
-      const frag = tpl.content.cloneNode(true);
-      const row = frag.querySelector('.marker-row');
-      if (!row) {
-        return;
-      }
       const t = Number(sc.time) || 0;
-      const nameLabel = row.querySelector('.marker-name-label');
-      const timeLabel = row.querySelector('.marker-time-label');
-      const jumpBtn = row.querySelector('.marker-jump');
-      const delBtn = row.querySelector('.marker-remove');
       const fallbackName = sc.label ? String(sc.label) : `#${idx + 1}`;
-      if (nameLabel) {
-        nameLabel.textContent = fallbackName;
-        nameLabel.title = 'Click to edit marker name';
-        nameLabel.tabIndex = 0;
-        nameLabel.addEventListener('click', () => startMarkerNameEdit(nameLabel, sc));
-        nameLabel.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            startMarkerNameEdit(nameLabel, sc);
-          }
-        });
-      }
-      if (timeLabel) {
-        timeLabel.textContent = fmtTime(t);
-        timeLabel.title = 'Click to edit time';
-        timeLabel.tabIndex = 0;
-        timeLabel.addEventListener('click', () => startMarkerTimeEdit(timeLabel, sc));
-        timeLabel.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            startMarkerTimeEdit(timeLabel, sc);
-          }
-        });
-      }
-      if (jumpBtn) {
-        jumpBtn.addEventListener('click', () => {
-          if (videoEl) {
-            videoEl.currentTime = Math.min(duration, Math.max(0, sc.time || 0));
-          }
-        });
-      }
-      if (delBtn) {
-        delBtn.addEventListener('click', () => removeMarker(sc));
-      }
-      list.appendChild(frag);
+      const frag = buildRow({
+        label: fallbackName,
+        timeSec: t,
+        variantClass: null,
+        editableName: sc,
+        editableTime: sc,
+        strongLabel: false,
+        onJump: () => { if (videoEl) videoEl.currentTime = Math.min(duration, Math.max(0, sc.time || 0)); },
+        onDelete: () => removeMarker(sc)
+      });
+      if (frag) list.appendChild(frag);
     });
   }
 
@@ -7643,13 +7577,13 @@ const Player = (() => {
           throw new Error('HTTP ' + r.status);
         }
         notify(kind + ' generation started', 'success');
-        // Poll artifact status until present or timeout
-        const startedAt = Date.now();
-        const TIMEOUT_MS = 60_000;
-        // 1 min fallback
+        // Poll artifact status until present; do not clear spinner on a fixed timeout.
+        // This keeps the spinner visible until the job actually completes.
         const POLL_INTERVAL = 1200;
+        const pathAtStart = currentPath;
         const poll = async () => {
-          if (!currentPath) return finish();
+          // If there's no active path or the selection changed, stop and clear spinner.
+          if (!currentPath || currentPath !== pathAtStart) return finish();
           try {
             await loadArtifactStatuses();
             // Determine presence based on kind
@@ -7674,10 +7608,8 @@ const Player = (() => {
             }
           }
           catch (_) { }
-          if (Date.now() - startedAt < TIMEOUT_MS) {
-            setTimeout(poll, POLL_INTERVAL);
-          }
-          else finish();
+          // Keep polling until present; avoid clearing spinner prematurely.
+          setTimeout(poll, POLL_INTERVAL);
         };
         const finish = () => {
           if (badgeEl) delete badgeEl.dataset.loading;
@@ -9302,6 +9234,22 @@ class TasksManager {
     setTimeout(() => this.wireOptionPersistence(), 0);
     // One-shot early jobs fetch: if any active jobs exist, surface Tasks tab immediately
     this._initialActiveCheck();
+
+    // Local elapsed time updater: refresh end-time (elapsed) display every second while viewing Tasks
+    if (!this._elapsedTimer) {
+      this._elapsedTimer = setInterval(() => {
+        try {
+          const activeTab = window.tabSystem && window.tabSystem.getActiveTab ? window.tabSystem.getActiveTab() : null;
+          if (activeTab === 'tasks') {
+            this.updateRunningVisuals();
+          }
+        }
+        catch (_) { /* ignore */ }
+      }, 1000);
+    }
+
+    // Initialize pause/resume controls
+    setTimeout(() => this.initPauseResumeControls(), 0);
   }
 
   async _initialActiveCheck() {
@@ -10045,6 +9993,78 @@ class TasksManager {
     }
   }
 
+  async getPauseState() {
+    try {
+      const r = await fetch('/api/tasks/pause');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      return !!(j && j.data && j.data.paused);
+    }
+    catch (_) {
+      return false;
+    }
+  }
+
+  async setPauseState(paused) {
+    const url = new URL('/api/tasks/pause', window.location.origin);
+    url.searchParams.set('paused', paused ? 'true' : 'false');
+    const r = await fetch(url.toString(), { method: 'POST' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    return !!(j && j.data && j.data.paused);
+  }
+
+  async initPauseResumeControls() {
+    const toggleBtn = document.getElementById('pauseToggleBtn');
+    if (!toggleBtn) return;
+    const iconUse = () => toggleBtn.querySelector('use');
+    const labelSpan = () => toggleBtn.querySelector('span');
+    const apply = (paused) => {
+      // Update icon, label, and tooltip
+      const useEl = iconUse();
+      const lbl = labelSpan();
+      if (paused) {
+        if (useEl) useEl.setAttribute('href', '#icon-play');
+        if (lbl) lbl.textContent = 'Resume';
+        toggleBtn.title = 'Resume starting new jobs';
+        toggleBtn.setAttribute('aria-pressed', 'true');
+      }
+      else {
+        if (useEl) useEl.setAttribute('href', '#icon-pause');
+        if (lbl) lbl.textContent = 'Pause';
+        toggleBtn.title = 'Pause starting new jobs';
+        toggleBtn.setAttribute('aria-pressed', 'false');
+      }
+      toggleBtn.disabled = false;
+    };
+    try {
+      const paused = await this.getPauseState();
+      apply(paused);
+    }
+    catch (_) {
+      apply(false);
+    }
+    if (!toggleBtn._wired) {
+      toggleBtn._wired = true;
+      toggleBtn.addEventListener('click', async () => {
+        try {
+          toggleBtn.disabled = true;
+          // Determine next state by reading current
+          const current = await this.getPauseState();
+          const next = !current;
+          const paused = await this.setPauseState(next);
+          this.showNotification(paused ? 'Job queue paused' : 'Job queue resumed', paused ? 'info' : 'success');
+          apply(paused);
+          await this.refreshJobs();
+        }
+        catch (_) {
+          toggleBtn.disabled = false;
+          this.showNotification('Failed to toggle queue', 'error');
+        }
+      });
+    }
+  }
+
   // Wire facesBrowserBtn to run browser detection on the currently open video
   wireBrowserFacesButton() {
     const btn = document.getElementById('facesBrowserBtn');
@@ -10731,6 +10751,19 @@ class TasksManager {
       window.__activeArtifactSpinners = window.__activeArtifactSpinners || new Map();
       // Build quick lookup of active job states by (path, artifact)
       const activeStates = new Set();
+      // Resolve currently open file path once for comparisons
+      const activePath = (window.Player && typeof window.Player.getPath === 'function')
+        ? window.Player.getPath()
+        : (typeof currentPath === 'function' ? currentPath() : (window.currentPath || currentPath));
+      // Helper: normalize backend artifact names to sidebar badge keys
+      const normArt = (k) => {
+        if (!k) return '';
+        k = String(k).toLowerCase();
+        if (k === 'previews' || k === 'preview') return 'hover';
+        if (k === 'thumbnails' || k === 'covers' || k === 'cover' || k === 'thumb' || k === 'thumbs') return 'thumbnail';
+        if (k === 'heatmap' || k === 'heatmaps') return 'heatmaps';
+        return k;
+      };
       for (const job of jobs) {
         const st = (job.state || '').toLowerCase();
         const isActive = st === 'running' || st === 'queued' || st === 'pending' || st === 'starting';
@@ -10738,24 +10771,28 @@ class TasksManager {
           continue;
         }
         // Prefer explicit artifact field from backend; fallback to heuristic only if absent
-        let artifact = (job.artifact || '').toLowerCase() || null;
+        let artifact = normArt(job.artifact || '');
         if (!artifact) {
           const task = (job.task || '').toLowerCase();
           if (/scene/.test(task)) artifact = 'scenes';
           else if (/sprite/.test(task)) artifact = 'sprites';
           else if (/hover/.test(task)) artifact = 'hover';
-          else if (/heatmap/.test(task)) artifact = 'heatmap';
+          else if (/heatmap/.test(task)) artifact = 'heatmaps';
           else if (/subtitle|caption/.test(task)) artifact = 'subtitles';
           else if (/face/.test(task)) artifact = 'faces';
           else if (/phash/.test(task)) artifact = 'phash';
           else if (/meta/.test(task)) artifact = 'metadata';
-          else if (/cover|thumb/.test(task)) artifact = 'cover';
+          else if (/cover|thumb/.test(task)) artifact = 'thumbnail';
         }
         if (!artifact) {
           continue;
         }
         const path = job.target || job.file || job.path || '';
         if (!path) {
+          continue;
+        }
+        // Only reflect spinner for the currently open file
+        if (!activePath || path !== activePath) {
           continue;
         }
         const key = `${path}::${artifact}`;
@@ -10778,7 +10815,7 @@ class TasksManager {
         window.__activeArtifactSpinners.delete(key);
         // Optionally refresh statuses lazily (cheap fetch) only for recently ended artifacts
         try {
-          if (path === (window.currentPath || currentPath)) {
+          if (path === activePath) {
             // Only refresh statuses for currently open file to reduce noise
             loadArtifactStatuses?.();
           }
@@ -10938,9 +10975,57 @@ class TasksManager {
       const id = tr?.dataset?.jobId;
       const job = id ? this.jobs.get(id) : null;
       const status = job ? this.normalizeStatus(job) : '';
+      const isPaused = !!(job && job.paused);
       const bar = tr.querySelector('.job-progress');
       if (bar) {
-        bar.classList.toggle('running', status === 'running');
+        bar.classList.toggle('running', status === 'running' && !isPaused);
+      }
+      // End time / elapsed updater
+      const endCell = tr.querySelector('.cell-time-end');
+      const startCell = tr.querySelector('.cell-time-start');
+      if (endCell && startCell) {
+        if (status === 'running' && !isPaused) {
+          const startTs = (job?.startTime || job?.createdTime || 0) * 1000;
+          if (startTs) {
+            const ms = Date.now() - startTs;
+            const sec = Math.max(0, Math.floor(ms / 1000));
+            // Reuse fmtTime if available on window; otherwise show mm:ss
+            let text = '';
+            try {
+              if (typeof window.fmtTime === 'function') {
+                text = window.fmtTime(sec);
+              } else {
+                const m = Math.floor(sec / 60);
+                const s = sec % 60;
+                text = `${m}:${String(s).padStart(2, '0')}`;
+              }
+            }
+            catch (_) { /* no-op */ }
+            endCell.textContent = text;
+            endCell.title = 'Elapsed time';
+          }
+          else {
+            endCell.textContent = '—';
+          }
+        }
+        else if (status === 'completed' || status === 'failed' || status === 'canceled') {
+          const endTs = (job?.endedTime || job?.endTime || 0) * 1000;
+          if (endTs) {
+            try {
+              endCell.textContent = new Date(endTs).toLocaleTimeString();
+              endCell.title = 'End time';
+            }
+            catch (_) {
+              endCell.textContent = '—';
+            }
+          }
+          else {
+            endCell.textContent = '—';
+          }
+        }
+        else {
+          endCell.textContent = '—';
+        }
       }
     });
   }
@@ -10971,20 +11056,48 @@ class TasksManager {
   }
 
   updateJobRow(row, job) {
-    const tstamp = job.startTime || job.createdTime || 0;
+    const status = this.normalizeStatus(job);
+    const isQueued = status === 'queued';
+    const tstamp = isQueued ? (job.createdTime || 0) : (job.startTime || job.createdTime || 0);
     const startTime = tstamp ? new Date(tstamp * 1000).toLocaleTimeString() : 'N/A';
     const baseName = (p) => (p || '').split('/').filter(Boolean).pop() || '';
     const fileName = baseName(job.target) || baseName(job.file);
-    row.querySelector('.cell-time').textContent = startTime;
+    const startCell = row.querySelector('.cell-time-start');
+    if (startCell) {
+      startCell.textContent = startTime;
+      if (isQueued) startCell.title = 'Enqueued time';
+      else startCell.title = startTime && startTime !== 'N/A' ? 'Start time' : '';
+    }
+    const endCell = row.querySelector('.cell-time-end');
+    if (endCell) {
+      if (status === 'running') {
+        // Will be filled by updateRunningVisuals timer as elapsed
+        endCell.textContent = '0:00';
+        endCell.title = 'Elapsed time';
+      }
+      else if (status === 'completed' || status === 'failed' || status === 'canceled') {
+        const endTs = (job.endedTime || job.endTime || 0) * 1000;
+        endCell.textContent = endTs ? new Date(endTs).toLocaleTimeString() : '—';
+        endCell.title = endTs ? 'End time' : '';
+      }
+      else {
+        endCell.textContent = '—';
+        endCell.title = '';
+      }
+    }
     row.querySelector('.cell-task').textContent = job.task;
     const fileCell = row.querySelector('.cell-file');
     fileCell.textContent = fileName;
     fileCell.title = job.target || job.file || '';
     // Status
-    let status = this.normalizeStatus(job);
     const statusEl = row.querySelector('.job-status');
-    statusEl.className = 'job-status ' + status;
-    statusEl.textContent = this.displayStatusLabel(status);
+    const pauseDot = row.querySelector('.job-paused-dot');
+    const isPaused = !!job.paused;
+    statusEl.className = 'job-status ' + (isPaused && status === 'queued' ? 'paused' : status);
+    statusEl.textContent = isPaused && status === 'queued' ? 'Paused' : this.displayStatusLabel(status);
+    if (pauseDot) {
+      if (isPaused && status === 'queued') pauseDot.hidden = false; else pauseDot.hidden = true;
+    }
     // Progress: prefer server-provided value;
     // only fall back to raw counters when missing
     let pct = 0;
@@ -11018,7 +11131,11 @@ class TasksManager {
       pctEl.textContent = status === 'canceled' ? 'Canceled' : `${pct}%`;
     }
     else {
-      pctEl.textContent = status === 'queued' ? 'Queued' : status === 'completed' ? '100%' : status === 'canceled' ? 'Canceled' : `${pct}%`;
+      if (isPaused && status === 'queued') {
+        pctEl.textContent = 'Paused';
+      } else {
+        pctEl.textContent = status === 'queued' ? 'Queued' : status === 'completed' ? '100%' : status === 'canceled' ? 'Canceled' : `${pct}%`;
+      }
     }
     /*
     const fname = row.querySelector(".fname");
@@ -11187,6 +11304,8 @@ class TasksManager {
     let s = (job.status || job.state || '').toLowerCase();
     // If backend uses 'done', treat as completed when not actually failed
     if (s === 'done') s = 'completed';
+    // Treat 'restored' (used on restore or when queue is paused) as queued for filtering/display
+    if (s === 'restored') s = 'queued';
     // Surface explicit error field as failed regardless of state label
     if (job.error) return 'failed';
     // Hover / other jobs may embed result.status (ok | partial | failed)

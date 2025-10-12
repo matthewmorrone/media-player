@@ -5,11 +5,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Media Library</title>
-  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-  <!-- Progressive favicon and app metadata -->
-  <link rel="manifest" href="/manifest.json" />
-  <meta name="theme-color" content="#0e1016" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="index.css" />
+  <script>
+    // Apply collapsed class ASAP to avoid post-load reflow when sidebar is persisted collapsed
+    try {
+      if (localStorage.getItem('mediaPlayer:sidebarCollapsed') === '1') {
+        (document.documentElement || document.body).classList.add('has-sidebar-collapsed');
+      }
+    } catch (e) { }
+  </script>
   <script>window.__JOBS_SSE_ENABLED = false; /* detected by client via /api/config; default false to avoid assumptions */</script>
   <script type="module" src="index.js"></script>
 </head>
@@ -17,7 +23,6 @@
 <body>
   <!-- Inline SVG sprite (all icon symbols embedded; external icons.svg removed) -->
   <svg aria-hidden="true" focusable="false" class="svg-sprite">
-    <link rel="manifest" href="manifest.json" />
     <symbol id="icon-placeholder" viewBox="0 0 320 180">
       <defs>
         <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
@@ -245,10 +250,11 @@
         <!-- Job table row template -->
         <template id="jobRowTemplate">
           <tr>
-            <td class="cell-time"></td>
+            <td class="cell-time-start"></td>
+            <td class="cell-time-end"></td>
             <td class="cell-task"></td>
             <td class="cell-file" title=""></td>
-            <td class="cell-status"><span class="job-status"></span></td>
+            <td class="cell-status"><span class="job-status"></span><span class="job-paused-dot" hidden title="Paused"></span></td>
             <td class="cell-progress">
               <div class="job-progress">
                 <div class="job-progress-fill"></div>
@@ -891,6 +897,12 @@
             <div class="section-header">
               <h2>Job Monitor</h2>
               <div class="section-actions">
+                <button id="pauseToggleBtn" class="btn-sm" title="Pause starting new jobs" aria-pressed="false">
+                  <svg width="16" height="16" aria-hidden="true" focusable="false">
+                    <use href="#icon-pause"></use>
+                  </svg>
+                  <span class="ml-4">Pause</span>
+                </button>
                 <!-- Buttons hidden initially; JS toggles .d-none -->
                 <button id="cancelAllBtn" class="btn-sm d-none" title="Cancel all queued and running jobs">Cancel All</button>
                 <button id="cancelQueuedBtn" class="btn-sm d-none" title="Cancel all queued jobs">Cancel Queued</button>
@@ -921,7 +933,8 @@
               <table class="job-table">
                 <thead>
                   <tr>
-                    <th>Time</th>
+                    <th>Start time</th>
+                    <th>End time</th>
                     <th>Task</th>
                     <th>File</th>
                     <th>Status</th>

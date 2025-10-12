@@ -53,6 +53,15 @@
   --radius: 8px;
   --radius-lg: 14px;
   --header-h: 54px;
+
+  .marker-label-strong {
+    font-weight: 700;
+  }
+
+  .flex-1 {
+    flex: 1 1 auto;
+  }
+
   --sticky-header-height: var(--header-h);
   /* unified with later viewport-fit section */
   /* --player-split-h removed: using flex-based natural height now */
@@ -2330,15 +2339,12 @@ keep only z-index here */
   align-items: stretch;
   box-sizing: border-box;
   min-height: 0;
-  /* no explicit height: rely on flex chain (body > main > tab-panels > #player-panel > .player-split) */
+  /* Make height deterministic: viewport minus header and panel padding (20px top/bottom) */
+  height: calc(100vh - var(--header-h) - 40px);
+  /* Prevent flicker/jumps on sidebar toggle by avoiding natural height changes */
 }
 
-/* Keep the player area at a stable height so collapsing/expanding the
-   sidebar doesn't change the player's vertical size. This uses a viewport
-   relative minimum but allows the layout to shrink on small screens. */
-.player-split {
-  min-height: 60vh;
-}
+/* Removed previous min-height baseline in favor of explicit height above */
 
 .player-split {
   /* Allow overflow so child focus/hover outlines (box-shadow) are visible.
@@ -2383,6 +2389,10 @@ keep only z-index here */
   /* prevent overflow due to long content */
 }
 
+.player-split>* {
+  max-height: 100%;
+}
+
 .player-split .player-main {
   overflow: hidden;
 }
@@ -2396,6 +2406,7 @@ keep only z-index here */
 .player-split .player-main {
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 /* Ensure the video fills the main area vertically and does not grow when
@@ -2435,6 +2446,9 @@ keep only z-index here */
 /* Collapse rules: hide the sidebar element entirely so the main area expands */
 .has-sidebar-collapsed .player-split {
   gap: 6px;
+  /* When sidebar is collapsed, allow the layout to shrink to content
+     instead of enforcing the larger baseline min-height. */
+  min-height: 0;
 }
 
 /* Animate collapse by shrinking max-width and flex-basis instead of using display:none */
@@ -2446,13 +2460,25 @@ keep only z-index here */
 .has-sidebar-collapsed .player-split .player-sidebar {
   max-width: 0 !important;
   flex: 0 0 0 !important;
-  padding-left: 0 !important;
-  padding-right: 0 !important;
+  /* Remove all padding so it doesn't inflate cross-size (height) */
+  padding: 0 !important;
+  /* Remove borders to avoid adding extra cross-size */
+  border: 0 !important;
+  /* Force zero height so it cannot become the tallest flex item during the width transition */
+  height: 0 !important;
+  min-height: 0 !important;
+  /* Keep it fully clipped */
+  overflow: hidden !important;
 }
 
 /* Rotate the caret icon when collapsed (points right when collapsed) */
 .has-sidebar-collapsed .sidebar-toggle__icon {
   transform: rotate(180deg);
+}
+
+/* In collapsed mode, don't stretch the sidebar toggle to full height */
+.has-sidebar-collapsed .sidebar-toggle {
+  align-self: center;
 }
 
 /* Full-height opt-in modifier: add class to #player-panel if needed */
@@ -2816,6 +2842,23 @@ body.resizing-job-table {
 .job-status.queued {
   background: rgba(245, 158, 11, 0.2);
   color: #f59e0b;
+}
+
+/* Paused indicator style (applies to a paused badge) */
+.job-status.paused {
+  background: rgba(148, 163, 184, 0.25);
+  /* slate-400/500 tint */
+  color: #94a3b8;
+}
+
+.job-paused-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: 6px;
+  background: #94a3b8;
+  vertical-align: middle;
 }
 
 .job-progress {
