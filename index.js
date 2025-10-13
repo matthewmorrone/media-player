@@ -1,4 +1,4 @@
-import { fmtSize, fmtDuration, parseTimeString, debounce, hide, show, showAs, isHidden, showMessageModal, isAbsolutePath, notify, lsGet, lsSet, lsRemove, lsGetJSON, lsSetJSON, lsGetBool, lsSetBool, lsRemovePrefix } from './utils.js';
+import {fmtSize, fmtDuration, parseTimeString, debounce, hide, show, showAs, isHidden, showMessageModal, isAbsolutePath, notify, lsGet, lsSet, lsRemove, lsGetJSON, lsSetJSON, lsGetBool, lsSetBool, lsRemovePrefix} from './utils.js';
 // Lightweight no-op placeholders to avoid no-undef when optional helpers are not wired
 const loadArtifactStatuses = (..._args) => {};
 const refreshSidebarThumbnail = (..._args) => {};
@@ -104,9 +104,8 @@ window.addEventListener('DOMContentLoaded', () => {
             try {
                 ['artifactBadgesSidebar', 'videoPerformers', 'videoTags', 'markersList', 'performerImportPreviewList'].forEach((id) => {
                     const el = document.getElementById(id);
-                    if (!el) {
-                        return;
-                    }
+                    if (!el) return;
+
                     if (el.tagName === 'DIV' || el.tagName === 'UL' || el.tagName === 'OL') el.innerHTML = '';
                     else el.textContent = '';
                 });
@@ -185,7 +184,7 @@ const adjVals = {
 };
 const adjResetBtn = document.getElementById('adjResetBtn');
 const ADJ_LS_KEY = 'mediaPlayer:videoAdjust';
-let adjState = { brightness: 1, contrast: 1, saturation: 1, hue: 0 };
+let adjState = {brightness: 1, contrast: 1, saturation: 1, hue: 0};
 try {
     const raw = lsGet(ADJ_LS_KEY);
     if (raw) {
@@ -206,7 +205,7 @@ function applyVideoAdjustments() {
     if (!v) {
         return;
     }
-    const { brightness, contrast, saturation, hue } = adjState;
+    const {brightness, contrast, saturation, hue} = adjState;
     v.style.filter = `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) hue-rotate(${hue}deg)`;
 }
 function persistAdjustments() {
@@ -258,7 +257,7 @@ function wireAdjustments() {
     if (adjResetBtn && !adjResetBtn._wired) {
         adjResetBtn._wired = true;
         adjResetBtn.addEventListener('click', () => {
-            adjState = { brightness: 1, contrast: 1, saturation: 1, hue: 0 };
+            adjState = {brightness: 1, contrast: 1, saturation: 1, hue: 0};
             updateAdjUI();
         });
     }
@@ -435,7 +434,7 @@ async function ensureHover(v) {
     if (!status) {
         // Status unknown (not cached);
         // treat as absent for now.
-        status = { hover: false };
+        status = {hover: false};
     }
     // If hover is missing but on-demand generation is enabled, trigger creation
     try {
@@ -451,7 +450,7 @@ async function ensureHover(v) {
                 const u = new URL('/api/hover/create', window.location.origin);
                 u.searchParams.set('path', path);
                 // fire-and-forget, but wait briefly and poll status
-                await fetch(u.toString(), { method: 'POST' });
+                await fetch(u.toString(), {method: 'POST' });
                 // Poll status up to ~6s
                 const deadline = Date.now() + 6000;
                 while (Date.now() < deadline) {
@@ -789,7 +788,7 @@ if (!window.__tileIO) {
                 }
                 catch (_) { }
             }
-        }, { root: document.getElementById('library-panel') || null, rootMargin: '200px 0px', threshold: 0.01 });
+        }, {root: document.getElementById('library-panel') || null, rootMargin: '200px 0px', threshold: 0.01});
     }
     catch (_) { }
 }
@@ -877,7 +876,7 @@ async function loadLibrary() {
             params.set('performers', libraryPerformerFilters.join(','));
         }
         const endpoint = '/api/library' + (params.toString() ? ('?' + params.toString()) : '');
-        const res = await fetch(endpoint, { headers: { Accept: 'application/json' } });
+        const res = await fetch(endpoint, {headers: {Accept: 'application/json' } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const payload = await res.json();
         if (payload?.status !== 'success') {
@@ -956,7 +955,7 @@ async function loadLibrary() {
                             const resVal = resSel ? String(resSel.value || '') : '';
                             if (resVal) u.searchParams.set('res_min', resVal);
                             const r = await fetch(u, {
-                                headers: { Accept: 'application/json' },
+                                headers: {Accept: 'application/json' },
                             });
                             if (!r.ok) {
                                 return;
@@ -1044,7 +1043,7 @@ async function loadLibrary() {
             grid.appendChild(frag);
             if (i < nodes.length) {
                 if (window.requestIdleCallback) {
-                    requestIdleCallback(insertBatch, { timeout: 120 });
+                    requestIdleCallback(insertBatch, {timeout: 120});
                 }
                 else {
                     requestAnimationFrame(insertBatch);
@@ -1078,7 +1077,7 @@ async function loadLibrary() {
             // Do not auto-trigger; wait for explicit bottom overscroll.
         }
         else {
-            if (window.requestIdleCallback) requestIdleCallback(insertBatch, { timeout: 80 });
+            if (window.requestIdleCallback) requestIdleCallback(insertBatch, {timeout: 80});
             else requestAnimationFrame(insertBatch);
         }
         if (infiniteScrollEnabled) {
@@ -1106,7 +1105,7 @@ async function loadLibrary() {
     }
     // already decided
     try {
-        const res = await fetch('/config', { cache: 'no-store' });
+        const res = await fetch('/config', {cache: 'no-store' });
         if (!res.ok) {
             return;
         }
@@ -1226,7 +1225,7 @@ async function loadLibrary() {
             });
         });
     }
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, {once: true});
     else init();
 })();
 refreshBtn.addEventListener('click', loadLibrary);
@@ -1259,14 +1258,14 @@ if (randomPlayBtn) {
             if (libraryPerformerFilters.length) {
                 url.searchParams.set('performers', libraryPerformerFilters.join(','));
             }
-            const r = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+            const r = await fetch(url.toString(), {headers: {Accept: 'application/json' } });
             if (!r.ok) {
                 throw new Error(`HTTP ${r.status}`);
             }
             const pl = await r.json();
             const f = (pl?.data?.files || [])[0];
             if (!f || !f.path) {
-                showMessageModal('No video found for random play.', { title: 'Random Play' });
+                showMessageModal('No video found for random play.', {title: 'Random Play' });
                 return;
             }
             if (typeof window.__playerOpen === 'function') {
@@ -1276,7 +1275,7 @@ if (randomPlayBtn) {
             }
         }
         catch (e) {
-            showMessageModal('Random play failed.', { title: 'Random Play' });
+            showMessageModal('Random play failed.', {title: 'Random Play' });
         }
     });
 }
@@ -1326,7 +1325,7 @@ async function fetchRandomFilePath() {
     if (val && !isAbsolutePath(val) && p) url.searchParams.set('path', p);
     if (libraryTagFilters.length) url.searchParams.set('tags', libraryTagFilters.join(','));
     if (libraryPerformerFilters.length) url.searchParams.set('performers', libraryPerformerFilters.join(','));
-    const r = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+    const r = await fetch(url.toString(), {headers: {Accept: 'application/json' } });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const pl = await r.json();
     const f = (pl?.data?.files || [])[0];
@@ -1431,16 +1430,16 @@ function setupInfiniteScrollSentinel() {
     // Mark when user actually scrolls (prevents immediate auto-trigger on load)
     if (!panel._infiniteScrollScrollWired) {
         panel._infiniteScrollScrollWired = true;
-        panel.addEventListener('scroll', markUserScrolled, { passive: true });
+        panel.addEventListener('scroll', markUserScrolled, {passive: true});
         // Also listen on the window/document in case the body (not panel) is the scrolling element.
-        window.addEventListener('scroll', markUserScrolled, { passive: true });
-        window.addEventListener('wheel', markUserScrolled, { passive: true });
-        window.addEventListener('touchmove', markUserScrolled, { passive: true });
+        window.addEventListener('scroll', markUserScrolled, {passive: true});
+        window.addEventListener('wheel', markUserScrolled, {passive: true});
+        window.addEventListener('touchmove', markUserScrolled, {passive: true});
         window.addEventListener('keydown', (e) => {
             // Keys that commonly initiate scroll/navigation; we can just mark on any keydown for simplicity.
             // This avoids over-specific logic missing an edge case.
             markUserScrolled();
-        }, { passive: true });
+        }, {passive: true});
     }
     if (!infiniteScrollSentinel) {
         infiniteScrollSentinel = document.createElement('div');
@@ -1470,7 +1469,7 @@ function setupInfiniteScrollSentinel() {
                     // Intersection alone no longer triggers eager load; rely on bottom check.
                     maybeTriggerPendingInfiniteScroll();
                 }
-            }, { root: null, rootMargin: '0px 0px', threshold: 0.01 });
+            }, {root: null, rootMargin: '0px 0px', threshold: 0.01});
         }
         catch (_) {
             return;
@@ -1760,14 +1759,14 @@ function setArtifactSpinner(artifact, spinning) {
 async function triggerArtifactJob(artifact) {
     const filePath = getSelectedFilePath();
     if (!filePath) {
-        showMessageModal('No file selected.', { title: 'Generate Artifact' });
+        showMessageModal('No file selected.', {title: 'Generate Artifact' });
         return;
     }
     setArtifactSpinner(artifact, true);
     // Record an optimistic active spinner state keyed by path+artifact so TasksManager can reconcile later
     try {
         window.__activeArtifactSpinners = window.__activeArtifactSpinners || new Map();
-        window.__activeArtifactSpinners.set(`${filePath}::${artifact}`, { path: filePath, artifact: artifact, since: Date.now(), manual: true });
+        window.__activeArtifactSpinners.set(`${filePath}::${artifact}`, {path: filePath, artifact: artifact, since: Date.now(), manual: true});
     }
     catch (_) { }
     let endpoint = '';
@@ -1778,11 +1777,11 @@ async function triggerArtifactJob(artifact) {
     }
     else {
         setArtifactSpinner(artifact, false);
-        showMessageModal('Unknown artifact type.', { title: 'Generate Artifact' });
+        showMessageModal('Unknown artifact type.', {title: 'Generate Artifact' });
         return;
     }
     try {
-        const res = await fetch(endpoint + params, { method: 'POST' });
+        const res = await fetch(endpoint + params, {method: 'POST' });
         if (!res.ok) {
             throw new Error(`HTTP ${res.status}`);
         }
@@ -1794,7 +1793,7 @@ async function triggerArtifactJob(artifact) {
             window.__activeArtifactSpinners?.delete?.(`${filePath}::${artifact}`);
         }
         catch (_) { }
-        showMessageModal(`Failed to generate ${artifact}: ${e.message}`, { title: 'Generate Artifact' });
+        showMessageModal(`Failed to generate ${artifact}: ${e.message}`, {title: 'Generate Artifact' });
     }
 }
 document.querySelectorAll('.artifact-gen-btn[data-artifact]').forEach((btn) => {
@@ -2100,7 +2099,7 @@ function wireSettings() {
         const push = async () => {
             const raw = Math.max(1, Math.min(128, Number(concurrencyInput.value || 4)));
             try {
-                const r = await fetch(`/api/tasks/concurrency?value=${raw}`, { method: 'POST' });
+                const r = await fetch(`/api/tasks/concurrency?value=${raw}`, {method: 'POST' });
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 localStorage.setItem('setting.maxConcurrency', String(raw));
                 const data = await r.json();
@@ -2133,7 +2132,7 @@ function wireSettings() {
                 params.append('timelimit', String(tl));
             }
             try {
-                const r = await fetch(`/api/settings/ffmpeg?${params.toString()}`, { method: 'POST' });
+                const r = await fetch(`/api/settings/ffmpeg?${params.toString()}`, {method: 'POST' });
                 if (!r.ok) {
                     throw new Error();
                 }
@@ -2309,7 +2308,7 @@ window.addEventListener('load', () => {
         clearBtn.addEventListener('click', async () => {
             try {
                 clearBtn.disabled = true; clearBtn.classList.add('btn-busy');
-                const r = await fetch('/api/tasks/jobs/clear-completed', { method: 'POST' });
+                const r = await fetch('/api/tasks/jobs/clear-completed', {method: 'POST' });
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 const data = await r.json();
                 const removed = data?.data?.removed ?? 0;
@@ -2332,7 +2331,7 @@ window.addEventListener('load', () => {
             try {
                 cancelQueuedBtn.disabled = true;
                 cancelQueuedBtn.classList.add('btn-busy');
-                const res = await fetch('/api/tasks/jobs/cancel-queued', { method: 'POST' });
+                const res = await fetch('/api/tasks/jobs/cancel-queued', {method: 'POST' });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 (window.tasksManager?.showNotification || notify)('Queued jobs canceled', 'success');
                 await (window.tasksManager?.refreshJobs?.() || Promise.resolve());
@@ -2353,7 +2352,7 @@ window.addEventListener('load', () => {
             try {
                 cancelAllBtn.disabled = true;
                 cancelAllBtn.classList.add('btn-busy');
-                const res = await fetch('/api/tasks/jobs/cancel-all', { method: 'POST' });
+                const res = await fetch('/api/tasks/jobs/cancel-all', {method: 'POST' });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 (window.tasksManager?.showNotification || notify)('All pending and running jobs asked to cancel', 'success');
                 await (window.tasksManager?.refreshJobs?.() || Promise.resolve());
@@ -2378,8 +2377,7 @@ function initArtifactOptionsMenus() {
             hide(tt);
         });
         // also drop raised stacking on any cards
-        document
-            .querySelectorAll('.artifact-card.menu-open')
+        document.querySelectorAll('.artifact-card.menu-open')
             .forEach((card) => card.classList.remove('menu-open'));
     });
     // Open corresponding tooltip for clicked options button
@@ -2397,8 +2395,7 @@ function initArtifactOptionsMenus() {
             document.querySelectorAll('.options-tooltip').forEach((tt) => {
                 if (tt !== tooltip) hide(tt);
             });
-            document
-                .querySelectorAll('.artifact-card.menu-open')
+            document.querySelectorAll('.artifact-card.menu-open')
                 .forEach((c) => c.classList.remove('menu-open'));
             if (tooltip) {
                 const willOpen = isHidden(tooltip);
@@ -2457,9 +2454,7 @@ function applyColumnsAndComputePageSize() {
 // overflow (page scroll) is removed or we reach a max side spacing. This keeps
 // global layout untouched per user request.
 function enforceGridSideSpacing() {
-    if (!grid || grid.hidden) {
-        return;
-    }
+    if (!grid || grid.hidden) return;
     // When infinite scroll is enabled we keep card width stable to prevent perceptible size shifts
     // as new batches append. So skip dynamic margin adjustments in that mode.
     if (infiniteScrollEnabled) return;
@@ -2482,9 +2477,7 @@ function enforceGridSideSpacing() {
         grid.style.marginRight = spacing + 'px';
         // If cards collapse below minimum width, stop expanding spacing further
         const cw = firstCard ? firstCard.getBoundingClientRect().width : 999;
-        if (cw < minCardWidth) {
-            break;
-        }
+        if (cw < minCardWidth) break;
         attempts++;
     }
 }
@@ -2570,17 +2563,11 @@ function updateCardSelection(path) {
         const checkbox = card.querySelector('.card-checkbox');
         if (selectedItems.has(path)) {
             checkbox.classList.add('checked');
-            try {
-                checkbox.setAttribute('aria-checked', 'true');
-            }
-            catch (_) { }
+            checkbox.setAttribute('aria-checked', 'true');
         }
         else {
             checkbox.classList.remove('checked');
-            try {
-                checkbox.setAttribute('aria-checked', 'false');
-            }
-            catch (_) { }
+            checkbox.setAttribute('aria-checked', 'false');
         }
     }
 }
@@ -2591,15 +2578,13 @@ selectAllBtn.addEventListener('click', () => {
         if (path) selectedItems.add(path);
     });
     updateSelectionUI();
-    document
-        .querySelectorAll('.card-checkbox')
+    document.querySelectorAll('.card-checkbox')
         .forEach((cb) => cb.classList.add('checked'));
 });
 selectNoneBtn.addEventListener('click', () => {
     selectedItems.clear();
     updateSelectionUI();
-    document
-        .querySelectorAll('.card-checkbox')
+    document.querySelectorAll('.card-checkbox')
         .forEach((cb) => cb.classList.remove('checked'));
 });
 // Folder picker
@@ -2611,7 +2596,7 @@ async function fetchDirs(path = '') {
     url.searchParams.set('page_size', '500');
     // we only need dirs;
     // dirs are not paginated server-side
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    const res = await fetch(url, {headers: {Accept: 'application/json' } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const payload = await res.json();
     if (payload?.status !== 'success') {
@@ -2619,7 +2604,7 @@ async function fetchDirs(path = '') {
     }
     const data = payload.data || {};
     const dirs = Array.isArray(data.dirs) ? data.dirs : [];
-    return { cwd: String(data.cwd || ''), dirs: dirs };
+    return {cwd: String(data.cwd || ''), dirs: dirs};
 }
 function renderCrumbs(path) {
     if (!crumbsEl) {
@@ -2655,7 +2640,7 @@ async function renderDir(path) {
     renderCrumbs(path);
     dirlistEl.innerHTML = '';
     try {
-        const { dirs } = await fetchDirs(path);
+        const {dirs} = await fetchDirs(path);
         if (path) {
             const tpl = document.getElementById('dirListItemTemplate');
             const up = tpl.content.firstElementChild.cloneNode(true);
@@ -2756,7 +2741,7 @@ async function renderDir(path) {
                         if (!name) {
                             return;
                         }
-                        const r = await fetch('/api/registry/tags/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+                        const r = await fetch('/api/registry/tags/create', {method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({name}) });
                         if (r.ok) {
                             showToast('Tag added', 'is-success');
                             fetchTags();
@@ -2768,7 +2753,7 @@ async function renderDir(path) {
                         if (!nn || nn === t.name) {
                             return;
                         }
-                        const r = await fetch('/api/registry/tags/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: t.name, new_name: nn }) });
+                        const r = await fetch('/api/registry/tags/rename', {method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({name: t.name, new_name: nn}) });
                         if (r.ok) {
                             showToast('Renamed', 'is-success');
                             fetchTags();
@@ -2798,7 +2783,7 @@ async function renderDir(path) {
                         }
                         const from = arr.find((s) => s !== _slugify(into)) || arr[0];
                         const url = `/api/registry/tags/merge?from_name=${encodeURIComponent(from)}&into_name=${encodeURIComponent(into)}`;
-                        const r = await fetch(url, { method: 'POST' });
+                        const r = await fetch(url, {method: 'POST' });
                         if (r.ok) {
                             showToast('Merged', 'is-success');
                             selected.clear();
@@ -2807,7 +2792,7 @@ async function renderDir(path) {
                         else showToast('Merge failed', 'is-error');
                     }
                     async function rewrite() {
-                        const r = await fetch('/api/registry/tags/rewrite-sidecars', { method: 'POST' });
+                        const r = await fetch('/api/registry/tags/rewrite-sidecars', {method: 'POST' });
                         if (r.ok) showToast('Rewritten', 'is-success');
                         else showToast('Rewrite failed', 'is-error');
                     }
@@ -2818,7 +2803,7 @@ async function renderDir(path) {
                                 throw new Error('HTTP ' + r.status);
                             }
                             const j = await r.json();
-                            const blob = new Blob([JSON.stringify({ tags: j.data.tags }, null, 2)], { type: 'application/json' });
+                            const blob = new Blob([JSON.stringify({tags: j.data.tags}, null, 2)], {type: 'application/json' });
                             const a = document.createElement('a');
                             a.href = URL.createObjectURL(blob);
                             a.download = 'tags-registry.json';
@@ -2833,15 +2818,13 @@ async function renderDir(path) {
                     }
                     function handleImport(e) {
                         const f = e.target.files?.[0];
-                        if (!f) {
-                            return;
-                        }
+                        if (!f) return;
                         const reader = new FileReader();
                         reader.onload = async () => {
                             try {
                                 const json = JSON.parse(reader.result);
-                                const payload = { tags: json.tags || json, replace: Boolean(importReplace?.checked) };
-                                const r = await fetch('/api/registry/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                                const payload = {tags: json.tags || json, replace: Boolean(importReplace?.checked) };
+                                const r = await fetch('/api/registry/import', {method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                                 if (r.ok) {
                                     showToast('Imported', 'is-success');
                                     fetchTags();
@@ -2867,7 +2850,7 @@ async function renderDir(path) {
                     function ensure() {
                         initDom();
                     }
-                    return { ensure: ensure, fetch: fetchTags };
+                    return {ensure: ensure, fetch: fetchTags};
                 })();
                 // -------------------------------------------------
                 // Performers Registry Module (re-using existing performers tab if needed later)
@@ -2980,9 +2963,7 @@ async function renderDir(path) {
                 // Hook tab activation to load registries / autotag lazily
                 document.addEventListener('click', (e) => {
                     const btn = e.target.closest && e.target.closest('.tab-button');
-                    if (!btn) {
-                        return;
-                    }
+                    if (!btn) return;
                     const tab = btn.getAttribute('data-tab');
                     if (tab === 'tags') {
                         TagsRegistry.ensure();
@@ -3047,16 +3028,14 @@ modal.addEventListener('click', (e) => {
 });
 async function setRoot(val) {
     const rootVal = (val || '').trim();
-    if (!rootVal) {
-        return;
-    }
+    if (!rootVal) return;
     if (!isAbsolutePath(rootVal)) {
         notify('Please enter an absolute path (e.g., /Volumes/Media or ~/Movies).', 'error');
         return;
     }
     try {
         // Validate path first to prevent 400s
-        const tp = await fetch('/api/testpath?' + new URLSearchParams({ path: rootVal }), { method: 'POST' });
+        const tp = await fetch('/api/testpath?' + new URLSearchParams({path: rootVal}), {method: 'POST' });
         if (!tp.ok) {
             throw new Error('Path check failed (HTTP ' + tp.status + ')');
         }
@@ -3066,7 +3045,7 @@ async function setRoot(val) {
             throw new Error('Path does not exist or is not a directory');
         }
         // Set root on the server
-        const sr = await fetch('/api/setroot?' + new URLSearchParams({ root: rootVal }), { method: 'POST' });
+        const sr = await fetch('/api/setroot?' + new URLSearchParams({root: rootVal}), {method: 'POST' });
         if (!sr.ok) {
             throw new Error('HTTP ' + sr.status);
         }
@@ -3209,7 +3188,7 @@ class TabSystem {
             const tabId = button.dataset.tab;
             const panel = document.getElementById(`${tabId}-panel`);
             if (panel) {
-                this.tabs.set(tabId, { button, panel });
+                this.tabs.set(tabId, {button, panel});
             }
         });
         // Add event listeners
@@ -3291,17 +3270,14 @@ class TabSystem {
         // Trigger custom event for other components to react
         window.dispatchEvent(
             new CustomEvent('tabchange', {
-                detail: { activeTab: tabId, previousTab: previousTab },
+                detail: {activeTab: tabId, previousTab: previousTab},
             }),
         );
         // Persist active tab (ignore failures in private modes)
         try {
             lsSet('activeTab', tabId);
         }
-        catch (e) {
-
-            /* ignore */
-        }
+        catch (e) { }
     }
     getActiveTab() {
         return this.activeTab;
@@ -3310,9 +3286,7 @@ class TabSystem {
         // Method to programmatically add tabs if needed
         const tabNav = document.querySelector('.tab-nav');
         const tabPanels = document.querySelector('.tab-panels');
-        if (!tabNav || !tabPanels) {
-            return;
-        }
+        if (!tabNav || !tabPanels) return;
         // Create button
         const button = document.createElement('button');
         button.className = 'tab-button';
@@ -3362,13 +3336,13 @@ class TabSystem {
         }
         tabPanels.appendChild(panel);
         // Register the new tab
-        this.tabs.set(tabId, { button, panel });
+        this.tabs.set(tabId, {button, panel});
         // Add event listeners
         button.addEventListener('click', (e) => {
             e.preventDefault();
             this.switchToTab(tabId);
         });
-        return { button, panel };
+        return {button, panel};
     }
 }
 // Initialize tab system when DOM is ready
@@ -3444,25 +3418,25 @@ function setupViewportFitPlayer() {
     const COL_LS_KEY = 'mediaPlayer:list:columns';
     // Default column definitions (id, label, width px, visible, accessor)
     const DEFAULT_COLS = [
-        { id: 'name', label: 'Name', width: 260, visible: true, get: (f) => f.name || f.title || '' },
-        { id: 'path', label: 'Path', width: 320, visible: true, get: (f) => f.path || '' },
-        { id: 'duration', label: 'Duration', width: 90, visible: true, get: (f) => fmtDuration(Number(f.duration)) },
-        { id: 'size', label: 'Size', width: 90, visible: true, get: (f) => fmtSize(Number(f.size)) },
-        { id: 'res', label: 'Resolution', width: 110, visible: true, get: (f) => (f.width && f.height) ? `${f.width}×${f.height}` : '' },
-        { id: 'mtime', label: 'Modified', width: 140, visible: true, get: (f) => f.mtime ? new Date(f.mtime * 1000).toLocaleString() : '' },
-        { id: 'codec', label: 'Video Codec', width: 130, visible: false, get: (f) => f.video_codec || '' },
-        { id: 'acodec', label: 'Audio Codec', width: 130, visible: false, get: (f) => f.audio_codec || '' },
+        {id: 'name', label: 'Name', width: 260, visible: true, get: (f) => f.name || f.title || '' },
+        {id: 'path', label: 'Path', width: 320, visible: true, get: (f) => f.path || '' },
+        {id: 'duration', label: 'Duration', width: 90, visible: true, get: (f) => fmtDuration(Number(f.duration)) },
+        {id: 'size', label: 'Size', width: 90, visible: true, get: (f) => fmtSize(Number(f.size)) },
+        {id: 'res', label: 'Resolution', width: 110, visible: true, get: (f) => (f.width && f.height) ? `${f.width}×${f.height}` : '' },
+        {id: 'mtime', label: 'Modified', width: 140, visible: true, get: (f) => f.mtime ? new Date(f.mtime * 1000).toLocaleString() : '' },
+        {id: 'codec', label: 'Video Codec', width: 130, visible: false, get: (f) => f.video_codec || '' },
+        {id: 'acodec', label: 'Audio Codec', width: 130, visible: false, get: (f) => f.audio_codec || '' },
     ];
     function loadCols() {
         try {
-            const raw = lsGet(COL_LS_KEY, { type: 'json', fallback: null });
-            if (!raw) return DEFAULT_COLS.map((c) => ({ ...c }));
+            const raw = lsGet(COL_LS_KEY, {type: 'json', fallback: null});
+            if (!raw) return DEFAULT_COLS.map((c) => ({ ...c}));
             // Merge to keep future default additions
             const map = new Map(raw.map((c) => [c.id, c]));
             return DEFAULT_COLS.map((d) => ({ ...d, ...(map.get(d.id) || {}) }));
         }
         catch (_) {
-            return DEFAULT_COLS.map((c) => ({ ...c }));
+            return DEFAULT_COLS.map((c) => ({ ...c}));
         }
     }
     function saveCols(cols) {
@@ -3473,7 +3447,7 @@ function setupViewportFitPlayer() {
     }
     function addListTab(ts) {
         const tpl = document.getElementById('listTabTemplate');
-        const { panel } = ts.addTab('list', 'List', tpl || '#listTabTemplate');
+        const {panel} = ts.addTab('list', 'List', tpl || '#listTabTemplate');
         const headRow = panel.querySelector('#listHeadRow');
         const tbody = panel.querySelector('#listTbody');
         const table = panel.querySelector('#listTable');
@@ -3528,7 +3502,7 @@ function setupViewportFitPlayer() {
                     const nw = Math.max(60, Math.round(rect.width));
                     const idx = cols.findIndex((x) => x.id === c.id);
                     if (idx >= 0) {
-                        cols[idx] = { ...cols[idx], width: nw };
+                        cols[idx] = { ...cols[idx], width: nw};
                         saveCols(cols);
                     }
                 };
@@ -3729,7 +3703,7 @@ function setupViewportFitPlayer() {
             if (val && !isAbsolutePath(val) && p) url.searchParams.set('path', p);
             if (libraryTagFilters.length) url.searchParams.set('tags', libraryTagFilters.join(','));
             if (libraryPerformerFilters.length) url.searchParams.set('performers', libraryPerformerFilters.join(','));
-            const r = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+            const r = await fetch(url.toString(), {headers: {Accept: 'application/json' } });
             if (!r.ok) {
                 tbody.innerHTML = '';
                 pageInfo.textContent = 'Failed';
@@ -3818,7 +3792,7 @@ function setupViewportFitPlayer() {
         if ((window.location.hash || '').replace(/^#/, '') === 'list') {
             setTimeout(() => loadPage(), 0);
         }
-        return { panel };
+        return {panel};
     }
     const tryInstall = () => {
         const ts = window.tabSystem;
@@ -3827,7 +3801,7 @@ function setupViewportFitPlayer() {
     };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => {
         tryInstall();
-    }, { once: true });
+    }, {once: true});
     else if (!tryInstall()) setTimeout(tryInstall, 0);
 })();
 // --- Similar Tab (pHash duplicates) ---
@@ -3838,7 +3812,7 @@ function setupViewportFitPlayer() {
     );
     function install(ts) {
         if (!ts || typeof ts.addTab !== 'function') return null;
-        const { panel } = ts.addTab('similar', 'Similar', controlsHTML);
+        const {panel} = ts.addTab('similar', 'Similar', controlsHTML);
         function persistSettings(thresh, limit, rec) {
             try {
                 lsSet('similar:thresh', String(thresh));
@@ -3902,7 +3876,7 @@ function setupViewportFitPlayer() {
             qs.set('recursive', rec ? 'true' : 'false');
             qs.set('page_size', String(limit));
             try {
-                const res = await fetch('/api/duplicates/list?' + qs.toString(), { headers: { Accept: 'application/json' } });
+                const res = await fetch('/api/duplicates/list?' + qs.toString(), {headers: {Accept: 'application/json' } });
                 if (!res.ok) {
                     statusEl.textContent = 'Failed to load';
                     statusEl.style.color = 'var(--danger-400, red)';
@@ -4021,7 +3995,7 @@ function setupViewportFitPlayer() {
             }
         }
         catch (_) { /* noop */ }
-        return { panel };
+        return {panel};
     }
     const tryInstall = () => {
         const ts = window.tabSystem;
@@ -4032,7 +4006,7 @@ function setupViewportFitPlayer() {
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
             tryInstall();
-        }, { once: true });
+        }, {once: true});
     }
     else {
         if (!tryInstall()) {
@@ -4154,7 +4128,7 @@ const Player = (() => {
     // relative path from /api library
     let duration = 0;
     let sprites = null;
-    // { index, sheet }
+    // {index, sheet}
     let scenes = [];
     let introEnd = null;
     let outroBegin = null;
@@ -4209,7 +4183,7 @@ const Player = (() => {
                 ts: Date.now(),
             });
             localStorage.setItem(keyForVideo(path), payload);
-            // Store compact last object { path, time }
+            // Store compact last object {path, time}
             try {
                 localStorage.setItem(
                     keyLastVideoObj(),
@@ -4254,7 +4228,7 @@ const Player = (() => {
         catch (_) { }
         try {
             const legacy = localStorage.getItem(keyLastVideoPathLegacy());
-            if (legacy) return { path: legacy, time: 0 };
+            if (legacy) return {path: legacy, time: 0};
         }
         catch (_) { }
         return null;
@@ -4285,7 +4259,7 @@ const Player = (() => {
                         const mu = new URL('/api/scenes/intro', window.location.origin);
                         mu.searchParams.set('path', currentPath);
                         mu.searchParams.set('time', String(t.toFixed(3)));
-                        const mr = await fetch(mu.toString(), { method: 'POST' });
+                        const mr = await fetch(mu.toString(), {method: 'POST' });
                         if (!mr.ok) {
                             throw new Error('server');
                         }
@@ -4472,9 +4446,8 @@ const Player = (() => {
             fiPathEl.style.cursor = 'text';
             fiPathEl.addEventListener('dblclick', () => {
                 try {
-                    if (!currentPath) {
-                        return;
-                    }
+                    if (!currentPath) return;
+
                     if (fiPathEl.querySelector('input')) return;
                     // already editing
                     const origRel = currentPath;
@@ -4566,7 +4539,7 @@ const Player = (() => {
                             const u = new URL('/api/media/rename', window.location.origin);
                             u.searchParams.set('path', origRel);
                             u.searchParams.set('new_name', newName);
-                            const r = await fetch(u.toString(), { method: 'POST' });
+                            const r = await fetch(u.toString(), {method: 'POST' });
                             if (!r.ok) {
                                 try {
                                     const j = await r.json();
@@ -4666,9 +4639,8 @@ const Player = (() => {
                 }
                 // Throttled periodic save of progress (every ~5s or on near-end)
                 try {
-                    if (!currentPath) {
-                        return;
-                    }
+                    if (!currentPath) return;
+
                     const now = Date.now();
                     if (!videoEl._lastPersist || now - videoEl._lastPersist > 5000 || (duration && duration - t < 2)) {
                         saveProgress(currentPath, {
@@ -4889,7 +4861,7 @@ const Player = (() => {
                         iu.searchParams.set('path', activePath);
                         iu.searchParams.set('t', t.toFixed(3));
                         iu.searchParams.set('overwrite', 'true');
-                        const ir = await fetch(iu.toString(), { method: 'POST' });
+                        const ir = await fetch(iu.toString(), {method: 'POST' });
                         if (ir.ok && ir.headers.get('Content-Type')?.includes('image')) {
                             const blob = await ir.blob();
                             const obj = URL.createObjectURL(blob);
@@ -4912,7 +4884,7 @@ const Player = (() => {
                         u.searchParams.set('path', activePath);
                         u.searchParams.set('t', t.toFixed(3));
                         u.searchParams.set('overwrite', 'true');
-                        const r = await fetch(u, { method: 'POST' });
+                        const r = await fetch(u, {method: 'POST' });
                         if (!r.ok) {
                             throw new Error('HTTP ' + r.status);
                         }
@@ -4938,7 +4910,7 @@ const Player = (() => {
                                 const headUrl = new URL('/api/thumbnail/get', window.location.origin);
                                 headUrl.searchParams.set('path', activePath);
                                 headUrl.searchParams.set('cb', Date.now().toString());
-                                const hr = await fetch(headUrl.toString(), { method: 'HEAD', cache: 'no-store' });
+                                const hr = await fetch(headUrl.toString(), {method: 'HEAD', cache: 'no-store' });
                                 if (hr.ok) {
                                     const bust2 = Date.now() + Math.floor(Math.random() * 10000);
                                     const finalUrl = `/api/thumbnail/get?path=${encodeURIComponent(activePath)}&cb=${bust2}`;
@@ -5106,7 +5078,7 @@ const Player = (() => {
                     const url = new URL('/api/marker', window.location.origin);
                     url.searchParams.set('path', currentPath);
                     url.searchParams.set('time', String(t.toFixed(3)));
-                    const r = await fetch(url, { method: 'POST' });
+                    const r = await fetch(url, {method: 'POST' });
                     if (!r.ok) {
                         throw new Error('HTTP ' + r.status);
                     }
@@ -5375,7 +5347,7 @@ const Player = (() => {
                 showOverlayBar();
                 return;
             }
-        }, { passive: false });
+        }, {passive: false});
     }
     // Sidebar File Info thumbnail handling
     const fiThumbnailWrap = document.getElementById('fiThumbnailWrap');
@@ -5444,7 +5416,7 @@ const Player = (() => {
                 // Optionally probe existence with HEAD for non-API paths to avoid transient 404 image flashes.
                 if (!c.startsWith('/api/thumbnail/get')) {
                     try {
-                        const head = await fetch(base.replace(/\?(?=[^?]*$).*/, (m) => m), { method: 'HEAD', cache: 'no-store' });
+                        const head = await fetch(base.replace(/\?(?=[^?]*$).*/, (m) => m), {method: 'HEAD', cache: 'no-store' });
                         if (!head.ok) {
                             continue;
                         }
@@ -5610,7 +5582,7 @@ const Player = (() => {
             const u = new URL('/api/media/rating', window.location.origin);
             u.searchParams.set('path', currentPath);
             u.searchParams.set('rating', String(Math.max(1, Math.min(5, r))));
-            const resp = await fetch(u.toString(), { method: 'POST' });
+            const resp = await fetch(u.toString(), {method: 'POST' });
             if (resp.ok) saved = true;
         }
         catch (_) { }
@@ -5627,7 +5599,7 @@ const Player = (() => {
         try {
             const u = new URL('/api/media/description', window.location.origin);
             u.searchParams.set('path', currentPath);
-            const resp = await fetch(u.toString(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description: text || '' }) });
+            const resp = await fetch(u.toString(), {method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({description: text || '' }) });
             if (resp.ok) saved = true;
         }
         catch (_) { }
@@ -5891,7 +5863,7 @@ const Player = (() => {
                 u.searchParams.set('path', currentPath);
                 u.searchParams.set('t', t.toFixed(3));
                 u.searchParams.set('overwrite', 'true');
-                const r = await fetch(u, { method: 'POST' });
+                const r = await fetch(u, {method: 'POST' });
                 if (!r.ok) {
                     throw new Error('HTTP ' + r.status);
                 }
@@ -5937,7 +5909,7 @@ const Player = (() => {
     }
     if (window.MutationObserver && videoEl && !videoEl._thumbWatch) {
         const mo = new MutationObserver(_maybeRefreshThumb);
-        mo.observe(videoEl, { attributes: true, attributeFilter: ['src'] });
+        mo.observe(videoEl, {attributes: true, attributeFilter: ['src'] });
         videoEl._thumbWatch = mo;
     }
     // -----------------------------
@@ -5987,7 +5959,7 @@ const Player = (() => {
             }
             main._overlayWired = true;
             ['mousemove', 'touchstart'].forEach((ev) => {
-                main.addEventListener(ev, () => showOverlayBar(), { passive: true });
+                main.addEventListener(ev, () => showOverlayBar(), {passive: true});
             });
             [overlayBarEl, scrubberEl].forEach((el) => {
                 if (!el) {
@@ -5995,9 +5967,9 @@ const Player = (() => {
                 }
                 // Keep overlay visible while interacting with controls/scrubber
                 try {
-                    el.addEventListener('mouseenter', () => showOverlayBar(), { passive: true });
-                    el.addEventListener('mousemove', () => showOverlayBar(), { passive: true });
-                    el.addEventListener('mouseleave', () => showOverlayBar(), { passive: true });
+                    el.addEventListener('mouseenter', () => showOverlayBar(), {passive: true});
+                    el.addEventListener('mousemove', () => showOverlayBar(), {passive: true});
+                    el.addEventListener('mouseleave', () => showOverlayBar(), {passive: true});
                 }
                 catch (_) { }
             });
@@ -6094,9 +6066,9 @@ const Player = (() => {
             }
             seekToClientX(e.touches ? e.touches[0].clientX : e.clientX);
             window.addEventListener('mousemove', onMove);
-            window.addEventListener('touchmove', onMove, { passive: false });
-            window.addEventListener('mouseup', onUp, { once: true });
-            window.addEventListener('touchend', onUp, { once: true });
+            window.addEventListener('touchmove', onMove, {passive: false});
+            window.addEventListener('mouseup', onUp, {once: true});
+            window.addEventListener('touchend', onUp, {once: true});
             e.preventDefault();
         };
         const onMove = (e) => {
@@ -6126,7 +6098,7 @@ const Player = (() => {
             showOverlayBar();
         };
         scrubberTrackEl.addEventListener('mousedown', onDown);
-        scrubberTrackEl.addEventListener('touchstart', onDown, { passive: true });
+        scrubberTrackEl.addEventListener('touchstart', onDown, {passive: true});
         // Hover sprite previews via existing logic
         scrubberTrackEl.addEventListener('mouseenter', () => {
             spriteHoverEnabled = true;
@@ -6192,14 +6164,14 @@ const Player = (() => {
             // Cache-bust on change
             const finalUrl = src.toString() + `?t=${Date.now()}`;
             try {
-                console.info('[player] setting video src', { path: path, encPath: encPath, url: finalUrl });
+                console.info('[player] setting video src', {path: path, encPath: encPath, url: finalUrl});
             }
             catch (_) { }
             videoEl.src = finalUrl;
             // Fire a HEAD probe (non-blocking) to validate existence/MIME and surface status in logs
             try {
                 const urlNoBust = src.toString();
-                fetch(urlNoBust, { method: 'HEAD' })
+                fetch(urlNoBust, {method: 'HEAD' })
                     .then((r) => {
                         try {
                             console.info('[player] HEAD /files status', r.status, r.headers.get('content-type'));
@@ -6235,7 +6207,7 @@ const Player = (() => {
                 videoEl._errWired = true;
                 videoEl.addEventListener('error', (e) => {
                     try {
-                        const err = (videoEl.error ? { code: videoEl.error.code, message: videoEl.error.message } : null);
+                        const err = (videoEl.error ? {code: videoEl.error.code, message: videoEl.error.message} : null);
                         console.error('[player:error] Video failed to load', {
                             currentSrc: videoEl.currentSrc || videoEl.src,
                             readyState: videoEl.readyState,
@@ -6248,9 +6220,9 @@ const Player = (() => {
             }
             // Defer autoplay decision to loadedmetadata restore
             // Attempt to keep lastVideo reference for convenience
-            saveProgress(path, { t: 0, d: 0, paused: true, rate: 1 });
+            saveProgress(path, {t: 0, d: 0, paused: true, rate: 1});
             startScrubberLoop();
-            videoEl.addEventListener('ended', () => stopScrubberLoop(), { once: true });
+            videoEl.addEventListener('ended', () => stopScrubberLoop(), {once: true});
             wireScrubberInteractions();
             // When metadata arrives, we can now safely render scene ticks if scenes already loaded
             videoEl.addEventListener('loadedmetadata', () => {
@@ -6319,7 +6291,7 @@ const Player = (() => {
                     })();
                 }
                 catch (_) { }
-            }, { once: true });
+            }, {once: true});
         }
         // Update floating title bar if present
         try {
@@ -6425,14 +6397,10 @@ const Player = (() => {
     // Video performers & tags chips
     // -----------------------------
     async function loadVideoChips() {
-        if (!currentPath) {
-            return;
-        }
+        if (!currentPath) return;
         const perfListEl = document.getElementById('videoPerformers');
         const tagListEl = document.getElementById('videoTags');
-        if (!perfListEl || !tagListEl) {
-            return;
-        }
+        if (!perfListEl || !tagListEl) return;
         perfListEl.innerHTML = '';
         tagListEl.innerHTML = '';
         // Fetch metadata that might contain tags/performers (extendable). If not present, fallback to dedicated endpoints if exist.
@@ -6523,7 +6491,7 @@ const Player = (() => {
             const url = new URL(ep, window.location.origin);
             url.searchParams.set('path', currentPath);
             url.searchParams.set(kind, value);
-            const r = await fetch(url.toString(), { method: 'POST' });
+            const r = await fetch(url.toString(), {method: 'POST' });
             if (!r.ok) {
                 throw new Error('HTTP ' + r.status);
             }
@@ -6542,7 +6510,7 @@ const Player = (() => {
             const url = new URL(ep, window.location.origin);
             url.searchParams.set('path', currentPath);
             url.searchParams.set(kind, value);
-            const r = await fetch(url.toString(), { method: 'POST' });
+            const r = await fetch(url.toString(), {method: 'POST' });
             if (!r.ok) {
                 throw new Error('HTTP ' + r.status);
             }
@@ -6589,7 +6557,7 @@ const Player = (() => {
             const canvas = document.createElement('canvas');
             canvas.width = W;
             canvas.height = H;
-            const ctx = canvas.getContext('2d', { willReadFrequently: false });
+            const ctx = canvas.getContext('2d', {willReadFrequently: false});
             if (!ctx) {
                 notify('Canvas not available for capture.', 'error');
                 return;
@@ -6687,17 +6655,16 @@ const Player = (() => {
             // If an existing faces.json is present, confirm overwrite
             let overwrite = true;
             try {
-                const head = await fetch('/api/faces/get?path=' + encodeURIComponent(currentPath), { method: 'HEAD' });
+                const head = await fetch('/api/faces/get?path=' + encodeURIComponent(currentPath), {method: 'HEAD' });
                 if (head.ok) {
                     overwrite = confirm('faces.json already exists for this video. Replace it with browser-detected faces?');
-                    if (!overwrite) {
-                        return;
-                    }
+                    if (!overwrite) return;
+
                 }
             }
             catch (_) { }
             // Upload
-            const payload = { faces: faces, backend: 'browser-facedetector', stub: false };
+            const payload = {faces: faces, backend: 'browser-facedetector', stub: false};
             const url = new URL('/api/faces/upload', window.location.origin);
             url.searchParams.set('path', currentPath);
             url.searchParams.set('compute_embeddings', 'true');
@@ -6752,7 +6719,7 @@ const Player = (() => {
                 const ju = new URL('/api/heatmaps/json', window.location.origin);
                 ju.searchParams.set('path', currentPath);
                 const jr = await fetch(ju.toString(), {
-                    headers: { Accept: 'application/json' },
+                    headers: {Accept: 'application/json' },
                 });
                 if (jr.ok) {
                     const jj = await jr.json();
@@ -6855,7 +6822,7 @@ const Player = (() => {
             if (!heatmapCanvasEl) {
                 return;
             }
-            const ctx = heatmapCanvasEl.getContext('2d', { willReadFrequently: false });
+            const ctx = heatmapCanvasEl.getContext('2d', {willReadFrequently: false});
             if (!ctx) {
                 return;
             }
@@ -6863,7 +6830,7 @@ const Player = (() => {
             const h = heatmapCanvasEl.height = heatmapCanvasEl.clientHeight || heatmapCanvasEl.offsetHeight || 24;
             ctx.clearRect(0, 0, w, h);
             if (!Array.isArray(samples) || !samples.length) return;
-            // Normalize samples: accept [number] or [{ v, t? }] or mixed
+            // Normalize samples: accept [number] or [{v, t? }] or mixed
             const values = samples.map((s) => {
                 if (typeof s === 'number') return s;
                 if (s && typeof s === 'object') {
@@ -7020,7 +6987,7 @@ const Player = (() => {
             const index = data?.data?.index;
             const sheet = data?.data?.sheet;
             if (index && sheet) {
-                sprites = { index, sheet };
+                sprites = {index, sheet};
                 if (badgeSpritesStatus) badgeSpritesStatus.textContent = '✓';
                 if (badgeSprites) badgeSprites.dataset.present = '1';
                 // Sidebar sprite sheet preview
@@ -7083,7 +7050,7 @@ const Player = (() => {
             // intro_end may be present as a top-level numeric field
             introEnd = Number.isFinite(Number(d.intro_end)) ? Number(d.intro_end) : null;
             scenes = arr
-                .map((s) => ({ time: Number(s.time || s.t || s.start || 0) }))
+                .map((s) => ({time: Number(s.time || s.t || s.start || 0) }))
                 .filter((s) => Number.isFinite(s.time));
             renderMarkers();
             // If the exact status element wasn't resolved early, try to locate it once more now
@@ -7291,7 +7258,7 @@ const Player = (() => {
         }
         // Small helper to clone the row template and fill fields
         function buildRow(options) {
-            const { label, timeSec, variantClass, editableName, editableTime, onJump, onDelete, strongLabel } = options;
+            const {label, timeSec, variantClass, editableName, editableTime, onJump, onDelete, strongLabel} = options;
             const frag = tpl.content.cloneNode(true);
             const row = frag.querySelector('.marker-row');
             if (!row) {
@@ -7383,7 +7350,7 @@ const Player = (() => {
                             try {
                                 const mu = new URL('/api/scenes/intro', window.location.origin);
                                 mu.searchParams.set('path', currentPath);
-                                await fetch(mu.toString(), { method: 'DELETE' });
+                                await fetch(mu.toString(), {method: 'DELETE' });
                             }
                             catch (_) { }
                             notify('Intro end cleared', 'success');
@@ -7502,7 +7469,7 @@ const Player = (() => {
             url.searchParams.set('path', currentPath || '');
             url.searchParams.set('old_time', String(sceneObj.time || 0));
             url.searchParams.set('new_time', String(clamped));
-            const r = await fetch(url.toString(), { method: 'POST' });
+            const r = await fetch(url.toString(), {method: 'POST' });
             if (!r.ok) {
                 throw new Error('HTTP ' + r.status);
             }
@@ -7637,7 +7604,7 @@ const Player = (() => {
             url.searchParams.set('new_time', String(sceneObj.time || 0));
             url.searchParams.set('type', sceneObj.type || 'scene');
             if (newLabel !== null) url.searchParams.set('label', newLabel);
-            const r = await fetch(url.toString(), { method: 'POST' });
+            const r = await fetch(url.toString(), {method: 'POST' });
             if (!r.ok) {
                 throw new Error('HTTP ' + r.status);
             }
@@ -7679,7 +7646,7 @@ const Player = (() => {
             const url = new URL('/api/marker/delete', window.location.origin);
             url.searchParams.set('path', currentPath || '');
             url.searchParams.set('time', String(sceneObj.time || 0));
-            const r = await fetch(url.toString(), { method: 'POST' });
+            const r = await fetch(url.toString(), {method: 'POST' });
             if (!r.ok) {
                 throw new Error('HTTP ' + r.status);
             }
@@ -7708,7 +7675,7 @@ const Player = (() => {
                 const url = new URL('/api/marker', window.location.origin);
                 url.searchParams.set('path', currentPath);
                 url.searchParams.set('time', String(t.toFixed(3)));
-                const r = await fetch(url.toString(), { method: 'POST' });
+                const r = await fetch(url.toString(), {method: 'POST' });
                 if (!r.ok) {
                     throw new Error('HTTP ' + r.status);
                 }
@@ -7840,7 +7807,7 @@ const Player = (() => {
                 if (badgeEl) {
                     badgeEl.dataset.loading = '1';
                 }
-                const r = await fetch(url.toString(), { method: 'POST' });
+                const r = await fetch(url.toString(), {method: 'POST' });
                 if (!r.ok) {
                     throw new Error('HTTP ' + r.status);
                 }
@@ -8116,7 +8083,7 @@ const Player = (() => {
     function getPath() {
         return currentPath;
     }
-    return { open, showOverlayBar, detectAndUploadFacesBrowser, getPath };
+    return {open, showOverlayBar, detectAndUploadFacesBrowser, getPath};
 })();
 window.Player = Player;
 // Player module assigned to window
@@ -8159,7 +8126,7 @@ window.Player = Player;
         const panel = document.getElementById('player-panel');
         if (panel && !panel._pauseObserver) {
             const obs = new MutationObserver(() => pauseIfNotActive());
-            obs.observe(panel, { attributes: true, attributeFilter: ['hidden', 'class'] });
+            obs.observe(panel, {attributes: true, attributeFilter: ['hidden', 'class'] });
             panel._pauseObserver = obs;
         }
     }
@@ -8245,7 +8212,7 @@ function initPlayerEnhancements() {
         toggleBtn.addEventListener('click', () => toggleSidebar());
     }
     const LS_KEY_EFFECTS = 'mediaPlayer:effects';
-    const state = { r: 1, g: 1, b: 1, blur: 0 };
+    const state = {r: 1, g: 1, b: 1, blur: 0};
     function loadState() {
         try {
             const saved = JSON.parse(lsGet(LS_KEY_EFFECTS) || '{}');
@@ -8276,7 +8243,7 @@ function initPlayerEnhancements() {
             return;
         }
         if (COLOR_MATRIX_NODE) {
-            const { r, g, b } = state;
+            const {r, g, b} = state;
             const matrix = [
                 r,
                 0,
@@ -8470,7 +8437,7 @@ function wireSidepanel() {
     return;
 }
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', wireSidepanel, { once: true });
+    document.addEventListener('DOMContentLoaded', wireSidepanel, {once: true});
 }
 else {
     wireSidepanel();
@@ -8571,10 +8538,10 @@ const Performers = (() => {
                 const bn = (b.name || '').toLowerCase();
                 if (an < bn) return -1;
                 if (an > bn) return 1;
-                // tie-breaker: count desc then norm
+                // tie-breaker: count desc then slug/norm
                 const cd = (b.count || 0) - (a.count || 0);
                 if (cd !== 0) return cd;
-                return (a.norm || '').localeCompare(b.norm || '');
+                return (a.slug || a.norm || '').localeCompare(b.slug || b.norm || '');
             }
             // default count
             const cd = (b.count || 0) - (a.count || 0);
@@ -8617,17 +8584,42 @@ const Performers = (() => {
                 const avatarEl = node.querySelector('.pc-avatar');
                 const countEl = node.querySelector('.pc-count');
                 if (card) {
-                    card.dataset.norm = p.norm;
-                    if (selected.has(p.norm)) card.dataset.selected = '1';
+                    const key = p.slug || p.norm;
+                    card.dataset.slug = key;
+                    if (selected.has(key)) card.dataset.selected = '1';
                     card.tabIndex = 0;
-                    card.onclick = (e) => handleCardClick(e, p, filtered);
+                    card.onclick = (e) => {
+                        // If multi-select modifier is held, keep selection behavior
+                        if (e.shiftKey || e.metaKey || e.ctrlKey) {
+                            handleCardClick(e, p, filtered);
+                            return;
+                        }
+                        // Single click: jump to Library and filter by this performer
+                        try {
+                            // Set filters
+                            libraryPerformerFilters = [p.name];
+                            // Persist filters for parity
+                            try {
+                                lsSetJSON('filters.performers', libraryPerformerFilters);
+                            }
+                            catch (_) { }
+                            // Switch tab to Library
+                            const libTab = document.querySelector('[data-tab="library"]');
+                            if (libTab) libTab.click();
+                            // Update chips and reload
+                            if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips();
+                            if (typeof loadLibrary === 'function') loadLibrary();
+                        }
+                        catch (_) { }
+                    };
                     card.onkeydown = (e) => handleCardKey(e, p, filtered);
                 }
                 if (nameEl) nameEl.textContent = p.name;
                 if (avatarEl) avatarEl.title = p.name;
                 if (countEl) {
-                    countEl.textContent = `${p.count}`;
-                    countEl.title = `${p.count} file${p.count === 1 ? '' : 's'}`;
+                    const files = Number(p.count || 0);
+                    countEl.textContent = `${files}`;
+                    countEl.title = `${files} file${files === 1 ? '' : 's'}`;
                 }
                 frag.appendChild(node);
             });
@@ -8651,12 +8643,13 @@ const Performers = (() => {
             window.__perfAutoFetched = true;
             window.addEventListener('DOMContentLoaded', () => {
                 if (window.fetchPerformers) window.fetchPerformers();
-            }, { once: true });
+            }, {once: true});
         }
     }
     function updateSelectionUI() {
         document.querySelectorAll('.perf-card').forEach((c) => {
-            if (selected.has(c.dataset.norm)) c.dataset.selected = '1';
+            const key = c.dataset.slug || c.dataset.norm;
+            if (selected.has(key)) c.dataset.selected = '1';
             else c.removeAttribute('data-selected');
         });
         const multi = selected.size >= 2;
@@ -8676,6 +8669,7 @@ const Performers = (() => {
             const j = await r.json();
             // performers response loaded
             performers = j?.data?.performers || [];
+            console.log(performers);
             setStatus('', false);
             // Reset to first page on new fetch to keep UX sane
             page = 1;
@@ -8696,16 +8690,16 @@ const Performers = (() => {
         }
     }
     const debounceSearch = debounce(fetchPerformers, 400);
-    function toggleSelect(norm, opts = { range: false, anchor: false }) {
+    function toggleSelect(norm, opts = {range: false, anchor: false}) {
         if (opts.range && shiftAnchor) {
             // range selection
             const filtered = currentFiltered();
-            const aIndex = filtered.findIndex((p) => p.norm === shiftAnchor);
-            const bIndex = filtered.findIndex((p) => p.norm === norm);
+            const aIndex = filtered.findIndex((p) => (p.slug || p.norm) === shiftAnchor);
+            const bIndex = filtered.findIndex((p) => (p.slug || p.norm) === norm);
             if (aIndex > -1 && bIndex > -1) {
                 const [start, end] = aIndex < bIndex ? [aIndex, bIndex] : [bIndex, aIndex];
                 for (let i = start; i <= end; i++) {
-                    selected.add(filtered[i].norm);
+                    selected.add(filtered[i].slug || filtered[i].norm);
                 }
                 updateSelectionUI();
                 return;
@@ -8721,13 +8715,13 @@ const Performers = (() => {
         return performers.filter((p) => !termLower || p.name.toLowerCase().includes(termLower));
     }
     function handleCardClick(e, p, filtered) {
-        const norm = p.norm;
+        const norm = p.slug || p.norm;
         if (e.shiftKey) {
-            toggleSelect(norm, { range: true });
+            toggleSelect(norm, {range: true});
             return;
         }
         if (e.metaKey || e.ctrlKey) {
-            toggleSelect(norm, { anchor: true });
+            toggleSelect(norm, {anchor: true});
             return;
         }
         if (selected.size <= 1 && selected.has(norm)) {
@@ -8740,11 +8734,11 @@ const Performers = (() => {
             shiftAnchor = norm;
         }
         updateSelectionUI();
-        lastFocusedIndex = filtered.findIndex((x) => x.norm === norm);
+        lastFocusedIndex = filtered.findIndex((x) => (x.slug || x.norm) === norm);
     }
     function handleCardKey(e, p, filtered) {
-        const norm = p.norm;
-        const index = filtered.findIndex((x) => x.norm === norm);
+        const norm = p.slug || p.norm;
+        const index = filtered.findIndex((x) => (x.slug || x.norm) === norm);
         if (
             [
                 'ArrowDown',
@@ -8763,7 +8757,7 @@ const Performers = (() => {
             if (i < 0 || i >= filtered.length) {
                 return;
             }
-            const card = gridEl.querySelector(`.perf-card[data-norm="${filtered[i].norm}"]`);
+            const card = gridEl.querySelector(`.perf-card[data-slug="${(filtered[i].slug || filtered[i].norm)}"]`);
             if (card) {
                 card.focus();
                 lastFocusedIndex = i;
@@ -8771,7 +8765,7 @@ const Performers = (() => {
         }
         switch (e.key) {
         case ' ':
-            toggleSelect(norm, { anchor: true });
+            toggleSelect(norm, {anchor: true});
             break;
         case 'Enter':
             renamePrompt(p);
@@ -8782,7 +8776,7 @@ const Performers = (() => {
             break;
         case 'a':
             if (e.metaKey || e.ctrlKey) {
-                selected = new Set(filtered.map((x) => x.norm));
+                selected = new Set(filtered.map((x) => x.slug || x.norm));
                 updateSelectionUI();
             }
             break;
@@ -8825,7 +8819,7 @@ const Performers = (() => {
             await fetch('/api/performers/add', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: searchTerm }),
+                body: JSON.stringify({name: searchTerm}),
             });
             await fetchPerformers();
         }
@@ -8893,7 +8887,7 @@ const Performers = (() => {
             await fetch('/api/performers/rename', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ old: p.name, new: val }),
+                body: JSON.stringify({old: p.name, new: val}),
             });
             await fetchPerformers();
         }
@@ -8908,7 +8902,7 @@ const Performers = (() => {
             await fetch('/api/performers/tags/add', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: p.name, tag: tag }),
+                body: JSON.stringify({name: p.name, tag: tag}),
             });
             await fetchPerformers();
         }
@@ -8920,7 +8914,7 @@ const Performers = (() => {
             await fetch('/api/performers/tags/remove', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: p.name, tag: tag }),
+                body: JSON.stringify({name: p.name, tag: tag}),
             });
             await fetchPerformers();
         }
@@ -9214,7 +9208,7 @@ const Performers = (() => {
                             const r2 = await fetch('/api/performers/import', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ names: rawNames }),
+                                body: JSON.stringify({names: rawNames}),
                             });
                             const j2 = await r2.json();
                             if (r2.ok) {
@@ -9267,9 +9261,9 @@ const Performers = (() => {
                         };
                         update();
                         const mo = new MutationObserver(update);
-                        mo.observe(title, { childList: true, characterData: true, subtree: true });
+                        mo.observe(title, {childList: true, characterData: true, subtree: true});
                         // also watch for attribute changes that may alter visibility
-                        mo.observe(overlay, { attributes: true });
+                        mo.observe(overlay, {attributes: true});
                     }
                     catch (_) { }
                 })();
@@ -9278,7 +9272,7 @@ const Performers = (() => {
     }
     // Wire file input at DOM ready and also opportunistically when tab is shown
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', wireFileInputOnce, { once: true });
+        document.addEventListener('DOMContentLoaded', wireFileInputOnce, {once: true});
     }
     else {
         wireFileInputOnce();
@@ -9444,7 +9438,7 @@ const Performers = (() => {
         // Just load performers; do not auto-open Auto‑Match modal.
         fetchPerformers();
     }
-    return { show: openPanel };
+    return {show: openPanel};
 })();
 window.Performers = Performers;
 // Hook tab switch to load performers when opened
@@ -9458,7 +9452,7 @@ document.addEventListener('click', (e) => {
     }
 });
 // 2) Router-driven activation (hash navigation and programmatic tab switches)
-//    TabSystem dispatches a CustomEvent('tabchange', { detail: { activeTab } }) on window.
+//    TabSystem dispatches a CustomEvent('tabchange', {detail: {activeTab} }) on window.
 window.addEventListener('tabchange', (ev) => {
     try {
         const active = ev && ev.detail && ev.detail.activeTab;
@@ -9567,8 +9561,8 @@ window.addEventListener('DOMContentLoaded', () => {
             lastRows = [];
             try {
                 // Global preview: scan all videos from root, recursive, using registry performers
-                const payload = { path: undefined, recursive: true, use_registry_performers: true, performers: [], tags: [], limit: 800 };
-                const r = await fetch('/api/autotag/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const payload = {path: undefined, recursive: true, use_registry_performers: true, performers: [], tags: [], limit: 800};
+                const r = await fetch('/api/autotag/preview', {method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const j = await r.json();
                 if (!r.ok) throw new Error(j?.message || 'Preview failed');
                 const rows = j?.data?.candidates || [];
@@ -9593,8 +9587,8 @@ window.addEventListener('DOMContentLoaded', () => {
             setApplying(true);
             if (statusEl) statusEl.textContent = 'Queuing job…';
             try {
-                const payload = { path: undefined, recursive: true, use_registry_performers: true, performers: [], tags: [] };
-                const r = await fetch('/api/autotag/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const payload = {path: undefined, recursive: true, use_registry_performers: true, performers: [], tags: [] };
+                const r = await fetch('/api/autotag/scan', {method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 if (!r.ok) {
                     const j = await r.json().catch(() => null);
                     throw new Error((j && j.message) || 'Queue failed');
@@ -9633,8 +9627,8 @@ window.addEventListener('DOMContentLoaded', () => {
         modal._wired = true;
     }
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', wire, { once: true });
-        document.addEventListener('DOMContentLoaded', wirePerformerAutoMatch, { once: true });
+        document.addEventListener('DOMContentLoaded', wire, {once: true});
+        document.addEventListener('DOMContentLoaded', wirePerformerAutoMatch, {once: true});
     }
     else {
         wire();
@@ -9659,7 +9653,7 @@ window.addEventListener('DOMContentLoaded', () => {
         });
     }
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', wire, { once: true });
+        document.addEventListener('DOMContentLoaded', wire, {once: true});
     }
     else {
         wire();
@@ -9727,7 +9721,7 @@ class TasksManager {
         try {
             // Small delay to allow freshly queued jobs to persist if init races with job enqueue
             await new Promise((r) => setTimeout(r, 150));
-            const r = await fetch('/api/tasks/jobs', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+            const r = await fetch('/api/tasks/jobs', {headers: {Accept: 'application/json' }, cache: 'no-store' });
             if (!r.ok) {
                 return;
             }
@@ -9765,7 +9759,7 @@ class TasksManager {
     async loadConfigAndApplyGates() {
         try {
             const r = await fetch('/config', {
-                headers: { Accept: 'application/json' },
+                headers: {Accept: 'application/json' },
             });
             if (r.ok) {
                 const j = await r.json();
@@ -9791,7 +9785,7 @@ class TasksManager {
                 this.capabilities.faces_enabled = Boolean(caps.faces_enabled ?? true);
                 // Expose for other modules (Player badge actions)
                 try {
-                    window.__capabilities = { ...this.capabilities };
+                    window.__capabilities = { ...this.capabilities};
                 }
                 catch (_) { }
             }
@@ -9852,15 +9846,15 @@ class TasksManager {
             };
             // Mapping artifact -> input ids
             const map = {
-                thumbnails: { offset: 'thumbnailOffset' },
-                sprites: { interval: 'spriteInterval', width: 'spriteWidth', cols: 'spriteCols', rows: 'spriteRows', quality: 'spriteQuality' },
-                previews: { segments: 'previewSegments', duration: 'previewDuration', width: 'previewWidth' },
-                phash: { frames: 'phashFrames', algorithm: 'phashAlgo' },
-                scenes: { threshold: 'sceneThreshold', limit: 'sceneLimit' },
-                heatmaps: { interval: 'heatmapInterval', mode: 'heatmapMode', png: 'heatmapPng' },
-                subtitles: { model: 'subtitleModel', language: 'subtitleLang' },
-                faces: { interval: 'faceInterval', min_size_frac: 'faceMinSize', backend: 'faceBackend', scale_factor: 'faceScale', min_neighbors: 'faceMinNeighbors', sim_thresh: 'faceSimThresh' },
-                embed: { interval: 'embedInterval', min_size_frac: 'embedMinSize', backend: 'embedBackend', sim_thresh: 'embedSimThresh' },
+                thumbnails: {offset: 'thumbnailOffset' },
+                sprites: {interval: 'spriteInterval', width: 'spriteWidth', cols: 'spriteCols', rows: 'spriteRows', quality: 'spriteQuality' },
+                previews: {segments: 'previewSegments', duration: 'previewDuration', width: 'previewWidth' },
+                phash: {frames: 'phashFrames', algorithm: 'phashAlgo' },
+                scenes: {threshold: 'sceneThreshold', limit: 'sceneLimit' },
+                heatmaps: {interval: 'heatmapInterval', mode: 'heatmapMode', png: 'heatmapPng' },
+                subtitles: {model: 'subtitleModel', language: 'subtitleLang' },
+                faces: {interval: 'faceInterval', min_size_frac: 'faceMinSize', backend: 'faceBackend', scale_factor: 'faceScale', min_neighbors: 'faceMinNeighbors', sim_thresh: 'faceSimThresh' },
+                embed: {interval: 'embedInterval', min_size_frac: 'embedMinSize', backend: 'embedBackend', sim_thresh: 'embedSimThresh' },
             };
             Object.entries(map).forEach(([art, fields]) => {
                 const def = data[art] || {};
@@ -10190,7 +10184,7 @@ class TasksManager {
                                     window.__activeArtifactSpinners = window.__activeArtifactSpinners || new Map();
                                     const key = `${file}::${art}`;
                                     if (!window.__activeArtifactSpinners.has(key)) {
-                                        window.__activeArtifactSpinners.set(key, { path: file, artifact: art, since: Date.now(), manual: false });
+                                        window.__activeArtifactSpinners.set(key, {path: file, artifact: art, since: Date.now(), manual: false});
                                     }
                                     setArtifactSpinner(art, true);
                                 }
@@ -10354,7 +10348,7 @@ class TasksManager {
                 try {
                     clearBtn.disabled = true;
                     clearBtn.classList.add('btn-busy');
-                    const r = await fetch('/api/tasks/jobs/clear-completed', { method: 'POST' });
+                    const r = await fetch('/api/tasks/jobs/clear-completed', {method: 'POST' });
                     if (!r.ok) throw new Error(`HTTP ${r.status}`);
                     const data = await r.json();
                     const removed = data?.data?.removed ?? 0;
@@ -10451,7 +10445,7 @@ class TasksManager {
     async setPauseState(paused) {
         const url = new URL('/api/tasks/pause', window.location.origin);
         url.searchParams.set('paused', paused ? 'true' : 'false');
-        const r = await fetch(url.toString(), { method: 'POST' });
+        const r = await fetch(url.toString(), {method: 'POST' });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
         return Boolean(j && j.data && j.data.paused);
@@ -10546,7 +10540,7 @@ class TasksManager {
             url.searchParams.set('page_size', '1');
             url.searchParams.set('sort', 'date');
             url.searchParams.set('order', 'desc');
-            const r = await fetch(url, { headers: { Accept: 'application/json' } });
+            const r = await fetch(url, {headers: {Accept: 'application/json' } });
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const pl = await r.json();
             const file = (pl?.data?.files || [])[0];
@@ -10563,7 +10557,7 @@ class TasksManager {
             let ok = false;
             for (let i = 0; i < 10; i++) {
                 // ~10 quick tries
-                const h = await fetch(headUrl.toString(), { method: 'HEAD' });
+                const h = await fetch(headUrl.toString(), {method: 'HEAD' });
                 if (h.status === 200) {
                     ok = true;
                     break;
@@ -10576,7 +10570,7 @@ class TasksManager {
                     createUrl.searchParams.set('mode', document.getElementById('heatmapMode')?.value || 'both');
                     createUrl.searchParams.set('png', 'true');
                     try {
-                        await fetch(createUrl, { method: 'POST' });
+                        await fetch(createUrl, {method: 'POST' });
                     }
                     catch (_) { }
                 }
@@ -10631,9 +10625,8 @@ class TasksManager {
             if (isClear) {
                 if (confirmDeletesEnabled) {
                     const confirmed = confirm(`Clear all ${base} artifacts? This cannot be undone.`);
-                    if (!confirmed) {
-                        return;
-                    }
+                    if (!confirmed) return;
+
                 }
                 // Attempt scoped clear if selected-only chosen and supported
                 try {
@@ -10659,11 +10652,11 @@ class TasksManager {
                         resp = await fetch(clearUrl.toString(), {
                             method: 'DELETE',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ paths: selPaths }),
+                            body: JSON.stringify({paths: selPaths}),
                         });
                     }
                     else {
-                        resp = await fetch(clearUrl.toString(), { method: 'DELETE' });
+                        resp = await fetch(clearUrl.toString(), {method: 'DELETE' });
                     }
                     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                     this.showNotification(`${base} cleared`, 'success');
@@ -10742,7 +10735,7 @@ class TasksManager {
             }
         }
         catch (error) {
-            console.error('Batch operation failed:', { operation, error });
+            console.error('Batch operation failed:', {operation, error});
             this.showNotification(`Failed to start ${operation}: ${error.message}`, 'error');
         }
     }
@@ -11013,7 +11006,7 @@ class TasksManager {
             }
         });
         // Mirror faces coverage to embeddings UI (embeddings share faces.json presence)
-        const facesData = this.coverage.faces || { processed: 0, total: 0 };
+        const facesData = this.coverage.faces || {processed: 0, total: 0};
         const embedProcessed = facesData.processed || 0;
         const embedTotal = facesData.total || 0;
         const embedPct = embedTotal > 0 ? Math.round((embedProcessed / embedTotal) * 100) : 0;
@@ -11221,7 +11214,7 @@ class TasksManager {
             // Clear spinners for keys no longer active (job finished) after verifying artifact presence or job terminal state
             for (const [key, rec] of Array.from(window.__activeArtifactSpinners.entries())) {
                 if (activeStates.has(key)) continue; // still active
-                const { artifact, path } = rec;
+                const {artifact, path} = rec;
                 // Determine if job ended: absence from active set means ended; hide spinner.
                 setArtifactSpinner(artifact, false);
                 window.__activeArtifactSpinners.delete(key);
@@ -11253,7 +11246,7 @@ class TasksManager {
                 const active = anyRunning || anyQueued;
                 if (active) {
                     // Compute progress from coverage if available
-                    const cov = (this.coverage && this.coverage.metadata) ? this.coverage.metadata : { processed: 0, total: 0 };
+                    const cov = (this.coverage && this.coverage.metadata) ? this.coverage.metadata : {processed: 0, total: 0};
                     const processed = Number(cov.processed || 0);
                     const total = Number(cov.total || 0);
                     const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((processed / total) * 100))) : 0;
@@ -11797,7 +11790,7 @@ class TasksManager {
         const SLOW = 15000;
         const MAX_BACKOFF = 60000;
         if (this._jobPollTimer) clearInterval(this._jobPollTimer);
-        this._jobPollInFlight = this._jobPollInFlight || { jobs: false, coverage: false };
+        this._jobPollInFlight = this._jobPollInFlight || {jobs: false, coverage: false};
         this._jobPollFailures = 0;
         let passiveMode = true;
         // until user views tasks or active job causes auto-switch
@@ -11930,7 +11923,7 @@ class TasksManager {
         catch (error) {
             // Quiet failure during polling
             // Reset display on error
-            this.updateOrphanDisplay({ orphaned: 0, orphaned_files: [] });
+            this.updateOrphanDisplay({orphaned: 0, orphaned_files: [] });
         }
     }
     updateOrphanDisplay(orphanData) {
@@ -12017,7 +12010,7 @@ class TasksManager {
         }
         try {
             // Use empty path to cleanup the current root directory
-            const response = await fetch('/api/artifacts/cleanup?dry_run=false&keep_orphans=false', { method: 'POST' });
+            const response = await fetch('/api/artifacts/cleanup?dry_run=false&keep_orphans=false', {method: 'POST' });
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }

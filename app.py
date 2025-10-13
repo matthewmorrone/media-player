@@ -956,6 +956,8 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
         th_flags = _ffmpeg_threads_flags()
     except Exception:
         th_flags = []
+    # Preserve aspect ratio: scale width to a target while letting height follow (-1), ensure even dims
+    target_w = int(os.environ.get("THUMBNAIL_WIDTH", "320") or 320)
     cmd = [
         "ffmpeg", "-y",
         *(hw),
@@ -963,8 +965,9 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
         "-ss", f"{t:.3f}",
         "-i", str(video),
         "-frames:v", "1",
-        # Ensure even dimensions for broad encoder/player compatibility
-        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        # Scale by width keeping aspect ratio, then enforce even dimensions.
+        # The 'scale' ensures width~=target_w and height auto; 'scale' with ceil then even padding by truncation
+        "-vf", f"scale='min({target_w},iw)':'-2'",
         "-q:v", str(max(2, min(31, int(quality)))),
         *(th_flags),
         str(out),
@@ -6621,6 +6624,32 @@ def _load_performers_sidecars() -> None:
                         continue
                     _PERFORMERS_INDEX.setdefault(norm, set()).add(rel)
                     _PERFORMERS_CACHE.setdefault(norm, {"name": n, "tags": []})
+    # Merge performers from in-memory media attribute store so per-file edits contribute to counts
+    try:
+        # _MEDIA_ATTR maps rel path -> {"performers": [...], "tags": [...]}
+        root = STATE.get("root") or Path.cwd()
+        for rel, ent in (_MEDIA_ATTR or {}).items():  # type: ignore[name-defined]
+            perfs = (ent or {}).get("performers") or []
+            if not isinstance(perfs, list) or not perfs:
+                continue
+            rel_str = str(rel)
+            try:
+                # Validate rel is inside root; leave as string if not resolvable
+                _ = safe_join(root, rel_str)
+            except Exception:
+                pass
+            for n in perfs:
+                if not isinstance(n, str):
+                    continue
+                norm = _normalize_performer(n)
+                if not norm:
+                    continue
+                _PERFORMERS_INDEX.setdefault(norm, set()).add(rel_str)
+                _PERFORMERS_CACHE.setdefault(norm, {"name": n, "tags": []})
+    except Exception:
+        # best effort merge; skip on errors
+        pass
+
     # Merge performers from central registry so imported names persist across reloads
     # Always (re)merge performers from central registry so imported names persist across reloads
     # and appear immediately even if the sidecar scan cache is warm.
@@ -6663,6 +6692,7 @@ def _list_performers(search: str | None = None) -> list[dict]:
         out.append({
             "name": rec["name"],
             "norm": norm,
+            "slug": _slugify(rec["name"]),
             "count": len(paths),
             "tags": rec.get("tags", []),
         })
@@ -6692,10 +6722,15 @@ def api_performers(search: Optional[str] = Query(None), debug: bool = Query(defa
                 idx_size = len(_PERFORMERS_INDEX or {})
                 cache_size = len(_PERFORMERS_CACHE or {})
                 logging.info("[performers] index size=%d cache size=%d", idx_size, cache_size)
+                try:
+                    ma_size = len((_MEDIA_ATTR or {}))  # type: ignore[name-defined]
+                except Exception:
+                    ma_size = -1
+                logging.info("[performers] media-attr entries=%s", str(ma_size))
                 # Top 10 by count for quick inspection
                 sample = sorted(res, key=lambda r: int(r.get("count") or 0), reverse=True)[:10]
                 for i, r in enumerate(sample, start=1):
-                    logging.info("[performers] #%d %s (norm=%s) count=%s", i, r.get("name"), r.get("norm"), str(r.get("count")))
+                    logging.info("[performers] #%d %s (slug=%s) count=%s", i, r.get("name"), r.get("slug"), str(r.get("count")))
             except Exception:
                 pass
     except Exception:
