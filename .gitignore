@@ -77,3 +77,5 @@ nosetests.xml
 
 # Uvicorn/Starlette static files cache (none by default, but ignore if added)
 staticfiles/
+
+node_modules/

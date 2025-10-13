@@ -54,11 +54,15 @@ Scope
 - Applies to any automated actor (scripts, CI jobs, chat assistants, code-generating agents) that creates, modifies, or deletes files in this repo.
 - Does not replace human code review. Agents must create a PR for any non-trivial change and must include a clear explanation of their changes.
 
+Single‑user project note (No backwards compatibility by default)
+- This repository is operated by a single maintainer for personal use. Agents MUST NOT introduce or maintain backwards-compatibility shims, legacy persistence keys, or migration code paths unless explicitly requested in the task. Prefer the simplest forward-only implementation.
+
 Agent Rules (mandatory)
 1. Use templates, not DOM assembly: Agents MUST NOT construct repeated UI fragments by composing strings, by frequently calling `document.createElement(...)`, or by using `innerHTML`/`insertAdjacentHTML` to inject large UI fragments in front-end JavaScript. Instead agents MUST add or reuse an HTML `<template id="...">` and clone it via `template.content.cloneNode(true)`.
 	 - Allowed exceptions (require explicit justification in PR): tiny ephemeral measurement nodes, small utility nodes used only for non-UI measurement, or programmatic SVG where templates are impractical.
 2. No inline styles: Agents must not add inline style attributes to HTML elements created by agents. Use CSS classes and add styles to `index.css` instead.
 3. No secret persistence: Agents must never add secrets, tokens, credentials, or environment-specific configuration files to the repo.
+4. No backwards-compatibility shims by default: Do not add legacy key fallbacks, alias routes, deprecated API handlers, or data migrations unless the task explicitly calls for them.
 4. Keep changes minimal and scoped: Each automated change should be a focused commit that makes a single logical update. Large multi-file transformations require a feature branch and a human reviewer prior to merging.
 5. Add tests or smoke checks when behavior is changed: If an agent changes runtime behavior (API, routing, major UI flows), it must add a basic smoke test in `scripts/` or update documentation describing manual verification steps.
 6. Always include a rollback plan: Add a note in the PR description describing how to revert if the automated change causes regressions (tag, branch, or commit id).

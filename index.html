@@ -133,6 +133,22 @@
     </section>
   </template>
 
+  <!-- Templates: Performers (card + empty state) -->
+  <template id="performerCardTemplate">
+    <div class="perf-card perf-card--pretty" role="group">
+      <div class="pc-top">
+        <div class="pc-avatar" aria-hidden="true"></div>
+        <div class="pc-titlebox">
+          <h3 class="pc-name"></h3>
+        </div>
+        <span class="pc-count" title=""></span>
+      </div>
+    </div>
+  </template>
+  <template id="emptyHintTemplate">
+    <div class="hint-sm empty-hint"></div>
+  </template>
+
   <!-- Performer Import Preview Modal (moved inside <body> and grouped with other modals) -->
   <div id="performerImportPreviewModal" class="modal" hidden>
     <div class="panel panel--narrow">
