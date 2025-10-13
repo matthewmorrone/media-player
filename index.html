@@ -189,21 +189,7 @@
         </div>
       </header>
       <div class="body panel-body--tall">
-        <div class="file-selection file-selection-compact mb-12">
-          <div class="flex-row gap-12 wrap">
-            <input type="text" id="perfAutoPath" class="control-input w-240" placeholder="Path (blank=root)" />
-            <label class="selection-option m0">
-              <input type="checkbox" id="perfAutoRecursive" /> Recursive
-            </label>
-            <label class="selection-option m0">
-              <input type="checkbox" id="perfAutoUseRegistry" /> All Registry Performers
-            </label>
-            <input type="text" id="perfAutoExtra" class="control-input w-200" placeholder="Extra (comma)" />
-            <button id="perfAutoPreviewBtn" class="btn-sm">Preview</button>
-            <button id="perfAutoApplyBtn" class="btn-sm" disabled>Apply</button>
-          </div>
-          <div class="hint-sm mt-6">Preview scans filenames and suggests performer assignments. Apply writes to sidecars.</div>
-        </div>
+        <div class="hint-sm mt-6">Preview scans all videos using registry performers. Apply writes to sidecars.</div>
         <div id="perfAutoMatchStatus" class="hint-sm opacity-75">Awaiting preview.</div>
         <table class="job-table autotag-table mt-8" id="perfAutoMatchTable">
           <thead>
@@ -809,20 +795,57 @@
 
       <!-- Performers Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="performers-tab" id="performers-panel" hidden>
-        <div class="perf-toolbar">
-          <input id="performerSearch" type="text" placeholder="Search performers…" class="perf-search" />
-          <button id="performerImportBtn" class="btn-sm" title="Import newline or JSON list">Import</button>
-          <button id="performerMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
-          <button id="performerDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
-          <button id="performerAutoMatchBtn" class="btn-sm" title="Auto‑match performers from filenames">Auto‑Match</button>
+        <div class="performers-container">
+          <div class="perf-toolbar">
+            <input id="performerSearch" type="text" placeholder="Search performers…" class="perf-search" />
+            <!-- Sort controls: default to Scenes (desc) -->
+            <label for="performerSort" class="hint-sm ml-8" style="opacity:.8">Sort</label>
+            <select id="performerSort" class="control-select" aria-label="Sort performers">
+              <option value="count" selected>Files</option>
+              <option value="name">Name</option>
+            </select>
+            <button id="performerSortOrder" class="btn-sm" title="Toggle sort order" aria-label="Toggle sort order">Desc</button>
+            <span id="performersCount" class="hint-sm ml-8" aria-live="polite"></span>
+            <button id="performerImportBtn" class="btn-sm" title="Import newline or JSON list">Import</button>
+            <button id="performerMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
+            <button id="performerDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
+            <button id="performerAutoMatchBtn" class="btn-sm" title="Auto‑match performers from filenames">Auto‑Match</button>
+          </div>
+          <div id="performerDropZone" role="button" tabindex="0" aria-label="Import performers" class="performer-dropzone">
+            <strong class="pdz-title">Import Performers</strong>
+            <span class="pdz-sub">Click to choose files or drag & drop names / JSON / text list</span>
+          </div>
+          <input id="performerFileInput" type="file" accept=".txt,.csv,.json,text/plain,application/json" multiple class="d-none" />
+          <div id="performersStatus" class="performers-status d-none">Loading…</div>
+          <div class="list-controls flex-row gap-10 mt-12" id="performersPager">
+            <div class="ml-auto"></div>
+            <label for="perfPageSize" class="hint-sm">Page size</label>
+            <select id="perfPageSize" class="control-select" aria-label="Performers page size">
+              <option value="16">16</option>
+              <option value="32" selected>32</option>
+              <option value="64">64</option>
+              <option value="128">128</option>
+            </select>
+            <button id="perfPrev" class="btn-sm" aria-label="Previous page">Prev</button>
+            <span id="perfPageInfo" class="hint-sm" aria-live="polite">—</span>
+            <button id="perfNext" class="btn-sm" aria-label="Next page">Next</button>
+          </div>
+          <div id="performersGrid" class="perf-grid performers-grid"></div>
+          <!-- Bottom pager (duplicate of top) -->
+          <div class="list-controls flex-row gap-10 mt-12" id="performersPagerBottom">
+            <div class="ml-auto"></div>
+            <label for="perfPageSizeBottom" class="hint-sm">Page size</label>
+            <select id="perfPageSizeBottom" class="control-select" aria-label="Performers page size (bottom)">
+              <option value="16">16</option>
+              <option value="32" selected>32</option>
+              <option value="64">64</option>
+              <option value="128">128</option>
+            </select>
+            <button id="perfPrevBottom" class="btn-sm" aria-label="Previous page">Prev</button>
+            <span id="perfPageInfoBottom" class="hint-sm" aria-live="polite">—</span>
+            <button id="perfNextBottom" class="btn-sm" aria-label="Next page">Next</button>
+          </div>
         </div>
-        <div id="performerDropZone" role="button" tabindex="0" aria-label="Import performers" class="performer-dropzone">
-          <strong class="pdz-title">Import Performers</strong>
-          <span class="pdz-sub">Click to choose files or drag & drop names / JSON / text list</span>
-        </div>
-        <input id="performerFileInput" type="file" accept=".txt,.csv,.json,text/plain,application/json" multiple class="d-none" />
-        <div id="performersStatus" class="performers-status d-none">Loading…</div>
-        <div id="performersGrid" class="perf-grid performers-grid"></div>
       </div>
 
       <!-- Tags Tab Panel -->

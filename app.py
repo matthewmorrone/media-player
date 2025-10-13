@@ -37,6 +37,27 @@ except Exception:  # pragma: no cover
             return default
 from difflib import SequenceMatcher
 
+# Ensure application logs (including performers persistence) are visible
+def _install_app_logger_once() -> None:
+    try:
+        level_name = str(os.environ.get("MEDIA_PLAYER_LOG_LEVEL") or "INFO").upper()
+        level = getattr(logging, level_name, logging.INFO)
+        root_logger = logging.getLogger()
+        if getattr(root_logger, "_app_logger_installed", False):
+            return
+        # If no handlers, attach a simple stdout handler
+        if not root_logger.handlers:
+            h = logging.StreamHandler(sys.stdout)
+            h.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s"))
+            root_logger.addHandler(h)
+        root_logger.setLevel(level)
+        setattr(root_logger, "_app_logger_installed", True)
+        logging.info("[app] logger initialized at level=%s", level_name)
+    except Exception:
+        pass
+
+_install_app_logger_once()
+
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response # type: ignore
 from fastapi import Body  # type: ignore
 from fastapi.responses import ( # type: ignore
@@ -5098,6 +5119,34 @@ def _load_registry(path: Path, kind: str) -> dict:
         return skel
     try:
         data = json.loads(path.read_text())
+        # Support legacy/simple formats:
+        # - If file is a bare list, wrap into the expected dict skeleton.
+        if isinstance(data, list):
+            wrapped = {"version": 1, "next_id": 1, kind: []}
+            items: list = []
+            if kind == "performers":
+                # Convert strings to performer objects; pass through dicts with name when present
+                next_id = 1
+                for it in data:
+                    if isinstance(it, str):
+                        nm = it.strip()
+                        if not nm:
+                            continue
+                        items.append({"id": next_id, "name": nm, "slug": _slugify(nm), "images": []})
+                        next_id += 1
+                    elif isinstance(it, dict):
+                        nm = str(it.get("name") or "").strip()
+                        if not nm:
+                            continue
+                        slug = it.get("slug") or _slugify(nm)
+                        items.append({"id": next_id, "name": nm, "slug": slug, "images": list(it.get("images") or [])})
+                        next_id += 1
+                wrapped[kind] = items
+                wrapped["next_id"] = next_id
+            else:
+                # tags: make sure it's a list of strings
+                wrapped[kind] = [str(t).strip() for t in data if str(t).strip()]
+            return wrapped
         if not isinstance(data, dict):
             return skel
         # ensure keys
@@ -5168,6 +5217,9 @@ def health():
         "time": time.time(),
         "uptime": uptime,
         "root": str(STATE.get("root")),
+        "registries": {
+            "performers": str(_performers_registry_path()),
+        },
         "ffmpeg": ffmpeg_available(),
         "ffprobe": ffprobe_available(),
         "faces_backend": detect_face_backend("auto"),
@@ -6520,62 +6572,91 @@ def _load_performers_sidecars() -> None:
     Caches results to avoid repeated full scans; invalidated when cache older than 5 minutes.
     """
     global _PERFORMERS_CACHE_TS, _PERFORMERS_INDEX, _PERFORMERS_CACHE
-    if STATE.get("root") is None:
-        return
+    # If root isn't configured yet, skip the sidecar scan but still merge the registry
+    root_missing = STATE.get("root") is None
     now = time.time()
-    if _PERFORMERS_CACHE_TS and (now - _PERFORMERS_CACHE_TS) < 300:
-        return
-    _PERFORMERS_INDEX = {}
-    root = Path(STATE["root"]).resolve()
-    vids = _find_mp4s(root, recursive=True)
-    for v in vids:
-        m = metadata_path(v)
-        if not m.exists():
-            continue
-        try:
-            j = json.loads(m.read_text())
-        except Exception:
-            continue
-        names = []
-        # Heuristic paths: format.tags.performers OR top-level performers OR tags.cast
-        try:
-            fmt = j.get("format", {}) or {}
-            tags = fmt.get("tags", {}) or {}
-            raw_perf = tags.get("performers")
-            if isinstance(raw_perf, str):
-                names.extend([t.strip() for t in re.split(r"[;,]", raw_perf) if t.strip()])
-            raw_cast = tags.get("cast")
-            if isinstance(raw_cast, str):
-                names.extend([t.strip() for t in re.split(r"[;,]", raw_cast) if t.strip()])
-        except Exception:
-            pass
-        # Optional explicit field
-        try:
-            if isinstance(j.get("performers"), list):
-                for n in j["performers"]:
-                    if isinstance(n, str) and n.strip():
-                        names.append(n.strip())
-        except Exception:
-            pass
-        if not names:
-            continue
-        rel: str
-        try:
-            rel = str(v.relative_to(root))
-        except Exception:
-            rel = str(v)
-        for n in names:
-            norm = _normalize_performer(n)
-            if not norm:
+    # Only rescan sidecars (expensive) when cache is stale; always merge registry (cheap) below.
+    rescan = (not _PERFORMERS_CACHE_TS or (now - _PERFORMERS_CACHE_TS) >= 300) and not root_missing
+    if rescan:
+        _PERFORMERS_INDEX = {}  # Initialize performers index
+        root = Path(STATE["root"]).resolve()
+        vids = _find_mp4s(root, recursive=True)
+        for v in vids:
+            m = metadata_path(v)
+            if not m.exists():
                 continue
-            _PERFORMERS_INDEX.setdefault(norm, set()).add(rel)
-            _PERFORMERS_CACHE.setdefault(norm, {"name": n, "tags": []})
-    _PERFORMERS_CACHE_TS = now
+            try:
+                j = json.loads(m.read_text())
+            except Exception:
+                continue
+            names = []
+            # Heuristic paths: format.tags.performers OR top-level performers OR tags.cast
+            try:
+                fmt = j.get("format", {}) or {}
+                tags = fmt.get("tags", {}) or {}
+                raw_perf = tags.get("performers")
+                if isinstance(raw_perf, str):
+                    names.extend([t.strip() for t in re.split(r"[;,]", raw_perf) if t.strip()])
+                raw_cast = tags.get("cast")
+                if isinstance(raw_cast, str):
+                    names.extend([t.strip() for t in re.split(r"[;,]", raw_cast) if t.strip()])
+            except Exception:
+                pass
+            # Optional explicit field
+            try:
+                if isinstance(j.get("performers"), list):
+                    for n in j["performers"]:
+                        if isinstance(n, str) and n.strip():
+                            names.append(n.strip())
+            except Exception:
+                pass
+            if names:
+                try:
+                    rel = str(v.relative_to(root))
+                except Exception:
+                    rel = str(v)
+                for n in names:
+                    norm = _normalize_performer(n)
+                    if not norm:
+                        continue
+                    _PERFORMERS_INDEX.setdefault(norm, set()).add(rel)
+                    _PERFORMERS_CACHE.setdefault(norm, {"name": n, "tags": []})
+    # Merge performers from central registry so imported names persist across reloads
+    # Always (re)merge performers from central registry so imported names persist across reloads
+    # and appear immediately even if the sidecar scan cache is warm.
+    try:
+        reg_path = _performers_registry_path()
+        with REGISTRY_LOCK:
+            pdata = _load_registry(reg_path, "performers")
+            items = list(pdata.get("performers") or [])
+        try:
+            logging.info("[performers] merge registry: %d item(s) from %s", len(items), str(reg_path))
+        except Exception:
+            pass
+        for item in items:
+            # Accept both dict items ({"name": ...}) and plain string names
+            if isinstance(item, str):
+                name = item.strip()
+            else:
+                name = (item.get("name") or "").strip()
+            if not name:
+                continue
+            norm = _normalize_performer(name)
+            _PERFORMERS_CACHE.setdefault(norm, {"name": name, "tags": []})
+            _PERFORMERS_INDEX.setdefault(norm, set())
+    except Exception:
+        # If registry is unreadable, continue with sidecar-derived data only
+        pass
+    if rescan:
+        _PERFORMERS_CACHE_TS = now
 
 def _list_performers(search: str | None = None) -> list[dict]:
     _load_performers_sidecars()
     out = []
-    for norm, paths in _PERFORMERS_INDEX.items():
+    # Include both indexed (found in files) and imported-only performers
+    all_norms = set(_PERFORMERS_INDEX.keys()) | set(_PERFORMERS_CACHE.keys())
+    for norm in all_norms:
+        paths = _PERFORMERS_INDEX.get(norm, set())
         rec = _PERFORMERS_CACHE.get(norm, {"name": norm, "tags": []})
         if search and search.lower() not in rec["name"].lower():
             continue
@@ -6590,8 +6671,36 @@ def _list_performers(search: str | None = None) -> list[dict]:
     return out
 
 @api.get("/performers")
-def api_performers(search: Optional[str] = Query(None)):
-    return api_success({"performers": _list_performers(search)})
+def api_performers(search: Optional[str] = Query(None), debug: bool = Query(default=False)):
+    try:
+        logging.info("[performers] list request: search=%s debug=%s", str(search), str(debug))
+    except Exception:
+        pass
+    # Ensure sidecars are loaded before listing; _list_performers already loads, but
+    # calling here makes intent explicit during debug.
+    if debug:
+        try:
+            _load_performers_sidecars()
+        except Exception:
+            pass
+    res = _list_performers(search)
+    try:
+        logging.info("[performers] list response: %d item(s)", len(res))
+        if debug:
+            try:
+                # Log cache/index sizes and a small sample of counts for visibility
+                idx_size = len(_PERFORMERS_INDEX or {})
+                cache_size = len(_PERFORMERS_CACHE or {})
+                logging.info("[performers] index size=%d cache size=%d", idx_size, cache_size)
+                # Top 10 by count for quick inspection
+                sample = sorted(res, key=lambda r: int(r.get("count") or 0), reverse=True)[:10]
+                for i, r in enumerate(sample, start=1):
+                    logging.info("[performers] #%d %s (norm=%s) count=%s", i, r.get("name"), r.get("norm"), str(r.get("count")))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return api_success({"performers": res})
 
 @api.post("/performers/add")
 def api_performers_add(body: dict = Body(...)):
@@ -6626,13 +6735,47 @@ def api_performers_import(body: str = Body(..., media_type="text/plain")):
     except Exception:
         raise_api_error("invalid import payload", status_code=400)
     added = 0
-    for n in names:
+    new_names: list[str] = []  # Initialize new names list
+    for n in names:  # Iterate through performer names
         norm = _normalize_performer(n)
         if norm and norm not in _PERFORMERS_CACHE:
             _PERFORMERS_CACHE[norm] = {"name": n, "tags": []}
             _PERFORMERS_INDEX.setdefault(norm, set())
             added += 1
-    return api_success({"imported": added})
+            new_names.append(n)  # Collect new names
+    # Persist into central registry so performers survive server reloads
+    if new_names:
+        try:
+            path = _performers_registry_path()
+            with REGISTRY_LOCK:
+                data = _load_registry(path, "performers")
+                items: list[dict] = data.get("performers") or []
+                # Build set of existing slugs to prevent duplicates
+                existing = {p.get("slug") or "" for p in items}
+                next_id = int(data.get("next_id") or 1)
+                for nm in new_names:
+                    slug = _slugify(nm)
+                    if slug in existing:
+                        continue
+                    items.append({"id": next_id, "name": nm, "slug": slug, "images": []})
+                    existing.add(slug)
+                    next_id += 1
+                data["performers"] = items
+                data["next_id"] = next_id
+                _save_registry(path, data)
+            try:
+                logging.info("[performers] import persisted: +%d new → %d total at %s", added, len(items), str(path))
+            except Exception:
+                pass
+        except Exception:
+            # Non-fatal: keep in-memory import even if persistence fails
+            pass
+    if added == 0:
+        try:
+            logging.info("[performers] import: 0 new (likely duplicates) at %s", str(_performers_registry_path()))
+        except Exception:
+            pass
+    return api_success({"imported": added})  # Return the number of added performers
 
 @api.post("/performers/rename")
 def api_performers_rename(body: dict = Body(...)):
@@ -9171,7 +9314,60 @@ def set_root(root: str = Query(...)):
     p = Path(root).expanduser()
     if not p.exists() or not p.is_dir():
         raise_api_error("Root does not exist or is not a directory", status_code=400, data={"path": str(p)})
-    STATE["root"] = p.resolve()
+    new_root = p.resolve()
+    old_root = STATE.get("root")
+    # If changing root, attempt to merge/migrate central registries so user data persists
+    try:
+        if old_root and Path(old_root) != new_root:
+            old_perf = Path(old_root) / ".artifacts" / "performers.json"
+            new_perf = new_root / ".artifacts" / "performers.json"
+            try:
+                logging.info("[performers] setroot: migrate registry from %s → %s", str(old_perf), str(new_perf))
+            except Exception:
+                pass
+            with REGISTRY_LOCK:
+                old_data = _load_registry(old_perf, "performers") if old_perf.exists() else {"version": 1, "next_id": 1, "performers": []}
+                new_data = _load_registry(new_perf, "performers")
+                # Merge unique by slug
+                items: list[dict] = list(new_data.get("performers") or [])
+                seen = {str(it.get("slug") or "") for it in items}
+                next_id = int(new_data.get("next_id") or 1)
+                for it in (old_data.get("performers") or []):
+                    slug = str(it.get("slug") or "")
+                    name = (it.get("name") or "").strip()
+                    if not name:
+                        continue
+                    if slug in seen:
+                        continue
+                    pid = int(it.get("id") or 0)
+                    if pid <= 0:
+                        pid = next_id
+                        next_id += 1
+                    else:
+                        next_id = max(next_id, pid + 1)
+                    items.append({
+                        "id": pid,
+                        "name": name,
+                        "slug": slug or _slugify(name),
+                        "images": list(it.get("images") or []),
+                    })
+                new_data["performers"] = items
+                new_data["next_id"] = next_id
+                _save_registry(new_perf, new_data)
+            try:
+                logging.info("[performers] setroot: migration complete → %d item(s) at %s", len(items), str(new_perf))
+            except Exception:
+                pass
+    except Exception:
+        # Non-fatal: proceed with root change even if registry migration fails
+        pass
+    STATE["root"] = new_root
+    # Invalidate performers cache so next read reflects new root/registry
+    try:
+        global _PERFORMERS_CACHE_TS
+        _PERFORMERS_CACHE_TS = None
+    except Exception:
+        pass
     return api_success({"root": str(STATE["root"])})
 
 
@@ -11708,6 +11904,10 @@ def registry_performers_list():
         data = _load_registry(path, "performers")
         items = list(data.get("performers") or [])
     items.sort(key=lambda x: (x.get("name") or "").lower())
+    try:
+        logging.info("[performers] registry list: %d item(s) from %s", len(items), str(path))
+    except Exception:
+        pass
     return api_success({"performers": items, "count": len(items)})
 
 
@@ -12355,6 +12555,18 @@ def _handle_autotag_job(jid: str, jr: JobRequest, base: Path) -> None:
                     changed += 1
                 except Exception:
                     pass
+            # Mirror into media attribute store for immediate UI reflection
+            try:
+                rel = str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)
+                ent = _media_entry(rel)
+                # merge performers/tags with normalization and dedupe
+                merged_perfs = _norm_list((ent.get("performers") or []) + list(found_perfs))
+                merged_tags = _norm_list((ent.get("tags") or []) + list(found_tags))
+                ent["performers"] = merged_perfs
+                ent["tags"] = merged_tags
+                _save_media_attr()
+            except Exception:
+                pass
         finally:
             _set_job_progress(jid, processed_set=i)
     _job_set_result(jid, {"matched_files": matched_count, "updated_files": changed, "total": len(vids)})

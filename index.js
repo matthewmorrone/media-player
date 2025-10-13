@@ -1,5 +1,21 @@
 import { fmtSize, fmtDuration, parseTimeString, debounce, hide, show, showAs, isHidden, showMessageModal, isAbsolutePath, notify, lsGet, lsSet, lsRemove, lsGetJSON, lsSetJSON, lsGetBool, lsSetBool, lsRemovePrefix } from './utils.js';
 
+// Back-compat toast shim: provide a module-scoped showToast used throughout this file.
+// If a legacy global window.showToast exists, use it; otherwise fallback to utils.notify().
+// Accepts legacy Bulma-like classes ('is-success'|'is-error'|'is-info') or plain types ('success'|'error'|'info').
+const showToast = (message, type = 'is-info') => {
+  try {
+    if (window && typeof window.showToast === 'function') {
+      window.showToast(message, type);
+      return;
+    }
+  }
+  catch (_) { /* ignore access errors */ }
+  // Normalize type for notify()
+  const normalized = (typeof type === 'string' && type.startsWith('is-')) ? type.slice(3) : (type || 'info');
+  try { notify(message, normalized); } catch (_) { /* no-op */ }
+};
+
 
 
 
@@ -302,7 +318,8 @@ let infiniteScrollUserScrolled = false;
 let infiniteScrollPendingInsertion = null; // Promise while new tiles are being inserted
 // Bottom-trigger infinite scroll enhancements
 // Strict mode (requested): ONLY load when user reaches/overscrolls the real bottom.
-// No prefill auto-loading; if first page doesn't create overflow, user must resize or change density.
+// No prefill auto-loading;
+// if first page doesn't create overflow, user must resize or change density.
 const INFINITE_SCROLL_BOTTOM_THRESHOLD = 32; // tighter threshold for "at bottom"
 let infiniteScrollLastTriggerHeight = 0; // scrollHeight at last successful trigger
 let stablePageSize = null; // locked page size for current browsing session (resets when page=1)
@@ -3663,7 +3680,8 @@ function setupViewportFitPlayer() {
         });
         item.addEventListener('drop', (e) => {
           e.preventDefault();
-          const src = draggingCol; const dst = c.id; if (!src || src === dst) return;
+          const src = draggingCol; const dst = c.id;
+          if (!src || src === dst) return;
           const sIdx = cols.findIndex((x) => x.id === src); const dIdx = cols.findIndex((x) => x.id === dst);
           if (sIdx < 0 || dIdx < 0) return;
           const before = item.classList.contains('drop-before');
@@ -4110,6 +4128,15 @@ const Player = (() => {
   // @TODO copilot: make this configurable in a setting
   const OVERLAY_FADE_DELAY = 2500;
   // ms before fading overlay bar
+  // Keep overlay visible briefly after keyboard interactions
+  let overlayKbActiveUntil = 0;
+  function markKeyboardActive() {
+    try {
+      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      overlayKbActiveUntil = now + OVERLAY_FADE_DELAY + 250;
+    }
+    catch (_) { overlayKbActiveUntil = Date.now() + OVERLAY_FADE_DELAY + 250; }
+  }
   // Scrubber elements
   let scrubberEl = null,
     scrubberTrackEl = null,
@@ -4355,21 +4382,29 @@ const Player = (() => {
     badgePhashStatus = qs('badgePhashStatus');
 
     // Support new hyphenated badge IDs (preferred) with fallback to legacy camelCase if present
-    const pick = (hyphen, legacy) => document.getElementById(hyphen) || document.getElementById(legacy);
-    badgeHeatmap = pick('badge-heatmap', 'badgeHeatmap');
+    const pick = (id1, id2, id3) => document.getElementById(id1) || (id2 ? document.getElementById(id2) : null) || (id3 ? document.getElementById(id3) : null);
+    // Note: heatmap badge in markup uses plural "badge-heatmaps"; support both
+    badgeHeatmap = pick('badge-heatmaps', 'badge-heatmap', 'badgeHeatmap');
     badgeScenes = pick('badge-scenes', 'badgeScenes');
     badgeSubtitles = pick('badge-subtitles', 'badgeSubtitles');
     badgeSprites = pick('badge-sprites', 'badgeSprites');
     badgeFaces = pick('badge-faces', 'badgeFaces');
     badgeHover = pick('badge-hover', 'badgeHover');
     badgePhash = pick('badge-phash', 'badgePhash');
-    badgeHeatmapStatus = pick('badge-heatmap-status', 'badgeHeatmapStatus');
+    badgeHeatmapStatus = pick('badge-heatmaps-status', 'badge-heatmap-status', 'badgeHeatmapStatus');
     badgeScenesStatus = pick('badge-scenes-status', 'badgeScenesStatus');
     badgeSubtitlesStatus = pick('badge-subtitles-status', 'badgeSubtitlesStatus');
     badgeSpritesStatus = pick('badge-sprites-status', 'badgeSpritesStatus');
     badgeFacesStatus = pick('badge-faces-status', 'badgeFacesStatus');
     badgeHoverStatus = pick('badge-hover-status', 'badgeHoverStatus');
     badgePhashStatus = pick('badge-phash-status', 'badgePhashStatus');
+    // Extra resilience: if a status element wasn't found but the badge exists, try to locate a child span ending with -status
+    if (!badgeScenesStatus && badgeScenes) {
+      try {
+        badgeScenesStatus = badgeScenes.querySelector('span[id$="-status"]') || null;
+      }
+      catch (_) { }
+    }
     btnSetThumbnail = qs('btnSetThumbnail');
     btnAddMarker = qs('btnAddMarker');
     btnSetIntroEnd = qs('btnSetIntroEnd');
@@ -4876,7 +4911,8 @@ const Player = (() => {
                   if (fi) fi.src = finalUrl;
                   const card = document.querySelector(`.card[data-path="${activePath.replace(/"/g, '\\"')}"]`);
                   if (card) {
-                    const img = card.querySelector('img.thumbnail-img'); if (img) img.src = finalUrl;
+                    const img = card.querySelector('img.thumbnail-img');
+                    if (img) img.src = finalUrl;
                   }
                   break;
                 }
@@ -5248,16 +5284,56 @@ const Player = (() => {
       if (!videoEl) {
         return;
       }
+      const tag = (document.activeElement && document.activeElement.tagName) || '';
+      const inForm = /INPUT|TEXTAREA|SELECT|BUTTON/.test(tag);
+      // Prevent page scroll when focused on body and using space/arrow keys for player
+      if (e.key === ' ' || e.key === 'Spacebar' || e.code === 'Space' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        if (!inForm) {
+          try { e.preventDefault(); } catch (_) { }
+        }
+      }
+      // Volume
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        const tag = (document.activeElement && document.activeElement.tagName) || '';
-        if (/INPUT|TEXTAREA|SELECT/.test(tag)) return;
-        e.preventDefault();
+        if (inForm) return;
         const delta = (e.key === 'ArrowUp') ? 0.05 : -0.05;
         let nv = Math.max(0, Math.min(1, (videoEl.volume || 0) + delta));
         if (nv < 0.005) nv = 0; // snap tiny
         videoEl.volume = nv;
         if (nv > 0 && videoEl.muted) videoEl.muted = false;
         syncControls();
+        markKeyboardActive();
+        showOverlayBar();
+        return;
+      }
+      // Seek left/right (5s)
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        if (inForm) return;
+        const delta = (e.key === 'ArrowLeft') ? -5 : 5;
+        try {
+          const cur = Number(videoEl.currentTime || 0);
+          const dur = Number(videoEl.duration || 0) || 0;
+          const next = Math.max(0, Math.min(dur || 9e9, cur + delta));
+          videoEl.currentTime = next;
+        }
+        catch (_) { }
+        markKeyboardActive();
+        showOverlayBar();
+        return;
+      }
+      // Space toggles play/pause
+      if ((e.key === ' ' || e.key === 'Spacebar' || e.code === 'Space') && !inForm) {
+        try {
+          if (videoEl.paused) {
+            safePlay(videoEl);
+          }
+          else {
+            videoEl.pause();
+          }
+        }
+        catch (_) { }
+        markKeyboardActive();
+        showOverlayBar();
+        return;
       }
     }, { passive: false });
   }
@@ -5443,7 +5519,10 @@ const Player = (() => {
     }
     catch (_) { }
     if (description == null) {
-      try { const v = localStorage.getItem(keyDesc(currentPath)); if (typeof v === 'string') description = v; } catch (_) { }
+      try {
+        const v = localStorage.getItem(keyDesc(currentPath));
+        if (typeof v === 'string') description = v;
+      } catch (_) { }
     }
     // Apply UI (allow 0 rating explicitly)
     try {
@@ -5736,12 +5815,18 @@ const Player = (() => {
         clearTimeout(overlayHideTimer);
         overlayHideTimer = null;
       }
-      const defer = (overlayBarEl.matches(':hover') || (scrubberEl && scrubberEl.matches(':hover')) || scrubberDragging);
-      if (defer) {
-        return;
-      }
+      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const shouldDefer = (overlayBarEl.matches(':hover') || (scrubberEl && scrubberEl.matches(':hover')) || scrubberDragging || now < overlayKbActiveUntil);
+      // Always schedule a fade check, but only apply if conditions allow
       overlayHideTimer = setTimeout(() => {
         try {
+          const n = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          const stillDefer = (overlayBarEl.matches(':hover') || (scrubberEl && scrubberEl.matches(':hover')) || scrubberDragging || n < overlayKbActiveUntil);
+          if (stillDefer) {
+            // Re-arm visibility without fading; try again shortly after the main delay window
+            showOverlayBar();
+            return;
+          }
           if (overlayBarEl) overlayBarEl.classList.add('fading');
           if (scrubberEl) scrubberEl.classList.add('fading');
         }
@@ -6214,6 +6299,14 @@ const Player = (() => {
     catch (_) { }
     renderChipSet(perfListEl, performers, 'performer');
     renderChipSet(tagListEl, tags, 'tag');
+    // Update label counts (e.g., "Performers (2)", "Tags (5)")
+    try {
+      const perfLabel = document.querySelector('#videoPerformersGroup .chips-label');
+      const tagLabel = document.querySelector('#videoTagsGroup .chips-label');
+      if (perfLabel) perfLabel.textContent = `Performers (${performers.length})`;
+      if (tagLabel) tagLabel.textContent = `Tags (${tags.length})`;
+    }
+    catch (_) { }
     wireChipInputs();
   }
 
@@ -6825,7 +6918,10 @@ const Player = (() => {
     try {
       const st = window.__artifactStatus && window.__artifactStatus[currentPath];
       if (st && st.scenes === false) {
-        if (badgeScenesStatus) badgeScenesStatus.textContent = '✗';
+        if (!badgeScenesStatus && badgeScenes) {
+          try { badgeScenesStatus = badgeScenes.querySelector('span[id$="-status"]') || null; } catch (_) { }
+        }
+        if (badgeScenesStatus) badgeScenesStatus.textContent = '0';
         if (badgeScenes) badgeScenes.dataset.present = '0';
         applyTimelineDisplayToggles();
         return;
@@ -6848,7 +6944,11 @@ const Player = (() => {
         .map((s) => ({ time: Number(s.time || s.t || s.start || 0) }))
         .filter((s) => Number.isFinite(s.time));
       renderMarkers();
-      if (badgeScenesStatus) badgeScenesStatus.textContent = scenes.length ? '✓' : '✗';
+      // If the exact status element wasn't resolved early, try to locate it once more now
+      if (!badgeScenesStatus && badgeScenes) {
+        try { badgeScenesStatus = badgeScenes.querySelector('span[id$="-status"]') || null; } catch (_) { }
+      }
+      if (badgeScenesStatus) badgeScenesStatus.textContent = scenes.length ? String(scenes.length) : '0';
       if (badgeScenes) badgeScenes.dataset.present = scenes.length ? '1' : '0';
       applyTimelineDisplayToggles();
       // Scene ticks may depend on duration;
@@ -6858,7 +6958,10 @@ const Player = (() => {
     catch (_) {
       scenes = [];
       renderMarkers();
-      if (badgeScenesStatus) badgeScenesStatus.textContent = '✗';
+      if (!badgeScenesStatus && badgeScenes) {
+        try { badgeScenesStatus = badgeScenes.querySelector('span[id$="-status"]') || null; } catch (_) { }
+      }
+      if (badgeScenesStatus) badgeScenesStatus.textContent = '0';
       if (badgeScenes) badgeScenes.dataset.present = '0';
     }
     applyTimelineDisplayToggles();
@@ -6874,7 +6977,6 @@ const Player = (() => {
     const ready = Number.isFinite(videoEl.duration) && videoEl.duration > 0;
     if (ready) {
       try {
-
         renderSceneTicks();
       }
       catch (_) { } return;
@@ -6906,7 +7008,6 @@ const Player = (() => {
         const tt = t.track || null;
         if (tt && t._cueHandler) {
           try {
-
             tt.removeEventListener && tt.removeEventListener('cuechange', t._cueHandler);
           }
           catch (_) { }
@@ -6914,7 +7015,6 @@ const Player = (() => {
       }
       catch (_) { }
       try {
-
         t.remove();
       }
       catch (_) { }
@@ -7135,8 +7235,10 @@ const Player = (() => {
         });
         if (frag) {
           // style icon buttons for special markers
-          const tmp = frag.querySelector('.marker-jump'); if (tmp) tmp.classList.add('marker-btn-icon');
-          const tmp2 = frag.querySelector('.marker-remove'); if (tmp2) { tmp2.classList.add('marker-btn-icon'); tmp2.title = 'Clear'; }
+          const tmp = frag.querySelector('.marker-jump');
+          if (tmp) tmp.classList.add('marker-btn-icon');
+          const tmp2 = frag.querySelector('.marker-remove');
+          if (tmp2) { tmp2.classList.add('marker-btn-icon'); tmp2.title = 'Clear'; }
           list.appendChild(frag);
         }
       }
@@ -7169,8 +7271,10 @@ const Player = (() => {
           }
         });
         if (frag) {
-          const tmp = frag.querySelector('.marker-jump'); if (tmp) tmp.classList.add('marker-btn-icon');
-          const tmp2 = frag.querySelector('.marker-remove'); if (tmp2) { tmp2.classList.add('marker-btn-icon'); tmp2.title = 'Clear'; }
+          const tmp = frag.querySelector('.marker-jump');
+          if (tmp) tmp.classList.add('marker-btn-icon');
+          const tmp2 = frag.querySelector('.marker-remove');
+          if (tmp2) { tmp2.classList.add('marker-btn-icon'); tmp2.title = 'Clear'; }
           list.appendChild(frag);
         }
       }
@@ -7286,7 +7390,6 @@ const Player = (() => {
         }
       });
       try {
-
         parent.replaceChild(restored, input);
       }
       catch (_) { }
@@ -7740,7 +7843,10 @@ const Player = (() => {
         for (let i = 0; i < framesMeta.length; i++) {
           const ft = Number(framesMeta[i]?.t ?? framesMeta[i]?.time ?? (i * (metaDur / Math.max(1, framesMeta.length - 1))));
           const d = Math.abs(ft - t);
-          if (d < bestDiff) { bestDiff = d; nearest = i; if (d === 0) break; }
+          if (d < bestDiff) {
+            bestDiff = d; nearest = i;
+            if (d === 0) break;
+          }
         }
         frame = nearest;
       } else if (interval > 0 && Number.isFinite(interval)) {
@@ -8210,6 +8316,7 @@ else {
 const Performers = (() => {
   let gridEl,
     searchEl,
+    countEl,
     addBtn,
     importBtn,
     mergeBtn,
@@ -8219,6 +8326,23 @@ const Performers = (() => {
   let performers = [];
   let selected = new Set();
   let searchTerm = '';
+  // Sort state (default: by count desc)
+  let sortBy = 'count'; // 'count' | 'name'
+  let sortOrder = 'desc'; // 'asc' | 'desc'
+  // Pagination state
+  let page = 1;
+  let pageSize = 32;
+  let pager = null;
+  let prevBtn = null;
+  let nextBtn = null;
+  let pageInfo = null;
+  let pageSizeSel = null;
+  // Bottom pager mirrors
+  let pagerB = null;
+  let prevBtnB = null;
+  let nextBtnB = null;
+  let pageInfoB = null;
+  let pageSizeSelB = null;
   // Debounced search trigger (shared helper)
   let searchTimer = null; // retained only if we decide to cancel externally (not used now)
   let lastFocusedIndex = -1;
@@ -8232,12 +8356,24 @@ const Performers = (() => {
     }
     gridEl = document.getElementById('performersGrid');
     searchEl = document.getElementById('performerSearch');
+    countEl = document.getElementById('performersCount');
     addBtn = document.getElementById('performerAddBtn');
     importBtn = document.getElementById('performerImportBtn');
     mergeBtn = document.getElementById('performerMergeBtn');
     deleteBtn = document.getElementById('performerDeleteBtn');
     dropZone = document.getElementById('performerDropZone');
     statusEl = document.getElementById('performersStatus');
+    pager = document.getElementById('performersPager');
+    prevBtn = document.getElementById('perfPrev');
+    nextBtn = document.getElementById('perfNext');
+    pageInfo = document.getElementById('perfPageInfo');
+    pageSizeSel = document.getElementById('perfPageSize');
+    // Bottom pager
+    pagerB = document.getElementById('performersPagerBottom');
+    prevBtnB = document.getElementById('perfPrevBottom');
+    nextBtnB = document.getElementById('perfNextBottom');
+    pageInfoB = document.getElementById('perfPageInfoBottom');
+    pageSizeSelB = document.getElementById('perfPageSizeBottom');
     wireEvents();
   }
   function setStatus(msg, showFlag = true) {
@@ -8255,15 +8391,48 @@ const Performers = (() => {
     gridEl.innerHTML = '';
     const frag = document.createDocumentFragment();
     const termLower = searchTerm.toLowerCase();
-    const filtered = performers.filter(
+    // Filter by search text
+    let filtered = performers.filter(
       (p) => !termLower || p.name.toLowerCase().includes(termLower)
     );
+    // Apply sort
+    const cmp = (a, b) => {
+      if (sortBy === 'name') {
+        const an = (a.name || '').toLowerCase();
+        const bn = (b.name || '').toLowerCase();
+        if (an < bn) return -1;
+        if (an > bn) return 1;
+        // tie-breaker: count desc then norm
+        const cd = (b.count || 0) - (a.count || 0);
+        if (cd !== 0) return cd;
+        return (a.norm || '').localeCompare(b.norm || '');
+      }
+      // default count
+      const cd = (b.count || 0) - (a.count || 0);
+      if (cd !== 0) return cd;
+      return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+    };
+    filtered.sort(cmp);
+    if (sortOrder === 'asc') filtered.reverse();
+    // setup pagination
+    const total = filtered.length || 0;
+    const pages = total ? Math.max(1, Math.ceil(total / pageSize)) : 1;
+    if (page > pages) page = pages;
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize;
+    const pageItems = filtered.slice(start, end);
     if (addBtn) {
       const exact = filtered.some((p) => p.name.toLowerCase() === termLower);
       if (searchTerm && !exact) showAs(addBtn, 'inline-block');
       else hide(addBtn);
       addBtn.textContent = `Add '${searchTerm}'`;
       addBtn.disabled = !searchTerm;
+    }
+    if (countEl) {
+      const total = performers.length;
+      countEl.textContent = filtered.length === total
+        ? `${total} performer${total === 1 ? '' : 's'}`
+        : `${filtered.length} of ${total}`;
     }
     if (filtered.length === 0) {
       const msg = document.createElement('div');
@@ -8274,49 +8443,33 @@ const Performers = (() => {
       gridEl.appendChild(msg);
     }
     else {
-      filtered.forEach((p) => {
+      pageItems.forEach((p) => {
         const card = document.createElement('div');
-        card.className = 'perf-card';
+        card.className = 'perf-card perf-card--pretty';
         card.dataset.norm = p.norm;
         if (selected.has(p.norm)) card.dataset.selected = '1';
+        // Top row: avatar + name + count badge
+        const top = document.createElement('div');
+        top.className = 'pc-top';
+        const avatar = document.createElement('div');
+        avatar.className = 'pc-avatar';
+        avatar.title = p.name;
+        avatar.setAttribute('aria-hidden', 'true');
+        const titleBox = document.createElement('div');
+        titleBox.className = 'pc-titlebox';
         const h = document.createElement('h3');
         h.textContent = p.name;
-        const count = document.createElement('div');
-        count.className = 'count';
-        count.textContent = `${p.count} file${p.count === 1 ? '' : 's'}`;
-        const actions = document.createElement('div');
-        actions.className = 'actions';
-        const btnRename = document.createElement('button');
-        btnRename.className = 'btn-xs';
-        btnRename.textContent = 'Rename';
-        btnRename.onclick = () => renamePrompt(p);
-        const tagsWrap = document.createElement('div');
-        tagsWrap.className = 'tags';
-        (p.tags || []).forEach((tag) => {
-          const tEl = document.createElement('span');
-          tEl.className = 'tag';
-          tEl.textContent = tag;
-          tEl.title = 'Click to remove';
-          tEl.onclick = (ev) => {
-            ev.stopPropagation();
-            removeTag(p, tag);
-          };
-          tagsWrap.appendChild(tEl);
-        });
-        const addTagBtn = document.createElement('button');
-        addTagBtn.className = 'btn-xs';
-        addTagBtn.textContent = '+';
-        addTagBtn.title = 'Add tag';
-        addTagBtn.onclick = (ev) => {
-          ev.stopPropagation();
-          addTagPrompt(p);
-        };
-        actions.appendChild(btnRename);
-        actions.appendChild(addTagBtn);
-        card.appendChild(h);
-        card.appendChild(count);
-        card.appendChild(tagsWrap);
-        card.appendChild(actions);
+        h.className = 'pc-name';
+        const count = document.createElement('span');
+        count.className = 'pc-count';
+        count.textContent = `${p.count}`;
+        count.title = `${p.count} file${p.count === 1 ? '' : 's'}`;
+        titleBox.appendChild(h);
+        top.appendChild(avatar);
+        top.appendChild(titleBox);
+        top.appendChild(count);
+        // Compose (no actions row)
+        card.appendChild(top);
         card.tabIndex = 0;
         // focusable
         card.onclick = (e) => handleCardClick(e, p, filtered);
@@ -8325,11 +8478,26 @@ const Performers = (() => {
       });
       gridEl.appendChild(frag);
     }
+    // pager UI
+    const infoText = total ? `Page ${page} / ${pages} • ${total} total` : '—';
+    if (pager && pageInfo && prevBtn && nextBtn) {
+      pageInfo.textContent = infoText;
+      prevBtn.disabled = page <= 1;
+      nextBtn.disabled = page >= pages;
+    }
+    if (pagerB && pageInfoB && prevBtnB && nextBtnB) {
+      pageInfoB.textContent = infoText;
+      prevBtnB.disabled = page <= 1;
+      nextBtnB.disabled = page >= pages;
+    }
     updateSelectionUI();
-    // Ensure performers grid loads on page load
-    window.addEventListener('DOMContentLoaded', () => {
-      if (window.fetchPerformers) window.fetchPerformers();
-    });
+    // Ensure performers grid loads on page load (idempotent)
+    if (!window.__perfAutoFetched) {
+      window.__perfAutoFetched = true;
+      window.addEventListener('DOMContentLoaded', () => {
+        if (window.fetchPerformers) window.fetchPerformers();
+      }, { once: true });
+    }
   }
   function updateSelectionUI() {
     document.querySelectorAll('.perf-card').forEach((c) => {
@@ -8347,11 +8515,15 @@ const Performers = (() => {
       setStatus('Loading…', true);
       const url = new URL('/api/performers', window.location.origin);
       if (searchTerm) url.searchParams.set('search', searchTerm);
+      // Add debug=true to print detailed counts and index/cache info in the server log while we troubleshoot 0 counts
+      url.searchParams.set('debug', 'true');
       const r = await fetch(url);
       const j = await r.json();
       // performers response loaded
       performers = j?.data?.performers || [];
       setStatus('', false);
+      // Reset to first page on new fetch to keep UX sane
+      page = 1;
       render();
     }
     catch (e) {
@@ -8531,9 +8703,11 @@ const Performers = (() => {
       }
       return;
     }
-    if (fileInput) {
+    // Always lookup the file input at call time in case DOM changed
+    const fi = document.getElementById('performerFileInput');
+    if (fi) {
       try {
-        fileInput.click();
+        fi.click();
         return;
       }
       catch (_) {
@@ -8682,13 +8856,98 @@ const Performers = (() => {
       dropZone._wired = true;
       wireDropZone();
     }
+    // Sort controls
+    const sortSel = document.getElementById('performerSort');
+    const sortOrderBtn = document.getElementById('performerSortOrder');
+    // Load persisted sort prefs
+    try {
+      const sb = localStorage.getItem('performers:sortBy');
+      const so = localStorage.getItem('performers:sortOrder');
+      if (sb === 'name' || sb === 'count') sortBy = sb;
+      if (so === 'asc' || so === 'desc') sortOrder = so;
+    } catch (_) { }
+    if (sortSel) {
+      sortSel.value = sortBy;
+      if (!sortSel._wired) {
+        sortSel._wired = true;
+        sortSel.addEventListener('change', () => {
+          sortBy = sortSel.value === 'name' ? 'name' : 'count';
+          // Default order: name asc, count desc
+          if (sortBy === 'name') sortOrder = 'asc'; else sortOrder = 'desc';
+          try { localStorage.setItem('performers:sortBy', sortBy); localStorage.setItem('performers:sortOrder', sortOrder); } catch (_) { }
+          // Reflect order button label
+          if (sortOrderBtn) sortOrderBtn.textContent = sortOrder === 'asc' ? 'Asc' : 'Desc';
+          page = 1;
+          render();
+        });
+      }
+    }
+    if (sortOrderBtn && !sortOrderBtn._wired) {
+      sortOrderBtn._wired = true;
+      // Initialize label
+      sortOrderBtn.textContent = sortOrder === 'asc' ? 'Asc' : 'Desc';
+      sortOrderBtn.addEventListener('click', () => {
+        sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+        try { localStorage.setItem('performers:sortOrder', sortOrder); } catch (_) { }
+        sortOrderBtn.textContent = sortOrder === 'asc' ? 'Asc' : 'Desc';
+        page = 1;
+        render();
+      });
+    }
+    const handlePrev = () => { if (page > 1) { page--; render(); } };
+    const handleNext = () => {
+      const termLower = searchTerm.toLowerCase();
+      const total = performers.filter((p) => !termLower || p.name.toLowerCase().includes(termLower)).length;
+      const pages = Math.max(1, Math.ceil(total / pageSize));
+      if (page < pages) { page++; render(); }
+    };
+    if (prevBtn && !prevBtn._wired) {
+      prevBtn._wired = true;
+      prevBtn.addEventListener('click', handlePrev);
+    }
+    if (nextBtn && !nextBtn._wired) {
+      nextBtn._wired = true;
+      nextBtn.addEventListener('click', handleNext);
+    }
+    if (prevBtnB && !prevBtnB._wired) {
+      prevBtnB._wired = true;
+      prevBtnB.addEventListener('click', handlePrev);
+    }
+    if (nextBtnB && !nextBtnB._wired) {
+      nextBtnB._wired = true;
+      nextBtnB.addEventListener('click', handleNext);
+    }
+    const handlePageSizeChange = (sel) => {
+      const v = parseInt(sel.value, 10);
+      if (Number.isFinite(v) && v > 0) {
+        pageSize = v;
+        // keep both selects in sync
+        if (pageSizeSel && pageSizeSel !== sel) pageSizeSel.value = String(v);
+        if (pageSizeSelB && pageSizeSelB !== sel) pageSizeSelB.value = String(v);
+        page = 1;
+        render();
+      }
+    };
+    if (pageSizeSel && !pageSizeSel._wired) {
+      pageSizeSel._wired = true;
+      const ps = parseInt(pageSizeSel.value, 10);
+      if (Number.isFinite(ps)) pageSize = ps;
+      pageSizeSel.addEventListener('change', () => handlePageSizeChange(pageSizeSel));
+    }
+    if (pageSizeSelB && !pageSizeSelB._wired) {
+      pageSizeSelB._wired = true;
+      const psb = parseInt(pageSizeSelB.value, 10);
+      if (Number.isFinite(psb)) pageSize = psb;
+      pageSizeSelB.addEventListener('change', () => handlePageSizeChange(pageSizeSelB));
+    }
     document.addEventListener('keydown', globalKeyHandler);
   }
   // Wire hidden file input fallback
-  const fileInput = document.getElementById('performerFileInput');
-  if (fileInput && !fileInput._wired) {
+  function wireFileInputOnce() {
+    const fileInput = document.getElementById('performerFileInput');
+    if (!fileInput || fileInput._wired) return;
     fileInput._wired = true;
-    fileInput.addEventListener('change', async (e) => {
+    fileInput.addEventListener('change', async () => {
       const files = [...(fileInput.files || [])];
       if (!files.length) {
         return;
@@ -8760,8 +9019,15 @@ const Performers = (() => {
             if (r.ok) {
               imported = true;
               if (window.showToast) window.showToast('Performers imported', 'is-success');
-              if (window.fetchPerformers) window.fetchPerformers();
+              try { await fetchPerformers(); } catch (_) { }
               setStatus('Imported performers', true);
+              // Immediately offer filename auto-match preview scoped to imported names
+              try {
+                if (window.__openPerfAutoMatchWithList) {
+                  window.__openPerfAutoMatchWithList(rawNames);
+                }
+              }
+              catch (_) { }
             }
             else if (r.status === 422) {
               // Fallback to JSON
@@ -8774,8 +9040,14 @@ const Performers = (() => {
               if (r2.ok) {
                 imported = true;
                 if (window.showToast) window.showToast('Performers imported', 'is-success');
-                if (window.fetchPerformers) window.fetchPerformers();
+                try { await fetchPerformers(); } catch (_) { }
                 setStatus('Imported performers', true);
+                try {
+                  if (window.__openPerfAutoMatchWithList) {
+                    window.__openPerfAutoMatchWithList(rawNames);
+                  }
+                }
+                catch (_) { }
               }
               else {
                 errorMsg = j2?.message || 'Import failed';
@@ -8821,18 +9093,27 @@ const Performers = (() => {
       }
     });
   }
+  // Wire file input at DOM ready and also opportunistically when tab is shown
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wireFileInputOnce, { once: true });
+  } else {
+    wireFileInputOnce();
+  }
   if (dropZone && !dropZone._clickWired) {
     dropZone._clickWired = true;
     dropZone.addEventListener('click', () => {
-      if (fileInput) fileInput.click();
+      const fi = document.getElementById('performerFileInput');
+      if (fi) fi.click();
     });
     dropZone.addEventListener('dblclick', () => {
-      if (fileInput) fileInput.click();
+      const fi = document.getElementById('performerFileInput');
+      if (fi) fi.click();
     });
     dropZone.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        if (fileInput) fileInput.click();
+        const fi = document.getElementById('performerFileInput');
+        if (fi) fi.click();
       }
     });
   }
@@ -8987,28 +9268,16 @@ const Performers = (() => {
       true
     );
   }
-  function show() {
-    const p = fetchPerformers();
-    let attempts = 0;
-    const maxAttempts = 40;
-    // up to ~2s
-    function attemptOpen() {
-      if (window.__openPerfAutoMatch) {
-        try {
-          window.__openPerfAutoMatch();
-        }
-        catch (_) { }
-        return;
-      }
-      if (++attempts <= maxAttempts) setTimeout(attemptOpen, 50);
-    }
-    setTimeout(attemptOpen, 80);
+  function openPanel() {
+    // Just load performers; do not auto-open Auto‑Match modal.
+    fetchPerformers();
   }
-  return { show };
+  return { show: openPanel };
 })();
 window.Performers = Performers;
 
 // Hook tab switch to load performers when opened
+// 1) Click on the Performers tab button
 document.addEventListener('click', (e) => {
   const btn = e.target.closest && e.target.closest('[data-tab="performers"]');
   if (btn) {
@@ -9017,19 +9286,38 @@ document.addEventListener('click', (e) => {
     }, 50);
   }
 });
+// 2) Router-driven activation (hash navigation and programmatic tab switches)
+//    TabSystem dispatches a CustomEvent('tabchange', { detail: { activeTab } }) on window.
+window.addEventListener('tabchange', (ev) => {
+  try {
+    const active = ev && ev.detail && ev.detail.activeTab;
+    if (active === 'performers' && window.Performers) {
+      // Defer slightly to allow panel DOM to settle
+      setTimeout(() => window.Performers && window.Performers.show(), 30);
+    }
+  }
+  catch (_) { /* no-op */ }
+});
+// 3) Direct load on #performers (refresh or deep-link)
+window.addEventListener('DOMContentLoaded', () => {
+  const hash = (window.location.hash || '').replace(/^#/, '');
+  if (hash === 'performers' && window.Performers) {
+    setTimeout(() => window.Performers && window.Performers.show(), 50);
+  }
+});
 
 // Fallback direct wiring: ensure clicking the import drop zone always opens file picker
 // (In case module wiring hasn't run yet or was interrupted.)
 (function ensurePerformerDropZoneClick() {
   function wire() {
     const dz = document.getElementById('performerDropZone');
-    const fi = document.getElementById('performerFileInput');
-    if (!dz || !fi || dz._directClick) {
+    if (!dz || dz._directClick) {
       return;
     }
     dz._directClick = true;
     dz.addEventListener('click', (ev) => {
       // Ignore if text selection drag ended here
+      const fi = document.getElementById('performerFileInput');
       if (fi && typeof fi.click === 'function') {
         try {
           fi.click();
@@ -9040,6 +9328,7 @@ document.addEventListener('click', (e) => {
     dz.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault();
+        const fi = document.getElementById('performerFileInput');
         if (fi && typeof fi.click === 'function') {
           try {
             fi.click();
@@ -9049,142 +9338,147 @@ document.addEventListener('click', (e) => {
       }
     });
   }
+  // Defer wiring until DOM is ready so elements exist
+  function wirePerformerAutoMatch() {
+    function qs(id) { return document.getElementById(id); }
+    const openBtn = qs('performerAutoMatchBtn');
+    const modal = qs('performerAutoMatchModal');
+    if (!modal) {
+      // Required modal root missing; nothing to wire.
+      return;
+    }
+    if (modal._wired) return;
+    const closeBtn = qs('perfAutoMatchClose');
+    const cancelBtn = qs('perfAutoCancelBtn');
+    const applyBtnFooter = qs('perfAutoApplyBtnFooter');
+    const statusEl = qs('perfAutoMatchStatus');
+    const tbody = qs('perfAutoMatchTbody');
+    let lastRows = [];
+
+    // Local toast helper: prefer legacy window.showToast if present; otherwise use notify()
+    function toast(message, type) {
+      try {
+        const normalized = (type && typeof type === 'string' && type.startsWith('is-')) ? type.slice(3) : (type || 'info');
+        if (window.showToast) {
+          // Keep original type for legacy showToast which expects 'is-success' etc.
+          window.showToast(message, type || 'is-info');
+        } else {
+          // utils.notify expects 'success' | 'error' | 'info'
+          notify(message, normalized);
+        }
+      }
+      catch (_) { /* no-op */ }
+    }
+
+    function open() {
+      show(modal);
+      modal.setAttribute('data-open', '1');
+      document.addEventListener('keydown', escListener);
+    }
+    function close() {
+      hide(modal);
+      modal.removeAttribute('data-open');
+      document.removeEventListener('keydown', escListener);
+    }
+    function escListener(e) { if (e.key === 'Escape') close(); }
+    function setApplying(dis) { if (applyBtnFooter) applyBtnFooter.disabled = dis; }
+    function enableApply(enabled) { setApplying(!enabled); }
+
+    async function doPreview() {
+      enableApply(false);
+      if (statusEl) statusEl.textContent = 'Previewing…';
+      if (tbody) tbody.innerHTML = '';
+      lastRows = [];
+      try {
+        // Global preview: scan all videos from root, recursive, using registry performers
+        const payload = { path: undefined, recursive: true, use_registry_performers: true, performers: [], tags: [], limit: 800 };
+        const r = await fetch('/api/autotag/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j?.message || 'Preview failed');
+        const rows = j?.data?.candidates || [];
+        lastRows = rows;
+        if (statusEl) statusEl.textContent = rows.length ? rows.length + ' match(es)' : 'No matches';
+        rows.forEach((row) => {
+          const tpl = document.getElementById('autotagRowTemplate');
+          if (!tpl) return;
+          const tr = tpl.content.firstElementChild.cloneNode(true);
+          tr.querySelector('.file').textContent = row.file;
+          tr.querySelector('.tags').textContent = (row.performers || []).join(', ');
+          tbody && tbody.appendChild(tr);
+        });
+        enableApply(rows.length > 0);
+      } catch (err) {
+        if (statusEl) statusEl.textContent = err.message || 'Preview failed';
+      }
+    }
+
+    async function doApply() {
+      if (!lastRows.length) return;
+      setApplying(true);
+      if (statusEl) statusEl.textContent = 'Queuing job…';
+      try {
+        const payload = { path: undefined, recursive: true, use_registry_performers: true, performers: [], tags: [] };
+        const r = await fetch('/api/autotag/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if (!r.ok) {
+          try { const j = await r.json(); throw new Error(j?.message || 'Queue failed'); }
+          catch (e) { throw e; }
+        }
+        if (statusEl) statusEl.textContent = 'Job queued';
+        toast('Auto‑match job queued', 'is-success');
+        setTimeout(close, 800);
+      } catch (err) {
+        if (statusEl) statusEl.textContent = err.message || 'Queue failed';
+        toast(err.message || 'Queue failed', 'is-error');
+        enableApply(true);
+      }
+    }
+
+    // Expose programmatic openers
+    window.__openPerfAutoMatch = function () {
+      if (!modal || !modal.hidden) return; // already open
+      open();
+      doPreview();
+    };
+    window.__openPerfAutoMatchWithList = function (_perfList) {
+      // List input no longer used; we always use registry performers for preview
+      open();
+      doPreview();
+    };
+
+    if (openBtn) openBtn.addEventListener('click', () => { open(); doPreview(); });
+    if (closeBtn) closeBtn.addEventListener('click', close);
+    if (cancelBtn) cancelBtn.addEventListener('click', close);
+    if (applyBtnFooter) applyBtnFooter.addEventListener('click', doApply);
+    modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+    modal._wired = true;
+  }
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', wire, { once: true });
+    document.addEventListener('DOMContentLoaded', wirePerformerAutoMatch, { once: true });
+  } else {
+    wire();
+    wirePerformerAutoMatch();
+  }
+})();
 
-    // -----------------------------
-    // Performer Auto-Match Modal (Preview + Apply)
-    // -----------------------------
-    (function wirePerformerAutoMatch() {
-      function qs(id) {
-        return document.getElementById(id);
+// Fallback direct wiring: ensure clicking the Import button always opens the file picker
+// This acts even if the Performers module didn't wire events yet.
+(function ensurePerformerImportButtonClick() {
+  function wire() {
+    const btn = document.getElementById('performerImportBtn');
+    if (!btn || btn._directClick) return;
+    btn._directClick = true;
+    btn.addEventListener('click', (ev) => {
+      const fi = document.getElementById('performerFileInput');
+      if (fi && typeof fi.click === 'function') {
+        try { fi.click(); } catch (_) { /* no-op */ }
       }
-      const openBtn = qs('performerAutoMatchBtn');
-      const modal = qs('performerAutoMatchModal');
-      if (!openBtn || !modal || modal._wired) {
-        return;
-      }
-      modal._wired = true;
-      const closeBtn = qs('perfAutoMatchClose');
-      const cancelBtn = qs('perfAutoCancelBtn');
-      const applyBtn = qs('perfAutoApplyBtn');
-      const applyBtnFooter = qs('perfAutoApplyBtnFooter');
-      const previewBtn = qs('perfAutoPreviewBtn');
-      const statusEl = qs('perfAutoMatchStatus');
-      const tbody = qs('perfAutoMatchTbody');
-      const pathEl = qs('perfAutoPath');
-      const recEl = qs('perfAutoRecursive');
-      const useEl = qs('perfAutoUseRegistry');
-      const extraEl = qs('perfAutoExtra');
-      let lastRows = [];
-
-      function open() {
-        show(modal);
-        modal.setAttribute('data-open', '1');
-        pathEl && pathEl.focus();
-        document.addEventListener('keydown', escListener);
-      }
-      function close() {
-        hide(modal);
-        modal.removeAttribute('data-open');
-        document.removeEventListener('keydown', escListener);
-      }
-      function escListener(e) {
-        if (e.key === 'Escape') {
-          close();
-        }
-      }
-      function setApplying(dis) {
-        if (applyBtn) applyBtn.disabled = dis;
-        if (applyBtnFooter) applyBtnFooter.disabled = dis;
-      }
-      function enableApply(enabled) {
-        setApplying(!enabled);
-      }
-      async function doPreview() {
-        enableApply(false);
-        statusEl.textContent = 'Previewing…';
-        tbody.innerHTML = '';
-        lastRows = [];
-        try {
-          const payload = { path: (pathEl.value || '').trim() || undefined, recursive: !!recEl.checked, use_registry_performers: !!useEl.checked, performers: _parseList(extraEl.value), tags: [], limit: 800 };
-          const r = await fetch('/api/autotag/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-          const j = await r.json();
-          if (!r.ok) {
-            throw new Error(j?.message || 'Preview failed');
-          }
-          const rows = j?.data?.candidates || [];
-          lastRows = rows;
-          statusEl.textContent = rows.length ? rows.length + ' match(es)' : 'No matches';
-          rows.forEach((row) => {
-            const tpl = document.getElementById('autotagRowTemplate');
-            const tr = tpl.content.firstElementChild.cloneNode(true);
-            tr.querySelector('.file').textContent = row.file;
-            tr.querySelector('.tags').textContent = (row.performers || []).join(', ');
-            tbody.appendChild(tr);
-          });
-          enableApply(rows.length > 0);
-        }
-        catch (err) {
-          statusEl.textContent = err.message || 'Preview failed';
-        }
-      }
-      async function doApply() {
-        if (!lastRows.length) {
-          return;
-        }
-        setApplying(true);
-        statusEl.textContent = 'Queuing job…';
-        try {
-          const payload = { path: (pathEl.value || '').trim() || undefined, recursive: !!recEl.checked, use_registry_performers: !!useEl.checked, performers: _parseList(extraEl.value), tags: [] };
-          const r = await fetch('/api/autotag/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-          if (!r.ok) {
-            try {
-              const j = await r.json();
-              throw new Error(j?.message || 'Queue failed');
-            }
-            catch (e) {
-              throw e;
-            }
-          }
-          statusEl.textContent = 'Job queued';
-          showToast && showToast('Auto‑match job queued', 'is-success');
-          setTimeout(close, 800);
-        }
-        catch (err) {
-          statusEl.textContent = err.message || 'Queue failed';
-          showToast && showToast(err.message || 'Queue failed', 'is-error');
-          enableApply(true);
-        }
-      }
-      // Expose programmatic opener that auto-previews only first time per open
-      window.__openPerfAutoMatch = function () {
-        if (!modal || !modal.hidden) {
-          return;
-        }
-        // already open
-        open();
-        // Trigger preview automatically when opened programmatically
-        if (previewBtn && !previewBtn._autoRan) {
-          previewBtn._autoRan = true;
-          doPreview();
-        }
-      };
-      if (openBtn) {
-        openBtn.addEventListener('click', () => {
-          open();
-          doPreview();
-        });
-      }
-      if (closeBtn) closeBtn.addEventListener('click', close);
-      if (cancelBtn) cancelBtn.addEventListener('click', close);
-      if (previewBtn) previewBtn.addEventListener('click', doPreview);
-      if (applyBtn) applyBtn.addEventListener('click', doApply);
-      if (applyBtnFooter) applyBtnFooter.addEventListener('click', doApply);
-      modal.addEventListener('click', (e) => {
-        if (e.target === modal) close();
-      });
-    })();
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire, { once: true });
   }
   else {
     wire();
@@ -10522,7 +10816,8 @@ class TasksManager {
         const processed = data.processed || 0;
         const total = data.total || 0;
         const ratio = `${processed}/${total}`;
-        // Format: "X/Y (Z%)"; if total is 0 keep previous style
+        // Format: "X/Y (Z%)";
+        // if total is 0 keep previous style
         if (total > 0) {
           percentageEl.textContent = `${ratio} (${percentage}%)`;
         }
