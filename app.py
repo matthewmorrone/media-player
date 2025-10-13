@@ -4179,6 +4179,38 @@ def _file_task_lock(path: Path, task: str) -> threading.Lock:
 # Registry lock for centralized tags/performers files
 REGISTRY_LOCK = threading.Lock()
 
+# Lightweight helper: detect if a job for the same (task,path) is already queued or running
+def _find_active_job(task: str, path: str) -> Optional[str]:
+    try:
+        t = _normalize_job_type(task)
+        # Normalize path to relative-to-root string like what _new_job stores
+        p = str(path)
+        try:
+            # If caller passed an absolute path, convert to rel
+            pp = Path(p)
+            if pp.is_absolute():
+                try:
+                    p = str(pp.resolve().relative_to(STATE["root"].resolve()))
+                except Exception:
+                    p = str(pp)
+        except Exception:
+            pass
+        with JOB_LOCK:
+            for jid, j in JOBS.items():
+                try:
+                    st = str(j.get("state") or "").lower()
+                    if st not in ("queued", "running"):
+                        continue
+                    if _normalize_job_type(str(j.get("type") or "")) != t:
+                        continue
+                    if str(j.get("path") or "") == p:
+                        return jid
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return None
+
 # -----------------------------
 # Jobs persistence (survive restarts)
 # -----------------------------
@@ -4640,6 +4672,13 @@ def jobs_reap_orphans(max_idle: float = Query(default=300.0), min_age: float = Q
 
 
 def _wrap_job(job_type: str, path: str, fn):
+    # Conservatively skip if same job already queued/running to avoid duplicates.
+    try:
+        existing = _find_active_job(job_type, path)
+        if existing:
+            return api_success({"job": existing, "queued": True, "skipped": True, "reason": "already queued/running"})
+    except Exception:
+        pass
     jid = _new_job(job_type, path)
     try:
         # FIFO gate: wait until this job is the earliest queued before starting.
@@ -4683,6 +4722,13 @@ def _wrap_job_background(job_type: str, path: str, fn):
     Run a job in a background thread and return immediately with a job id.
     This avoids coupling long-running work to the HTTP request lifecycle.
     """
+    # Avoid duplicate enqueue for same (task,path) if a job is already active
+    try:
+        existing = _find_active_job(job_type, path)
+        if existing:
+            return api_success({"job": existing, "queued": True, "skipped": True, "reason": "already queued/running"})
+    except Exception:
+        pass
     jid = _new_job(job_type, path)
     def _runner():
         try:
@@ -6584,10 +6630,17 @@ def _load_performers_sidecars() -> None:
         _PERFORMERS_INDEX = {}  # Initialize performers index
         root = Path(STATE["root"]).resolve()
         vids = _find_mp4s(root, recursive=True)
+        # Telemetry counters for debug visibility
+        scanned_total = 0
+        with_meta = 0
+        with_names = 0
+        links_added = 0
         for v in vids:
+            scanned_total += 1
             m = metadata_path(v)
             if not m.exists():
                 continue
+            with_meta += 1
             try:
                 j = json.loads(m.read_text())
             except Exception:
@@ -6597,12 +6650,17 @@ def _load_performers_sidecars() -> None:
             try:
                 fmt = j.get("format", {}) or {}
                 tags = fmt.get("tags", {}) or {}
-                raw_perf = tags.get("performers")
-                if isinstance(raw_perf, str):
-                    names.extend([t.strip() for t in re.split(r"[;,]", raw_perf) if t.strip()])
-                raw_cast = tags.get("cast")
-                if isinstance(raw_cast, str):
-                    names.extend([t.strip() for t in re.split(r"[;,]", raw_cast) if t.strip()])
+                if isinstance(tags, dict) and tags:
+                    # Case-insensitive access to tag keys
+                    tags_ci = {str(k).lower(): v for k, v in tags.items()}
+                    for key in ("performers", "cast"):
+                        raw_val = tags_ci.get(key)
+                        if isinstance(raw_val, str):
+                            names.extend([t.strip() for t in re.split(r"[;,]", raw_val) if t.strip()])
+                        elif isinstance(raw_val, list):
+                            for n in raw_val:
+                                if isinstance(n, str) and n.strip():
+                                    names.append(n.strip())
             except Exception:
                 pass
             # Optional explicit field
@@ -6624,14 +6682,24 @@ def _load_performers_sidecars() -> None:
                         continue
                     _PERFORMERS_INDEX.setdefault(norm, set()).add(rel)
                     _PERFORMERS_CACHE.setdefault(norm, {"name": n, "tags": []})
+                    links_added += 1
+                with_names += 1
     # Merge performers from in-memory media attribute store so per-file edits contribute to counts
     try:
+        # Ensure media-attr store is loaded/refreshed for current root before merging
+        try:
+            _load_media_attr()  # type: ignore[name-defined]
+        except Exception:
+            pass
         # _MEDIA_ATTR maps rel path -> {"performers": [...], "tags": [...]}
         root = STATE.get("root") or Path.cwd()
+        ma_with_perf = 0
+        ma_links = 0
         for rel, ent in (_MEDIA_ATTR or {}).items():  # type: ignore[name-defined]
             perfs = (ent or {}).get("performers") or []
             if not isinstance(perfs, list) or not perfs:
                 continue
+            ma_with_perf += 1
             rel_str = str(rel)
             try:
                 # Validate rel is inside root; leave as string if not resolvable
@@ -6646,6 +6714,7 @@ def _load_performers_sidecars() -> None:
                     continue
                 _PERFORMERS_INDEX.setdefault(norm, set()).add(rel_str)
                 _PERFORMERS_CACHE.setdefault(norm, {"name": n, "tags": []})
+                ma_links += 1
     except Exception:
         # best effort merge; skip on errors
         pass
@@ -6676,6 +6745,23 @@ def _load_performers_sidecars() -> None:
     except Exception:
         # If registry is unreadable, continue with sidecar-derived data only
         pass
+    # Emit a concise one-line summary when a rescan occurred to aid debugging in logs
+    if rescan:
+        try:
+            idx_size = len(_PERFORMERS_INDEX or {})
+            total_links = sum(len(s) for s in _PERFORMERS_INDEX.values()) if _PERFORMERS_INDEX else 0
+            logging.info(
+                "[performers] scan summary: videos=%d meta=%d files_with_names=%d links=%d idx_keys=%d ma_with_perf=%s ma_links=%s",
+                scanned_total,
+                with_meta,
+                with_names,
+                total_links,
+                idx_size,
+                str(locals().get('ma_with_perf', 0)),
+                str(locals().get('ma_links', 0)),
+            )
+        except Exception:
+            pass
     if rescan:
         _PERFORMERS_CACHE_TS = now
 
@@ -6691,31 +6777,69 @@ def _list_performers(search: str | None = None) -> list[dict]:
             continue
         out.append({
             "name": rec["name"],
-            "norm": norm,
             "slug": _slugify(rec["name"]),
             "count": len(paths),
-            "tags": rec.get("tags", []),
         })
     # Sort by usage desc then alpha
     out.sort(key=lambda r: (-int(r.get("count") or 0), r.get("name", "" ).lower()))
     return out
 
 @api.get("/performers")
-def api_performers(search: Optional[str] = Query(None), debug: bool = Query(default=False)):
+def api_performers(
+    search: Optional[str] = Query(None),
+    debug: bool = Query(default=False),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=32, ge=1, le=200),
+    sort: str = Query(default="count"),  # 'count' | 'name'
+    order: str = Query(default="desc"),  # 'asc' | 'desc'
+    refresh: bool = Query(default=False),  # force a rescan of sidecars/index
+):
     try:
-        logging.info("[performers] list request: search=%s debug=%s", str(search), str(debug))
+        logging.info("[performers] list request: search=%s debug=%s refresh=%s", str(search), str(debug), str(refresh))
     except Exception:
         pass
     # Ensure sidecars are loaded before listing; _list_performers already loads, but
     # calling here makes intent explicit during debug.
-    if debug:
+    if refresh:
+        try:
+            # Invalidate cache timestamp to force a fresh rescan
+            global _PERFORMERS_CACHE_TS
+            _PERFORMERS_CACHE_TS = None
+        except Exception:
+            pass
+    if debug or refresh:
         try:
             _load_performers_sidecars()
         except Exception:
             pass
-    res = _list_performers(search)
+    items = _list_performers(search)
+    # Apply server-side sort per request
     try:
-        logging.info("[performers] list response: %d item(s)", len(res))
+        key_name = lambda r: (r.get("name") or "").lower()
+        key_count = lambda r: int(r.get("count") or 0)
+        reverse = (order or "desc").lower() == "desc"
+        if (sort or "count").lower() == "name":
+            items.sort(key=key_name, reverse=reverse)
+        else:
+            # count with name tiebreaker (asc/desc via reverse)
+            items.sort(key=lambda r: (key_count(r), key_name(r)), reverse=reverse)
+    except Exception:
+        pass
+    # Pagination slice
+    try:
+        total = len(items)
+        total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
+        if page > total_pages:
+            page = total_pages
+        start = max(0, (page - 1) * page_size)
+        end = start + page_size
+        page_items = items[start:end]
+    except Exception:
+        total = len(items)
+        total_pages = 1
+        page_items = items
+    try:
+        logging.info("[performers] list response: %d item(s) total; page=%s size=%s sort=%s order=%s", len(items), str(page), str(page_size), str(sort), str(order))
         if debug:
             try:
                 # Log cache/index sizes and a small sample of counts for visibility
@@ -6728,14 +6852,23 @@ def api_performers(search: Optional[str] = Query(None), debug: bool = Query(defa
                     ma_size = -1
                 logging.info("[performers] media-attr entries=%s", str(ma_size))
                 # Top 10 by count for quick inspection
-                sample = sorted(res, key=lambda r: int(r.get("count") or 0), reverse=True)[:10]
+                sample = sorted(items, key=lambda r: int(r.get("count") or 0), reverse=True)[:10]
                 for i, r in enumerate(sample, start=1):
                     logging.info("[performers] #%d %s (slug=%s) count=%s", i, r.get("name"), r.get("slug"), str(r.get("count")))
             except Exception:
                 pass
     except Exception:
         pass
-    return api_success({"performers": res})
+    return api_success({
+        "performers": page_items,
+        "page": page,
+        "total": total,
+        "total_pages": total_pages,
+        "page_size": page_size,
+        "sort": (sort or "count"),
+        "order": (order or "desc"),
+        "search": search or None,
+    })
 
 @api.post("/performers/add")
 def api_performers_add(body: dict = Body(...)):
@@ -14226,6 +14359,154 @@ def api_tags_summary(path: str = Query(default=""), recursive: bool = Query(defa
         for t in data.get("performers", []) or []:
             perf_counts[t] = perf_counts.get(t, 0) + 1
     return {"tags": tag_counts, "performers": perf_counts}
+
+
+# ---------------------------------
+# Tags System (lightweight counters)
+# ---------------------------------
+_TAGS_CACHE: dict[str, dict] = {}
+_TAGS_CACHE_TS: float | None = None
+_TAGS_INDEX: dict[str, set[str]] = {}
+
+def _normalize_tag(name: str) -> str:
+    s = (name or "").strip()
+    return s
+
+def _load_tags_sidecars() -> None:
+    """Scan tags from sidecar files and in-memory media attributes; merge with registry.
+    Builds an index of tag -> set(paths) for counts. Cached for a few minutes.
+    """
+    global _TAGS_CACHE_TS, _TAGS_INDEX, _TAGS_CACHE
+    root = STATE.get("root")
+    root_missing = not root or not root.exists()
+    now = time.time()
+    rescan = (not _TAGS_CACHE_TS or (now - _TAGS_CACHE_TS) >= 300) and not root_missing
+    if not rescan:
+        return
+    _TAGS_INDEX = {}
+    _TAGS_CACHE = {}
+    # From media-attr first (fast, in-memory)
+    try:
+        for rel, ent in (_MEDIA_ATTR or {}).items():
+            try:
+                rel_str = str(rel)
+            except Exception:
+                rel_str = str(rel)
+            tags = (ent or {}).get("tags") or []
+            for n in tags:
+                if not isinstance(n, str):
+                    continue
+                tag = _normalize_tag(n)
+                if not tag:
+                    continue
+                _TAGS_INDEX.setdefault(tag, set()).add(rel_str)
+                _TAGS_CACHE.setdefault(tag, {"name": n})
+    except Exception:
+        pass
+    # Merge from sidecar files on disk
+    try:
+        vids = _find_mp4s(root, True) if root and root.exists() else []
+    except Exception:
+        vids = []
+    for p in vids:
+        tf = _tags_file(p)
+        if not tf.exists():
+            continue
+        try:
+            data = json.loads(tf.read_text())
+        except Exception:
+            continue
+        for n in (data.get("tags") or []):
+            if not isinstance(n, str):
+                continue
+            tag = _normalize_tag(n)
+            if not tag:
+                continue
+            rel = None
+            try:
+                rel = str(p.relative_to(root)) if root else str(p)
+            except Exception:
+                rel = str(p)
+            _TAGS_INDEX.setdefault(tag, set()).add(rel)
+            _TAGS_CACHE.setdefault(tag, {"name": n})
+    # Merge from registry (ensures known tags appear with count=0)
+    try:
+        path = _tags_registry_path()
+        data = _load_registry(path, "tags") if path.exists() else {"tags": []}
+        items = list(data.get("tags") or [])
+        for it in items:
+            nm = str(it.get("name") or "").strip()
+            if not nm:
+                continue
+            tag = _normalize_tag(nm)
+            _TAGS_CACHE.setdefault(tag, {"name": nm})
+            _TAGS_INDEX.setdefault(tag, set())
+    except Exception:
+        pass
+    _TAGS_CACHE_TS = now
+
+def _list_tags(search: str | None = None) -> list[dict]:
+    _load_tags_sidecars()
+    all_norms = set(_TAGS_INDEX.keys()) | set(_TAGS_CACHE.keys())
+    out: list[dict] = []
+    for norm in all_norms:
+        paths = _TAGS_INDEX.get(norm, set())
+        rec = _TAGS_CACHE.get(norm, {"name": norm})
+        name = rec.get("name") or norm
+        slug = _slugify(name)
+        out.append({"name": name, "slug": slug, "count": len(paths)})
+    if search:
+        s = search.strip().lower()
+        out = [r for r in out if s in (r.get("name") or "").lower()]
+    return out
+
+@api.get("/tags")
+def api_tags(
+    search: Optional[str] = Query(default=None),
+    sort: str = Query(default="count"),
+    order: str = Query(default="desc"),
+    page: int = Query(default=1),
+    page_size: int = Query(default=32),
+    refresh: bool = Query(default=False),
+    debug: bool = Query(default=False),
+):
+    try:
+        if debug:
+            logging.info("[tags] list request: search=%s refresh=%s", str(search), str(refresh))
+        if refresh:
+            global _TAGS_CACHE_TS
+            _TAGS_CACHE_TS = None
+        # Ensure loaded
+        _load_tags_sidecars()
+        items = _list_tags(search)
+        s = (sort or "count").lower()
+        o = (order or "desc").lower()
+        if s == "name":
+            items.sort(key=lambda r: (r.get("name") or "").lower(), reverse=(o == "desc"))
+        else:
+            items.sort(key=lambda r: (int(r.get("count") or 0), (r.get("name") or "").lower()), reverse=(o == "desc"))
+        total = len(items)
+        p = max(1, int(page or 1))
+        ps = max(1, min(256, int(page_size or 32)))
+        start = (p - 1) * ps
+        end = start + ps
+        page_items = items[start:end]
+        if debug:
+            logging.info("[tags] list response: total=%d page=%d size=%d sort=%s order=%s", total, p, ps, s, o)
+            for i, r in enumerate(page_items[:10], 1):
+                logging.info("[tags] #%d %s (slug=%s) count=%s", i, r.get("name"), r.get("slug"), str(r.get("count")))
+        return api_success({
+            "tags": page_items,
+            "total": total,
+            "page": p,
+            "page_size": ps,
+            "total_pages": max(1, (total + ps - 1) // ps),
+            "sort": s,
+            "order": o,
+            "search": search or "",
+        })
+    except Exception as e:
+        raise_api_error(f"Failed to list tags: {str(e)}")
 
 
 @api.get("/stats")

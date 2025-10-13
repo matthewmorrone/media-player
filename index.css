@@ -388,8 +388,20 @@ button.btn-danger {
   max-width: 100%;
 }
 
+/* Tags panel spacing mirrors performers for visual parity */
+#tags-panel {
+  overflow-x: hidden;
+  padding: 16px 20px;
+}
+
+#tags-panel .perf-grid {
+  overflow-x: hidden;
+  width: 100%;
+  max-width: 100%;
+}
+
 /* Inner container to provide consistent spacing between sections */
-.performers-container {
+.catalog-container {
   width: 1400px;
   max-width: 1400px;
   margin: 0 auto;
@@ -570,6 +582,12 @@ button.btn-danger {
 
 /* Preserve existing (rest of file below remains in original relative order, minus removed nested block & duplicates) */
 #performers-panel .perf-card h3 {
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Ensure tag cards wrap titles the same as performers */
+#tags-panel .perf-card h3 {
   word-break: break-word;
   overflow-wrap: break-word;
 }
@@ -1131,7 +1149,7 @@ th .col-drag-handle:active {
   opacity: 0.85;
 }
 
-.performers-status {
+.catalog-status {
   font-size: 12px;
   color: #8894b0;
   margin: 0 0 8px;
@@ -2238,34 +2256,40 @@ keep only z-index here */
 }
 
 /* Column widths */
+/* 7 columns in order: Start, End, Task, File, Status, Progress, Action */
 .job-table th:nth-child(1),
-.job-table td:nth-child(1) {
+.job-table td:nth-child(1) { /* Start */
   width: 96px;
 }
 
 .job-table th:nth-child(2),
-.job-table td:nth-child(2) {
-  width: 140px;
+.job-table td:nth-child(2) { /* End */
+  width: 96px;
 }
 
 .job-table th:nth-child(3),
-.job-table td:nth-child(3) {
-  width: 30%;
+.job-table td:nth-child(3) { /* Task */
+  width: 160px;
 }
 
 .job-table th:nth-child(4),
-.job-table td:nth-child(4) {
-  width: 120px;
+.job-table td:nth-child(4) { /* File (flex) */
+  width: auto;
 }
 
 .job-table th:nth-child(5),
-.job-table td:nth-child(5) {
-  width: 32%;
+.job-table td:nth-child(5) { /* Status */
+  width: 120px;
 }
 
 .job-table th:nth-child(6),
-.job-table td:nth-child(6) {
-  width: 120px;
+.job-table td:nth-child(6) { /* Progress */
+  width: 160px;
+}
+
+.job-table th:nth-child(7),
+.job-table td:nth-child(7) { /* Action */
+  width: 80px;
 }
 
 /* Job table cells & truncation */

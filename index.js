@@ -4,135 +4,21 @@ const loadArtifactStatuses = (..._args) => {};
 const refreshSidebarThumbnail = (..._args) => {};
 // Local slugify for tag/name normalization where needed
 const _slugify = (s) => String(s ?? '')
-    .trim()
     .toLowerCase()
     .replace(/\s+/g, '-');
-// Back-compat toast shim: provide a module-scoped showToast used throughout this file.
-// If a legacy global window.showToast exists, use it; otherwise fallback to utils.notify().
-// Accepts legacy Bulma-like classes ('is-success'|'is-error'|'is-info') or plain types ('success'|'error'|'info').
-const showToast = (message, type = 'is-info') => {
+// Local toast helper: prefer legacy window.showToast if present; otherwise use notify()
+const showToast = (message, type) => {
     try {
-        if (window && typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
+        if (window.showToast) {
+            window.showToast(message, type || 'is-info');
+        }
+        else {
+            const map = { 'is-error': 'error', 'is-success': 'success' };
+            notify(message, map[type] || 'info');
         }
     }
-    catch (_) { /* ignore access errors */ }
-    // Normalize type for notify()
-    const normalized = (typeof type === 'string' && type.startsWith('is-')) ? type.slice(3) : (type || 'info');
-    try {
-        notify(message, normalized);
-    }
-    catch (_) { /* no-op */ }
+    catch (_) { }
 };
-// Reset Player logic (sanitized)
-window.addEventListener('DOMContentLoaded', () => {
-    const btn = document.getElementById('btnResetPlayer');
-    const video = document.getElementById('playerVideo');
-    const title = document.getElementById('playerTitle');
-    if (btn && video) {
-        btn.addEventListener('click', () => {
-            try {
-                video.pause();
-            }
-            catch (_) { }
-            try {
-                video.removeAttribute('src');
-            }
-            catch (_) { }
-            try {
-                video.load();
-            }
-            catch (_) { }
-            if (title) {
-                title.textContent = '';
-                hide(title);
-            }
-            // Mark that a reset occurred so unload handlers won't re-save state during a following refresh
-            try {
-                lsSet('mediaPlayer:skipSaveOnUnload', '1');
-            }
-            catch (_) { }
-            // Clear last played video from localStorage so no movie auto-loads after refresh
-            try {
-                ['mediaPlayer:last', 'mediaPlayer:lastVideo', 'mediaPlayer:lastSelected'].forEach((k) => {
-                    try {
-                        lsRemove(k);
-                    }
-                    catch (_) { }
-                });
-            }
-            catch (_) { }
-            // Clear file info fields
-            [
-                'fiPath', 'fiDuration', 'fiResolution', 'fiVideoCodec', 'fiAudioCodec', 'fiBitrate', 'fiVBitrate', 'fiABitrate', 'fiSize', 'fiModified',
-            ].forEach((id) => {
-                const el = document.getElementById(id);
-                if (el) el.textContent = '—';
-            });
-            // Also clear currentPath and resumeOverrideTime if possible
-            try {
-                if (window.Player) {
-                    if ('currentPath' in window.Player) window.Player.currentPath = null;
-                    if ('resumeOverrideTime' in window.Player) window.Player.resumeOverrideTime = null;
-                }
-            }
-            catch (_) { }
-            // Clear module-level path is handled by Player unload; do not assign to currentPath (function name)
-            // Remove per-video persistence keys (mediaPlayer:video:*) so progress/last entries don't rehydrate
-            try {
-                const removals = [];
-                for (let i = 0; i < localStorage.length; i++) {
-                    const k = localStorage.key(i);
-                    if (!k) {
-                        continue;
-                    }
-                    // remove per-video keys and any 'last' keys that might trigger auto-resume
-                    if (k.indexOf('mediaPlayer:video:') === 0) removals.push(k);
-                    if (/last/i.test(k)) removals.push(k);
-                    if (/lastSelected/i.test(k)) removals.push(k);
-                }
-                removals.forEach((k) => {
-                    try {
-                        lsRemove(k);
-                    }
-                    catch (_) { }
-                });
-            }
-            catch (_) { }
-            // Clear common sidebar UI elements so no stale info remains
-            try {
-                ['artifactBadgesSidebar', 'videoPerformers', 'videoTags', 'markersList', 'performerImportPreviewList'].forEach((id) => {
-                    const el = document.getElementById(id);
-                    if (!el) return;
-
-                    if (el.tagName === 'DIV' || el.tagName === 'UL' || el.tagName === 'OL') el.innerHTML = '';
-                    else el.textContent = '';
-                });
-                // Clear selection state and UI
-                try {
-                    selectedItems = new Set();
-                    const selCount = document.getElementById('selectionCount');
-                    if (selCount) selCount.textContent = '0';
-                    document.querySelectorAll('.card.selected').forEach((c) => c.classList.remove('selected'));
-                }
-                catch (_) { }
-                // Attempt to unload the Player module if available
-                try {
-                    if (window.Player && typeof window.Player.unload === 'function') {
-                        window.Player.unload();
-                    }
-                    else if (typeof Player !== 'undefined' && Player && typeof Player.unload === 'function') {
-                        Player.unload();
-                    }
-                }
-                catch (_) { }
-                // Do not change active tab on reset — preserve user's current tab
-            }
-            catch (_) { }
-        });
-    }
-});
 const grid = document.getElementById('grid');
 const statusEl = document.getElementById('status');
 const spinner = document.getElementById('spinner');
@@ -944,16 +830,17 @@ async function loadLibrary() {
                             return;
                         }
                         try {
-                            const u = new URL('/api/library', window.location.origin);
-                            u.searchParams.set('path', dpath);
-                            u.searchParams.set('page', '1');
-                            u.searchParams.set('page_size', String(Math.min(48, MAX_TILES)));
-                            u.searchParams.set('sort', curSort);
-                            u.searchParams.set('order', curOrder);
+                            const sp = new URLSearchParams();
+                            sp.set('path', dpath);
+                            sp.set('page', '1');
+                            sp.set('page_size', String(Math.min(48, MAX_TILES)));
+                            sp.set('sort', curSort);
+                            sp.set('order', curOrder);
                             // Include resolution filter in fallback fetches
                             const resSel = document.getElementById('resSelect');
                             const resVal = resSel ? String(resSel.value || '') : '';
-                            if (resVal) u.searchParams.set('res_min', resVal);
+                            if (resVal) sp.set('res_min', resVal);
+                            const u = '/api/library?' + sp.toString();
                             const r = await fetch(u, {
                                 headers: {Accept: 'application/json' },
                             });
@@ -1540,6 +1427,7 @@ function renderUnifiedFilterChips() {
                 removeFn();
                 persistLibraryFilters();
                 renderUnifiedFilterChips();
+                if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
                 currentPage = 1;
                 loadLibrary();
             });
@@ -1584,6 +1472,7 @@ function commitUnifiedInputToken(raw) {
     if (consumed) {
         persistLibraryFilters();
         renderUnifiedFilterChips();
+        if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
         currentPage = 1;
         loadLibrary();
     }
@@ -1596,6 +1485,35 @@ function computeSearchVal() {
         parts.push(live);
     }
     return parts.join(' ');
+}
+// Keep the browser URL in sync with current Library filters and search
+function updateLibraryUrlFromState() {
+    try {
+        const url = new URL(window.location.href);
+        const searchVal = computeSearchVal();
+        const val = (folderInput && folderInput.value || '').trim();
+        const relPath = (typeof currentPath === 'function') ? currentPath() : '';
+        const resSel = document.getElementById('resSelect');
+        const resVal = resSel ? String(resSel.value || '') : '';
+        const sortVal = sortSelect ? (sortSelect.value || 'date') : 'date';
+        const orderVal = orderToggle ? (orderToggle.dataset.order || 'desc') : 'desc';
+        const setOrDel = (k, v) => {
+            if (v && String(v).length) url.searchParams.set(k, v);
+            else url.searchParams.delete(k);
+        };
+        setOrDel('search', searchVal);
+        if (val && typeof isAbsolutePath === 'function' && !isAbsolutePath(val) && relPath) setOrDel('path', relPath);
+        else url.searchParams.delete('path');
+        if (Array.isArray(libraryTagFilters) && libraryTagFilters.length) setOrDel('tags', libraryTagFilters.join(','));
+        else url.searchParams.delete('tags');
+        if (Array.isArray(libraryPerformerFilters) && libraryPerformerFilters.length) setOrDel('performers', libraryPerformerFilters.join(','));
+        else url.searchParams.delete('performers');
+        setOrDel('res_min', resVal);
+        setOrDel('sort', sortVal);
+        setOrDel('order', orderVal);
+        history.replaceState(null, '', url);
+    }
+    catch (_) { }
 }
 if (unifiedInput) {
     unifiedInput.addEventListener('keydown', (e) => {
@@ -1618,6 +1536,7 @@ if (unifiedInput) {
             }
             persistLibraryFilters();
             renderUnifiedFilterChips();
+            if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
             currentPage = 1;
             loadLibrary();
         }
@@ -4315,6 +4234,7 @@ const Player = (() => {
             });
         }
     }
+    let playerTagsSpinnerEl = null;
     function initDom() {
         // Resolve button elements (grouped)
         // (intro/outro buttons already resolved earlier in initDom)
@@ -8453,18 +8373,26 @@ const Performers = (() => {
     let importBtn;
     let mergeBtn;
     let deleteBtn;
+    let autoMatchBtn;
     let dropZone;
     let statusEl;
+    let spinnerEl;
     let performers = [];
     let selected = new Set();
     let searchTerm = '';
     // Sort state (default: by count desc)
     let sortBy = 'count'; // 'count' | 'name'
-    // sortDir: 1 = ascending, -1 = descending
-    let sortDir = -1;
+    // sortDir UI flag (mapping to server order happens in fetch):
+    // We treat sortDir === 1 as the default for count (meaning server 'desc'), and -1 for asc.
+    let sortDir = 1;
     // Pagination state
     let page = 1;
     let pageSize = 32;
+    // Server pagination meta (set after fetch)
+    let srvTotal = 0;
+    let srvTotalPages = 1;
+    let srvPage = 1;
+    let tagsSpinnerEl = null;
     let pager = null;
     let prevBtn = null;
     let nextBtn = null;
@@ -8493,8 +8421,10 @@ const Performers = (() => {
         importBtn = document.getElementById('performerImportBtn');
         mergeBtn = document.getElementById('performerMergeBtn');
         deleteBtn = document.getElementById('performerDeleteBtn');
+        autoMatchBtn = document.getElementById('performerAutoMatchBtn');
         dropZone = document.getElementById('performerDropZone');
         statusEl = document.getElementById('performersStatus');
+        spinnerEl = document.getElementById('performersSpinner');
         pager = document.getElementById('performersPager');
         prevBtn = document.getElementById('perfPrev');
         nextBtn = document.getElementById('perfNext');
@@ -8515,6 +8445,7 @@ const Performers = (() => {
         statusEl.textContent = msg || '';
         if (showFlag) showAs(statusEl, 'block');
         else hide(statusEl);
+        if (spinnerEl) spinnerEl.hidden = !showFlag;
     }
     function tpl(id) {
         const t = document.getElementById(id);
@@ -8526,46 +8457,22 @@ const Performers = (() => {
         }
         gridEl.innerHTML = '';
         const frag = document.createDocumentFragment();
-        const termLower = searchTerm.toLowerCase();
-        // Filter by search text
-        let filtered = performers.filter(
-            (p) => !termLower || p.name.toLowerCase().includes(termLower),
-        );
-        // Apply sort
-        const cmp = (a, b) => {
-            if (sortBy === 'name') {
-                const an = (a.name || '').toLowerCase();
-                const bn = (b.name || '').toLowerCase();
-                if (an < bn) return -1;
-                if (an > bn) return 1;
-                // tie-breaker: count desc then slug/norm
-                const cd = (b.count || 0) - (a.count || 0);
-                if (cd !== 0) return cd;
-                return (a.slug || a.norm || '').localeCompare(b.slug || b.norm || '');
-            }
-            // default count
-            const cd = (b.count || 0) - (a.count || 0);
-            if (cd !== 0) return cd;
-            return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
-        };
-        filtered.sort((a, b) => sortDir * cmp(a, b));
-        // setup pagination
-        const total = filtered.length || 0;
-        const pages = total ? Math.max(1, Math.ceil(total / pageSize)) : 1;
-        if (page > pages) page = pages;
-        const start = (page - 1) * pageSize;
-        const end = start + pageSize;
-        const pageItems = filtered.slice(start, end);
+        // Trust server-side filtering/sorting/pagination: render given page as-is
+        const filtered = performers;
+        const pageItems = performers;
         if (addBtn) {
-            const exact = filtered.some((p) => p.name.toLowerCase() === termLower);
+            const termLower = searchTerm.toLowerCase();
+            const exact = performers.some((p) => (p.name || '').toLowerCase() === termLower);
             if (searchTerm && !exact) showAs(addBtn, 'inline-block');
             else hide(addBtn);
             addBtn.textContent = `Add '${searchTerm}'`;
             addBtn.disabled = !searchTerm;
         }
         if (countEl) {
-            const total = performers.length;
-            countEl.textContent = filtered.length === total ? `${total} performer${total === 1 ? '' : 's'}` : `${filtered.length} of ${total}`;
+            const total = Number.isFinite(srvTotal) ? srvTotal : performers.length;
+            const shown = pageItems.length;
+            // Show total performers (server authoritative); include "showing" hint when paginated
+            countEl.textContent = total ? `${total} performer${total === 1 ? '' : 's'}${srvTotalPages > 1 ? ` • showing ${shown}` : ''}` : '0 performers';
         }
         if (filtered.length === 0) {
             const node = tpl('emptyHintTemplate');
@@ -8584,7 +8491,7 @@ const Performers = (() => {
                 const avatarEl = node.querySelector('.pc-avatar');
                 const countEl = node.querySelector('.pc-count');
                 if (card) {
-                    const key = p.slug || p.norm;
+                    const key = p.slug;
                     card.dataset.slug = key;
                     if (selected.has(key)) card.dataset.selected = '1';
                     card.tabIndex = 0;
@@ -8609,6 +8516,7 @@ const Performers = (() => {
                             // Update chips and reload
                             if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips();
                             if (typeof loadLibrary === 'function') loadLibrary();
+                            if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
                         }
                         catch (_) { }
                     };
@@ -8625,17 +8533,17 @@ const Performers = (() => {
             });
             gridEl.appendChild(frag);
         }
-        // pager UI
-        const infoText = total ? `Page ${page} / ${pages} • ${total} total` : '—';
+        // pager UI: use server meta exclusively
+        const infoText = srvTotal ? `Page ${srvPage} / ${srvTotalPages} • ${srvTotal} total` : '—';
         if (pager && pageInfo && prevBtn && nextBtn) {
             pageInfo.textContent = infoText;
-            prevBtn.disabled = page <= 1;
-            nextBtn.disabled = page >= pages;
+            prevBtn.disabled = srvPage <= 1;
+            nextBtn.disabled = srvPage >= srvTotalPages;
         }
         if (pagerB && pageInfoB && prevBtnB && nextBtnB) {
             pageInfoB.textContent = infoText;
-            prevBtnB.disabled = page <= 1;
-            nextBtnB.disabled = page >= pages;
+            prevBtnB.disabled = srvPage <= 1;
+            nextBtnB.disabled = srvPage >= srvTotalPages;
         }
         updateSelectionUI();
         // Ensure performers grid loads on page load (idempotent)
@@ -8648,7 +8556,7 @@ const Performers = (() => {
     }
     function updateSelectionUI() {
         document.querySelectorAll('.perf-card').forEach((c) => {
-            const key = c.dataset.slug || c.dataset.norm;
+            const key = c.dataset.slug;
             if (selected.has(key)) c.dataset.selected = '1';
             else c.removeAttribute('data-selected');
         });
@@ -8656,27 +8564,75 @@ const Performers = (() => {
         if (mergeBtn) mergeBtn.disabled = !multi;
         if (deleteBtn) deleteBtn.disabled = selected.size === 0;
     }
+    function ensureControlsVisible() {
+        try {
+            const toolbar = document.querySelector('#performers-panel .perf-toolbar');
+            const elts = [toolbar, importBtn, mergeBtn, deleteBtn, autoMatchBtn, dropZone, statusEl];
+            elts.forEach((el) => {
+                if (!el) return;
+                try {
+                    el.hidden = false;
+                }
+                catch (_) { }
+                try {
+                    el.classList.remove('d-none');
+                }
+                catch (_) { }
+            });
+        }
+        catch (_) { }
+    }
     async function fetchPerformers() {
         initDom();
+        ensureControlsVisible();
         try {
             // fetchPerformers called
             setStatus('Loading…', true);
+            if (gridEl) gridEl.classList.add('loading');
             const url = new URL('/api/performers', window.location.origin);
             if (searchTerm) url.searchParams.set('search', searchTerm);
-            // Add debug=true to print detailed counts and index/cache info in the server log while we troubleshoot 0 counts
-            url.searchParams.set('debug', 'true');
+            // Server-side pagination & sorting
+            url.searchParams.set('page', String(page || 1));
+            url.searchParams.set('page_size', String(pageSize || 32));
+            const sortSel = document.getElementById('performerSort');
+            const sortVal = sortSel ? (sortSel.value === 'name' ? 'name' : 'count') : (sortBy || 'count');
+            url.searchParams.set('sort', sortVal);
+            // Note: server's order semantics were opposite of our UI flag; flip mapping
+            url.searchParams.set('order', sortDir === 1 ? 'desc' : 'asc');
+            // Optional debug logging on server
+            url.searchParams.set('debug', 'false');
             const r = await fetch(url);
             const j = await r.json();
             // performers response loaded
-            performers = j?.data?.performers || [];
+            const d = j?.data || {};
+            performers = d.performers || [];
             console.log(performers);
+            // Update pagination from server meta if present
+            const total = Number(d.total || 0);
+            const totalPages = Number(d.total_pages || 1);
+            const curPage = Number(d.page || page || 1);
+            srvTotal = total;
+            srvTotalPages = totalPages;
+            srvPage = curPage;
+            // Update UI counters using server values
+            if (pageInfo) {
+                pageInfo.textContent = total ? `Page ${curPage} / ${totalPages} • ${total} total` : '—';
+            }
+            if (pageInfoB) {
+                pageInfoB.textContent = total ? `Page ${curPage} / ${totalPages} • ${total} total` : '—';
+            }
+            if (prevBtn) prevBtn.disabled = curPage <= 1;
+            if (nextBtn) nextBtn.disabled = curPage >= totalPages;
+            if (prevBtnB) prevBtnB.disabled = curPage <= 1;
+            if (nextBtnB) nextBtnB.disabled = curPage >= totalPages;
+            page = curPage;
             setStatus('', false);
-            // Reset to first page on new fetch to keep UX sane
-            page = 1;
+            if (gridEl) gridEl.classList.remove('loading');
             render();
         }
         catch (e) {
             setStatus('Failed to load performers', true);
+            if (gridEl) gridEl.classList.remove('loading');
             if (gridEl) {
                 gridEl.innerHTML = '';
                 const node = tpl('emptyHintTemplate');
@@ -8690,24 +8646,24 @@ const Performers = (() => {
         }
     }
     const debounceSearch = debounce(fetchPerformers, 400);
-    function toggleSelect(norm, opts = {range: false, anchor: false}) {
+    function toggleSelect(slug, opts = {range: false, anchor: false}) {
         if (opts.range && shiftAnchor) {
             // range selection
             const filtered = currentFiltered();
-            const aIndex = filtered.findIndex((p) => (p.slug || p.norm) === shiftAnchor);
-            const bIndex = filtered.findIndex((p) => (p.slug || p.norm) === norm);
+            const aIndex = filtered.findIndex((p) => p.slug === shiftAnchor);
+            const bIndex = filtered.findIndex((p) => p.slug === slug);
             if (aIndex > -1 && bIndex > -1) {
                 const [start, end] = aIndex < bIndex ? [aIndex, bIndex] : [bIndex, aIndex];
                 for (let i = start; i <= end; i++) {
-                    selected.add(filtered[i].slug || filtered[i].norm);
+                    selected.add(filtered[i].slug);
                 }
                 updateSelectionUI();
                 return;
             }
         }
-        if (selected.has(norm)) selected.delete(norm);
-        else selected.add(norm);
-        if (opts.anchor) shiftAnchor = norm;
+        if (selected.has(slug)) selected.delete(slug);
+        else selected.add(slug);
+        if (opts.anchor) shiftAnchor = slug;
         updateSelectionUI();
     }
     function currentFiltered() {
@@ -8715,7 +8671,7 @@ const Performers = (() => {
         return performers.filter((p) => !termLower || p.name.toLowerCase().includes(termLower));
     }
     function handleCardClick(e, p, filtered) {
-        const norm = p.slug || p.norm;
+        const norm = p.slug;
         if (e.shiftKey) {
             toggleSelect(norm, {range: true});
             return;
@@ -8734,11 +8690,11 @@ const Performers = (() => {
             shiftAnchor = norm;
         }
         updateSelectionUI();
-        lastFocusedIndex = filtered.findIndex((x) => (x.slug || x.norm) === norm);
+        lastFocusedIndex = filtered.findIndex((x) => x.slug === norm);
     }
     function handleCardKey(e, p, filtered) {
-        const norm = p.slug || p.norm;
-        const index = filtered.findIndex((x) => (x.slug || x.norm) === norm);
+        const norm = p.slug;
+        const index = filtered.findIndex((x) => x.slug === norm);
         if (
             [
                 'ArrowDown',
@@ -8757,7 +8713,7 @@ const Performers = (() => {
             if (i < 0 || i >= filtered.length) {
                 return;
             }
-            const card = gridEl.querySelector(`.perf-card[data-slug="${(filtered[i].slug || filtered[i].norm)}"]`);
+            const card = gridEl.querySelector(`.perf-card[data-slug="${(filtered[i].slug)}"]`);
             if (card) {
                 card.focus();
                 lastFocusedIndex = i;
@@ -8776,7 +8732,7 @@ const Performers = (() => {
             break;
         case 'a':
             if (e.metaKey || e.ctrlKey) {
-                selected = new Set(filtered.map((x) => x.slug || x.norm));
+                selected = new Set(filtered.map((x) => x.slug));
                 updateSelectionUI();
             }
             break;
@@ -8934,7 +8890,7 @@ const Performers = (() => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    from: list.map((n) => performers.find((p) => p.norm === n)?.name || n),
+                    from: list.map((s) => performers.find((p) => p.slug === s)?.name || s),
                     to: target,
                 }),
             });
@@ -8947,9 +8903,12 @@ const Performers = (() => {
         if (!selected.size) {
             return;
         }
-        if (!confirm(`Delete ${selected.size} performer(s)?`)) return;
-        for (const norm of [...selected]) {
-            const rec = performers.find((p) => p.norm === norm);
+        // Respect Settings > Confirm delete preference; default is off
+        if (confirmDeletesEnabled) {
+            if (!confirm(`Delete ${selected.size} performer(s)?`)) return;
+        }
+        for (const slug of [...selected]) {
+            const rec = performers.find((p) => p.slug === slug);
             if (!rec) {
                 continue;
             }
@@ -8968,12 +8927,14 @@ const Performers = (() => {
             searchEl._wired = true;
             searchEl.addEventListener('input', () => {
                 searchTerm = searchEl.value.trim();
+                page = 1;
                 debounceSearch();
             });
             searchEl.addEventListener('keydown', (e) => {
                 if (e.key === 'Escape') {
                     searchEl.value = '';
                     searchTerm = '';
+                    page = 1;
                     fetchPerformers();
                 }
             });
@@ -9003,10 +8964,11 @@ const Performers = (() => {
         const sortOrderBtn = document.getElementById('performerSortOrder');
         const applySortButtonLabel = () => {
             if (!sortOrderBtn) return;
-            const asc = sortDir === 1;
-            sortOrderBtn.textContent = asc ? '▲' : '▼';
-            sortOrderBtn.setAttribute('aria-label', asc ? 'Ascending' : 'Descending');
-            sortOrderBtn.title = asc ? 'Ascending' : 'Descending';
+            // With current mapping, sortDir === 1 maps to server 'desc' (descending)
+            const isDesc = sortDir === 1;
+            sortOrderBtn.textContent = isDesc ? '▼' : '▲';
+            sortOrderBtn.setAttribute('aria-label', isDesc ? 'Descending' : 'Ascending');
+            sortOrderBtn.title = isDesc ? 'Descending' : 'Ascending';
         };
         // Load persisted sort prefs
         try {
@@ -9017,8 +8979,9 @@ const Performers = (() => {
                 sortDir = sd === '1' ? 1 : -1;
             }
             else {
-                // default by sortBy
-                sortDir = (sortBy === 'name') ? 1 : -1;
+                // default by sortBy: name → ascending, count → descending
+                // Note: mapping in fetchPerformers flips server order, so name asc => -1; count desc => 1
+                sortDir = (sortBy === 'name') ? -1 : 1;
             }
         }
         catch (_) { }
@@ -9026,10 +8989,10 @@ const Performers = (() => {
             sortSel.value = sortBy;
             if (!sortSel._wired) {
                 sortSel._wired = true;
-                sortSel.addEventListener('change', () => {
+                sortSel.addEventListener('change', async () => {
                     sortBy = sortSel.value === 'name' ? 'name' : 'count';
-                    // Default dir: name asc (1), count desc (-1)
-                    sortDir = (sortBy === 'name') ? 1 : -1;
+                    // Default dir: name asc, count desc (see mapping in fetchPerformers)
+                    sortDir = (sortBy === 'name') ? -1 : 1;
                     try {
                         localStorage.setItem('performers:sortBy', sortBy);
                         localStorage.setItem('performers:sortDir', String(sortDir));
@@ -9037,7 +9000,7 @@ const Performers = (() => {
                     catch (_) { }
                     applySortButtonLabel();
                     page = 1;
-                    render();
+                    await fetchPerformers();
                 });
             }
         }
@@ -9045,7 +9008,7 @@ const Performers = (() => {
             sortOrderBtn._wired = true;
             // Initialize label
             applySortButtonLabel();
-            sortOrderBtn.addEventListener('click', () => {
+            sortOrderBtn.addEventListener('click', async () => {
                 sortDir = sortDir === 1 ? -1 : 1;
                 try {
                     localStorage.setItem('performers:sortDir', String(sortDir));
@@ -9053,22 +9016,18 @@ const Performers = (() => {
                 catch (_) { }
                 applySortButtonLabel();
                 page = 1;
-                render();
+                await fetchPerformers();
             });
         }
-        const handlePrev = () => {
+        const handlePrev = async () => {
             if (page > 1) {
-                page--; render();
+                page--;
+                await fetchPerformers();
             }
         };
-        const handleNext = () => {
-            const termLower = searchTerm.toLowerCase();
-            const total = performers.filter((p) => !termLower || p.name.toLowerCase().includes(termLower)).length;
-            const pages = Math.max(1, Math.ceil(total / pageSize));
-            if (page < pages) {
-                page++;
-                render();
-            }
+        const handleNext = async () => {
+            page++;
+            await fetchPerformers();
         };
         if (prevBtn && !prevBtn._wired) {
             prevBtn._wired = true;
@@ -9086,7 +9045,7 @@ const Performers = (() => {
             nextBtnB._wired = true;
             nextBtnB.addEventListener('click', handleNext);
         }
-        const handlePageSizeChange = (sel) => {
+        const handlePageSizeChange = async (sel) => {
             const v = parseInt(sel.value, 10);
             if (Number.isFinite(v) && v > 0) {
                 pageSize = v;
@@ -9094,7 +9053,7 @@ const Performers = (() => {
                 if (pageSizeSel && pageSizeSel !== sel) pageSizeSel.value = String(v);
                 if (pageSizeSelB && pageSizeSelB !== sel) pageSizeSelB.value = String(v);
                 page = 1;
-                render();
+                await fetchPerformers();
             }
         };
         if (pageSizeSel && !pageSizeSel._wired) {
@@ -9635,6 +9594,598 @@ window.addEventListener('DOMContentLoaded', () => {
         wirePerformerAutoMatch();
     }
 })();
+
+// -----------------------------
+// Tags Module (list extant tags with counts; server-side pagination)
+// -----------------------------
+const Tags = (() => {
+    let tags = [];
+    let gridEl = null;
+    let searchEl = null;
+    let countEl = null;
+    let statusEl = null;
+    let tagsSpinnerEl = null;
+    let importBtn = null;
+    let mergeBtn = null;
+    let deleteBtn = null;
+    let importFile = null;
+    let dropZone = null;
+    let autoTagBtn = null;
+    // selection state (by slug)
+    let selected = new Set();
+    let pager = null;
+    let prevBtn = null;
+    let nextBtn = null;
+    let pageInfo = null;
+    let pageSizeSel = null;
+    let pagerB = null;
+    let prevBtnB = null;
+    let nextBtnB = null;
+    let pageInfoB = null;
+    let pageSizeSelB = null;
+    let sortBy = 'count';
+    // name → asc; count → desc
+    let sortDir = 1; // 1 => desc (server mapping), -1 => asc
+    let searchTerm = '';
+    let page = 1;
+    let pageSize = 32;
+    let srvTotal = 0;
+    let srvTotalPages = 1;
+    let srvPage = 1;
+    function initDom() {
+        if (gridEl) return;
+        gridEl = document.getElementById('tagsGrid');
+        searchEl = document.getElementById('tagSearch');
+        countEl = document.getElementById('tagsCount');
+        statusEl = document.getElementById('tagsStatus');
+        pager = document.getElementById('tagsPager');
+        tagsSpinnerEl = document.getElementById('tagsSpinner');
+        prevBtn = document.getElementById('tagPrev');
+        nextBtn = document.getElementById('tagNext');
+        pageInfo = document.getElementById('tagPageInfo');
+        pageSizeSel = document.getElementById('tagPageSize');
+        pagerB = document.getElementById('tagsPagerBottom');
+        prevBtnB = document.getElementById('tagPrevBottom');
+        nextBtnB = document.getElementById('tagNextBottom');
+        pageInfoB = document.getElementById('tagPageInfoBottom');
+        pageSizeSelB = document.getElementById('tagPageSizeBottom');
+        importBtn = document.getElementById('tagImportBtn');
+        mergeBtn = document.getElementById('tagMergeBtn');
+        deleteBtn = document.getElementById('tagDeleteBtn');
+        importFile = document.getElementById('tagImportFile');
+        dropZone = document.getElementById('tagDropZone');
+        autoTagBtn = document.getElementById('tagAutoTagBtn');
+        wireEvents();
+    }
+    function ensureControlsVisible() {
+        try {
+            const toolbar = document.querySelector('#tags-panel .perf-toolbar');
+            const elts = [toolbar, importBtn, mergeBtn, deleteBtn, autoTagBtn, dropZone, statusEl, tagsSpinnerEl, pager, pagerB, gridEl, searchEl, countEl, pageSizeSel, pageSizeSelB, prevBtn, nextBtn, prevBtnB, nextBtnB];
+            elts.forEach((el) => {
+                if (!el) return;
+                try {
+                    el.hidden = false;
+                }
+                catch (_) { }
+                try {
+                    if (el.classList) el.classList.remove('d-none');
+                }
+                catch (_) { }
+            });
+        }
+        catch (_) { }
+    }
+    function setStatus(msg, showFlag = true) {
+        if (!statusEl) return;
+        statusEl.textContent = msg || '';
+        if (showFlag) showAs(statusEl, 'block'); else hide(statusEl);
+        if (tagsSpinnerEl) tagsSpinnerEl.hidden = !showFlag;
+    }
+    function tpl(id) {
+        const t = document.getElementById(id);
+        return t ? t.content.cloneNode(true) : null;
+    }
+    function applySortButtonLabel() {
+        const sortOrderBtn = document.getElementById('tagSortOrder');
+        if (!sortOrderBtn) return;
+        const isDesc = sortDir === 1;
+        sortOrderBtn.textContent = isDesc ? '▼' : '▲';
+        sortOrderBtn.setAttribute('aria-label', isDesc ? 'Descending' : 'Ascending');
+        sortOrderBtn.title = isDesc ? 'Descending' : 'Ascending';
+    }
+    function updateButtons() {
+        if (mergeBtn) mergeBtn.disabled = selected.size !== 2;
+        if (deleteBtn) deleteBtn.disabled = selected.size === 0;
+    }
+    function render() {
+        if (!gridEl) return;
+        gridEl.innerHTML = '';
+        const frag = document.createDocumentFragment();
+        if (!tags.length) {
+            const node = tpl('emptyHintTemplate');
+            if (node) {
+                const el = node.querySelector('.empty-hint');
+                if (el) el.textContent = 'No tags found.';
+                gridEl.appendChild(node);
+            }
+        }
+        else {
+            tags.forEach((t) => {
+                const node = tpl('tagCardTemplate');
+                if (!node) return;
+                const card = node.querySelector('.perf-card');
+                const nameEl = node.querySelector('.pc-name');
+                const countEl = node.querySelector('.pc-count');
+                if (nameEl) nameEl.textContent = t.name;
+                if (countEl) {
+                    const c = Number(t.count || 0);
+                    countEl.textContent = String(c);
+                    countEl.title = `${c} file${c === 1 ? '' : 's'}`;
+                }
+                if (card) {
+                    const slug = t.slug || _slugify(t.name || '');
+                    card.dataset.slug = slug;
+                    if (selected.has(slug)) card.dataset.selected = '1'; else card.removeAttribute('data-selected');
+                    card.tabIndex = 0;
+                    card.addEventListener('click', (e) => {
+                        // Multi-select support: Cmd/Ctrl or Shift toggles selection
+                        if (e && (e.metaKey || e.ctrlKey || e.shiftKey)) {
+                            try {
+                                if (selected.has(slug)) selected.delete(slug); else selected.add(slug);
+                                updateButtons();
+                                if (card) {
+                                    if (selected.has(slug)) card.dataset.selected = '1'; else card.removeAttribute('data-selected');
+                                }
+                            }
+                            catch (_) { }
+                            return;
+                        }
+                        try {
+                            // Use slug in filters to match server normalization
+                            libraryTagFilters = [slug];
+                            try {
+                                lsSetJSON('filters.tags', libraryTagFilters);
+                            }
+                            catch (_) {
+                                // no-op
+                            }
+                            const libTab = document.querySelector('[data-tab="library"]');
+                            if (libTab) libTab.click();
+                            if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips();
+                            if (typeof loadLibrary === 'function') loadLibrary();
+                            if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
+                        }
+                        catch (_) {
+                            // no-op
+                        }
+                    });
+                    card.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            card.click();
+                        }
+                    });
+                }
+                frag.appendChild(node);
+            });
+            gridEl.appendChild(frag);
+        }
+        updateButtons();
+        const infoText = srvTotal ? `Page ${srvPage} / ${srvTotalPages} • ${srvTotal} total` : '—';
+        if (pager && pageInfo && prevBtn && nextBtn) {
+            pageInfo.textContent = infoText;
+            prevBtn.disabled = srvPage <= 1;
+            nextBtn.disabled = srvPage >= srvTotalPages;
+        }
+        if (pagerB && pageInfoB && prevBtnB && nextBtnB) {
+            pageInfoB.textContent = infoText;
+            prevBtnB.disabled = srvPage <= 1;
+            nextBtnB.disabled = srvPage >= srvTotalPages;
+        }
+    }
+    async function fetchTags() {
+        initDom();
+        ensureControlsVisible();
+        try {
+            setStatus('Loading…', true);
+            if (gridEl) gridEl.classList.add('loading');
+            const url = new URL('/api/tags', window.location.origin);
+            if (searchTerm) url.searchParams.set('search', searchTerm);
+            url.searchParams.set('page', String(page || 1));
+            url.searchParams.set('page_size', String(pageSize || 32));
+            const sortSel = document.getElementById('tagSort');
+            const sortVal = sortSel ? (sortSel.value === 'name' ? 'name' : 'count') : (sortBy || 'count');
+            url.searchParams.set('sort', sortVal);
+            url.searchParams.set('order', sortDir === 1 ? 'desc' : 'asc');
+            url.searchParams.set('debug', 'false');
+            const r = await fetch(url);
+            const j = await r.json();
+            const d = j?.data || {};
+            tags = d.tags || d.items || [];
+            const total = Number(d.total || 0);
+            const totalPages = Number(d.total_pages || 1);
+            const curPage = Number(d.page || page || 1);
+            srvTotal = total;
+            srvTotalPages = totalPages;
+            srvPage = curPage;
+            if (countEl) {
+                countEl.textContent = total ? `${total} tag${total === 1 ? '' : 's'}${totalPages > 1 ? ` • showing ${tags.length}` : ''}` : '0 tags';
+            }
+            if (pageInfo) pageInfo.textContent = total ? `Page ${curPage} / ${totalPages} • ${total} total` : '—';
+            if (pageInfoB) pageInfoB.textContent = total ? `Page ${curPage} / ${totalPages} • ${total} total` : '—';
+            if (prevBtn) prevBtn.disabled = curPage <= 1;
+            if (nextBtn) nextBtn.disabled = curPage >= totalPages;
+            if (prevBtnB) prevBtnB.disabled = curPage <= 1;
+            if (nextBtnB) nextBtnB.disabled = curPage >= totalPages;
+            page = curPage;
+            setStatus('', false);
+            if (gridEl) gridEl.classList.remove('loading');
+            render();
+        }
+        catch (e) {
+            setStatus('Failed to load tags', true);
+            if (gridEl) gridEl.classList.remove('loading');
+            if (gridEl) {
+                gridEl.innerHTML = '';
+                const node = tpl('emptyHintTemplate');
+                if (node) {
+                    const el = node.querySelector('.empty-hint');
+                    if (el) el.textContent = 'Error loading tags.';
+                    gridEl.appendChild(node);
+                }
+            }
+            console.error(e);
+        }
+    }
+    const debounceSearch = debounce(fetchTags, 400);
+    function wireEvents() {
+        if (searchEl && !searchEl._wired) {
+            searchEl._wired = true;
+            searchEl.addEventListener('input', () => {
+                searchTerm = searchEl.value.trim();
+                page = 1;
+                debounceSearch();
+            });
+            searchEl.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    searchEl.value = '';
+                    searchTerm = '';
+                    page = 1;
+                    fetchTags();
+                }
+            });
+        }
+        const sortSel = document.getElementById('tagSort');
+        const sortOrderBtn = document.getElementById('tagSortOrder');
+        if (sortSel && !sortSel._wired) {
+            sortSel._wired = true;
+            sortSel.addEventListener('change', async () => {
+                sortBy = sortSel.value === 'name' ? 'name' : 'count';
+                sortDir = (sortBy === 'name') ? -1 : 1;
+                applySortButtonLabel();
+                page = 1;
+                await fetchTags();
+            });
+        }
+        if (sortOrderBtn && !sortOrderBtn._wired) {
+            sortOrderBtn._wired = true;
+            applySortButtonLabel();
+            sortOrderBtn.addEventListener('click', async () => {
+                sortDir = sortDir === 1 ? -1 : 1;
+                applySortButtonLabel();
+                page = 1;
+                await fetchTags();
+            });
+        }
+        const handlePrev = async () => {
+            if (page > 1) {
+                page--;
+                await fetchTags();
+            }
+        };
+        const handleNext = async () => {
+            page++;
+            await fetchTags();
+        };
+        if (prevBtn && !prevBtn._wired) {
+            prevBtn._wired = true;
+            prevBtn.addEventListener('click', handlePrev);
+        }
+        if (nextBtn && !nextBtn._wired) {
+            nextBtn._wired = true;
+            nextBtn.addEventListener('click', handleNext);
+        }
+        if (prevBtnB && !prevBtnB._wired) {
+            prevBtnB._wired = true;
+            prevBtnB.addEventListener('click', handlePrev);
+        }
+        if (nextBtnB && !nextBtnB._wired) {
+            nextBtnB._wired = true;
+            nextBtnB.addEventListener('click', handleNext);
+        }
+        // Drop zone wiring (drag/drop and click-to-open)
+        if (dropZone && !dropZone._wired) {
+            dropZone._wired = true;
+            // click, dblclick, keydown just open file input
+            const openFile = () => {
+                const fi = document.getElementById('tagImportFile');
+                if (fi && typeof fi.click === 'function') {
+                    try {
+                        fi.click();
+                    }
+                    catch (_) {
+                        // no-op
+                    }
+                }
+            };
+            dropZone.addEventListener('click', openFile);
+            dropZone.addEventListener('dblclick', openFile);
+            dropZone.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openFile();
+                }
+            });
+            // Drag and drop file/text
+            const isPanelActive = () => {
+                const panel = document.getElementById('tags-panel');
+                return panel && !panel.hasAttribute('hidden');
+            };
+            let over = false;
+            function showHover() {
+                if (dropZone) dropZone.classList.add('drag-hover');
+            }
+            function clearHover() {
+                if (dropZone) dropZone.classList.remove('drag-hover');
+            }
+            function wantsIntercept(dt) {
+                return Boolean(dt) && (dt.types?.includes('Files') || dt.types?.includes('text/plain') || (dt.files && dt.files.length));
+            }
+            async function readPayload(dt) {
+                if (!dt) return '';
+                let out = '';
+                const items = dt.items ? [...dt.items] : [];
+                for (const it of items) {
+                    if (it.kind === 'string') {
+                        try {
+                            out = await new Promise((r) => it.getAsString(r));
+                        }
+                        catch (_) { }
+                        if (out) return out;
+                    }
+                }
+                if (dt.files && dt.files.length) {
+                    for (const f of dt.files) {
+                        try {
+                            if (f.type.startsWith('text/') || /\.(txt|csv|json)$/i.test(f.name)) {
+                                out = await f.text();
+                                if (out) return out;
+                            }
+                        }
+                        catch (_) { }
+                    }
+                }
+                return out;
+            }
+            document.addEventListener('dragover', (e) => {
+                if (!isPanelActive()) return;
+                if (!wantsIntercept(e.dataTransfer)) return;
+                e.preventDefault(); e.stopPropagation();
+                if (!over) {
+                    over = true;
+                    showHover();
+                }
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+            }, true);
+            document.addEventListener('dragenter', (e) => {
+                if (!isPanelActive()) return;
+                if (!wantsIntercept(e.dataTransfer)) return;
+                e.preventDefault(); e.stopPropagation();
+                over = true; showHover();
+            }, true);
+            document.addEventListener('dragleave', (e) => {
+                if (!isPanelActive()) return;
+                if (!over) return;
+                over = false; clearHover();
+            }, true);
+            document.addEventListener('drop', async (e) => {
+                if (!isPanelActive()) return;
+                if (!wantsIntercept(e.dataTransfer)) return;
+                e.preventDefault(); e.stopPropagation();
+                over = false; clearHover();
+                try {
+                    const text = await readPayload(e.dataTransfer);
+                    if (text) {
+                        setStatus('Importing…', true);
+                        // Accept bare array or newline-separated
+                        let payload;
+                        try {
+                            const js = JSON.parse(text);
+                            payload = {tags: js.tags || js, replace: false};
+                        }
+                        catch (_) {
+                            const lines = text
+                                .split(/\r?\n/)
+                                .map((s) => s.trim())
+                                .filter(Boolean);
+                            payload = {tags: lines, replace: false};
+                        }
+                        await fetch('/api/registry/import', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+                        await fetchTags();
+                    }
+                }
+                catch (err) {
+                    console.warn('tags drop failed', err);
+                    setStatus('Import failed', true);
+                    setTimeout(() => setStatus('', false), 1500);
+                }
+            }, true);
+        }
+        if (autoTagBtn && !autoTagBtn._wired) {
+            autoTagBtn._wired = true;
+            autoTagBtn.addEventListener('click', () => {
+                try {
+                    const tasksTab = document.querySelector('[data-tab="tasks"]');
+                    if (tasksTab) tasksTab.click();
+                    setTimeout(() => {
+                        const el = document.getElementById('autotagTagsSection');
+                        if (el && el.scrollIntoView) {
+                            el.scrollIntoView({behavior: 'smooth', block: 'start'});
+                        }
+                    }, 60);
+                }
+                catch (_) { }
+            });
+        }
+        const handlePageSizeChange = async (sel) => {
+            const v = parseInt(sel.value, 10);
+            if (Number.isFinite(v) && v > 0) {
+                pageSize = v;
+                if (pageSizeSel && pageSizeSel !== sel) pageSizeSel.value = String(v);
+                if (pageSizeSelB && pageSizeSelB !== sel) pageSizeSelB.value = String(v);
+                page = 1;
+                await fetchTags();
+            }
+        };
+        if (pageSizeSel && !pageSizeSel._wired) {
+            pageSizeSel._wired = true;
+            const ps = parseInt(pageSizeSel.value, 10);
+            if (Number.isFinite(ps)) pageSize = ps;
+            pageSizeSel.addEventListener('change', () => handlePageSizeChange(pageSizeSel));
+        }
+        if (pageSizeSelB && !pageSizeSelB._wired) {
+            pageSizeSelB._wired = true;
+            const psb = parseInt(pageSizeSelB.value, 10);
+            if (Number.isFinite(psb)) pageSize = psb;
+            pageSizeSelB.addEventListener('change', () => handlePageSizeChange(pageSizeSelB));
+        }
+        // Import/Merge/Delete wiring
+        if (importBtn && !importBtn._wired) {
+            importBtn._wired = true;
+            importBtn.addEventListener('click', () => importFile && importFile.click());
+        }
+        if (importFile && !importFile._wired) {
+            importFile._wired = true;
+            importFile.addEventListener('change', async (e) => {
+                const f = e.target && e.target.files && e.target.files[0];
+                if (!f) return;
+                try {
+                    const text = await f.text();
+                    const json = JSON.parse(text);
+                    const payload = {tags: json.tags || json, replace: false};
+                    const r = await fetch('/api/registry/import', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+                    if (r.ok) {
+                        if (window.showToast) window.showToast('Imported', 'is-success');
+                        await fetchTags();
+                    }
+                    else {
+                        if (window.showToast) window.showToast('Import failed', 'is-error');
+                    }
+                }
+                catch (_) {
+                    if (window.showToast) window.showToast('Invalid JSON', 'is-error');
+                }
+                finally {
+                    try {
+                        e.target.value = '';
+                    }
+                    catch (_) {
+                        // no-op
+                    }
+                }
+            });
+        }
+        if (mergeBtn && !mergeBtn._wired) {
+            mergeBtn._wired = true;
+            mergeBtn.addEventListener('click', async () => {
+                if (selected.size !== 2) return;
+                const arr = [...selected];
+                const into = prompt('Merge: tag that remains', arr[0]);
+                if (!into) return;
+                // Map selected slugs to tag names for API
+                const slugToName = (slug) => {
+                    const hit = tags.find((t) => (t.slug || _slugify(t.name || '')) === slug);
+                    return (hit && hit.name) || slug;
+                };
+                const intoName = into;
+                const fromSlug = arr.find((s) => s !== _slugify(intoName)) || arr[0];
+                const fromName = slugToName(fromSlug);
+                const url = `/api/registry/tags/merge?from_name=${encodeURIComponent(fromName)}&into_name=${encodeURIComponent(intoName)}`;
+                try {
+                    const r = await fetch(url, {method: 'POST'});
+                    if (r.ok) {
+                        if (window.showToast) window.showToast('Merged', 'is-success');
+                        selected.clear();
+                        await fetchTags();
+                    }
+                    else {
+                        if (window.showToast) window.showToast('Merge failed', 'is-error');
+                    }
+                }
+                catch (_) {
+                    if (window.showToast) window.showToast('Merge failed', 'is-error');
+                }
+            });
+        }
+        if (deleteBtn && !deleteBtn._wired) {
+            deleteBtn._wired = true;
+            deleteBtn.addEventListener('click', async () => {
+                if (!selected.size) return;
+                // Use global confirmDeletesEnabled preference if present
+                if (typeof confirmDeletesEnabled === 'undefined' || confirmDeletesEnabled) {
+                    if (!confirm(`Delete ${selected.size} tag(s)?`)) return;
+                }
+                try {
+                    const slugToName = (slug) => {
+                        const hit = tags.find((t) => (t.slug || _slugify(t.name || '')) === slug);
+                        return (hit && hit.name) || slug;
+                    };
+                    for (const slug of Array.from(selected)) {
+                        const name = slugToName(slug);
+                        await fetch('/api/registry/tags/delete', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})});
+                    }
+                    selected.clear();
+                    await fetchTags();
+                    if (window.showToast) window.showToast('Deleted', 'is-success');
+                }
+                catch (_) {
+                    if (window.showToast) window.showToast('Delete failed', 'is-error');
+                }
+            });
+        }
+    }
+    async function show() {
+        page = page || 1;
+        await fetchTags();
+    }
+    return {show};
+})();
+window.Tags = Tags;
+// Hook tab switch to load tags when opened
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('[data-tab="tags"]');
+    if (!btn) return;
+    try {
+        if (window.Tags) window.Tags.show();
+    }
+    catch (_) {
+        // no-op
+    }
+});
+window.addEventListener('tabchange', (ev) => {
+    const active = ev && ev.detail && ev.detail.activeTab;
+    if (active === 'tags' && window.Tags) {
+        setTimeout(() => window.Tags && window.Tags.show(), 30);
+    }
+});
+// Direct load on #tags
+try {
+    const hash = (window.location.hash || '').replace(/^#/, '');
+    if (hash === 'tags' && window.Tags) {
+        setTimeout(() => window.Tags && window.Tags.show(), 50);
+    }
+}
+catch (_) { }
 // Fallback direct wiring: ensure clicking the Import button always opens the file picker
 // This acts even if the Performers module didn't wire events yet.
 (function ensurePerformerImportButtonClick() {

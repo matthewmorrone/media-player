@@ -145,6 +145,18 @@
       </div>
     </div>
   </template>
+  <!-- Templates: Tags (card) -->
+  <template id="tagCardTemplate">
+    <div class="perf-card perf-card--pretty" role="group">
+      <div class="pc-top">
+        <div class="pc-avatar" aria-hidden="true"></div>
+        <div class="pc-titlebox">
+          <h3 class="pc-name"></h3>
+        </div>
+        <span class="pc-count" title=""></span>
+      </div>
+    </div>
+  </template>
   <template id="emptyHintTemplate">
     <div class="hint-sm empty-hint"></div>
   </template>
@@ -811,7 +823,7 @@
 
       <!-- Performers Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="performers-tab" id="performers-panel" hidden>
-        <div class="performers-container">
+        <div class="catalog-container">
           <div class="perf-toolbar">
             <input id="performerSearch" type="text" placeholder="Search performers…" class="perf-search" />
             <!-- Sort controls: default to Scenes (desc) -->
@@ -832,7 +844,8 @@
             <span class="pdz-sub">Click to choose files or drag & drop names / JSON / text list</span>
           </div>
           <input id="performerFileInput" type="file" accept=".txt,.csv,.json,text/plain,application/json" multiple class="d-none" />
-          <div id="performersStatus" class="performers-status d-none">Loading…</div>
+          <div id="performersStatus" class="catalog-status d-none" aria-live="polite">Loading…</div>
+          <div id="performersSpinner" class="spinner" hidden></div>
           <div class="list-controls flex-row gap-10 mt-12" id="performersPager">
             <div class="ml-auto"></div>
             <label for="perfPageSize" class="hint-sm">Page size</label>
@@ -866,63 +879,55 @@
 
       <!-- Tags Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="tags-tab" id="tags-panel" hidden>
-        <div class="task-section">
-          <div class="section-header">
-            <h2>Tags</h2>
+        <!-- Tags grid (extant tags with counts) -->
+        <div class="catalog-container">
+          <div class="perf-toolbar">
+            <input id="tagSearch" type="text" placeholder="Search tags…" class="perf-search" />
+            <label for="tagSort" class="hint-sm ml-8" style="opacity:.8">Sort</label>
+            <select id="tagSort" class="control-select" aria-label="Sort tags">
+              <option value="count" selected>Files</option>
+              <option value="name">Name</option>
+            </select>
+            <button id="tagSortOrder" class="btn-sm" title="Toggle sort order" aria-label="Toggle sort order">Desc</button>
+            <span id="tagsCount" class="hint-sm ml-8" aria-live="polite"></span>
+            <button id="tagImportBtn" class="btn-sm" title="Import tags from JSON">Import</button>
+            <button id="tagMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
+            <button id="tagDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
+            <button id="tagAutoTagBtn" class="btn-sm" title="Auto‑tag videos">Auto‑Tag</button>
           </div>
-          <div class="registry-column registry-column--narrow">
-            <div class="registry-toolbar">
-              <input type="text" id="tagsRegistrySearch" placeholder="Search tags…" class="control-input" />
-              <button id="tagsRegistryAddBtn" class="btn-sm" title="Add new tag">Add</button>
-              <button id="tagsRegistryMergeBtn" class="btn-sm" disabled title="Merge selected tags">Merge</button>
-              <button id="tagsRegistryDeleteBtn" class="btn-sm" disabled title="Delete selected tags">Delete</button>
-              <button id="tagsRegistryRewriteBtn" class="btn-sm" title="Rewrite sidecars to canonical names">Rewrite</button>
-            </div>
-            <div id="tagsRegistryStatus" class="hint-sm hint-sm--muted" aria-live="polite">—</div>
-            <div id="tagsRegistryList" class="registry-list" aria-label="Tag registry" tabindex="0"></div>
-            <div class="flex-row gap-12 wrap mt-12">
-              <button id="tagsRegistryExportBtn" class="btn-sm">Export JSON</button>
-              <button id="tagsRegistryImportBtn" class="btn-sm">Import JSON</button>
-              <label class="hint-sm label-inline">
-                <input type="checkbox" id="tagsRegistryImportReplace" /> Replace existing
-              </label>
-              <input type="file" id="tagsRegistryImportFile" class="d-none" accept="application/json,.json" />
-            </div>
+          <div id="tagDropZone" role="button" tabindex="0" aria-label="Import tags" class="performer-dropzone">
+            <strong class="pdz-title">Import Tags</strong>
+            <span class="pdz-sub">Click to choose a file or drag & drop JSON / newline list</span>
           </div>
-        </div>
-        <div class="task-section mt-24">
-          <div class="section-header">
-            <h2>Auto‑Tag (Tags Focus)</h2>
+          <input id="tagImportFile" type="file" accept=".txt,.csv,.json,text/plain,application/json" class="d-none" />
+          <div id="tagsStatus" class="catalog-status d-none" aria-live="polite">Loading…</div>
+          <div id="tagsSpinner" class="spinner" hidden></div>
+          <div class="list-controls flex-row gap-10 mt-12" id="tagsPager">
+            <div class="ml-auto"></div>
+            <label for="tagPageSize" class="hint-sm">Page size</label>
+            <select id="tagPageSize" class="control-select" aria-label="Tags page size">
+              <option value="16">16</option>
+              <option value="32" selected>32</option>
+              <option value="64">64</option>
+              <option value="128">128</option>
+            </select>
+            <button id="tagPrev" class="btn-sm" aria-label="Previous page">Prev</button>
+            <span id="tagPageInfo" class="hint-sm" aria-live="polite">—</span>
+            <button id="tagNext" class="btn-sm" aria-label="Next page">Next</button>
           </div>
-          <div class="file-selection file-selection-compact">
-            <div class="flex-row gap-12 wrap">
-              <input type="text" id="autotagPathTags" class="control-input w-240" placeholder="Path (blank=root)" />
-              <label class="selection-option selection-option--no-margin">
-                <input type="checkbox" id="autotagRecursiveTags" /> Recursive
-              </label>
-              <label class="selection-option m0">
-                <input type="checkbox" id="autotagUseRegTagsOnly" /> All Registry Tags
-              </label>
-              <input type="text" id="autotagExtraTags" class="control-input w-200" placeholder="Extra tags (comma)" />
-              <button id="autotagPreviewTagsBtn" class="btn-sm">Preview</button>
-              <button id="autotagScanTagsBtn" class="btn-sm" disabled>Run Job</button>
-            </div>
-            <div class="hint-sm mt-6">Preview suggests tags from filenames; Run Job writes sidecars.</div>
-          </div>
-          <div class="task-section mt-12">
-            <div class="section-header">
-              <h2>Preview Results</h2>
-            </div>
-            <div id="autotagTagResultsStatus" class="hint-sm hint-sm--muted">No preview yet.</div>
-            <table class="job-table autotag-table" id="autotagTagResultsTable">
-              <thead>
-                <tr>
-                  <th>File</th>
-                  <th>Tags</th>
-                </tr>
-              </thead>
-              <tbody id="autotagTagResultsBody"></tbody>
-            </table>
+          <div id="tagsGrid" class="perf-grid performers-grid"></div>
+          <div class="list-controls flex-row gap-10 mt-12" id="tagsPagerBottom">
+            <div class="ml-auto"></div>
+            <label for="tagPageSizeBottom" class="hint-sm">Page size</label>
+            <select id="tagPageSizeBottom" class="control-select" aria-label="Tags page size (bottom)">
+              <option value="16">16</option>
+              <option value="32" selected>32</option>
+              <option value="64">64</option>
+              <option value="128">128</option>
+            </select>
+            <button id="tagPrevBottom" class="btn-sm" aria-label="Previous page">Prev</button>
+            <span id="tagPageInfoBottom" class="hint-sm" aria-live="polite">—</span>
+            <button id="tagNextBottom" class="btn-sm" aria-label="Next page">Next</button>
           </div>
         </div>
       </div>
@@ -1379,6 +1384,67 @@
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Tag Tools (moved from Tags tab) -->
+          <div class="task-section" id="tagRegistrySection">
+          <div class="section-header">
+            <h2>Tag Registry</h2>
+          </div>
+          <div class="registry-column registry-column--narrow">
+            <div class="registry-toolbar">
+              <input type="text" id="tagsRegistrySearch" placeholder="Search tags…" class="control-input" />
+              <button id="tagsRegistryAddBtn" class="btn-sm" title="Add new tag">Add</button>
+              <button id="tagsRegistryMergeBtn" class="btn-sm" disabled title="Merge selected tags">Merge</button>
+              <button id="tagsRegistryDeleteBtn" class="btn-sm" disabled title="Delete selected tags">Delete</button>
+              <button id="tagsRegistryRewriteBtn" class="btn-sm" title="Rewrite sidecars to canonical names">Rewrite</button>
+            </div>
+            <div id="tagsRegistryStatus" class="hint-sm hint-sm--muted" aria-live="polite">—</div>
+            <div id="tagsRegistryList" class="registry-list" aria-label="Tag registry" tabindex="0"></div>
+            <div class="flex-row gap-12 wrap mt-12">
+              <button id="tagsRegistryExportBtn" class="btn-sm">Export JSON</button>
+              <button id="tagsRegistryImportBtn" class="btn-sm">Import JSON</button>
+              <label class="hint-sm label-inline">
+                <input type="checkbox" id="tagsRegistryImportReplace" /> Replace existing
+              </label>
+              <input type="file" id="tagsRegistryImportFile" class="d-none" accept="application/json,.json" />
+            </div>
+          </div>
+        </div>
+        <div class="task-section mt-24" id="autotagTagsSection">
+          <div class="section-header">
+            <h2>Auto‑Tag (Tags Focus)</h2>
+          </div>
+          <div class="file-selection file-selection-compact">
+            <div class="flex-row gap-12 wrap">
+              <input type="text" id="autotagPathTags" class="control-input w-240" placeholder="Path (blank=root)" />
+              <label class="selection-option selection-option--no-margin">
+                <input type="checkbox" id="autotagRecursiveTags" /> Recursive
+              </label>
+              <label class="selection-option m0">
+                <input type="checkbox" id="autotagUseRegTagsOnly" /> All Registry Tags
+              </label>
+              <input type="text" id="autotagExtraTags" class="control-input w-200" placeholder="Extra tags (comma)" />
+              <button id="autotagPreviewTagsBtn" class="btn-sm">Preview</button>
+              <button id="autotagScanTagsBtn" class="btn-sm" disabled>Run Job</button>
+            </div>
+            <div class="hint-sm mt-6">Preview suggests tags from filenames; Run Job writes sidecars.</div>
+          </div>
+          <div class="task-section mt-12">
+            <div class="section-header">
+              <h2>Preview Results</h2>
+            </div>
+            <div id="autotagTagResultsStatus" class="hint-sm hint-sm--muted">No preview yet.</div>
+            <table class="job-table autotag-table" id="autotagTagResultsTable">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Tags</th>
+                </tr>
+              </thead>
+              <tbody id="autotagTagResultsBody"></tbody>
+            </table>
           </div>
         </div>
       </div>
