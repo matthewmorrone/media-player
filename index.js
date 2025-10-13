@@ -9746,18 +9746,14 @@ const Tags = (() => {
                             try {
                                 lsSetJSON('filters.tags', libraryTagFilters);
                             }
-                            catch (_) {
-                                // no-op
-                            }
+                            catch (_) { }
                             const libTab = document.querySelector('[data-tab="library"]');
                             if (libTab) libTab.click();
                             if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips();
                             if (typeof loadLibrary === 'function') loadLibrary();
                             if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
                         }
-                        catch (_) {
-                            // no-op
-                        }
+                        catch (_) { }
                     });
                     card.addEventListener('keydown', (e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
@@ -9913,9 +9909,7 @@ const Tags = (() => {
                     try {
                         fi.click();
                     }
-                    catch (_) {
-                        // no-op
-                    }
+                    catch (_) { }
                 }
             };
             dropZone.addEventListener('click', openFile);
@@ -10089,9 +10083,7 @@ const Tags = (() => {
                     try {
                         e.target.value = '';
                     }
-                    catch (_) {
-                        // no-op
-                    }
+                    catch (_) { }
                 }
             });
         }
@@ -10168,9 +10160,7 @@ document.addEventListener('click', (e) => {
     try {
         if (window.Tags) window.Tags.show();
     }
-    catch (_) {
-        // no-op
-    }
+    catch (_) { }
 });
 window.addEventListener('tabchange', (ev) => {
     const active = ev && ev.detail && ev.detail.activeTab;
@@ -10199,7 +10189,7 @@ catch (_) { }
                 try {
                     fi.click();
                 }
-                catch (_) { /* no-op */ }
+                catch (_) { }
             }
         });
     }
@@ -10273,9 +10263,7 @@ class TasksManager {
             // Small delay to allow freshly queued jobs to persist if init races with job enqueue
             await new Promise((r) => setTimeout(r, 150));
             const r = await fetch('/api/tasks/jobs', {headers: {Accept: 'application/json' }, cache: 'no-store' });
-            if (!r.ok) {
-                return;
-            }
+            if (!r.ok) return;
             const j = await r.json();
             const jobs = j?.data?.jobs || [];
             let hasActive = false;
@@ -10305,7 +10293,7 @@ class TasksManager {
             }
             catch (_) { }
         }
-        catch (_) { /* silent */ }
+        catch (_) { }
     }
     async loadConfigAndApplyGates() {
         try {
@@ -10341,9 +10329,7 @@ class TasksManager {
                 catch (_) { }
             }
         }
-        catch (_) {
-            // Keep defaults if /config fails
-        }
+        catch (_) { }
         this.applyCapabilityGates();
         // Re-evaluate and wire browser faces button when caps are known
         this.wireBrowserFacesButton();
@@ -10385,12 +10371,8 @@ class TasksManager {
             catch (_) { }
             const applyVal = (id, val) => {
                 const el = document.getElementById(id);
-                if (!el) {
-                    return;
-                }
-                if (saved && saved[id] !== undefined) {
-                    return;
-                }
+                if (!el) return;
+                if (saved && saved[id] !== undefined) return;
                 // user override
                 if (el.type === 'checkbox') el.checked = Boolean(val);
                 else el.value = val;
@@ -10438,15 +10420,11 @@ class TasksManager {
         };
         const sel = '#spritesOptions input, #previewsOptions input, #thumbnailsOptions input, #phashOptions select, #phashOptions input, #scenesOptions input, #heatmapsOptions input, #heatmapsOptions select, #subtitlesOptions select, #subtitlesOptions input, #facesOptions input, #facesOptions select, #embedOptions input, #embedOptions select';
         document.querySelectorAll(sel).forEach((el) => {
-            if (el._persistWired) {
-                return;
-            }
+            if (el._persistWired) return;
             el._persistWired = true;
             const handler = () => {
                 const id = el.id;
-                if (!id) {
-                    return;
-                }
+                if (!id) return;
                 cache[id] = (el.type === 'checkbox') ? el.checked : el.value;
                 persist();
             };
@@ -10483,7 +10461,27 @@ class TasksManager {
     }
     attachOptionValidators() {
         const numericIds = [
-            'spriteInterval', 'spriteWidth', 'spriteCols', 'spriteRows', 'spriteQuality', 'previewSegments', 'previewDuration', 'previewWidth', 'phashFrames', 'sceneThreshold', 'sceneLimit', 'heatmapInterval', 'thumbnailOffset', 'faceInterval', 'faceMinSize', 'faceScale', 'faceMinNeighbors', 'faceSimThresh', 'embedInterval', 'embedMinSize', 'embedSimThresh',
+            'spriteInterval',
+            'spriteWidth',
+            'spriteCols',
+            'spriteRows',
+            'spriteQuality',
+            'previewSegments',
+            'previewDuration',
+            'previewWidth',
+            'phashFrames',
+            'sceneThreshold',
+            'sceneLimit',
+            'heatmapInterval',
+            'thumbnailOffset',
+            'faceInterval',
+            'faceMinSize',
+            'faceScale',
+            'faceMinNeighbors',
+            'faceSimThresh',
+            'embedInterval',
+            'embedMinSize',
+            'embedSimThresh',
         ];
         numericIds.forEach((id) => {
             const el = document.getElementById(id);
@@ -10495,12 +10493,8 @@ class TasksManager {
         });
     }
     validateNumericInput(el) {
-        if (!el) {
-            return;
-        }
-        if (el.type !== 'number') {
-            return;
-        }
+        if (!el) return;
+        if (el.type !== 'number') return;
         const min = (el.min !== '' && !isNaN(parseFloat(el.min))) ? parseFloat(el.min) : null;
         const max = (el.max !== '' && !isNaN(parseFloat(el.max))) ? parseFloat(el.max) : null;
         let val = parseFloat(el.value);
@@ -10529,44 +10523,14 @@ class TasksManager {
         // FFmpeg-dependent
         const ffmpegMissing = !caps.ffmpeg;
         if (ffmpegMissing) {
-            disableIf(
-                '[data-operation="thumbnails-missing"], [data-operation="thumbnails-all"]',
-                true,
-                'Disabled: FFmpeg not detected',
-            );
-            disableIf(
-                '[data-operation="previews-missing"], [data-operation="previews-all"]',
-                true,
-                'Disabled: FFmpeg not detected',
-            );
-            disableIf(
-                '[data-operation="sprites-missing"], [data-operation="sprites-all"]',
-                true,
-                'Disabled: FFmpeg not detected',
-            );
-            disableIf(
-                '[data-operation="scenes-missing"], [data-operation="scenes-all"]',
-                true,
-                'Disabled: FFmpeg not detected',
-            );
-            disableIf(
-                '[data-operation="heatmaps-missing"], [data-operation="heatmaps-all"]',
-                true,
-                'Disabled: FFmpeg not detected',
-            );
-            disableIf(
-                '[data-operation="phash-missing"], [data-operation="phash-all"]',
-                true,
-                'Disabled: FFmpeg not detected',
-            );
+            disableIf('[data-operation="thumbnails-missing"], [data-operation="thumbnails-all"]', true, 'Disabled: FFmpeg not detected');
+            disableIf('[data-operation="previews-missing"], [data-operation="previews-all"]', true, 'Disabled: FFmpeg not detected');
+            disableIf('[data-operation="sprites-missing"], [data-operation="sprites-all"]', true, 'Disabled: FFmpeg not detected');
+            disableIf('[data-operation="scenes-missing"], [data-operation="scenes-all"]', true, 'Disabled: FFmpeg not detected');
+            disableIf('[data-operation="heatmaps-missing"], [data-operation="heatmaps-all"]', true, 'Disabled: FFmpeg not detected');
+            disableIf('[data-operation="phash-missing"], [data-operation="phash-all"]', true, 'Disabled: FFmpeg not detected');
             // Player badges
-            [
-                'badgeHeatmap',
-                'badgeScenes',
-                'badgeSprites',
-                'badgeHover',
-                'badgePhash',
-            ].forEach((id) => {
+            ['badgeHeatmap', 'badgeScenes', 'badgeSprites', 'badgeHover', 'badgePhash'].forEach((id) => {
                 const el = document.getElementById(id);
                 if (el) {
                     el.disabled = true;
@@ -10589,16 +10553,8 @@ class TasksManager {
         }
         // Faces/Embeddings
         if (!caps.faces_enabled) {
-            disableIf(
-                '[data-operation="faces-missing"], [data-operation="faces-all"]',
-                true,
-                'Disabled: face backends not available',
-            );
-            disableIf(
-                '[data-operation="embed-missing"], [data-operation="embed-all"]',
-                true,
-                'Disabled: face backends not available',
-            );
+            disableIf('[data-operation="faces-missing"], [data-operation="faces-all"]', true, 'Disabled: face backends not available');
+            disableIf('[data-operation="embed-missing"], [data-operation="embed-all"]', true, 'Disabled: face backends not available');
             const bf = document.getElementById('badgeFaces');
             if (bf) {
                 bf.disabled = true;
@@ -10625,8 +10581,7 @@ class TasksManager {
             );
         }
         if (!caps.subtitles_enabled) {
-            issues.push(
-                'Subtitles backend unavailable — subtitles generation is disabled.',
+            issues.push('Subtitles backend unavailable — subtitles generation is disabled.',
             );
         }
         if (!caps.faces_enabled) {
@@ -10822,9 +10777,7 @@ class TasksManager {
         // Batch operation buttons
         document.querySelectorAll('[data-operation]').forEach((btn) => {
             // Avoid attaching duplicate listeners
-            if (btn._opHandlerAttached) {
-                return;
-            }
+            if (btn._opHandlerAttached) return;
             btn._opHandlerAttached = true;
             btn.addEventListener('click', async (e) => {
                 const button = e.currentTarget;
@@ -10867,9 +10820,7 @@ class TasksManager {
         ];
         const refreshCardStates = () => {
             allFilters.forEach((el) => {
-                if (!el) {
-                    return;
-                }
+                if (!el) return;
                 const key = el.dataset.filter;
                 el.classList.toggle('active', this.activeFilters.has(key));
             });
@@ -11293,12 +11244,8 @@ class TasksManager {
     // Wire Generate All button: queue all missing artifacts in fast-first order
     wireGenerateAll() {
         const btn = document.getElementById('generateAllBtn');
-        if (!btn) {
-            return;
-        }
-        if (btn._wired) {
-            return;
-        }
+        if (!btn) return;
+        if (btn._wired) return;
         btn._wired = true;
         btn.addEventListener('click', async () => {
             const ops = [
@@ -11625,9 +11572,7 @@ class TasksManager {
                 return data.data.jobs;
             }
         }
-        catch (error) {
-            // Quiet failure during polling
-        }
+        catch (error) { }
         return null;
     }
     updateJobsDisplay(jobs) {
@@ -11718,9 +11663,7 @@ class TasksManager {
             for (const job of jobs) {
                 const st = (job.state || '').toLowerCase();
                 const isActive = st === 'running' || st === 'queued' || st === 'pending' || st === 'starting';
-                if (!isActive) {
-                    continue;
-                }
+                if (!isActive) continue;
                 // Prefer explicit artifact field from backend; fallback to heuristic only if absent
                 let artifact = normArt(job.artifact || '');
                 if (!artifact) {
@@ -11735,13 +11678,9 @@ class TasksManager {
                     else if (/meta/.test(task)) artifact = 'metadata';
                     else if (/cover|thumb/.test(task)) artifact = 'thumbnail';
                 }
-                if (!artifact) {
-                    continue;
-                }
+                if (!artifact) continue;
                 const path = job.target || job.file || job.path || '';
-                if (!path) {
-                    continue;
-                }
+                if (!path) continue;
                 // Only reflect spinner for the currently open file
                 if (!activePath || path !== activePath) {
                     continue;
