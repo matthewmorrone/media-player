@@ -5,8 +5,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Media Library</title>
-  <link rel="icon" type="image/x-icon" href="favicon.ico" />
-  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+  <link rel="manifest" href="/static/manifest.json" />
   <link rel="stylesheet" href="index.css" />
   <script>
     // Apply collapsed class ASAP to avoid post-load reflow when sidebar is persisted collapsed
@@ -65,7 +65,7 @@
     </symbol>
     <symbol id="icon-caret" viewBox="0 0 24 24">
       <!-- filled chevron for better visibility (uses currentColor) -->
-      <path d="M15 6 L9 12 L15 18 Z" fill="currentColor" />
+      <path d="M9 18 L15 12 L9 6 Z" fill="currentColor" />
     </symbol>
     <symbol id="icon-jump" viewBox="0 0 24 24">
       <path d="M4 12a8 8 0 1 1 16 0 8 8 0 0 1-16 0zm5.5-3.5v7l6-3.5-6-3.5z" fill="currentColor" />
@@ -239,6 +239,50 @@
     </div>
   </div>
 
+  <!-- Tag Manual Add Modal -->
+  <div id="tagManualModal" class="modal" hidden>
+    <div class="panel panel--wide panel--manual-add">
+      <header class="panel-header--spaced">
+        <strong>Add Tag Manually</strong>
+        <div class="ml-auto"></div>
+        <button id="tagManualClose" class="btn-sm" title="Close">Close</button>
+      </header>
+      <div class="body panel-body--scroll">
+        <div class="manual-add-layout gap-16">
+          <div class="manual-form-col">
+            <div class="control-group--flex gap-10">
+              <label for="manualTagName" class="hint-sm w-120">Tag name</label>
+              <input id="manualTagName" type="text" placeholder="e.g. 4K" class="control-input w-100" />
+            </div>
+            <div class="control-group--flex gap-10 mt-12">
+              <label for="manualTagPatterns" class="hint-sm w-120">Match strings</label>
+              <textarea id="manualTagPatterns" rows="6" placeholder="Comma or newline separated; any match tags the file" class="control-textarea w-100"></textarea>
+            </div>
+            <div class="flex-row gap-10 mt-12">
+              <button id="manualPreviewBtn" class="btn-sm">Preview</button>
+              <button id="manualApplyAllBtn" class="btn-sm">Apply All</button>
+            </div>
+            <span id="manualStatus" class="hint-sm mt-12" aria-live="polite"></span>
+          </div>
+          <div class="manual-results-col">
+            <div id="manualResults" class="manual-results" role="region" aria-label="Preview matches"></div>
+          </div>
+        </div>
+      </div>
+      <footer class="panel-footer--actions">
+        <span class="hint-sm hint-sm--muted">Esc or Close to dismiss • "Apply" writes tags per file</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Manual tag result row template -->
+  <template id="manualTagRowTemplate">
+    <div class="manual-result-row flex-row gap-10">
+      <div class="file w-100"></div>
+      <button class="btn-sm apply">Apply</button>
+    </div>
+  </template>
+
   <!-- Error modal (predeclared to avoid dynamic injection) -->
   <div id="errorModal" class="modal" hidden>
     <div class="modal-content modal-content--wide">
@@ -403,6 +447,52 @@
       </footer>
     </div>
   </div>
+
+  <!-- Templates: API Explorer -->
+  <template id="apiGroupTemplate">
+    <section class="api-group" data-open="1">
+      <header class="api-group__header flex-row gap-10" role="button" tabindex="0" aria-expanded="true">
+        <span class="api-group__caret" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24"><use href="#icon-caret"></use></svg>
+        </span>
+        <h3 class="api-group__title"></h3>
+        <button class="btn-xs api-group__expand-all" title="Expand/collapse all children" style="display: none;">±</button>
+        <span class="ml-auto hint-sm api-group__count"></span>
+      </header>
+      <div class="api-group__body"></div>
+    </section>
+  </template>
+  <template id="apiEndpointTemplate">
+    <div class="card api-endpoint" data-open="0">
+  <div class="api-endpoint__header row" role="button" tabindex="0" aria-expanded="false">
+        <span class="method-badge">GET</span>
+        <code class="api-path w-100"></code>
+        <button class="btn-sm api-toggle" aria-expanded="false" aria-label="Toggle details">Details</button>
+      </div>
+      <div class="api-endpoint__body hidden">
+        <div class="hint-sm api-summary"></div>
+        <div class="api-params" role="group" aria-label="Parameters"></div>
+        <div class="api-body" hidden>
+          <label class="hint-sm">Request Body (JSON)
+            <textarea class="api-body-text control-textarea w-100" rows="6" placeholder="{ }"></textarea>
+          </label>
+        </div>
+        <div class="row gap-10 mt-12">
+          <button class="btn-sm api-run">Run</button>
+          <span class="hint-sm api-status"></span>
+        </div>
+        <pre class="json-pre api-response mt-12" aria-live="polite"></pre>
+      </div>
+    </div>
+  </template>
+  <template id="apiParamTemplate">
+    <div class="api-param-row">
+      <label class="hint-sm w-120 api-param-label">name
+        <input class="control-input api-param-input w-100" />
+      </label>
+      <span class="hint-sm api-param-meta"></span>
+    </div>
+  </template>
   <header>
     <!-- Tab Navigation only (top bar removed) -->
     <nav class="tab-nav" role="tablist" aria-label="Main navigation">
@@ -411,6 +501,12 @@
       </button>
       <button class="tab-button active" role="tab" aria-selected="true" aria-controls="library-panel" id="library-tab" data-tab="library">
         Library
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="list-panel" id="list-tab" data-tab="list">
+        List
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="similar-panel" id="similar-tab" data-tab="similar">
+        Similar
       </button>
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="tasks-panel" id="tasks-tab" data-tab="tasks">
         Tasks
@@ -423,6 +519,12 @@
       </button>
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="stats-panel" id="stats-tab" data-tab="stats">
         Stats
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="settings-panel" id="settings-tab" data-tab="settings">
+        Settings
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="api-panel" id="api-tab" data-tab="api">
+        API
       </button>
     </nav>
   </header>
@@ -728,7 +830,7 @@
             </div>
             <div class="control-group">
               <div class="select">
-                <select id="resSelect" class="control-select" title="Filter by resolution">
+                <select id="resSelect" class="control-select" title="Filter by resolution" aria-label="Filter by resolution">
                   <option value="" selected>All resolutions</option>
                   <option value="2160">2160p+</option>
                   <option value="1440">1440p+</option>
@@ -742,7 +844,7 @@
             <div class="control-group">
               <!-- <span class="control-label">Sort</span> -->
               <div class="select">
-                <select id="sortSelect" class="control-select">
+                <select id="sortSelect" class="control-select" aria-label="Sort by">
                   <option value="date">Date</option>
                   <option value="name">Name</option>
                   <option value="size">Size</option>
@@ -750,20 +852,20 @@
                 </select>
                 <span class="chevron">▾</span>
               </div>
-              <button id="orderToggle" class="btn-sm order-btn" data-order="desc" title="Toggle sort order">▼</button>
+              <button id="orderToggle" class="btn-sm order-btn" data-order="desc" title="Toggle sort order" aria-label="Toggle sort order">▼</button>
             </div>
             <div class="pagination-group">
               <div class="control-group">
                 <!-- <span class="control-label">Density</span> -->
-                <input id="densitySlider" type="range" min="1" max="15" value="12" step="1" class="control-slider" title="Adjust grid density (columns)" />
+                <input id="densitySlider" type="range" min="1" max="15" value="12" step="1" class="control-slider" title="Adjust grid density (columns)" aria-label="Grid density" />
               </div>
               <div class="pagination">
                 <button id="prevBtn" class="btn-sm" title="Previous page">‹</button>
                 <span id="pageInfo" class="page-info">Page 1 of 1</span>
                 <button id="nextBtn" class="btn-sm" title="Next page">›</button>
               </div>
-              <button id="randomPlayBtn" class="btn-sm ml-8" title="Play a random video from current filters">Random ▶</button>
-              <button id="randomAutoBtn" class="btn-sm ml-4" title="Toggle auto-random play when the video ends" aria-pressed="false">Auto ⟳</button>
+              <button id="randomPlayBtn" class="btn-sm ml-8" title="Play a random video from current filters" aria-label="Play random">Random ▶</button>
+              <button id="randomAutoBtn" class="btn-sm ml-4" title="Toggle auto-random play when the video ends" aria-pressed="false" aria-label="Toggle auto-random">Auto ⟳</button>
             </div>
           </div>
         </div>
@@ -819,6 +921,40 @@
         </template>
 
         <div id="grid" class="grid" hidden></div>
+      </div>
+
+      <!-- List Tab Panel (static) -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="list-tab" id="list-panel" hidden>
+        <div class="list-panel">
+          <div class="list-controls">
+            <div class="flex-row gap-8">
+              <button id="listColumnsBtn" class="btn-sm" aria-controls="listColumnsPanel" aria-expanded="false">Columns</button>
+              <button id="listRotateHeadersToggle" class="btn-sm" aria-pressed="false" title="Rotate column headers 90° for compact view">Rotate headers: Off</button>
+              <div class="list-pager">
+                <button id="listPrevBtn" class="btn-sm" aria-label="Previous page">Prev</button>
+                <span id="listPageInfo" class="hint-sm">Page 1</span>
+                <button id="listNextBtn" class="btn-sm" aria-label="Next page">Next</button>
+              </div>
+            </div>
+          </div>
+          <div id="listColumnsPanel" class="list-columns-panel hidden" role="region" aria-label="Column settings">
+            <div class="panel-header--spaced">
+              <strong>Columns</strong>
+              <button id="listRotateHeadersTogglePanel" class="btn-sm" aria-pressed="false" title="Rotate column headers 90° for compact view">Rotate headers: Off</button>
+              <button id="listColumnsClose" class="btn-sm" aria-label="Close">Close</button>
+            </div>
+            <div id="listColumnsBody" class="list-columns-body"></div>
+            <div class="hint-sm hint-sm--muted mt-12">Drag to reorder • Toggle to show/hide • Resize using header grips in the table</div>
+          </div>
+          <div class="list-wrap">
+            <table id="listTable" class="list-table" role="table" aria-label="Files list">
+              <thead>
+                <tr id="listHeadRow"></tr>
+              </thead>
+              <tbody id="listTbody"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       <!-- Performers Tab Panel -->
@@ -894,6 +1030,7 @@
             <button id="tagMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
             <button id="tagDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
             <button id="tagAutoTagBtn" class="btn-sm" title="Auto‑tag videos">Auto‑Tag</button>
+            <button id="tagManualAddBtn" class="btn-sm" title="Manually add a tag by matching filenames">Add…</button>
           </div>
           <div id="tagDropZone" role="button" tabindex="0" aria-label="Import tags" class="performer-dropzone">
             <strong class="pdz-title">Import Tags</strong>
@@ -929,6 +1066,96 @@
             <span id="tagPageInfoBottom" class="hint-sm" aria-live="polite">—</span>
             <button id="tagNextBottom" class="btn-sm" aria-label="Next page">Next</button>
           </div>
+        </div>
+      </div>
+
+      <!-- Template: Similar row (pair) -->
+      <template id="similarRowTemplate">
+        <div class="card similar-row">
+          <div class="row jc-between ai-center">
+            <strong class="similar-title">—</strong>
+            <div class="row gap-10">
+              <button class="btn-sm play-a">Play A</button>
+              <button class="btn-sm play-b">Play B</button>
+            </div>
+          </div>
+          <div class="hint-sm mt-6">
+            <div class="path-a"></div>
+            <div class="path-b"></div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Similar Tab Panel (static) -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="similar-tab" id="similar-panel" hidden>
+        <div class="task-section">
+          <div class="section-header">
+            <h2>Similar (pHash)</h2>
+            <div class="section-actions">
+              <label class="hint-sm">Threshold <input id="similarThresh" type="number" min="0" max="1" step="0.01" value="0.90" class="w-120" /></label>
+              <label class="hint-sm">Limit <input id="similarLimit" type="number" min="1" step="1" value="50" class="w-120" /></label>
+              <label class="hint-sm"><input id="similarRecursive" type="checkbox" /> Recursive</label>
+              <button id="similarRefreshBtn" class="btn-sm">Refresh</button>
+            </div>
+          </div>
+          <div id="similarStatus" class="hint-sm hint-sm--muted">—</div>
+          <div id="similarResults" class="mt-12"></div>
+        </div>
+      </div>
+
+      <!-- API Explorer Tab Panel -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="api-tab" id="api-panel" hidden>
+        <div class="task-section">
+          <div class="section-header">
+            <h2>API Explorer</h2>
+            <div class="section-actions">
+              <button id="apiReloadSpecBtn" class="btn-sm" aria-label="Reload API spec">Reload Spec</button>
+              <label for="apiSearch" class="sr-only">Filter endpoints</label>
+              <input id="apiSearch" type="text" class="control-input" placeholder="Filter paths…" aria-label="Filter endpoints" />
+            </div>
+          </div>
+          <div class="api-composer">
+            <div class="row gap-10">
+              <label for="apiMethod" class="sr-only">HTTP method</label>
+              <select id="apiMethod" class="control-select" aria-label="HTTP method">
+                <option>GET</option>
+                <option>POST</option>
+                <option>PUT</option>
+                <option>PATCH</option>
+                <option>DELETE</option>
+              </select>
+              <label for="apiPath" class="sr-only">Request path</label>
+              <input id="apiPath" class="control-input w-100" placeholder="/api/health" aria-label="Request path" />
+              <button id="apiExecBtn" class="btn-sm" aria-label="Execute request">Execute</button>
+            </div>
+            <div class="row gap-10 mt-12">
+              <div class="w-100">
+                <label class="hint-sm" for="apiQueryJson">Query (JSON object)</label>
+                <textarea id="apiQueryJson" class="control-textarea w-100" rows="4" placeholder="{\n  \"page\": 1\n}"></textarea>
+              </div>
+              <div class="w-100">
+                <label class="hint-sm" for="apiBodyJson">Body (JSON)</label>
+                <textarea id="apiBodyJson" class="control-textarea w-100" rows="4" placeholder="{ }"></textarea>
+              </div>
+            </div>
+            <div class="row gap-10 mt-12">
+              <span id="apiComposerStatus" class="hint-sm"></span>
+            </div>
+            <pre id="apiComposerResponse" class="json-pre mt-12" aria-live="polite"></pre>
+          </div>
+        </div>
+        <div class="task-section">
+          <div class="section-header">
+            <h2>Endpoints</h2>
+            <div class="section-actions">
+              <label class="toggle-label" for="apiTreeToggle">
+                <input id="apiTreeToggle" type="checkbox" checked aria-label="Toggle tree view" />
+                <span>Tree View</span>
+              </label>
+              <button id="apiEndpointsToggleAllBtn" class="btn-sm" aria-expanded="false" aria-controls="apiEndpointsList">Expand All</button>
+            </div>
+          </div>
+          <div id="apiEndpointsList" class="api-endpoints-list"></div>
         </div>
       </div>
 
@@ -1386,67 +1613,6 @@
             </div>
           </div>
         </div>
-
-        <!-- Tag Tools (moved from Tags tab) -->
-          <div class="task-section" id="tagRegistrySection">
-          <div class="section-header">
-            <h2>Tag Registry</h2>
-          </div>
-          <div class="registry-column registry-column--narrow">
-            <div class="registry-toolbar">
-              <input type="text" id="tagsRegistrySearch" placeholder="Search tags…" class="control-input" />
-              <button id="tagsRegistryAddBtn" class="btn-sm" title="Add new tag">Add</button>
-              <button id="tagsRegistryMergeBtn" class="btn-sm" disabled title="Merge selected tags">Merge</button>
-              <button id="tagsRegistryDeleteBtn" class="btn-sm" disabled title="Delete selected tags">Delete</button>
-              <button id="tagsRegistryRewriteBtn" class="btn-sm" title="Rewrite sidecars to canonical names">Rewrite</button>
-            </div>
-            <div id="tagsRegistryStatus" class="hint-sm hint-sm--muted" aria-live="polite">—</div>
-            <div id="tagsRegistryList" class="registry-list" aria-label="Tag registry" tabindex="0"></div>
-            <div class="flex-row gap-12 wrap mt-12">
-              <button id="tagsRegistryExportBtn" class="btn-sm">Export JSON</button>
-              <button id="tagsRegistryImportBtn" class="btn-sm">Import JSON</button>
-              <label class="hint-sm label-inline">
-                <input type="checkbox" id="tagsRegistryImportReplace" /> Replace existing
-              </label>
-              <input type="file" id="tagsRegistryImportFile" class="d-none" accept="application/json,.json" />
-            </div>
-          </div>
-        </div>
-        <div class="task-section mt-24" id="autotagTagsSection">
-          <div class="section-header">
-            <h2>Auto‑Tag (Tags Focus)</h2>
-          </div>
-          <div class="file-selection file-selection-compact">
-            <div class="flex-row gap-12 wrap">
-              <input type="text" id="autotagPathTags" class="control-input w-240" placeholder="Path (blank=root)" />
-              <label class="selection-option selection-option--no-margin">
-                <input type="checkbox" id="autotagRecursiveTags" /> Recursive
-              </label>
-              <label class="selection-option m0">
-                <input type="checkbox" id="autotagUseRegTagsOnly" /> All Registry Tags
-              </label>
-              <input type="text" id="autotagExtraTags" class="control-input w-200" placeholder="Extra tags (comma)" />
-              <button id="autotagPreviewTagsBtn" class="btn-sm">Preview</button>
-              <button id="autotagScanTagsBtn" class="btn-sm" disabled>Run Job</button>
-            </div>
-            <div class="hint-sm mt-6">Preview suggests tags from filenames; Run Job writes sidecars.</div>
-          </div>
-          <div class="task-section mt-12">
-            <div class="section-header">
-              <h2>Preview Results</h2>
-            </div>
-            <div id="autotagTagResultsStatus" class="hint-sm hint-sm--muted">No preview yet.</div>
-            <table class="job-table autotag-table" id="autotagTagResultsTable">
-              <thead>
-                <tr>
-                  <th>File</th>
-                  <th>Tags</th>
-                </tr>
-              </thead>
-              <tbody id="autotagTagResultsBody"></tbody>
-            </table>
-          </div>
-        </div>
       </div>
 
       <!-- Stats Tab Panel -->
@@ -1549,27 +1715,21 @@
                 <input type="checkbox" id="settingHoverPreviews" />
                 <div>
                   <div class="fw-600">Enable hover video previews</div>
-                  <div class="hint-sm">
-                    When enabled, cards will play a small preview on hover. Previews are only played if they already exist; no background generation is triggered automatically.
-                  </div>
+                  <div class="hint-sm">When enabled, cards will play a small preview on hover. Previews are only played if they already exist; no background generation is triggered automatically.</div>
                 </div>
               </label>
               <label class="selection-option selection-option-wide mt-12">
                 <input type="checkbox" id="settingHoverOnDemand" />
                 <div>
                   <div class="fw-600">Generate hover previews on demand</div>
-                  <div class="hint-sm">
-                    When enabled, hovering a card will request the server to create a preview if one doesn’t exist yet. This may start background work and use CPU.
-                  </div>
+                  <div class="hint-sm">When enabled, hovering a card will request the server to create a preview if one doesn’t exist yet. This may start background work and use CPU.</div>
                 </div>
               </label>
               <label class="selection-option selection-option-wide mt-12">
                 <input type="checkbox" id="settingConfirmDeletes" />
                 <div>
                   <div class="fw-600">Require confirmation for deletions</div>
-                  <div class="hint-sm">
-                    When enabled, clearing or deleting artifacts will ask for confirmation. Default is off.
-                  </div>
+                  <div class="hint-sm">When enabled, clearing or deleting artifacts will ask for confirmation. Default is off.</div>
                 </div>
               </label>
             </div>
@@ -1602,9 +1762,7 @@
                 <input type="number" id="settingFfmpegTimelimit" min="0" max="86400" step="10" value="600" class="w-120" />
               </div>
             </div>
-            <div class="hint-sm mt-8 max-w-640">
-              FFmpeg settings control low-level media processing. Parallel processes multiply workload across different files; threads apply within a single process. Lower timelimit can fail very long operations; set 0 to disable.
-            </div>
+            <div class="hint-sm mt-8 max-w-640">FFmpeg settings control low-level media processing. Parallel processes multiply workload across different files; threads apply within a single process. Lower timelimit can fail very long operations; set 0 to disable.</div>
           </div>
         </div>
       </div>

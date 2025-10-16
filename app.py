@@ -4041,7 +4041,207 @@ def _require_ffmpeg_or_error(task_name: str) -> None:
 
 
 app = FastAPI(title="Media Player", version="3.0")
+try:
+    # Mount static assets (favicon, manifest, docs) at /static
+    app.mount('/static', StaticFiles(directory='static'), name='static')  # type: ignore[arg-type]
+except Exception as _e:  # pragma: no cover
+    logging.getLogger().warning("[init] failed to mount /static: %s", _e)
 api = APIRouter(prefix="/api")
+
+# Serve OpenAPI schema under /api as well, so clients that expect an /api base can find it
+@app.get('/api/openapi.json', include_in_schema=False)
+def openapi_alias():
+    try:
+        return JSONResponse(app.openapi())  # type: ignore[arg-type]
+    except Exception as e:  # pragma: no cover
+        # If OpenAPI generation is disabled or fails, return a minimal stub
+        return JSONResponse({"openapi": "3.0.2", "info": {"title": "Media Player", "version": "3.0"}, "paths": {}}, status_code=200)
+
+# Comprehensive endpoint listing that includes both API router routes and app-level routes
+def _humanize_segment(seg: str) -> str:
+    s = (seg or '').strip('/').replace('_', ' ').replace('-', ' ')
+    # Friendly names for common tokens
+    repl = {
+        'phash': 'perceptual hash',
+        'orphans': 'orphaned artifacts',
+        'sprites': 'sprite sheets',
+        'heatmaps': 'heatmaps',
+        'faces': 'face detections',
+        'scenes': 'scenes',
+        'preview': 'preview',
+        'library': 'library files',
+        'duplicates': 'duplicates',
+        'tags': 'tags',
+        'jobs': 'jobs',
+        'admin': 'admin',
+        'config': 'configuration',
+        'health': 'health',
+        'cleanup': 'cleanup',
+        'status': 'status',
+        'summary': 'summary',
+    }
+    return repl.get(s, s)
+
+def _load_route_descriptions() -> dict:
+    """Load static route descriptions from route_descriptions.json next to app.py.
+
+    Keys must be formatted as "METHOD /path". Returns an empty dict on error.
+    """
+    try:
+        base = Path(__file__).parent
+        fp = base / "route_descriptions.json"
+        data = json.loads(fp.read_text()) if fp.exists() else {}
+        # Normalize keys to METHOD UPPER, path exact
+        out = {}
+        for k, v in (data or {}).items():
+            if not isinstance(k, str):
+                continue
+            parts = k.strip().split(None, 1)
+            if len(parts) != 2:
+                continue
+            m = parts[0].upper()
+            p = parts[1].strip()
+            out[f"{m} {p}"] = str(v)
+        return out
+    except Exception:
+        return {}
+
+ROUTE_DESCRIPTIONS = _load_route_descriptions()
+
+def _guess_description(method: str, path: str) -> str:
+    """Best-effort human description used ONLY to bootstrap static descriptions.
+
+    Runtime listing does not use this; it's for exporting to the JSON file.
+    """
+    try:
+        method = (method or '').upper()
+        p = str(path or '/').strip()
+        segs = [s for s in p.strip('/').split('/') if s]
+        if segs and segs[0] == 'api':
+            segs = segs[1:]
+        resource = (segs[0] if segs else 'resource').replace('-', ' ').replace('_', ' ')
+        tail = segs[1] if len(segs) > 1 else ''
+
+        if resource == 'markers' and tail in ('intro', 'outro'):
+            if tail == 'intro':
+                return 'Set or clear intro end marker for a video' if method in ('POST','DELETE') else 'Intro marker operation for a video'
+            if tail == 'outro':
+                return 'Set or clear outro begin marker for a video' if method in ('POST','DELETE') else 'Outro marker operation for a video'
+
+        if method == 'GET':
+            return f'List {resource}' if resource.endswith('s') else f'Retrieve {resource}'
+        if method == 'HEAD':
+            return f'Check {resource} presence'
+        if method in ('PUT', 'PATCH'):
+            return f'Update {resource}'
+        if method == 'POST':
+            # Heuristic: treat trailing segment as action for readability
+            if len(segs) > 1 and tail not in ('intro','outro'):
+                action = tail.replace('-', ' ').replace('_', ' ')
+                return f'{action.title()} {resource}'
+            return f'Create {resource}'
+        if method == 'DELETE':
+            return f'Delete {resource}'
+        return f'{method.title()} {resource}'
+    except Exception:
+        return f'{method} {path}'
+
+@app.get('/api/routes', include_in_schema=False)
+def list_all_routes(include_head: bool = Query(default=False)):
+    """List all available routes, including those excluded from OpenAPI schema."""
+    try:
+        routes = []
+        for route in app.routes:
+            if hasattr(route, 'methods') and hasattr(route, 'path'):
+                for method in route.methods:
+                    if method == 'HEAD' and not include_head:
+                        continue
+                        # Best-effort extraction of description from multiple sources
+                        desc = ''
+                        try:
+                            desc = getattr(route, 'description', '') or ''
+                        except Exception:
+                            desc = ''
+                        if not desc:
+                            try:
+                                # FastAPI routes often expose the underlying callable as .endpoint
+                                fn = getattr(route, 'endpoint', None)
+                                if fn and getattr(fn, '__doc__', None):
+                                    desc = (fn.__doc__ or '').strip()
+                            except Exception:
+                                pass
+                        # Only use static descriptions from ROUTE_DESCRIPTIONS; no heuristics in runtime
+                        if not desc:
+                            key = f"{method} {route.path}"
+                            desc = ROUTE_DESCRIPTIONS.get(key, '')
+                        # Derive a concise summary (single line)
+                        summary = (getattr(route, 'summary', '') or '').strip()
+                        if not summary:
+                            # Use description first line or default to METHOD PATH
+                            summary = (desc.split('\n', 1)[0]).strip() or f"{method} {route.path}"
+                        if not summary:
+                            summary = f"{method} {route.path}"
+                        routes.append({
+                            "method": method,
+                            "path": route.path,
+                            "summary": summary,
+                            "description": desc,
+                            "name": getattr(route, 'name', ''),
+                            "include_in_schema": getattr(route, 'include_in_schema', True)
+                        })
+        # Sort by path then method with user-friendly verb priority
+        method_order = {"GET": 0, "HEAD": 1, "POST": 2, "PUT": 3, "PATCH": 4, "DELETE": 5}
+        routes.sort(key=lambda x: (x["path"], method_order.get(x["method"], 99), x["method"]))
+        # Build OpenAPI-like paths object, merging multiple methods under the same path
+        paths_obj: dict[str, dict[str, dict]] = {}
+        for r in routes:
+            p = r["path"]
+            m = r["method"].lower()
+            if p not in paths_obj:
+                paths_obj[p] = {}
+            paths_obj[p][m] = {
+                "summary": r["summary"],
+                "description": r.get("description", ""),
+                "operationId": f"{m}_{p.replace('/', '_').replace('{', '').replace('}', '').replace(':', '').strip('_')}",
+                "responses": {"200": {"description": "Success"}},
+            }
+        return JSONResponse({
+            "openapi": "3.0.2",
+            "info": {"title": "Media Player", "version": "3.0"},
+            "paths": paths_obj,
+        })
+    except Exception as e:  # pragma: no cover
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.post('/api/routes/descriptions/export', include_in_schema=False)
+def export_route_descriptions(include_head: bool = Query(default=True)):
+    """Export a complete route_descriptions.json with guessed text for missing entries.
+
+    This helps bootstrap the static JSON so ALL endpoints have a description.
+    Existing entries are preserved; only missing keys are added.
+    """
+    global ROUTE_DESCRIPTIONS
+    try:
+        # Gather all methods/paths
+        seen: dict[str, str] = dict(ROUTE_DESCRIPTIONS)
+        for route in app.routes:
+            if hasattr(route, 'methods') and hasattr(route, 'path'):
+                for method in route.methods:
+                    if method == 'HEAD' and not include_head:
+                        continue
+                    key = f"{method} {route.path}"
+                    if key not in seen:
+                        seen[key] = _guess_description(method, route.path)
+        # Persist to JSON file (sorted by key for stable diffs)
+        base = Path(__file__).parent
+        fp = base / "route_descriptions.json"
+        ordered = {k: seen[k] for k in sorted(seen.keys())}
+        fp.write_text(json.dumps(ordered, indent=2))
+        # Reload into memory so subsequent calls see updates
+        ROUTE_DESCRIPTIONS = ordered
+        return api_success({"written": str(fp), "count": len(ordered)})
+    except Exception as e:
+        return api_error(str(e), status_code=500)
 
 # -----------------------------
 # CORS: allow UI from file:// or other hosts to call the API
@@ -5363,6 +5563,14 @@ def config_info():
         "version": app.version,
     }
 
+# Provide /api/config alias for clients expecting the API-prefixed route
+@app.get("/api/config", include_in_schema=False)
+def config_info_api_alias():
+    try:
+        return config_info()  # type: ignore[misc]
+    except Exception as e:
+        raise_api_error(f"Failed to load config: {e}")
+
 
 # -----------------------------
 # Root path (GET current / POST update)
@@ -5668,7 +5876,7 @@ class TagUpdate(BaseModel): # type: ignore
 
 ## Removed legacy: GET /tags/summary (use /api/tags/summary)
 
-## Removed legacy: GET /phash/duplicates (replaced by /api/duplicates/list)
+## Removed legacy: GET /phash/duplicates (replaced by /api/duplicates)
 
 
 def _list_dir(root: Path, rel: str):
@@ -5750,13 +5958,13 @@ def _list_dir(root: Path, rel: str):
                     thumb_rel = thumbs_path(entry).relative_to(STATE["root"]).as_posix()
                     info["thumbnail"] = f"/files/{thumb_rel}"
                 except Exception:
-                    info["thumbnail"] = f"/api/thumbnail/get?path={info['path']}"
+                    info["thumbnail"] = f"/api/thumbnail?path={info['path']}"
             else:
                 info["thumbnail"] = None
             # Hover: single-file only
             concat = _hover_concat_path(entry)
             if _file_nonempty(concat):
-                info["hoverPreview"] = f"/api/hover/get?path={info['path']}"
+                info["hoverPreview"] = f"/api/hover?path={info['path']}"
             files.append(info)
     return {"cwd": rel, "dirs": dirs, "files": files}
 
@@ -5859,12 +6067,12 @@ def _enrich_file_basic(entry: dict) -> dict:
                     thumb_rel = thumbs_path(fp).relative_to(STATE["root"]).as_posix()
                     entry["thumbnail"] = f"/files/{thumb_rel}"
                 except Exception:
-                    entry["thumbnail"] = f"/api/thumbnail/get?path={entry['path']}"
+                    entry["thumbnail"] = f"/api/thumbnail?path={entry['path']}"
             else:
                 entry.setdefault("thumbnail", None)
             concat = _hover_concat_path(fp)
             if _file_nonempty(concat):
-                entry["hoverPreview"] = f"/api/hover/get?path={entry['path']}"
+                entry["hoverPreview"] = f"/api/hover?path={entry['path']}"
         except Exception:
             pass
     except Exception:
@@ -5986,7 +6194,11 @@ def get_library(
         filtered = []
         for f in files:
             try:
-                vt, vp = _load_sidecar_sets(f.get("path"))
+                rel_path = f.get("path")
+                if isinstance(rel_path, str) and rel_path:
+                    vt, vp = _load_sidecar_sets(rel_path)
+                else:
+                    vt, vp = set(), set()
             except Exception:
                 vt, vp = set(), set()
             ok_tags = True
@@ -6088,7 +6300,7 @@ def get_library(
 # -----------------
 # Duplicates (API wrapper)
 # -----------------
-@api.get("/duplicates/list")
+@api.get("/duplicates")
 def api_duplicates_list(
     directory: str = Query(".", description="Directory under root to scan ('.' for root)"),
     recursive: bool = Query(False, description="Recurse into subdirectories"),
@@ -7451,7 +7663,7 @@ def _name_and_dir(path: str) -> tuple[str, str]:
 
 
 # --- Thumbnail (standardized; previously 'cover') ---
-@api.get("/thumbnail/get")
+@api.get("/thumbnail")
 def thumbnail_get(path: str = Query(...)):
     name, directory = _name_and_dir(path)
     # Prefer artifact thumbs; fallback to alongside JPG
@@ -7464,12 +7676,12 @@ def thumbnail_get(path: str = Query(...)):
         if sibling.exists():
             thumb = sibling
     if not thumb.exists():
-        raise_api_error("cover not found", status_code=404)
+        raise_api_error("thumbnail not found", status_code=404)
     resp = FileResponse(str(thumb))
     try:
         mt = thumb.stat().st_mtime
         resp.headers["Cache-Control"] = "no-store, max-age=0"
-        resp.headers["ETag"] = f"\"cover-{int(mt)}\""
+        resp.headers["ETag"] = f"\"thumbnail-{int(mt)}\""
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
         resp.headers["Last-Modified"] = formatdate(mt, usegmt=True) if 'formatdate' in globals() else resp.headers.get("Last-Modified", "")
@@ -7479,7 +7691,7 @@ def thumbnail_get(path: str = Query(...)):
 
 @api.head("/thumbnail/get")
 def thumbnail_head(path: str = Query(...)):
-    """Lightweight existence probe for cover thumbnails.
+    """Lightweight existence probe for thumbnails.
     Returns 200 if present, 404 if missing. Avoids 405 noise when frontend uses HEAD.
     """
     name, directory = _name_and_dir(path)
@@ -7491,11 +7703,11 @@ def thumbnail_head(path: str = Query(...)):
         if sibling.exists():
             thumb = sibling
     if not thumb.exists():
-        raise_api_error("cover not found", status_code=404)
+        raise_api_error("thumbnail not found", status_code=404)
     return Response(status_code=200, media_type="image/jpeg")
 
 
-@api.post("/thumbnail/create")
+@api.post("/thumbnail")
 def thumbnail_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
@@ -7568,7 +7780,7 @@ def thumbnail_create_inline(path: str = Query(...), t: Optional[str | float] = Q
     return resp
 
 
-@api.post("/thumbnail/create/batch")
+@api.post("/thumbnail/batch")
 def thumbnail_create_batch(
     path: str = Query(default=""),
     recursive: bool = Query(default=True),
@@ -7603,7 +7815,7 @@ def thumbnail_create_batch(
                     if thumbs_path(p).exists() and not force:
                         return
                     try:
-                        lk = _file_task_lock(p, "cover")
+                        lk = _file_task_lock(p, "thumbnail")
                         with JOB_RUN_SEM:
                             with lk:
                                 generate_thumbnail(p, force=force, time_spec=time_spec, quality=q)
@@ -7623,7 +7835,7 @@ def thumbnail_create_batch(
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
             for p in vids:
-                t = threading.Thread(target=_process, args=(p,), name=f"cover-batch-item-{p.name}", daemon=True)
+                t = threading.Thread(target=_process, args=(p,), name=f"thumbnail-batch-item-{p.name}", daemon=True)
                 threads.append(t)
                 t.start()
             for t in threads:
@@ -7638,33 +7850,12 @@ def thumbnail_create_batch(
     return api_success({"started": True, "job": sup_jid})
 
 
-# --- Legacy cover endpoints (compatibility shims) ---
-@api.get("/cover/get")
-def cover_get(path: str = Query(...)):
-    return thumbnail_get(path=path)  # type: ignore
+# (Removed) Legacy /cover endpoints: GET/HEAD/POST/POST batch/DELETE
+# These aliases previously forwarded to the /thumbnail handlers. They have been
+# removed to reduce API surface area; callers should use /api/thumbnail instead.
 
 
-@api.head("/cover/get")
-def cover_head(path: str = Query(...)):
-    return thumbnail_head(path=path)  # type: ignore
-
-
-@api.post("/cover/create")
-def cover_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
-    return thumbnail_create(path=path, t=t, quality=quality, overwrite=overwrite)  # type: ignore
-
-
-@api.post("/cover/create/batch")
-def cover_create_batch(path: str = Query(default=""), recursive: bool = Query(default=True), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
-    return thumbnail_create_batch(path=path, recursive=recursive, t=t, quality=quality, overwrite=overwrite)  # type: ignore
-
-
-@api.delete("/cover/delete")
-async def cover_delete(request: Request, path: str | None = Query(default=None)):
-    return await thumbnail_delete(request, path=path)  # type: ignore
-
-
-@api.delete("/thumbnail/delete")
+@api.delete("/thumbnail")
 async def thumbnail_delete(request: Request, path: str | None = Query(default=None)):
     """Delete thumbnail image(s).
 
@@ -7740,7 +7931,7 @@ async def thumbnail_delete(request: Request, path: str | None = Query(default=No
 
 
 # --- Hover --- single-file previews only ---
-@api.get("/hover/get")
+@api.get("/hover")
 def hover_get(request: Request, path: str = Query(...)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
@@ -7750,7 +7941,7 @@ def hover_get(request: Request, path: str = Query(...)):
     return _serve_range(request, concat, "video/webm")
 
 
-@api.head("/hover/get")
+@api.head("/hover")
 def hover_head(path: str = Query(...)):
     """
     Lightweight existence check for hover previews. Returns 200 if present, 404 if missing.
@@ -7784,7 +7975,7 @@ def _hover_info_path(video: Path) -> Path:
 
 
 
-@api.post("/hover/create")
+@api.post("/hover")
 def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
@@ -7802,7 +7993,7 @@ def hover_create(path: str = Query(...), segments: int = Query(default=9), seg_d
     return _hover_create_impl(video, segments=segments, seg_dur=seg_dur, width=width, overwrite=overwrite, background=not sync_flag)
 
 
-@api.post("/hover/create/bg")
+@api.post("/hover/bg")
 def hover_create_background(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False)):
     """Explicit background hover creation endpoint; always queues job and returns job id immediately."""
     name, directory = _name_and_dir(path)
@@ -7888,7 +8079,7 @@ def hover_info(path: str = Query(...)):
     return api_success({"data": data})
 
 
-@api.post("/hover/create/batch")
+@api.post("/hover/batch")
 def hover_create_batch(
     path: str = Query(default=""),
     recursive: bool = Query(default=True),
@@ -8003,9 +8194,10 @@ def hover_create_batch(
     return api_success({"started": True, "job": sup_jid})
 
 
-@api.delete("/hover/delete")
+@api.delete("/hover")
 async def hover_delete(request: Request, path: str | None = Query(default=None)):
-    """Delete hover preview(s).
+    """
+    Delete hover preview(s).
 
     Modes:
       - Single: supply ?path=relative/file.mp4
@@ -8110,7 +8302,7 @@ async def hover_delete_compat(request: Request, path: str | None = Query(default
     return await hover_delete(request, path)  # delegate
 
 
-@api.get("/hover/list")
+@api.get("/hovers")
 def hover_list(path: str = Query(default=""), recursive: bool = Query(default=True)):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
@@ -8133,7 +8325,7 @@ def hover_list(path: str = Query(default=""), recursive: bool = Query(default=Tr
 
 
 # --- pHash ---
-@api.get("/phash/get")
+@api.get("/phash")
 def phash_get(path: str = Query(...)):
     fp = safe_join(STATE["root"], path)
     ph = phash_path(fp)
@@ -8201,7 +8393,7 @@ def artifacts_status(path: str = Query(...)):
     })
 
 
-@api.post("/phash/create")
+@api.post("/phash")
 def phash_create(path: str = Query(...), frames: int = Query(default=5), algo: str = Query(default="ahash"), combine: str = Query(default="xor")):
     fp = safe_join(STATE["root"], path)
     _frames = int(frames)
@@ -8229,7 +8421,7 @@ def phash_create(path: str = Query(...), frames: int = Query(default=5), algo: s
         raise_api_error(f"phash failed: {e}", status_code=500)
 
 
-@api.delete("/phash/delete")
+@api.delete("/phash")
 def phash_delete(path: str = Query(...)):
     fp = safe_join(STATE["root"], path)
     ph = phash_path(fp)
@@ -8242,7 +8434,7 @@ def phash_delete(path: str = Query(...)):
     raise_api_error("pHash not found", status_code=404)
 
 
-@api.get("/phash/list")
+@api.get("/phashes")
 def phash_list(path: str = Query(default=""), recursive: bool = Query(default=True)):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
@@ -8262,7 +8454,7 @@ def phash_list(path: str = Query(default=""), recursive: bool = Query(default=Tr
 
 
 # --- Scenes (Chapter Markers) ---
-@api.get("/scenes/get")
+@api.get("/scenes")
 def scenes_get(path: str = Query(...)):
     fp = safe_join(STATE["root"], path)
     j = scenes_json_path(fp)
@@ -8298,7 +8490,7 @@ def scenes_head(path: str = Query(...)):
     raise_api_error("Scenes not found", status_code=404)
 
 
-@api.post("/scenes/create")
+@api.post("/scenes")
 def scenes_create(path: str = Query(...), threshold: float = Query(default=0.4), limit: int = Query(default=0), thumbs: bool = Query(default=False), clips: bool = Query(default=False), thumbs_width: int = Query(default=320), clip_duration: float = Query(default=2.0), fast: bool = Query(default=True)):
     fp = safe_join(STATE["root"], path)
     # Scene detection and outputs require ffmpeg present
@@ -8386,7 +8578,7 @@ def scenes_create(path: str = Query(...), threshold: float = Query(default=0.4),
     return api_success({"job": jid, "queued": True, "lightSlot": light_slot})
 
 
-@api.delete("/scenes/delete")
+@api.delete("/scenes")
 def scenes_delete(path: str = Query(...)):
     fp = safe_join(STATE["root"], path)
     j = scenes_json_path(fp)
@@ -8409,7 +8601,7 @@ def scenes_delete(path: str = Query(...)):
     return api_success({"deleted": deleted}) if deleted else raise_api_error("Scenes not found", status_code=404)
 
 
-@api.get("/scenes/list")
+@api.get("/scenes")
 def scenes_list(path: str = Query(default=""), recursive: bool = Query(default=True)):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
@@ -8428,7 +8620,7 @@ def scenes_list(path: str = Query(default=""), recursive: bool = Query(default=T
     return api_success({"total": total, "have": have, "missing": max(0, total - have)})
 
 
-@api.post("/scenes/create/batch")
+@api.post("/scenes/batch")
 def scenes_create_batch(
     path: str = Query(default=""),
     recursive: bool = Query(default=True),
@@ -10257,8 +10449,8 @@ def frame_boxed(
         headers = {"Cache-Control": "public, max-age=604800"}
         return Response(content=proc.stdout, media_type="image/jpeg", headers=headers)
 
-# --- Simple marker store expected by v1 UI
-@api.post("/marker")
+# --- Markers (manual timeline points)
+@api.post("/markers")
 def set_marker(
     path: str = Query(...),
     time: float = Query(...),
@@ -10305,8 +10497,7 @@ def set_marker(
     return api_success({"saved": True, "count": len(data.get("scenes", []))})
 
 
-@api.post("/marker/update")
-
+@api.patch("/markers")
 def update_marker(
     path: str = Query(...),
     old_time: float = Query(..., alias="old_time"),
@@ -10374,8 +10565,7 @@ def update_marker(
     return api_success({"saved": True, "count": len(uniq)})
 
 
-@api.post("/marker/delete")
-
+@api.delete("/markers")
 def delete_marker(
     path: str = Query(...),
     time: float = Query(...),
@@ -10417,7 +10607,41 @@ def delete_marker(
     except Exception:
         raise_api_error("write failed", status_code=500)
     return api_success({"deleted": True, "count": len(cur["scenes"])})
-@api.post("/scenes/outro")
+
+@api.get("/markers")
+def list_markers(path: str = Query(...)):
+    """List markers for a given video. Returns a stable 'markers' array even though the on-disk key is 'scenes'."""
+    fp = safe_join(STATE["root"], path)
+    store = scenes_json_path(fp)
+    res: dict = {"markers": []}
+    if not store.exists():
+        return api_success(res)
+    try:
+        cur = json.loads(store.read_text())
+        arr = []
+        if isinstance(cur, dict) and isinstance(cur.get("scenes"), list):
+            # Normalize to markers list
+            for s in cur["scenes"]:
+                try:
+                    arr.append({
+                        "time": round(float(s.get("time")), 3),
+                        "type": s.get("type", "scene"),
+                        "label": s.get("label")
+                    })
+                except Exception:
+                    continue
+            arr.sort(key=lambda x: x.get("time", 0.0))
+        res["markers"] = arr
+        # Include intro/outro if present for convenience
+        if isinstance(cur, dict):
+            if "intro_end" in cur:
+                res["intro_end"] = cur.get("intro_end")
+            if "outro_begin" in cur:
+                res["outro_begin"] = cur.get("outro_begin")
+        return api_success(res)
+    except Exception:
+        return api_success(res)
+@api.post("/markers/outro")
 def scenes_set_outro(path: str = Query(...), time: float = Query(...)):
     """Set a numeric outro_begin value (seconds) for the given media path.
 
@@ -10442,7 +10666,7 @@ def scenes_set_outro(path: str = Query(...), time: float = Query(...)):
     except Exception:
         raise_api_error("write failed", status_code=500)
     return api_success({"saved": True, "outro_begin": data.get("outro_begin")})
-@api.delete("/scenes/outro")
+@api.delete("/markers/outro")
 def scenes_delete_outro(path: str = Query(...)):
     """Remove the outro_begin entry from the scenes JSON for the given media path."""
     fp = safe_join(STATE["root"], path)
@@ -10467,7 +10691,7 @@ def scenes_delete_outro(path: str = Query(...)):
 
 
 # --- Intro end helper endpoints: persist a top-level `intro_end` value in the same scenes JSON
-@api.post("/scenes/intro")
+@api.post("/markers/intro")
 def scenes_set_intro(path: str = Query(...), time: float = Query(...)):
     """Set a numeric intro_end value (seconds) for the given media path.
 
@@ -10494,7 +10718,7 @@ def scenes_set_intro(path: str = Query(...), time: float = Query(...)):
     return api_success({"saved": True, "intro_end": data.get("intro_end")})
 
 
-@api.delete("/scenes/intro")
+@api.delete("/markers/intro")
 def scenes_delete_intro(path: str = Query(...)):
     """Remove the intro_end entry from the scenes JSON for the given media path."""
     fp = safe_join(STATE["root"], path)
@@ -10784,6 +11008,32 @@ def tasks_coverage_api(path: str = Query(default="")):
 @app.get("/api/stats", include_in_schema=False)
 def api_stats_api(path: str = Query(default=""), recursive: bool = Query(default=True)):
     return api_stats(path=path, recursive=recursive)  # type: ignore
+
+# Ensure /api/tags and /api/tags/summary exist regardless of router include order
+# Forward to the router-registered handlers to prevent 404s if those were defined later.
+@app.get("/api/tags", include_in_schema=False)
+def api_tags_api(
+    search: Optional[str] = Query(default=None),
+    sort: str = Query(default="count"),
+    order: str = Query(default="desc"),
+    page: int = Query(default=1),
+    page_size: int = Query(default=32),
+    refresh: bool = Query(default=False),
+    debug: bool = Query(default=False),
+):
+    return api_tags(  # type: ignore
+        search=search,
+        sort=sort,
+        order=order,
+        page=page,
+        page_size=page_size,
+        refresh=refresh,
+        debug=debug,
+    )
+
+@app.get("/api/tags/summary", include_in_schema=False)
+def api_tags_summary_api(path: str = Query(default=""), recursive: bool = Query(default=False)):
+    return api_tags_summary(path=path, recursive=recursive)  # type: ignore
 
 
 @api.post("/tasks/batch")

@@ -224,16 +224,25 @@ main {
 }
 
 .card {
+
+  /* Visually hidden utility for accessible labels */
+  .sr-only {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+  }
   background: var(--card);
   border: 1px solid #2a3144;
   border-radius: 10px;
   overflow: hidden;
   transition: background .15s ease, transform .06s ease;
   position: relative;
-  user-select: none;
-  -webkit-user-select: none;
-  -moz-user-select: none;
-  -ms-user-select: none;
 }
 
 .card:hover {
@@ -922,6 +931,7 @@ th .col-drag-handle:active {
 
 .mt-12 {
   margin-top: 12px;
+  margin-bottom: 12px;
 }
 
 .gap-10 {
@@ -977,6 +987,170 @@ th .col-drag-handle:active {
 
 .ml-4 {
   margin-left: 4px;
+}
+
+/* ===== API Explorer ===== */
+.api-endpoints-list {
+  display: grid;
+  gap: 8px;
+}
+
+.api-endpoint__header {
+  gap: 10px;
+}
+
+.method-badge {
+  display: inline-block;
+  text-align: center;
+  font-weight: 700;
+  color: #fff;
+  background: #3b6cb7;
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.method-badge.get {
+  background: darkgreen;
+}
+
+.method-badge.post {
+  background: darkgoldenrod;
+}
+
+.method-badge.delete {
+  background: crimson;
+}
+
+.api-endpoint[data-open="1"] .api-endpoint__body {
+  display: block;
+}
+
+.api-endpoint__body.hidden {
+  display: none;
+}
+
+.api-param-row {
+  display: grid;
+  grid-template-columns: 120px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.json-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #0e1320;
+  border: 1px solid #2a3144;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+/* API Grouping & Folding */
+.api-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.api-group {
+  border: 1px solid #2a3144;
+  border-radius: 10px;
+  background: #0d1220;
+}
+
+.api-group__header {
+  padding: 10px 12px;
+  cursor: pointer;
+  align-items: center;
+}
+
+.api-group__header:focus {
+  outline: 2px solid var(--accent, #4f8cff);
+  outline-offset: 2px;
+}
+
+.api-group__body {
+  padding: 10px;
+  border-top: 1px solid #1b2235;
+}
+
+.api-group[data-open="0"] .api-group__body {
+  display: none;
+}
+
+.api-group__caret {
+  transform: rotate(0deg); /* collapsed: right */
+  transition: transform .15s ease;
+  color: #7f8aa3;
+}
+
+.api-group[data-open="1"] .api-group__caret {
+  transform: rotate(90deg); /* expanded: down */
+}
+
+/* Expand all button for groups with children */
+.api-group__expand-all {
+  background: #1a2635;
+  border: 1px solid #2a3144;
+  color: #94a2c7;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+.api-group__expand-all:hover {
+  background: #243247;
+  border-color: #3a4354;
+  color: #dbe2f1;
+}
+
+/* Slightly larger spacing for API endpoint cards inside groups */
+.api-group .api-endpoint {
+  margin-bottom: 10px;
+}
+
+.api-group .api-endpoint:last-child {
+  margin-bottom: 0;
+}
+
+/* Tree view toggle */
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: #a0aec0;
+  cursor: pointer;
+}
+
+.toggle-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+/* Tree indentation for nested groups */
+.api-group__body>.api-group {
+  margin-left: 14px;
+  border-left: 1px dashed #1b2235;
+}
+
+.api-group__body>.api-group .api-group__header {
+  padding-left: 18px;
+}
+
+/* Global: add more breathing room around tab contents */
+.tab-panels>.tab-panel {
+  padding: 20px 20px 28px;
+}
+
+.panel,
+.card {
+  padding: 14px;
 }
 
 /* Sidebar toggle handle (vertical) */
@@ -1571,6 +1745,11 @@ keep only z-index here */
   width: 90%;
 }
 
+/* Wider variant for Manual Add modal to comfortably show two columns */
+.panel--manual-add {
+  max-width: min(1100px, 96vw);
+}
+
 .panel--image {
   max-width: min(920px, 96vw);
 }
@@ -1591,7 +1770,9 @@ keep only z-index here */
 
 .panel-body--scroll {
   max-height: 60vh;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* enforce no horizontal scroll in scrollable panels */
 }
 
 .panel-body--tall {
@@ -1722,7 +1903,9 @@ keep only z-index here */
 .modal .body {
   padding: 12px 14px;
   max-height: min(60vh, 520px);
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* avoid horizontal scrolling inside modal body */
 }
 
 .dirlist {
@@ -1776,6 +1959,76 @@ keep only z-index here */
 
 .dir.muted {
   opacity: 0.8;
+}
+
+/* Manual Add Tag modal layout and styling */
+.manual-add-layout {
+  display: grid;
+  /* Use minmax(0, ...) so columns can shrink without forcing horizontal overflow */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.manual-form-col {
+  /* Allow shrinking inside grid to prevent x-overflow */
+  min-width: 0;
+}
+
+.manual-results-col {
+  /* Allow shrinking and hide horizontal overflow; vertical scroll only */
+  min-width: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-left: 1px solid #2a3144;
+  padding-left: 12px;
+}
+
+.manual-results .manual-result-row {
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.manual-results .manual-result-row:last-child {
+  border-bottom: none;
+}
+
+/* Long file paths should wrap instead of causing horizontal scroll */
+.manual-result-row .file {
+  min-width: 0;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+/* Inputs inside modal */
+.control-textarea {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid #2a3144;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 14px;
+  outline: none;
+  transition: all 0.2s ease;
+  resize: vertical;
+}
+
+.control-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.2);
+}
+
+@media (max-width: 900px) {
+  .manual-add-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .manual-results-col {
+    border-left: none;
+    padding-left: 0;
+    margin-top: 12px;
+  }
 }
 
 /* Grid controls - Modern card-based styling to match tasks */
@@ -2021,10 +2274,6 @@ keep only z-index here */
 /* Card selection overlay */
 .card {
   position: relative;
-  user-select: none;
-  -webkit-user-select: none;
-  -moz-user-select: none;
-  -ms-user-select: none;
 }
 
 .card.selection-mode {
@@ -2258,37 +2507,44 @@ keep only z-index here */
 /* Column widths */
 /* 7 columns in order: Start, End, Task, File, Status, Progress, Action */
 .job-table th:nth-child(1),
-.job-table td:nth-child(1) { /* Start */
+.job-table td:nth-child(1) {
+  /* Start */
   width: 96px;
 }
 
 .job-table th:nth-child(2),
-.job-table td:nth-child(2) { /* End */
+.job-table td:nth-child(2) {
+  /* End */
   width: 96px;
 }
 
 .job-table th:nth-child(3),
-.job-table td:nth-child(3) { /* Task */
+.job-table td:nth-child(3) {
+  /* Task */
   width: 160px;
 }
 
 .job-table th:nth-child(4),
-.job-table td:nth-child(4) { /* File (flex) */
+.job-table td:nth-child(4) {
+  /* File (flex) */
   width: auto;
 }
 
 .job-table th:nth-child(5),
-.job-table td:nth-child(5) { /* Status */
+.job-table td:nth-child(5) {
+  /* Status */
   width: 120px;
 }
 
 .job-table th:nth-child(6),
-.job-table td:nth-child(6) { /* Progress */
+.job-table td:nth-child(6) {
+  /* Progress */
   width: 160px;
 }
 
 .job-table th:nth-child(7),
-.job-table td:nth-child(7) { /* Action */
+.job-table td:nth-child(7) {
+  /* Action */
   width: 80px;
 }
 
@@ -5718,7 +5974,6 @@ button.btn-danger {
   border: 1px solid #2a2e3a;
   border-radius: 8px;
   padding: 10px;
-  max-height: 300px;
   overflow: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   font-size: 12px;
