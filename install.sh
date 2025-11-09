@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+!/usr/bin/env bash
 set -euo pipefail
 
 # Minimal setup script: create/activate a project-local venv and install deps.
@@ -21,6 +21,7 @@ REQUIRED_PKGS=(
   fastapi
   uvicorn
   pydantic
+  python-multipart
   httpx
   Pillow
   watchgod
@@ -75,7 +76,23 @@ echo "[install] Required: $DO_REQUIRED, Optional: $DO_OPTIONAL, Apt-OpenCV: $DO_
 mkdir -p "$(dirname "$VENV_PATH")" || true
 if [ ! -x "$VENV_PATH/bin/python" ]; then
   echo "[install] Creating venv at $VENV_PATH ..."
-  "$PY_BIN" -m venv "$VENV_PATH"
+  # Use --copies to avoid symlink issues on external volumes
+  if ! "$PY_BIN" -m venv --copies "$VENV_PATH" 2>/dev/null; then
+    echo "[install] Failed to create venv on external volume, trying fallback location..."
+    # Fallback: create venv in home directory if external volume fails
+    FALLBACK_VENV="$HOME/.venvs/media-player"
+    echo "[install] Using fallback venv at $FALLBACK_VENV"
+    mkdir -p "$(dirname "$FALLBACK_VENV")"
+    "$PY_BIN" -m venv "$FALLBACK_VENV"
+    # Create a symlink or wrapper script to the fallback
+    if ln -sf "$FALLBACK_VENV" "$VENV_PATH" 2>/dev/null; then
+      echo "[install] Created symlink to fallback venv"
+    else
+      # If symlink fails, just update VENV_PATH to point to fallback
+      VENV_PATH="$FALLBACK_VENV"
+      echo "[install] Using fallback venv directly"
+    fi
+  fi
 fi
 
 # shellcheck source=/dev/null

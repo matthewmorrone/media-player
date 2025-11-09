@@ -4,7 +4,7 @@ CLI to generate artifacts for all videos in a directory without running the serv
 
 Artifacts covered:
 - thumbnail JPG
-- hover preview (webm)
+- preview (webm)
 - sprite sheet JPG + JSON
 - scene JSON (+ optional thumbs/clips)
 - heatmaps JSON (+ optional PNG)
@@ -15,7 +15,7 @@ Usage:
     python artifacts.py \
         --root /path/to/videos \
     [--recursive] \
-    [--what all|thumb|hover|sprites|scenes|heatmaps|phash|metadata] \
+    [--what all|thumb|preview|sprites|scenes|heatmaps|phash|metadata] \
     [--force] [--concurrency 2]
 
 Notes:
@@ -140,13 +140,13 @@ def task_thumb(m, v: Path, force: bool):
     m.generate_thumbnail(v, force=force, time_spec="middle", quality=2)
 
 
-def task_hover(m, v: Path, progress=None, cancel=None, fmt: str = "webm"):
+def task_preview(m, v: Path, progress=None, cancel=None, fmt: str = "webm"):
     """
-    Generate hover preview with optional progress and cancel callbacks.
+    Generate preview with optional progress and cancel callbacks.
     When a progress callback is provided, the backend uses a segmented path and
     reports per-segment progress via progress_cb(i, total).
     """
-    m.generate_hover_preview(v, segments=9, seg_dur=0.8, width=240, fmt=fmt, progress_cb=progress, cancel_check=cancel)
+    m.generate_preview(v, segments=9, seg_dur=0.8, width=240, fmt=fmt, progress_cb=progress, cancel_check=cancel)
 
 
 def task_sprites(m, v: Path):
@@ -185,7 +185,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--root", default=os.environ.get("MEDIA_ROOT", os.getcwd()), help="Directory containing media files")
     ap.add_argument("--recursive", action="store_true", help="Recurse into subdirectories")
     ap.add_argument("--what", default="all", choices=[
-        "all", "thumb", "hover", "sprites", "scenes", "heatmaps", "phash", "metadata"
+        "all", "thumb", "preview", "sprites", "scenes", "heatmaps", "phash", "metadata"
     ], help="Which artifact(s) to generate")
     ap.add_argument("--force", action="store_true", help="Force overwrite where applicable")
     # Align with server default JOB_MAX_CONCURRENCY=4 (overridable via env)
@@ -195,13 +195,13 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--heatmaps-png", action="store_true", help="For heatmaps: also write PNG strip")
     ap.add_argument("--ffmpeg-timelimit", type=int, default=int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600), help="Hard cap for each ffmpeg invocation in seconds (0 disables)")
     ap.add_argument("--no-ffprobe", action="store_true", help="Disable ffprobe (set FFPROBE_DISABLE=1) to avoid probe hangs; some features may be approximate")
-    ap.add_argument("--hover-fmt", default=os.environ.get("HOVER_FMT", "webm"), choices=["webm", "mp4"], help="Container for hover previews (webm/libvpx-vp9 or mp4/h264)")
+    ap.add_argument("--preview-fmt", default=os.environ.get("PREVIEW_FMT", "webm"), choices=["webm", "mp4"], help="Container for previews (webm/libvpx-vp9 or mp4/h264)")
     ap.add_argument("--ffmpeg-verbose", action="store_true", help="Print ffmpeg commands (sets FFMPEG_DEBUG=1)")
     ap.add_argument("--ffmpeg-loglevel", default=os.environ.get("FFMPEG_LOGLEVEL", "error"), choices=["quiet", "panic", "fatal", "error", "warning", "info"], help="ffmpeg -loglevel (default: error)")
-    # Hover generation strategy: by default the server attempts single-pass and can parse progress.
+    # Preview generation strategy: by default the server attempts single-pass and can parse progress.
     # Expose parity flags that map to PREVIEW_SINGLE_PASS env while preserving progress reporting.
-    ap.add_argument("--hover-single-pass", action="store_true", help="Prefer single-pass hover encoding (sets PREVIEW_SINGLE_PASS=1; progress still reported)")
-    ap.add_argument("--hover-multi-step", action="store_true", help="Force multi-step hover encoding (sets PREVIEW_SINGLE_PASS=0)")
+    ap.add_argument("--preview-single-pass", action="store_true", help="Prefer single-pass preview encoding (sets PREVIEW_SINGLE_PASS=1; progress still reported)")
+    ap.add_argument("--preview-multi-step", action="store_true", help="Force multi-step preview encoding (sets PREVIEW_SINGLE_PASS=0)")
     ap.add_argument("--venv-status", action="store_true", help="Print the Python interpreter path in use and exit")
     # Default behavior: only-missing. Users can override with --recompute-all.
     ap.add_argument("--only-missing", action="store_true", default=None, help="Skip steps whose artifact already exists (default). Use --recompute-all to force regeneration.")
@@ -233,10 +233,10 @@ def main(argv: list[str]) -> int:
         os.environ["FFMPEG_LOGLEVEL"] = str(args.ffmpeg_loglevel)
 
     m = import_app_module()
-    # Honor hover single-pass/multi-step flags via env to match server behavior
-    if args.hover_single_pass:
+    # Honor preview single-pass/multi-step flags via env to match server behavior
+    if args.preview_single_pass:
         os.environ["PREVIEW_SINGLE_PASS"] = "1"
-    if args.hover_multi_step:
+    if args.preview_multi_step:
         os.environ["PREVIEW_SINGLE_PASS"] = "0"
 
     videos = find_videos(m, root, args.recursive)
@@ -274,9 +274,9 @@ def main(argv: list[str]) -> int:
             return [
                 "metadata",
                 "thumb",
-                # Keep sprites and hover adjacent; server runs them in the same phase
+                # Keep sprites and preview adjacent; server runs them in the same phase
                 "sprites",
-                "hover",
+                "preview",
                 "scenes",
                 "heatmaps",
                 "phash"
@@ -328,8 +328,8 @@ def main(argv: list[str]) -> int:
                 return m.metadata_path(v).exists()
             if task == "thumb":
                 return m.thumbs_path(v).exists()
-            if task == "hover":
-                fmt = args.hover_fmt
+            if task == "preview":
+                fmt = args.preview_fmt
                 p = (m.artifact_dir(v) / f"{v.stem}.preview.{fmt}")
                 try:
                     return p.exists() and p.stat().st_size > 0
@@ -410,38 +410,38 @@ def main(argv: list[str]) -> int:
                     starting("thumb"); task_thumb(m, v, args.force); advance("thumb")
                 if cancel_event.is_set():
                     return f"{v}: cancelled"
-                # Hover progress: update bar postfix or print simple progress
-                def _hover_progress(i: int, total: int):
+                # Preview progress: update bar postfix or print simple progress
+                def _preview_progress(i: int, total: int):
                     if slot and slot.bar:
                         try:
-                            slot.bar.set_postfix_str(f"hover {i}/{total}")
+                            slot.bar.set_postfix_str(f"preview {i}/{total}")
                         except Exception:
                             pass
                     else:
                         try:
-                            sys.stderr.write(f"[cli] {name}: hover {i}/{total}\n")
+                            sys.stderr.write(f"[cli] {name}: preview {i}/{total}\n")
                             sys.stderr.flush()
                         except Exception:
                             pass
-                if only_missing and artifact_exists("hover", v):
-                    advance("hover (skip)")
+                if only_missing and artifact_exists("preview", v):
+                    advance("preview (skip)")
                 else:
-                    starting("hover")
+                    starting("preview")
                     try:
                         # Always provide progress; server handles single-pass progress internally when enabled
-                        task_hover(m, v, progress=_hover_progress, cancel=cancel_event.is_set, fmt=args.hover_fmt)
+                        task_preview(m, v, progress=_preview_progress, cancel=cancel_event.is_set, fmt=args.preview_fmt)
                     except Exception as e:
                         # If webm fails, retry once with mp4 as a fallback
-                        if args.hover_fmt == "webm":
+                        if args.preview_fmt == "webm":
                             try:
                                 sys.stderr.write(f"[cli] {name}: webm failed ({e}); retrying as mp4...\n")
                                 sys.stderr.flush()
                             except Exception:
                                 pass
-                            task_hover(m, v, progress=_hover_progress, cancel=cancel_event.is_set, fmt="mp4")
+                            task_preview(m, v, progress=_preview_progress, cancel=cancel_event.is_set, fmt="mp4")
                         else:
                             raise
-                    advance("hover")
+                    advance("preview")
                 if cancel_event.is_set():
                     return f"{v}: cancelled"
                 if only_missing and artifact_exists("sprites", v):
@@ -476,36 +476,36 @@ def main(argv: list[str]) -> int:
                     advance("thumb (skip)")
                 else:
                     starting("thumb"); task_thumb(m, v, args.force); advance("thumb")
-            elif args.what == "hover":
-                if only_missing and artifact_exists("hover", v):
-                    advance("hover (skip)")
+            elif args.what == "preview":
+                if only_missing and artifact_exists("preview", v):
+                    advance("preview (skip)")
                 else:
-                    def _hover_progress2(i: int, total: int):
+                    def _preview_progress2(i: int, total: int):
                         if slot and slot.bar:
                             try:
-                                slot.bar.set_postfix_str(f"hover {i}/{total}")
+                                slot.bar.set_postfix_str(f"preview {i}/{total}")
                             except Exception:
                                 pass
                         else:
                             try:
-                                sys.stderr.write(f"[cli] {name}: hover {i}/{total}\n")
+                                sys.stderr.write(f"[cli] {name}: preview {i}/{total}\n")
                                 sys.stderr.flush()
                             except Exception:
                                 pass
-                    starting("hover")
+                    starting("preview")
                     try:
-                        task_hover(m, v, progress=_hover_progress2, cancel=cancel_event.is_set, fmt=args.hover_fmt)
+                        task_preview(m, v, progress=_preview_progress2, cancel=cancel_event.is_set, fmt=args.preview_fmt)
                     except Exception as e:
-                        if args.hover_fmt == "webm":
+                        if args.preview_fmt == "webm":
                             try:
                                 sys.stderr.write(f"[cli] {name}: webm failed ({e}); retrying as mp4...\n")
                                 sys.stderr.flush()
                             except Exception:
                                 pass
-                            task_hover(m, v, progress=_hover_progress2, cancel=cancel_event.is_set, fmt="mp4")
+                            task_preview(m, v, progress=_preview_progress2, cancel=cancel_event.is_set, fmt="mp4")
                         else:
                             raise
-                    advance("hover")
+                    advance("preview")
             elif args.what == "sprites":
                 if only_missing and artifact_exists("sprites", v):
                     advance("sprites (skip)")

@@ -1,6 +1,5 @@
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,6 +7,15 @@
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="stylesheet" href="index.css" />
+  <!-- Cytoscape.js and plugins (for Performers Graph tab) -->
+  <link rel="stylesheet" href="https://unpkg.com/cytoscape-panzoom@2.5.3/cytoscape.js-panzoom.css" />
+  <script src="https://unpkg.com/cytoscape@3.27.0/dist/cytoscape.min.js"></script>
+  <!-- fcose dependencies (must be loaded before fcose) -->
+  <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
+  <script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
+  <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+  <script src="https://unpkg.com/cytoscape-cxtmenu@3.5.0/cytoscape-cxtmenu.js"></script>
+  <script src="https://unpkg.com/cytoscape-panzoom@2.5.3/cytoscape-panzoom.js"></script>
   <script>
     // Apply collapsed class ASAP to avoid post-load reflow when sidebar is persisted collapsed
     try {
@@ -17,7 +25,45 @@
     } catch (e) { }
   </script>
   <script>window.__JOBS_SSE_ENABLED = false; /* detected by client via /api/config; default false to avoid assumptions */</script>
+  <script>
+    // Fire TV/Android TV Detection
+    (function() {
+      const isFireTV = /silk|aftvb|afts|aft\w|aftt/i.test(navigator.userAgent);
+      const isAndroidTV = /android.*tv|googletv/i.test(navigator.userAgent);
+
+      if (isFireTV || isAndroidTV) {
+        document.documentElement.classList.add('firetv');
+        // Also add to <body> once DOM is ready so body-scoped rules can apply
+        const addBodyClass = () => {
+          try {
+            document.body.classList.add('firetv');
+          }
+          catch (_) {}
+        };
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', addBodyClass, { once: true });
+        }
+        else {
+          addBodyClass();
+        }
+      }
+    })();
+  </script>
   <script type="module" src="index.js"></script>
+  <style>
+    /* Column filter trigger and popover (List tab) */
+    .col-filter-trigger { margin-left: 6px; font-size: 12px; opacity: .7; cursor: pointer; }
+    .col-filter-trigger:hover { opacity: 1; }
+    .list-filter-menu { position: absolute; z-index: 9999; background: var(--panel-bg, #111827); color: inherit; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 10px; box-shadow: 0 6px 18px rgba(0,0,0,.35); min-width: 220px; }
+    .list-filter-menu .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+    .list-filter-menu .values { max-height: 220px; overflow: auto; padding: 4px 0; }
+    .list-filter-menu .values label { display: flex; align-items: center; gap: 8px; padding: 2px 4px; }
+    .list-filter-menu .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+    .list-table tbody td.col-artifacts .chips-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .list-table tbody td.col-artifacts .chip { font-size: 11px; padding: 2px 6px; border-radius: 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); }
+    .list-table tbody td.col-artifacts .chip--ok { background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.4); color: #bbf7d0; }
+    .list-table tbody td.col-artifacts .chip--missing { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.45); color: #fecaca; }
+  </style>
 </head>
 
 <body>
@@ -77,9 +123,43 @@
       <!-- Circular arrow reset icon -->
       <path d="M12 5a7 7 0 1 1-6.23 4H8a1 1 0 0 0 0-2H4.5A1.5 1.5 0 0 0 3 8.5V13a1 1 0 0 0 2 0V9.97A9 9 0 1 0 12 3v2z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" />
     </symbol>
+    <!-- Shuffle / Random icon (path supplied by user) -->
+    <symbol id="icon-shuffle" viewBox="0 0 1792 1792">
+      <path fill="currentColor" d="M666 481q-60 92-137 273-22-45-37-72.5t-40.5-63.5-51-56.5-63-35-81.5-14.5h-224q-14 0-23-9t-9-23v-192q0-14 9-23t23-9h224q250 0 410 225zm1126 799q0 14-9 23l-320 320q-9 9-23 9-13 0-22.5-9.5t-9.5-22.5v-192q-32 0-85 .5t-81 1-73-1-71-5-64-10.5-63-18.5-58-28.5-59-40-55-53.5-56-69.5q59-93 136-273 22 45 37 72.5t40.5 63.5 51 56.5 63 35 81.5 14.5h256v-192q0-14 9-23t23-9q12 0 24 10l319 319q9 9 9 23zm0-896q0 14-9 23l-320 320q-9 9-23 9-13 0-22.5-9.5t-9.5-22.5v-192h-256q-48 0-87 15t-69 45-51 61.5-45 77.5q-32 62-78 171-29 66-49.5 111t-54 105-64 100-74 83-90 68.5-106.5 42-128 16.5h-224q-14 0-23-9t-9-23v-192q0-14 9-23t23-9h224q48 0 87-15t69-45 51-61.5 45-77.5q32-62 78-171 29-66 49.5-111t54-105 64-100 74-83 90-68.5 106.5-42 128-16.5h256v-192q0-14 9-23t23-9q12 0 24 10l319 319q9 9 9 23z"/>
+    </symbol>
+    <!-- Repeat / Auto icon (two arrows in a circle) -->
+    <symbol id="icon-repeat" viewBox="0 0 24 24">
+      <path d="M7 7h7a5 5 0 0 1 0 10H7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M7 7l2.5-2.5M7 7L4.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M17 17H10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M17 17l-2.5 2.5M17 17l2.5 2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <!-- Auto/loop icon for Random Auto (infinity-like circles) -->
+    <symbol id="icon-auto-shuffle" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M20.288 9.463a4.856 4.856 0 0 0-4.336-2.3 4.586 4.586 0 0 0-3.343 1.767c.071.116.148.226.212.347l.879 1.652.134-.254a2.71 2.71 0 0 1 2.206-1.519 2.845 2.845 0 1 1 0 5.686 2.708 2.708 0 0 1-2.205-1.518L13.131 12l-1.193-2.26a4.709 4.709 0 0 0-3.89-2.581 4.845 4.845 0 1 0 0 9.682 4.586 4.586 0 0 0 3.343-1.767c-.071-.116-.148-.226-.212-.347l-.879-1.656-.134.254a2.71 2.71 0 0 1-2.206 1.519 2.855 2.855 0 0 1-2.559-1.369 2.825 2.825 0 0 1 0-2.946 2.862 2.862 0 0 1 2.442-1.374h.121a2.708 2.708 0 0 1 2.205 1.518l.7 1.327 1.193 2.26a4.709 4.709 0 0 0 3.89 2.581h.209a4.846 4.846 0 0 0 4.127-7.378z"/>
+    </symbol>
     <symbol id="icon-cc" viewBox="0 0 24 24">
       <rect x="2" y="5" width="20" height="14" rx="2" ry="2" fill="none" stroke="currentColor" stroke-width="2" />
       <path d="M11.2 14.5c-.43.3-.93.5-1.5.5a3 3 0 1 1 0-6c.57 0 1.07.2 1.5.5M17.2 14.5c-.43.3-.93.5-1.5.5a3 3 0 1 1 0-6c.57 0 1.07.2 1.5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+    </symbol>
+    <!-- Rating and Favorite Icons -->
+    <symbol id="icon-star" viewBox="0 0 24 24">
+      <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.62L12 2 9.19 8.62 2 9.24l5.46 4.73L5.82 21z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="icon-star-filled" viewBox="0 0 24 24">
+      <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.62L12 2 9.19 8.62 2 9.24l5.46 4.73L5.82 21z" fill="currentColor" />
+    </symbol>
+    <symbol id="icon-heart" viewBox="0 0 24 24">
+      <path d="M12.1 8.64 12 8.77l-.1-.13C10.14 6.6 7.1 6.52 5.14 8.5 3.07 10.57 3.24 14 6 16.5c1.54 1.38 3.4 2.74 5.1 3.94 1.7-1.2 3.56-2.56 5.1-3.94 2.76-2.5 2.93-5.93.86-8C16.9 6.52 13.86 6.6 12.1 8.64z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="icon-heart-filled" viewBox="0 0 24 24">
+      <path d="M12.1 8.64 12 8.77l-.1-.13C10.14 6.6 7.1 6.52 5.14 8.5 3.07 10.57 3.24 14 6 16.5c1.54 1.38 3.4 2.74 5.1 3.94 1.7-1.2 3.56-2.56 5.1-3.94 2.76-2.5 2.93-5.93.86-8C16.9 6.52 13.86 6.6 12.1 8.64z" fill="currentColor" />
+    </symbol>
+    <!-- Camera icon for frame download -->
+    <symbol id="icon-camera" viewBox="0 0 24 24">
+      <path d="M4 7h3.2l1.6-2h6.4l1.6 2H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+      <circle cx="12" cy="13" r="4" fill="none" stroke="currentColor" stroke-width="2" />
+      <circle cx="18" cy="9" r="1" fill="currentColor" />
     </symbol>
   </svg>
 
@@ -136,18 +216,23 @@
   <!-- Templates: Performers (card + empty state) -->
   <template id="performerCardTemplate">
     <div class="perf-card perf-card--pretty" role="group">
+      <div class="card-checkbox" role="checkbox" aria-checked="false" aria-label="Select performer"></div>
       <div class="pc-top">
-        <div class="pc-avatar" aria-hidden="true"></div>
+        <div class="pc-avatar" role="button" tabindex="0" aria-label="Upload image">
+          <svg class="pc-avatar-icon" width="18" height="18" aria-hidden="true"><use href="#icon-camera"></use></svg>
+        </div>
         <div class="pc-titlebox">
           <h3 class="pc-name"></h3>
+          <div class="pc-meta hint-sm"></div>
         </div>
-        <span class="pc-count" title=""></span>
+        <div class="pc-count" title="Files">0</div>
       </div>
     </div>
   </template>
   <!-- Templates: Tags (card) -->
   <template id="tagCardTemplate">
     <div class="perf-card perf-card--pretty" role="group">
+      <div class="card-checkbox" role="checkbox" aria-checked="false" aria-label="Select tag"></div>
       <div class="pc-top">
         <div class="pc-avatar" aria-hidden="true"></div>
         <div class="pc-titlebox">
@@ -239,6 +324,31 @@
     </div>
   </div>
 
+  <!-- Performer Image Face Box Preview Modal -->
+  <div id="faceBoxModal" class="modal" hidden>
+    <div class="panel panel--image">
+      <header>
+        <div class="panel-header--spaced">
+          <strong id="faceBoxTitle">Image Preview</strong>
+          <div class="flex-row gap-8">
+            <button class="btn" id="faceBoxSaveBtn" title="Save face box" disabled>Save</button>
+            <button class="btn" id="faceBoxUploadBtn" title="Upload new image">Upload</button>
+            <button class="btn" id="faceBoxClose">Close</button>
+          </div>
+        </div>
+      </header>
+      <div class="body panel--image-body">
+        <div class="facebox-stage">
+          <img id="faceBoxImg" alt="Performer" class="panel-image" />
+          <div id="faceBoxOverlay" class="facebox-overlay" hidden>
+            <div class="handle" aria-hidden="true"></div>
+          </div>
+          <div id="faceBoxLinks" class="facebox-links hidden" aria-label="External performer links"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Tag Manual Add Modal -->
   <div id="tagManualModal" class="modal" hidden>
     <div class="panel panel--wide panel--manual-add">
@@ -271,6 +381,55 @@
       </div>
       <footer class="panel-footer--actions">
         <span class="hint-sm hint-sm--muted">Esc or Close to dismiss • "Apply" writes tags per file</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Tag Merge Modal -->
+  <div id="tagMergeModal" class="modal" hidden>
+    <div class="panel panel--narrow">
+      <header class="panel-header--spaced">
+        <h3>Merge Tags</h3>
+        <button id="tagMergeClose" class="btn btn-text" aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        <div class="hint-sm mb-8">Choose the tag name to keep. The other selected tag will be merged into it.</div>
+        <div class="row gap-8 mb-10">
+          <label class="hint-sm w-120">Selected</label>
+          <div id="tagMergeSelected" class="flex-row gap-6"></div>
+        </div>
+        <div class="row gap-8">
+          <label for="tagMergeInto" class="hint-sm w-120">Tag that remains</label>
+          <input id="tagMergeInto" type="text" class="control-input w-100" placeholder="e.g. Vintage" />
+        </div>
+      </div>
+      <footer class="panel-footer--actions">
+        <button id="tagMergeCancel" class="btn">Cancel</button>
+        <button id="tagMergeConfirm" class="btn btn-primary" disabled>Merge</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Tag Rename Modal -->
+  <div id="tagRenameModal" class="modal" hidden>
+    <div class="panel panel--narrow">
+      <header class="panel-header--spaced">
+        <h3>Rename Tag</h3>
+        <button id="tagRenameClose" class="btn btn-text" aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        <div class="row gap-8 mb-10">
+          <label class="hint-sm w-120">Selected</label>
+          <div id="tagRenameSelected" class="flex-row gap-6"></div>
+        </div>
+        <div class="row gap-8">
+          <label for="tagRenameInput" class="hint-sm w-120">New name</label>
+          <input id="tagRenameInput" type="text" class="control-input w-100" placeholder="e.g. Vintage" />
+        </div>
+      </div>
+      <footer class="panel-footer--actions">
+        <button id="tagRenameCancel" class="btn">Cancel</button>
+        <button id="tagRenameConfirm" class="btn btn-primary" disabled>Rename</button>
       </footer>
     </div>
   </div>
@@ -368,7 +527,17 @@
             <div class="list-controls">
               <div class="flex-row gap-8">
                 <button id="listColumnsBtn" class="btn-sm" aria-controls="listColumnsPanel" aria-expanded="false">Columns</button>
-                <button id="listRotateHeadersToggle" class="btn-sm" aria-pressed="false" title="Rotate column headers 90° for compact view">Rotate headers: Off</button>
+                <button id="listWrapToggle" class="btn-sm" aria-pressed="false" title="Toggle text wrapping in the table">Wrap: On</button>
+                <label for="listPageSize" class="hint-sm" style="display:inline-flex; align-items:center; gap:6px;">
+                  Per page:
+                  <select id="listPageSize" class="control-select" aria-label="Page size">
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                  </select>
+                </label>
                 <div class="list-pager">
                   <button id="listPrevBtn" class="btn-sm" aria-label="Previous page">Prev</button>
                   <span id="listPageInfo" class="hint-sm">Page 1</span>
@@ -379,7 +548,6 @@
             <div id="listColumnsPanel" class="list-columns-panel hidden" role="region" aria-label="Column settings">
               <div class="panel-header--spaced">
                 <strong>Columns</strong>
-                <button id="listRotateHeadersTogglePanel" class="btn-sm" aria-pressed="false" title="Rotate column headers 90° for compact view">Rotate headers: Off</button>
                 <button id="listColumnsClose" class="btn-sm" aria-label="Close">Close</button>
               </div>
               <div id="listColumnsBody" class="list-columns-body"></div>
@@ -514,6 +682,9 @@
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="performers-panel" id="performers-tab" data-tab="performers">
         Performers
       </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="graph-panel" id="graph-tab" data-tab="graph">
+        Graph
+      </button>
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="tags-panel" id="tags-tab" data-tab="tags">
         Tags
       </button>
@@ -532,6 +703,47 @@
   <main>
     <!-- Tab Panels -->
     <div class="tab-panels">
+      <!-- Graph Tab Panel (Performers Co‑appearance) -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="graph-tab" id="graph-panel" hidden>
+        <section class="graph-panel">
+          <div class="graph-controls">
+            <strong>Performers Graph</strong>
+            <span id="graphStatus" class="hint-sm" style="opacity:.8;"></span>
+            <label class="hint-sm">
+              Min videos
+              <input id="graphMinCount" type="number" class="control-input w-120" value="2" min="1" step="1" />
+            </label>
+            <label class="hint-sm" title="Minimum number of connections (edges) a performer must have to be shown; > 0 hides isolated nodes">
+              Min edges
+              <input id="graphMinEdges" type="number" class="control-input w-120" value="0" min="0" step="1" />
+            </label>
+            <label class="hint-sm">
+              Layout
+              <select id="graphLayoutSelect" class="control-input w-120">
+                <option value="fcose">fCoSE</option>
+                <option value="cose">CoSE</option>
+                <option value="circle">Circle</option>
+                <option value="grid">Grid</option>
+                <option value="random">Random</option>
+              </select>
+            </label>
+            <label class="hint-sm" title="Render edges as straight lines">
+              <input id="graphStraightEdges" type="checkbox" checked />
+              Straight lines
+            </label>
+            <input id="graphSearchInput" class="control-input" placeholder="Search performer…" />
+            <button id="graphRefreshBtn" class="btn-sm">Refresh</button>
+            <div class="ml-auto"></div>
+            <button id="graphNeighborhoodBtn" class="btn-sm" title="Reveal neighborhood of matches/selection">Reveal Neighborhood</button>
+            <button id="graphClearBtn" class="btn-sm" title="Clear filters and highlights">Clear</button>
+            <button id="graphFitBtn" class="btn-sm" title="Fit all">Fit</button>
+          </div>
+          <div id="cyContainer">
+            <div id="cyGraph" aria-label="Performers graph" role="application"></div>
+          </div>
+          <div id="graphTooltip" hidden></div>
+        </section>
+      </div>
       <!-- Player Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="player-tab" id="player-panel" hidden>
         <!-- Split layout now stretches full height -->
@@ -633,14 +845,14 @@
                     <div id="badge-thumbnail" class="badge-pill artifact-gen-btn" data-artifact="thumbnail" title="Primary thumbnail">
                       <span>Thumbnail</span><span id="badge-thumbnail-status" aria-hidden="true">?</span>
                     </div>
-                    <div id="badge-hover" class="badge-pill artifact-gen-btn" data-artifact="hover" title="Hover preview video">
-                      <span>Hover</span><span id="badge-hover-status" aria-hidden="true">?</span>
+                    <div id="badge-preview" class="badge-pill artifact-gen-btn" data-artifact="preview" title="Preview video">
+                      <span>Preview</span><span id="badge-preview-status" aria-hidden="true">?</span>
                     </div>
                     <div id="badge-phash" class="badge-pill artifact-gen-btn" data-artifact="phash" title="Perceptual hash">
                       <span>pHash</span>
                       <span id="badge-phash-status" aria-hidden="true">?</span>
                     </div>
-                    <div id="badge-sprites" class="badge-pill artifact-gen-btn" data-artifact="sprites" title="Sprite sheet thumbnails (hover scrub)">
+                    <div id="badge-sprites" class="badge-pill artifact-gen-btn" data-artifact="sprites" title="Sprite sheet thumbnails (timeline scrub)">
                       <span>Sprites</span><span id="badge-sprites-status" aria-hidden="true">?</span>
                     </div>
                     <div id="badge-heatmaps" class="badge-pill artifact-gen-btn" data-artifact="heatmaps" title="Heatmap timeline overlay">
@@ -669,6 +881,29 @@
                   <div class="hint-sm mt-6 hint-sm--muted line-13">Click a missing badge (✗) or Generate button to start. ✓ indicates the artifact is present. Spinner shows job progress.</div>
                 </div>
               </div>
+              <div class="acc-item" data-key="actions">
+                <button class="acc-header" aria-expanded="false">
+                  <svg class="acc-header__icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <use href="#icon-caret"></use>
+                    <path class="acc-header__fallback" d="M15 6 L9 12 L15 18 Z" fill="currentColor" />
+                  </svg>
+                  Actions
+                </button>
+                <div class="acc-panel hidden">
+                  <div class="flex-row gap-8 mt-4" role="group" aria-label="Video actions">
+                    <button id="btnDownloadFrame" class="btn-sm" title="Download current frame as PNG">
+                      <svg width="16" height="16" aria-hidden="true" focusable="false"><use href="#icon-camera" /></svg>
+                      <span class="ml-4">Download frame</span>
+                    </button>
+                    <button id="btnConvert" class="btn-sm" disabled title="Coming soon">Convert</button>
+                    <button id="btnCompress" class="btn-sm" disabled title="Coming soon">Compress</button>
+                    <button id="btnTrim" class="btn-sm" disabled title="Coming soon">Trim</button>
+                    <button id="btnSplit" class="btn-sm" disabled title="Coming soon">Split</button>
+                    <button id="btnConcat" class="btn-sm" disabled title="Coming soon">Concat</button>
+                  </div>
+                  <div class="hint-sm hint-sm--muted mt-6">Advanced actions (convert, compress, trim, split, concat) are planned. Download frame works locally now.</div>
+                </div>
+              </div>
               <div class="acc-item" data-key="video-settings">
                 <button class="acc-header" aria-expanded="false">
                   <svg class="acc-header__icon" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -683,22 +918,44 @@
                       <div class="chips-label">Performers</div>
                       <div class="chips-list" id="videoPerformers"></div>
                       <input type="text" id="videoPerformerInput" class="chips-input" placeholder="Add performer…" aria-label="Add performer" />
+                      <div class="chips-suggestions hint-sm mt-4" id="videoPerformerSuggestions" aria-live="polite"></div>
                     </div>
                     <div class="chips-group" id="videoTagsGroup">
                       <div class="chips-label">Tags</div>
                       <div class="chips-list" id="videoTags"></div>
                       <input type="text" id="videoTagInput" class="chips-input" placeholder="Add tag…" aria-label="Add tag" />
+                      <div class="chips-suggestions hint-sm mt-4" id="videoTagSuggestions" aria-live="polite"></div>
                     </div>
-                    <div class="chips-hint hint-sm hint-sm--muted mt-4">Enter to add · Click a chip to remove</div>
-                    <!-- Rating (5-star) -->
+                    <div class="chips-hint hint-sm hint-sm--muted mt-4">Enter to add · Click a chip to view · Click × to remove</div>
+                    <!-- Rating (5-star) + Favorite toggle in header -->
                     <div class="chips-group" id="videoRatingGroup">
-                      <div class="chips-label">Rating</div>
+                      <div class="chips-label">Rating
+                        <button id="videoFavorite" class="btn-sm btn-icon favorite-toggle" aria-pressed="false" title="Toggle favorite">
+                          <svg class="icon icon-outline" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-heart"></use></svg>
+                          <svg class="icon icon-filled" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-heart-filled"></use></svg>
+                        </button>
+                      </div>
                       <div class="rating-stars" id="videoRating" role="radiogroup" aria-label="Rating (1 to 5)">
-                        <span class="star" role="radio" tabindex="0" data-value="1" aria-label="1 star" aria-checked="false">☆</span>
-                        <span class="star" role="radio" tabindex="0" data-value="2" aria-label="2 stars" aria-checked="false">☆</span>
-                        <span class="star" role="radio" tabindex="0" data-value="3" aria-label="3 stars" aria-checked="false">☆</span>
-                        <span class="star" role="radio" tabindex="0" data-value="4" aria-label="4 stars" aria-checked="false">☆</span>
-                        <span class="star" role="radio" tabindex="0" data-value="5" aria-label="5 stars" aria-checked="false">☆</span>
+                        <span class="star" role="radio" tabindex="0" data-value="1" aria-label="1 star" aria-checked="false">
+                          <svg class="icon icon-outline" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-star"></use></svg>
+                          <svg class="icon icon-filled" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-star-filled"></use></svg>
+                        </span>
+                        <span class="star" role="radio" tabindex="0" data-value="2" aria-label="2 stars" aria-checked="false">
+                          <svg class="icon icon-outline" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-star"></use></svg>
+                          <svg class="icon icon-filled" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-star-filled"></use></svg>
+                        </span>
+                        <span class="star" role="radio" tabindex="0" data-value="3" aria-label="3 stars" aria-checked="false">
+                          <svg class="icon icon-outline" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-star"></use></svg>
+                          <svg class="icon icon-filled" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-star-filled"></use></svg>
+                        </span>
+                        <span class="star" role="radio" tabindex="0" data-value="4" aria-label="4 stars" aria-checked="false">
+                          <svg class="icon icon-outline" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-star"></use></svg>
+                          <svg class="icon icon-filled" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-star-filled"></use></svg>
+                        </span>
+                        <span class="star" role="radio" tabindex="0" data-value="5" aria-label="5 stars" aria-checked="false">
+                          <svg class="icon icon-outline" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-star"></use></svg>
+                          <svg class="icon icon-filled" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-star-filled"></use></svg>
+                        </span>
                       </div>
                     </div>
                     <!-- Description -->
@@ -782,12 +1039,18 @@
               <div class="scrubber-status-row">
                 <span class="scrubber-time" id="playerScrubberTime">00:00 / 00:00</span>
                 <!-- Playback controls -->
+                <!-- New: Seek -30s / -1 frame -->
+                <button id="btnSeekBack30" class="btn btn-xs" type="button" title="Back 30 seconds" aria-label="Back 30 seconds">−30s</button>
+                <button id="btnPrevFrame" class="btn btn-xs" type="button" title="Previous frame" aria-label="Previous frame">−1f</button>
                 <button id="btnPlayPause" class="btn btn-xs" type="button" title="Play / Pause">
                   <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <use href="#icon-play" class="icon-play"></use>
                     <use href="#icon-pause" class="icon-pause hidden"></use>
                   </svg>
                 </button>
+                <!-- New: +1 frame / +30s -->
+                <button id="btnNextFrame" class="btn btn-xs" type="button" title="Next frame" aria-label="Next frame">+1f</button>
+                <button id="btnSeekFwd30" class="btn btn-xs" type="button" title="Forward 30 seconds" aria-label="Forward 30 seconds">+30s</button>
                 <button id="btnMute" class="btn btn-xs" type="button" title="Mute / Unmute">
                   <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <use href="#icon-vol" class="icon-vol"></use>
@@ -805,11 +1068,19 @@
                     <use href="#icon-reset"></use>
                   </svg>
                 </button>
+                <!-- Favorite toggle inside player controls -->
+                <button id="btnFavorite" class="btn btn-xs favorite-toggle" type="button" title="Toggle favorite" aria-label="Toggle favorite" aria-pressed="false">
+                  <svg class="icon icon-outline" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-heart"></use></svg>
+                  <svg class="icon icon-filled" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-heart-filled"></use></svg>
+                </button>
+                <!-- New: Previous / Next video -->
+                <button id="btnPrevVideo" class="btn btn-xs" type="button" title="Previous video" aria-label="Previous video">Prev</button>
                 <button id="btnFullscreen" class="btn btn-xs" type="button" title="Toggle fullscreen" aria-label="Fullscreen">
                   <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <path fill="currentColor" d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM6 14v4h4v2H4v-6h2zm12 0h2v6h-6v-2h4v-4z" />
                   </svg>
                 </button>
+                <button id="btnNextVideo" class="btn btn-xs" type="button" title="Next video" aria-label="Next video">Next</button>
               </div>
             </div>
             <!-- Hover sprite preview (dynamically positioned) -->
@@ -822,13 +1093,12 @@
       <div class="tab-panel active" role="tabpanel" aria-labelledby="library-tab" id="library-panel">
         <div class="controls-panel sticky-enabled">
           <div class="controls-row">
-            <div class="control-group control-group--flex flex-2">
-              <div class="chips-group inline-chips" id="libraryUnifiedFiltersGroup" title="Search: plain text, #tag, @performer (Enter to add chip)">
-                <div class="chips-list" id="libraryUnifiedChips"></div>
-                <input type="text" id="libraryUnifiedInput" class="chips-input" placeholder="Search files, #tag, @performer…" aria-label="Search library" />
-              </div>
-            </div>
-            <div class="control-group">
+            <div class="control-group control-group--flex">
+              <button id="clearFiltersTopBtn" class="btn-icon clear-btn" type="button" aria-label="Clear filters" title="Clear search, tags, performers and resolution">
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-clear"></use></svg>
+              </button>
+              <input type="text" id="libraryUnifiedInput" class="chips-input" placeholder="Search files, #tag, @performer…" aria-label="Search library" />
+              <div class="chips-list" id="libraryUnifiedChips"></div>
               <div class="select">
                 <select id="resSelect" class="control-select" title="Filter by resolution" aria-label="Filter by resolution">
                   <option value="" selected>All resolutions</option>
@@ -840,9 +1110,6 @@
                 </select>
                 <span class="chevron">▾</span>
               </div>
-            </div>
-            <div class="control-group">
-              <!-- <span class="control-label">Sort</span> -->
               <div class="select">
                 <select id="sortSelect" class="control-select" aria-label="Sort by">
                   <option value="date">Date</option>
@@ -853,19 +1120,18 @@
                 <span class="chevron">▾</span>
               </div>
               <button id="orderToggle" class="btn-sm order-btn" data-order="desc" title="Toggle sort order" aria-label="Toggle sort order">▼</button>
-            </div>
-            <div class="pagination-group">
-              <div class="control-group">
-                <!-- <span class="control-label">Density</span> -->
-                <input id="densitySlider" type="range" min="1" max="15" value="12" step="1" class="control-slider" title="Adjust grid density (columns)" aria-label="Grid density" />
-              </div>
+              <input id="densitySlider" type="range" min="1" max="15" value="12" step="1" class="control-slider" title="Adjust grid density (columns)" aria-label="Grid density" />
               <div class="pagination">
                 <button id="prevBtn" class="btn-sm" title="Previous page">‹</button>
                 <span id="pageInfo" class="page-info">Page 1 of 1</span>
                 <button id="nextBtn" class="btn-sm" title="Next page">›</button>
               </div>
-              <button id="randomPlayBtn" class="btn-sm ml-8" title="Play a random video from current filters" aria-label="Play random">Random ▶</button>
-              <button id="randomAutoBtn" class="btn-sm ml-4" title="Toggle auto-random play when the video ends" aria-pressed="false" aria-label="Toggle auto-random">Auto ⟳</button>
+              <button id="randomPlayBtn" class="btn-sm ml-8" title="Play a random video from current filters" aria-label="Play random">
+                <svg width="16" height="16" aria-hidden="true" focusable="false"><use href="#icon-shuffle" /></svg>
+              </button>
+              <button id="randomAutoBtn" class="btn-sm ml-4" title="Toggle auto-random play when the video ends" aria-pressed="false" aria-label="Toggle auto-random">
+                <svg width="16" height="16" aria-hidden="true" focusable="false"><use href="#icon-auto-shuffle" /></svg>
+              </button>
             </div>
           </div>
         </div>
@@ -873,6 +1139,22 @@
           <span id="selectionCount" class="selection-count">0 selected</span>
           <button id="selectAllBtn" class="btn-sm">Select All</button>
           <button id="selectNoneBtn" class="btn-sm">Select None</button>
+          <button id="bulkEditBtn" class="btn-sm">Bulk Edit</button>
+          <div id="bulkEditPanel" class="bulk-panel" hidden>
+            <label class="hint-sm mr-6" for="bulkKindSelect">Type</label>
+            <select id="bulkKindSelect" class="control-select">
+              <option value="tag">Tag</option>
+              <option value="performer">Performer</option>
+            </select>
+            <label class="hint-sm ml-10 mr-6" for="bulkOpSelect">Action</label>
+            <select id="bulkOpSelect" class="control-select">
+              <option value="add">Add</option>
+              <option value="remove">Remove</option>
+            </select>
+            <input id="bulkValueInput" type="text" class="chips-input ml-10" placeholder="Name…" aria-label="Name" />
+            <button id="bulkApplyBtn" class="btn-sm ml-6">Apply</button>
+            <div id="bulkSuggestions" class="chips-suggestions hint-sm mt-4" aria-live="polite"></div>
+          </div>
         </div>
 
         <div id="spinner" class="spinner"></div>
@@ -929,18 +1211,27 @@
           <div class="list-controls">
             <div class="flex-row gap-8">
               <button id="listColumnsBtn" class="btn-sm" aria-controls="listColumnsPanel" aria-expanded="false">Columns</button>
-              <button id="listRotateHeadersToggle" class="btn-sm" aria-pressed="false" title="Rotate column headers 90° for compact view">Rotate headers: Off</button>
-              <div class="list-pager">
-                <button id="listPrevBtn" class="btn-sm" aria-label="Previous page">Prev</button>
-                <span id="listPageInfo" class="hint-sm">Page 1</span>
-                <button id="listNextBtn" class="btn-sm" aria-label="Next page">Next</button>
-              </div>
+              <button id="listWrapToggle" class="btn-sm" aria-pressed="false" title="Toggle text wrapping in the table">Wrap: On</button>
+              <label for="listPageSize" class="hint-sm" style="display:inline-flex; align-items:center; gap:6px;">
+                Per page
+                <select id="listPageSize" class="control-select" aria-label="Page size">
+                  <option value="16">16</option>
+                  <option value="32" selected>32</option>
+                  <option value="64">64</option>
+                  <option value="128">128</option>
+                  <option value="256">256</option>
+                  <option value="512">512</option>
+                </select>
+              </label>
+              <button id="listPrevBtn" class="btn-sm" aria-label="Previous page">Prev</button>
+              <button id="listNextBtn" class="btn-sm" aria-label="Next page">Next</button>
+              <span id="listPageInfo" class="hint-sm"></span>
+              <div id="listSpinner" class="spinner" hidden></div>
             </div>
           </div>
           <div id="listColumnsPanel" class="list-columns-panel hidden" role="region" aria-label="Column settings">
             <div class="panel-header--spaced">
               <strong>Columns</strong>
-              <button id="listRotateHeadersTogglePanel" class="btn-sm" aria-pressed="false" title="Rotate column headers 90° for compact view">Rotate headers: Off</button>
               <button id="listColumnsClose" class="btn-sm" aria-label="Close">Close</button>
             </div>
             <div id="listColumnsBody" class="list-columns-body"></div>
@@ -970,17 +1261,22 @@
             </select>
             <button id="performerSortOrder" class="btn-sm" title="Toggle sort order" aria-label="Toggle sort order">Desc</button>
             <span id="performersCount" class="hint-sm ml-8" aria-live="polite"></span>
-            <button id="performerImportBtn" class="btn-sm" title="Import newline or JSON list">Import</button>
+            <button id="performerUnifiedImportBtn" class="btn-sm" title="Import performers: names list, images folder, loose images, or ZIP">Import</button>
             <button id="performerMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
+            <button id="performerRenameBtn" class="btn-sm" title="Rename selected" disabled>Rename</button>
             <button id="performerDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
             <button id="performerAutoMatchBtn" class="btn-sm" title="Auto‑match performers from filenames">Auto‑Match</button>
           </div>
           <div id="performerDropZone" role="button" tabindex="0" aria-label="Import performers" class="performer-dropzone">
-            <strong class="pdz-title">Import Performers</strong>
-            <span class="pdz-sub">Click to choose files or drag & drop names / JSON / text list</span>
+            <strong class="pdz-title">Unified Import</strong>
+            <span class="pdz-sub">Click for names / images / ZIP or drag & drop text list</span>
           </div>
           <input id="performerFileInput" type="file" accept=".txt,.csv,.json,text/plain,application/json" multiple class="d-none" />
           <div id="performersStatus" class="catalog-status d-none" aria-live="polite">Loading…</div>
+          <!-- Unified hidden inputs -->
+          <input id="performerUnifiedFileInput" type="file" class="d-none" multiple accept=".txt,.csv,.json,.zip,image/*,text/plain,application/json,application/zip,application/x-zip-compressed" />
+          <input id="performerUnifiedFolderInput" type="file" class="d-none" webkitdirectory directory multiple accept="image/*" />
+          <input id="performerSingleImageInput" type="file" class="d-none" accept="image/*" />
           <div id="performersSpinner" class="spinner" hidden></div>
           <div class="list-controls flex-row gap-10 mt-12" id="performersPager">
             <div class="ml-auto"></div>
@@ -1013,6 +1309,55 @@
         </div>
       </div>
 
+      <!-- Performer Merge Modal -->
+      <div id="performerMergeModal" class="modal" hidden>
+        <div class="panel panel--narrow">
+          <header class="panel-header--spaced">
+            <h3>Merge Performers</h3>
+            <button id="performerMergeClose" class="btn btn-text" aria-label="Close">✕</button>
+          </header>
+          <div class="body">
+            <div class="hint-sm mb-8">Choose the performer name to keep. The other selected performer(s) will be merged into it.</div>
+            <div class="row gap-8 mb-10">
+              <label class="hint-sm w-120">Selected</label>
+              <div id="performerMergeSelected" class="flex-row gap-6"></div>
+            </div>
+            <div class="row gap-8">
+              <label for="performerMergeInto" class="hint-sm w-120">Name that remains</label>
+              <input id="performerMergeInto" type="text" class="control-input w-100" placeholder="e.g. Jane Doe" />
+            </div>
+          </div>
+          <footer class="panel-footer--actions">
+            <button id="performerMergeCancel" class="btn">Cancel</button>
+            <button id="performerMergeConfirm" class="btn btn-primary" disabled>Merge</button>
+          </footer>
+        </div>
+      </div>
+
+      <!-- Performer Rename Modal -->
+      <div id="performerRenameModal" class="modal" hidden>
+        <div class="panel panel--narrow">
+          <header class="panel-header--spaced">
+            <h3>Rename Performer</h3>
+            <button id="performerRenameClose" class="btn btn-text" aria-label="Close">✕</button>
+          </header>
+          <div class="body">
+            <div class="row gap-8 mb-10">
+              <label class="hint-sm w-120">Selected</label>
+              <div id="performerRenameSelected" class="flex-row gap-6"></div>
+            </div>
+            <div class="row gap-8">
+              <label for="performerRenameInput" class="hint-sm w-120">New name</label>
+              <input id="performerRenameInput" type="text" class="control-input w-100" placeholder="e.g. Jane Doe" />
+            </div>
+          </div>
+          <footer class="panel-footer--actions">
+            <button id="performerRenameCancel" class="btn">Cancel</button>
+            <button id="performerRenameConfirm" class="btn btn-primary" disabled>Rename</button>
+          </footer>
+        </div>
+      </div>
+
       <!-- Tags Tab Panel -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="tags-tab" id="tags-panel" hidden>
         <!-- Tags grid (extant tags with counts) -->
@@ -1028,6 +1373,7 @@
             <span id="tagsCount" class="hint-sm ml-8" aria-live="polite"></span>
             <button id="tagImportBtn" class="btn-sm" title="Import tags from JSON">Import</button>
             <button id="tagMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
+            <button id="tagRenameBtn" class="btn-sm" title="Rename selected" disabled>Rename</button>
             <button id="tagDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
             <button id="tagAutoTagBtn" class="btn-sm" title="Auto‑tag videos">Auto‑Tag</button>
             <button id="tagManualAddBtn" class="btn-sm" title="Manually add a tag by matching filenames">Add…</button>
@@ -1204,8 +1550,8 @@
               <table class="job-table">
                 <thead>
                   <tr>
-                    <th>Start time</th>
-                    <th>End time</th>
+                    <th>Start</th>
+                    <th>Finish</th>
                     <th>Task</th>
                     <th>File</th>
                     <th>Status</th>
@@ -1294,7 +1640,7 @@
               <div class="artifact-card artifact-card-uniform" data-artifact="previews">
                 <div class="artifact-header">
                   <div class="artifact-info">
-                    <h3>Hover Previews</h3>
+                    <h3>Previews</h3>
                     <div class="coverage-display">
                       <span class="coverage-text" id="previewsCoverage">0%</span>
                       <div class="coverage-bar-mini">
@@ -1305,8 +1651,8 @@
                   <div class="artifact-actions">
                     <button class="btn-generate hidden" data-operation="previews-missing">Generate Missing</button>
                     <button class="btn-generate d-none hidden" data-operation="previews-all">Recompute All</button>
-                    <button class="btn-generate d-none hidden" data-operation="previews-clear" title="Delete all hover preview videos">Clear</button>
-                    <button class="btn-options" data-artifact="previews" aria-label="Hover preview options">
+                    <button class="btn-generate d-none hidden" data-operation="previews-clear" title="Delete all preview videos">Clear</button>
+                    <button class="btn-options" data-artifact="previews" aria-label="Preview options">
                       <svg width="16" height="16" aria-hidden="true">
                         <use href="#icon-options" />
                       </svg>
@@ -1388,29 +1734,29 @@
                 </div>
               </div>
 
-              <div class="artifact-card artifact-card-uniform" data-artifact="scenes">
+              <div class="artifact-card artifact-card-uniform" data-artifact="markers">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Scene Detection</h3>
                     <div class="coverage-display">
-                      <span class="coverage-text" id="scenesCoverage">0%</span>
+                      <span class="coverage-text" id="markersCoverage">0%</span>
                       <div class="coverage-bar-mini">
-                        <div class="coverage-fill-mini" id="scenesFill"></div>
+                        <div class="coverage-fill-mini" id="markersFill"></div>
                       </div>
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate hidden" data-operation="scenes-missing">Generate Missing</button>
-                    <button class="btn-generate d-none hidden" data-operation="scenes-all">Recompute All</button>
-                    <button class="btn-generate d-none hidden" data-operation="scenes-clear" title="Delete all scene detection JSON">Clear</button>
-                    <button class="btn-options" data-artifact="scenes">
+                    <button class="btn-generate hidden" data-operation="markers-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="markers-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="markers-clear" title="Delete all scene detection JSON">Clear</button>
+                    <button class="btn-options" data-artifact="markers">
                       <svg width="16" height="16" aria-hidden="true">
                         <use href="#icon-options" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip d-none" id="scenesOptions">
+                <div class="options-tooltip d-none" id="markersOptions">
                   <label>Threshold: <input type="number" id="sceneThreshold" value="0.4" min="0.1" max="1.0" step="0.1"></label>
                   <label>Limit: <input type="number" id="sceneLimit" value="0" min="0" max="100"></label>
                 </div>
@@ -1601,13 +1947,22 @@
                   </div>
                 </div>
                 <div class="orphan-actions">
-                  <button class="btn-cleanup" id="cleanupOrphansBtn" disabled>Clean Up</button>
-                  <button class="btn-preview" id="previewOrphansBtn" disabled>Preview</button>
+                  <button class="btn-preview" id="previewOrphansBtn" disabled title="Show suggested cleanup (dry run)">Preview Cleanup</button>
+                  <!-- Apply Cleanup is hidden until a preview is displayed -->
+                  <button class="btn-cleanup d-none" id="cleanupOrphansBtn" disabled title="Apply cleanup (removes unmatched orphans)">Apply Cleanup</button>
+                  <button class="btn-preview" id="previewRepairsBtn" disabled title="Show suggested renames (dry run)">Preview Repairs</button>
+                  <!-- Apply Repairs is hidden until repair preview streaming completes -->
+                  <button class="btn-cleanup d-none" id="applyRepairsBtn" disabled title="Apply suggested repairs (move artifacts next to best-matched media; keeps unmatched orphans)">Apply Repairs</button>
                 </div>
               </div>
               <div class="orphan-details d-none" id="orphanDetails">
                 <div class="orphan-list" id="orphanList">
                   <!-- Orphan files will be listed here -->
+                </div>
+              </div>
+              <div class="orphan-details d-none" id="orphanRenames">
+                <div class="orphan-list" id="orphanRenamesList">
+                  <!-- Suggested renames (dry run) will be listed here -->
                 </div>
               </div>
             </div>
@@ -1712,16 +2067,16 @@
             </div>
             <div class="file-selection file-selection-compact">
               <label class="selection-option selection-option-wide">
-                <input type="checkbox" id="settingHoverPreviews" />
+                <input type="checkbox" id="settingPreview" />
                 <div>
-                  <div class="fw-600">Enable hover video previews</div>
+                  <div class="fw-600">Enable video previews</div>
                   <div class="hint-sm">When enabled, cards will play a small preview on hover. Previews are only played if they already exist; no background generation is triggered automatically.</div>
                 </div>
               </label>
               <label class="selection-option selection-option-wide mt-12">
-                <input type="checkbox" id="settingHoverOnDemand" />
+                <input type="checkbox" id="settingPreviewOnDemand" />
                 <div>
-                  <div class="fw-600">Generate hover previews on demand</div>
+                  <div class="fw-600">Generate previews on demand</div>
                   <div class="hint-sm">When enabled, hovering a card will request the server to create a preview if one doesn’t exist yet. This may start background work and use CPU.</div>
                 </div>
               </label>
@@ -1769,5 +2124,4 @@
     </div>
   </main>
 </body>
-
 </html>
