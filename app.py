@@ -14059,6 +14059,11 @@ def api_tags_summary_api(path: str = Query(default=""), recursive: bool = Query(
     return api_tags_summary(path=path, recursive=recursive)  # type: ignore
 
 
+@api.head("/tasks/batch")
+def tasks_batch_operation_head():
+    """HEAD endpoint for batch operations to avoid 405 errors."""
+    return Response(status_code=200, headers={"Content-Type": "application/json"})
+
 @api.post("/tasks/batch")
 def tasks_batch_operation(request: Request):
     """

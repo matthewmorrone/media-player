@@ -2,6 +2,7 @@
 
 
 ### Known issues:
+<!-- the 405 was coming from clicking on the artifact chip in the player tab, not batch.  -->
 + Orphans detects same-name orphans
 + No percentage progress for orphans
 + get a weird transparent 405 modal when trying to regenerate a thumbnail
@@ -14,7 +15,7 @@
 + metadata job shows hyphen for time instead of current duration
 + add forward and backward buttons in player: forward hits random, backward will require history
 + heatmap still not visible
-
++ still no shift click in the library grid
 + background idling would be nice
 + use tensorflowjs/blazeface to detect faces for centering
 

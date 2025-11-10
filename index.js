@@ -8507,11 +8507,33 @@ const Player = (() => {
     };
     if (btnSeekBack30 && !btnSeekBack30._wired) {
       btnSeekBack30._wired = true;
-      btnSeekBack30.addEventListener('click', () => seekBy(-30));
+      btnSeekBack30.addEventListener('click', () => {
+        const getJump = (key, fallback) => {
+          try {
+            const raw = localStorage.getItem(key);
+            const v = Number(raw);
+            if (Number.isFinite(v) && v >= 1 && v <= 600) return v;
+          } catch(_) {}
+          return fallback;
+        };
+        const back = getJump('setting.jumpBackSeconds', 30);
+        seekBy(-back);
+      });
     }
     if (btnSeekFwd30 && !btnSeekFwd30._wired) {
       btnSeekFwd30._wired = true;
-      btnSeekFwd30.addEventListener('click', () => seekBy(30));
+      btnSeekFwd30.addEventListener('click', () => {
+        const getJump = (key, fallback) => {
+          try {
+            const raw = localStorage.getItem(key);
+            const v = Number(raw);
+            if (Number.isFinite(v) && v >= 1 && v <= 600) return v;
+          } catch(_) {}
+          return fallback;
+        };
+        const fwd = getJump('setting.jumpFwdSeconds', 30);
+        seekBy(fwd);
+      });
     }
     if (btnPrevFrame && !btnPrevFrame._wired) {
       btnPrevFrame._wired = true;
@@ -8995,8 +9017,8 @@ const Player = (() => {
             } catch(_) {}
             return fallback;
           };
-          const back = getJump('setting.jumpBackSeconds', 5);
-          const fwd = getJump('setting.jumpFwdSeconds', 5);
+          const back = getJump('setting.jumpBackSeconds', 30);
+          const fwd = getJump('setting.jumpFwdSeconds', 30);
           const delta = (e.key === 'ArrowLeft') ? -back : fwd;
           const cur = Number(videoEl.currentTime || 0);
           const dur = Number(videoEl.duration || 0) || 0;
