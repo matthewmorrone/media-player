@@ -13421,10 +13421,36 @@ def artifacts_orphans_status(
             if not parsed:
                 continue
             a_stem, kind = parsed
+            # Normalize artifact stem: if it erroneously includes an original media
+            # extension (e.g. 'video.mp4.metadata.json' -> stem 'video.mp4'), strip
+            # the extension so matching doesn't falsely classify valid artifacts
+            # as orphans. This handles legacy sidecars generated with full filename.
+            try:
+                a_stem_lower = a_stem.lower()
+                for ext in MEDIA_EXTS:
+                    if a_stem_lower.endswith(ext):
+                        a_stem = a_stem[: -len(ext)]
+                        break
+            except Exception:
+                pass
 
-            # Check if corresponding media exists
-            cand_media = media_by_stem.get(a_stem)
-            if cand_media and cand_media.exists():
+            # Prefer strict adjacency: look for media next to the .artifacts folder
+            # with the same stem and any allowed media extension.
+            media_exists = False
+            try:
+                media_dir = art.parent.parent
+                for ext in MEDIA_EXTS:
+                    cand = media_dir / f"{a_stem}{ext}"
+                    if cand.exists() and cand.is_file():
+                        media_exists = True
+                        break
+            except Exception:
+                media_exists = False
+            # Fallback to global stem map only if adjacency check fails
+            if not media_exists:
+                cand_media = media_by_stem.get(a_stem)
+                media_exists = bool(cand_media and cand_media.exists())
+            if media_exists:
                 matched.append(str(art.relative_to(base)))
             else:
                 orphaned.append(str(art.relative_to(base)))
@@ -16447,6 +16473,17 @@ def _handle_cleanup_artifacts_job(jid: str, jr: JobRequest, base: Path) -> None:
             if not parsed:
                 continue
             a_stem, kind = parsed
+            # Same normalization as artifacts_orphans_status: strip trailing media
+            # extension from artifact stem if present (legacy sidecars).
+            try:
+                a_stem_lower_tmp = a_stem.lower()
+                for ext in MEDIA_EXTS:
+                    if a_stem_lower_tmp.endswith(ext):
+                        a_stem = a_stem[: -len(ext)]
+                        a_stem_lower_tmp = a_stem.lower()
+                        break
+            except Exception:
+                pass
             a_stem_lower = a_stem.lower()
             parent_dir = art.parent
             # Fast-path: reuse cached preview move suggestions before running heuristics

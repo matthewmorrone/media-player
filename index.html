@@ -727,6 +727,14 @@
                 <option value="random">Random</option>
               </select>
             </label>
+            <label class="hint-sm" title="Ideal edge length for force layouts (higher = looser)">
+              Edge length
+              <input id="graphEdgeLen" type="range" min="40" max="300" step="10" value="120" />
+            </label>
+            <label class="hint-sm" title="Node repulsion for force layouts (higher = more spread)">
+              Node repulsion
+              <input id="graphRepulsion" type="range" min="1000" max="120000" step="1000" value="50000" />
+            </label>
             <label class="hint-sm" title="Render edges as straight lines">
               <input id="graphStraightEdges" type="checkbox" checked />
               Straight lines
@@ -2018,6 +2026,20 @@
               <h2>Player Preferences</h2>
             </div>
             <div class="file-selection file-selection-compact">
+              <label class="selection-option selection-option-wide">
+                <div class="fw-600">Seek jumps (seconds)</div>
+                <div class="row gap-10" style="align-items:center; flex-wrap:wrap; margin-top:4px">
+                  <div class="flex-row gap-10" style="align-items:center">
+                    <label for="settingJumpBackSeconds" class="hint-sm" style="opacity:.8">Back</label>
+                    <input type="number" id="settingJumpBackSeconds" min="1" max="600" step="1" value="30" class="w-120" aria-label="Jump backward seconds" />
+                  </div>
+                  <div class="flex-row gap-10" style="align-items:center">
+                    <label for="settingJumpFwdSeconds" class="hint-sm" style="opacity:.8">Forward</label>
+                    <input type="number" id="settingJumpFwdSeconds" min="1" max="600" step="1" value="30" class="w-120" aria-label="Jump forward seconds" />
+                  </div>
+                  <span class="hint-sm" style="opacity:.75; flex-basis:100%">Values used by the ± buttons & Arrow Left/Right (when not frame-stepping).</span>
+                </div>
+              </label>
               <label class="selection-option selection-option-wide">
                 <input type="checkbox" id="settingInfiniteScroll" />
                 <div>

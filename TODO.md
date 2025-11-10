@@ -1,14 +1,31 @@
 # TODO (Structured Roadmap)
 
+
+### Known issues:
++ Orphans detects same-name orphans
++ No percentage progress for orphans
++ get a weird transparent 405 modal when trying to regenerate a thumbnail
++ when selecting files for tasks tab, no way to specify which artifacts to generate
++ thumbnail doesn't update in the UI without a refresh
++ add a way to filter by duration: input and lt/gt/eq
++ in performers metadata, stores both image and images array: this is redundant
++ menus for artifact generation don't appear: ... buttons with options
++ batch jobs for metadata and thumbnail generation should be split into individual jobs
++ metadata job shows hyphen for time instead of current duration
++ add forward and backward buttons in player: forward hits random, backward will require history
++ heatmap still not visible
+
++ background idling would be nice
++ use tensorflowjs/blazeface to detect faces for centering
+
 ## Now
-- [ ] add a tab for library-wide statistics: number of files, library size, library total duration, resolution pi chart, duration pi chart, number of tags, number of performers
-- [ ] add a boolean favorite heart icon
-- [ ] add a boolean "needs looked at" flag icon
-- [ ] move forward and back with left and right arrows (amount of time specified in settings)
+- [x] add a tab for library-wide statistics: number of files, library size, library total duration, resolution pi chart, duration pi chart, number of tags, number of performers
+- [x] add a boolean favorite heart icon
+- [x] move forward and back with left and right arrows (amount of time specified in settings)
 - [ ] jump forward and backward by scene markers
 - [ ] persist color filters
-- [ ] Phone/Mobile Layout optimization
-- [ ] Fire TV Layout optimization
+- [x] Phone/Mobile Layout optimization
+- [x] Fire TV Layout optimization
 
 ## Later
 - [ ] List layout

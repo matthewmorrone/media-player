@@ -133,7 +133,7 @@ body::-webkit-scrollbar,
 
 
 header {
-  position: fixed;
+  position: sticky;
   top: 0;
   left: 0;
   right: 0;
@@ -148,7 +148,8 @@ main {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding-top: var(--header-h);
+  /* With sticky header we no longer need artificial top padding; allow panels to scroll under gracefully */
+  padding-top: 0;
 }
 
 /* 3. Utilities */
@@ -6634,6 +6635,15 @@ a:focus {
   background: var(--panel);
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
+#cyContainer {  position: relative;  flex: 1 1 auto;  min-height: 320px; }
+#cyGraph { position: absolute; inset: 0; }
+.graph-controls input[type="range"] { width: 140px; }
+#graphTooltip { position: fixed; z-index: 9999; background: rgba(10,12,18,0.96); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; padding: 8px; box-shadow: 0 8px 22px rgba(0,0,0,.45); max-width: 400px; }
+#graphTooltip .gt-title { font-weight: 600; margin-bottom: 6px; font-size: 12px; }
+#graphTooltip .gt-list { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+#graphTooltip .gt-item { display: block; text-decoration: none; color: inherit; font-size: 11px; }
+#graphTooltip .gt-item div { margin-top: 3px; line-height: 1.2; word-break: break-word; }
+#graphTooltip img { width: 100%; height: 60px; object-fit: cover; border-radius: 4px; background: #111a28; }
 #cyContainer {
   position: relative;
   flex: 1 1 auto;

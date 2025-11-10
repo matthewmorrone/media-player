@@ -2924,6 +2924,68 @@ function wireSettings() {
       savePreviewSetting();
       if (!previewEnabled) stopAllTilePreviews();
     });
+    // Seek jump seconds setting
+    // Distinct forward/back jump settings
+    const jumpBackInput = document.getElementById('settingJumpBackSeconds');
+    const jumpFwdInput = document.getElementById('settingJumpFwdSeconds');
+    // Migration: if legacy unified exists and new not set, seed both
+    try {
+      const legacy = localStorage.getItem('setting.jumpSeconds');
+      const backRaw = localStorage.getItem('setting.jumpBackSeconds');
+      const fwdRaw = localStorage.getItem('setting.jumpFwdSeconds');
+      const legacyVal = Number(legacy);
+      if (legacy && (!backRaw || !fwdRaw) && Number.isFinite(legacyVal) && legacyVal >= 1 && legacyVal <= 600) {
+        if (!backRaw) localStorage.setItem('setting.jumpBackSeconds', legacy);
+        if (!fwdRaw) localStorage.setItem('setting.jumpFwdSeconds', legacy);
+      }
+    } catch(_) {}
+    const wireJumpInput = (el, key, defVal) => {
+      if (!el || el._wired) return;
+      el._wired = true;
+      try {
+        const raw = localStorage.getItem(key);
+        const v = Number(raw);
+        if (Number.isFinite(v) && v >= 1 && v <= 600) el.value = String(v);
+      } catch(_) {}
+      const onChange = () => {
+        const v = Number(el.value);
+        const val = (Number.isFinite(v) && v >= 1 && v <= 600) ? Math.round(v) : defVal;
+        try { localStorage.setItem(key, String(val)); } catch(_) {}
+        el.value = String(val);
+      };
+      el.addEventListener('input', onChange);
+      el.addEventListener('change', onChange);
+    };
+    wireJumpInput(jumpBackInput, 'setting.jumpBackSeconds', 30);
+    wireJumpInput(jumpFwdInput, 'setting.jumpFwdSeconds', 30);
+    // Reflect configured jump seconds on seek buttons (visual + a11y)
+    const updateJumpButtons = () => {
+      try {
+        const backRaw = localStorage.getItem('setting.jumpBackSeconds');
+        const fwdRaw = localStorage.getItem('setting.jumpFwdSeconds');
+        let back = Number(backRaw); if (!Number.isFinite(back) || back < 1 || back > 600) back = 30;
+        let fwd = Number(fwdRaw); if (!Number.isFinite(fwd) || fwd < 1 || fwd > 600) fwd = 30;
+        const backBtn = document.getElementById('btnSeekBack30');
+        const fwdBtn = document.getElementById('btnSeekFwd30');
+        if (backBtn) {
+          backBtn.textContent = `-${back}s`;
+          backBtn.title = `Back ${back} seconds`;
+          backBtn.setAttribute('aria-label', `Back ${back} seconds`);
+        }
+        if (fwdBtn) {
+          fwdBtn.textContent = `+${fwd}s`;
+          fwdBtn.title = `Forward ${fwd} seconds`;
+          fwdBtn.setAttribute('aria-label', `Forward ${fwd} seconds`);
+        }
+      } catch(_) {}
+    };
+    updateJumpButtons();
+    // Re-run label update whenever inputs change
+    [jumpBackInput, jumpFwdInput].forEach((el) => {
+      if (!el) return;
+      el.addEventListener('change', updateJumpButtons);
+      el.addEventListener('input', updateJumpButtons);
+    });
   }
   if (cbDemand) {
     cbDemand.checked = Boolean(previewOnDemandEnabled);
@@ -5935,6 +5997,18 @@ function setupViewportFitPlayer() {
 
   function el(id) { return document.getElementById(id); }
 
+  // Slider helpers (Edge length / Node repulsion)
+  function getEdgeLen() {
+    const v = parseInt(el('graphEdgeLen')?.value || '120', 10);
+    if (!Number.isFinite(v)) return 120;
+    return Math.max(20, Math.min(600, v));
+  }
+  function getNodeRepulsion() {
+    const v = parseInt(el('graphRepulsion')?.value || '50000', 10);
+    if (!Number.isFinite(v)) return 50000;
+    return Math.max(500, Math.min(200000, v));
+  }
+
   function straightPrefGet() {
     try { return getLocalStorageBoolean('graph:straightEdges', true); }
     catch (_) { return true; }
@@ -5976,8 +6050,8 @@ function setupViewportFitPlayer() {
         id: n.id,
         label: n.name,
         count: Number(n.count || 0),
-        size: nodeSizeForCount(n.count),
-        ...nodeDims(n.name, n.count),
+        // Optional image URL from API; fallback tries by name if server supports it
+        image: n.image || (n.name ? `/api/performers/image?name=${encodeURIComponent(n.name)}` : ''),
       },
     }));
     const edges = (data.edges || []).map((e) => ({
@@ -6043,20 +6117,25 @@ function setupViewportFitPlayer() {
         {
           selector: 'node',
             style: {
-            'background-color': '#3b82f6',
+            'shape': 'ellipse',
+            'background-color': '#22324c',
+            'background-image': 'data(image)',
+            'background-fit': 'cover',
+            'background-opacity': 1,
+            'border-width': 2,
+            'border-color': '#93c5fd',
             'label': 'data(label)',
             'color': '#eaf0ff',
-            'font-size': 12,
-            'text-valign': 'center',
-            'text-halign': 'center',
+            'font-size': 10,
             'text-wrap': 'wrap',
-            'text-max-width': 'data(textW)',
+            'text-max-width': 80,
             'text-outline-color': '#0b1220',
-            'text-outline-width': 3,
+            'text-outline-width': 2,
             'min-zoomed-font-size': 8,
-            'shape': 'round-rectangle',
-            'width': 'data(w)',
-            'height': 'data(h)',
+            'width': 64,
+            'height': 64,
+            'text-valign': 'bottom',
+            'text-margin-y': 8,
           }
         },
         {
@@ -6079,7 +6158,7 @@ function setupViewportFitPlayer() {
         },
         {
           selector: 'node:selected',
-          style: { 'border-width': 3, 'border-color': '#e5e7eb' }
+          style: { 'border-width': 3, 'border-color': '#ffffff' }
         },
         {
           selector: '.highlight',
@@ -6217,6 +6296,8 @@ function setupViewportFitPlayer() {
   function applyLayout(kind) {
     if (!cy) return;
     const k = (kind || 'fcose').toLowerCase();
+    const EDGE_LEN_BASE = getEdgeLen();
+    const REPULSION_BASE = getNodeRepulsion();
     let layout;
     if (k === 'random') layout = { name: 'random', padding: 20 };
     else if (k === 'circle') layout = { name: 'circle', padding: 20 };
@@ -6229,10 +6310,11 @@ function setupViewportFitPlayer() {
         fit: true,
         padding: 40,
         nodeOverlap: 10,
-        nodeRepulsion: 8000,
+        nodeRepulsion: REPULSION_BASE,
         idealEdgeLength: (edge) => {
           const c = Number(edge.data('count') || 1);
-          return Math.max(60, 140 - Math.log2(1 + c) * 20);
+          // Use slider as baseline and compress dense edges slightly
+          return Math.max(30, EDGE_LEN_BASE - Math.log2(1 + c) * 20);
         },
         gravity: 80,
         componentSpacing: 80,
@@ -6253,16 +6335,13 @@ function setupViewportFitPlayer() {
         packComponents: true,
         idealEdgeLength: (edge) => {
           const c = Number(edge.data('count') || 1);
-          return Math.max(50, 140 - Math.log2(1 + c) * 22);
+          return Math.max(40, EDGE_LEN_BASE - Math.log2(1 + c) * 22);
         },
         edgeElasticity: (edge) => {
           const c = Number(edge.data('count') || 1);
           return Math.max(0.2, 0.9 - Math.min(0.6, Math.log2(1 + c) * 0.1));
         },
-        nodeRepulsion: (node) => {
-          const count = Number(node.data('count') || 1);
-          return 6000 + Math.sqrt(count) * 400;
-        },
+        nodeRepulsion: (_node) => REPULSION_BASE,
       };
     }
     try { cy.layout(layout).run(); }
@@ -6496,6 +6575,21 @@ function setupViewportFitPlayer() {
       const onChange = () => refreshGraphFromCurrentData(false);
       minEdgesInput.addEventListener('input', onChange);
       minEdgesInput.addEventListener('change', onChange);
+    }
+    // Edge length / Repulsion sliders → re-run current layout (debounced)
+    const edgeLenInput = el('graphEdgeLen');
+    if (edgeLenInput && !edgeLenInput._wired) {
+      edgeLenInput._wired = true;
+      const on = debounce(() => applyLayout(layoutSel?.value || 'fcose'), 200);
+      edgeLenInput.addEventListener('input', on);
+      edgeLenInput.addEventListener('change', on);
+    }
+    const repInput = el('graphRepulsion');
+    if (repInput && !repInput._wired) {
+      repInput._wired = true;
+      const on = debounce(() => applyLayout(layoutSel?.value || 'fcose'), 200);
+      repInput.addEventListener('input', on);
+      repInput.addEventListener('change', on);
     }
     const searchInput = el('graphSearchInput');
     if (searchInput && !searchInput._wired) {
@@ -8356,7 +8450,22 @@ const Player = (() => {
       const wasPaused = videoEl.paused;
       try {
         const cur = Number(videoEl.currentTime || 0);
-        const next = clampTime(cur + delta);
+        // Use configurable jump seconds when delta matches our button convention (±30)
+        // Distinct values for backward/forward
+        const getJump = (key, fallback) => {
+          try {
+            const raw = localStorage.getItem(key);
+            const v = Number(raw);
+            if (Number.isFinite(v) && v >= 1 && v <= 600) return v;
+          } catch(_) {}
+          return fallback;
+        };
+        const back = getJump('setting.jumpBackSeconds', 30);
+        const fwd = getJump('setting.jumpFwdSeconds', 30);
+        const effectiveDelta = (Math.abs(delta) === 30)
+          ? (delta < 0 ? -back : fwd)
+          : delta;
+        const next = clampTime(cur + effectiveDelta);
         if (!Number.isFinite(next)) return;
         videoEl.currentTime = next;
         await awaitSeekEvent(videoEl, 1200);
@@ -8874,17 +8983,26 @@ const Player = (() => {
         showOverlayBar();
         return;
       }
-      // Seek left/right (5s)
+      // Seek left/right (configurable seconds)
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         if (inForm) return;
-        const delta = (e.key === 'ArrowLeft') ? -5 : 5;
         try {
+          const getJump = (key, fallback) => {
+            try {
+              const raw = localStorage.getItem(key);
+              const v = Number(raw);
+              if (Number.isFinite(v) && v >= 1 && v <= 600) return v;
+            } catch(_) {}
+            return fallback;
+          };
+          const back = getJump('setting.jumpBackSeconds', 5);
+          const fwd = getJump('setting.jumpFwdSeconds', 5);
+          const delta = (e.key === 'ArrowLeft') ? -back : fwd;
           const cur = Number(videoEl.currentTime || 0);
           const dur = Number(videoEl.duration || 0) || 0;
           const next = Math.max(0, Math.min(dur || 9e9, cur + delta));
           videoEl.currentTime = next;
-        }
-        catch (_) { }
+        } catch(_) { }
         markKeyboardActive();
         showOverlayBar();
         return;
