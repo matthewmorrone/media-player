@@ -1269,7 +1269,9 @@ th .col-drag-handle:active {
 }
 .facebox-stage img {
   display: block;
-  max-width: 100%;
+  max-width: 480px; /* normalize modal image size */
+  max-height: 480px;
+  width: auto;
   height: auto;
 }
 .facebox-overlay {
@@ -1586,14 +1588,14 @@ th .col-drag-handle:active {
 
 .perf-card.perf-card--pretty .pc-top {
   display: grid;
-  grid-template-columns: 48px 1fr auto;
+  grid-template-columns: 56px 1fr auto; /* unified avatar column width */
   gap: 12px;
   align-items: center;
 }
 
 .perf-card.perf-card--pretty .pc-avatar {
-  width: 48px;
-  height: 48px;
+  width: 56px; /* standardized avatar size */
+  height: 56px; /* standardized avatar size */
   border-radius: 50%;
   background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.25), rgba(90, 110, 160, 0.4));
   border: 1px solid rgba(120, 130, 160, 0.35);

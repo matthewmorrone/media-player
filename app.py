@@ -2,81 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Callable
 
-# Helper: square + padded + upward bias for face boxes (normalized)
-def _square_pad_face_box_px(x: float, y: float, w: float, h: float, W: float, H: float, pad: float = 0.35, bias_up: float = 0.10) -> list[float]:
-    """
-    Return a normalized square face box [nx, ny, nw, nh] derived from an initial
-    detector rectangle (x, y, w, h) and the image dimensions (W, H).
-
-    Inspiration: MediaPipe's face detector UI (see example:
-    https://mediapipe-studio.webapps.google.com/studio/demo/face_detector) presents
-    consistently sized square crops around the face. We emulate that behavior by:
-
-    1. Choosing the square side as side = max(w, h).
-    2. Expanding it symmetrically by a padding fraction ``pad`` applied on every side:
-       ``side_padded = side * (1 + 2*pad)``. (pad=0.35 -> ~70% growth; empirically
-       captures chin + forehead without overshooting small images.)
-    3. Applying a slight upward bias (``bias_up``) so more forehead / hair is included:
-       shift the square center upward by ``bias_up * side_padded`` (bias_up=0.10 was
-       chosen after visual checks; ~10% vertical lift).
-    4. Clamping the square fully inside the image bounds (never extends outside).
-    5. Normalizing coordinates to [0,1] by dividing by W, H.
-
-    Rationale for defaults:
-    - pad=0.35: MediaPipe-like framing with extra head/shoulder context while keeping
-      face large enough for avatar centering. Smaller (<0.25) cropped too tight; larger
-      (>0.45) often included distracting background.
-    - bias_up=0.10: Lifts box so eyes sit slightly below center (natural gaze framing).
-
-    These values may be tuned later or exposed via config; documenting them here keeps
-    the sizing assumptions explicit.
-    """
-    try:
-        x = float(x); y = float(y); w = float(w); h = float(h); W = float(W); H = float(H)
-    except Exception:
-        return [0.0, 0.0, 0.0, 0.0]
-    W = max(1.0, W); H = max(1.0, H)
-    cx = x + max(0.0, w) * 0.5
-    cy = y + max(0.0, h) * 0.5
-    side = max(max(0.0, w), max(0.0, h))
-    side_p = side * (1.0 + pad * 2.0)
-    side_p = max(1.0, min(side_p, min(W, H)))
-    sx = cx - side_p * 0.5
-    sy = cy - side_p * 0.5 - (bias_up * side_p)
-    # clamp
-    if sx < 0.0: sx = 0.0
-    if sy < 0.0: sy = 0.0
-    if sx + side_p > W: sx = max(0.0, W - side_p)
-    if sy + side_p > H: sy = max(0.0, H - side_p)
-    nx = max(0.0, min(1.0, sx / W))
-    ny = max(0.0, min(1.0, sy / H))
-    nw = max(0.0, min(1.0, side_p / W))
-    nh = max(0.0, min(1.0, side_p / H))
-    return [nx, ny, nw, nh]
-
-def _retro_square_face_boxes(reg_path: Path) -> None:
-    """Retroactively normalize any stored image_face_box entries to square padded form (idempotent)."""
-    try:
-        data = _load_registry(reg_path, "performers")
-        items = list(data.get("performers") or [])
-        changed = False
-        for it in items:
-            fb = it.get("image_face_box")
-            if (
-                isinstance(fb, (list, tuple)) and len(fb) == 4 and
-                (abs(float(fb[2]) - float(fb[3])) > 1e-6 or float(fb[2]) < 0.5)  # not square or too tight (<50% side)
-            ):
-                # Without image dimensions we cannot do pixel-true squares; keep legacy normalization (best-effort).
-                # Prefer client-side correction in modal where W,H are available.
-                # Preserve the existing box rather than mis-scaling.
-                new_fb = list(fb)
-                it["image_face_box"] = new_fb
-                changed = True
-        if changed:
-            data["performers"] = items
-            _save_registry(reg_path, data)
-    except Exception:
-        pass
+# Legacy square/padding helpers removed; face boxes are stored in raw normalized form [x,y,w,h].
 import json
 import copy
 import mimetypes
@@ -7957,12 +7883,7 @@ def api_performers(
         _PERFORMERS_SCAN_IN_PROGRESS = False
     timings["counts_partial"] = False  # maintain client compatibility (always full counts)
     t_l0 = _time.perf_counter() if _time else None
-    # Retro-normalize stored face boxes to square+padded form once per list request (idempotent)
-    try:
-        with REGISTRY_LOCK:
-            _retro_square_face_boxes(_performers_registry_path())
-    except Exception:
-        pass
+    # Deprecated: no retro-normalization; keep whatever box shape was stored
     items = _list_performers(search)
     if _time and t_l0 is not None:
         timings["list_build_ms"] = round((_time.perf_counter() - t_l0) * 1000, 2)
@@ -8440,8 +8361,12 @@ def performers_images_upload(
                                         best = (x, y, ww, hh)
                                 if best is not None:
                                     x, y, ww, hh = best
-                                    # Pixel-based square + padding then normalize
-                                    face_box_norm = _square_pad_face_box_px(x, y, ww, hh, iw, ih)
+                                    # Raw normalized rectangle (no square/padding)
+                                    nx = max(0.0, min(1.0, x / iw))
+                                    ny = max(0.0, min(1.0, y / ih))
+                                    nw = max(0.0, min(1.0, ww / iw))
+                                    nh = max(0.0, min(1.0, hh / ih))
+                                    face_box_norm = [nx, ny, nw, nh]
                     except Exception:
                         face_box_norm = None
                     # Single concise log line
@@ -8492,14 +8417,14 @@ def performers_images_upload(
 @api.post("/performers/face-box")
 def performer_update_face_box(
     slug: str = Query(..., description="Performer slug or name"),
-    x: float = Body(..., embed=True, description="Normalized x (0..1) of square face box"),
-    y: float = Body(..., embed=True, description="Normalized y (0..1) of square face box"),
-    w: float = Body(..., embed=True, description="Normalized width (==height) 0..1"),
-    h: float = Body(..., embed=True, description="Normalized height (==width) 0..1"),
+    x: float = Body(..., embed=True, description="Normalized x (0..1) of face box"),
+    y: float = Body(..., embed=True, description="Normalized y (0..1) of face box"),
+    w: float = Body(..., embed=True, description="Normalized width 0..1"),
+    h: float = Body(..., embed=True, description="Normalized height 0..1"),
 ):
     """
     Update (or set) the manual face bounding box for a performer's primary image.
-    Accepts normalized coordinates. Box is clamped into [0,1] and forced square.
+    Accepts normalized coordinates. Box is clamped into [0,1] (no forced square).
     """
     try:
         slug_in = (slug or "").strip()
@@ -8511,13 +8436,12 @@ def performer_update_face_box(
         ny = max(0.0, min(1.0, float(y)))
         nw = max(0.0, min(1.0, float(w)))
         nh = max(0.0, min(1.0, float(h)))
-        side = max(nw, nh)
-        bx = [nx, ny, side, side]
-        # Clamp so box fully fits
+        bx = [nx, ny, nw, nh]
+        # Clamp so box fully fits (adjust width/height if needed)
         if bx[0] + bx[2] > 1.0:
-            bx[0] = max(0.0, 1.0 - bx[2])
+            bx[2] = max(0.0, 1.0 - bx[0])
         if bx[1] + bx[3] > 1.0:
-            bx[1] = max(0.0, 1.0 - bx[3])
+            bx[3] = max(0.0, 1.0 - bx[1])
         reg_path = _performers_registry_path()
         with REGISTRY_LOCK:
             data = _load_registry(reg_path, "performers")
@@ -8543,7 +8467,7 @@ def performer_update_face_box(
 def performer_update_face_boxes(body: dict = Body(..., description="Batch face boxes")):
     """Batch update face boxes.
     Body format: { boxes: [ { slug: str, x: float, y: float, w: float, h: float }, ... ] }
-    Each box is normalized (0..1). Width/height forced square by taking max(w,h). Box clamped to image bounds.
+    Each box is normalized (0..1). Box clamped to image bounds; no forced square.
     Returns list of updated slugs.
     """
     try:
@@ -8574,12 +8498,11 @@ def performer_update_face_boxes(body: dict = Body(..., description="Batch face b
                     ny = max(0.0, min(1.0, float(ent.get("y", 0.0))))
                     nw = max(0.0, min(1.0, float(ent.get("w", 0.0))))
                     nh = max(0.0, min(1.0, float(ent.get("h", 0.0))))
-                    side = max(nw, nh)
-                    bx = [nx, ny, side, side]
+                    bx = [nx, ny, nw, nh]
                     if bx[0] + bx[2] > 1.0:
-                        bx[0] = max(0.0, 1.0 - bx[2])
+                        bx[2] = max(0.0, 1.0 - bx[0])
                     if bx[1] + bx[3] > 1.0:
-                        bx[1] = max(0.0, 1.0 - bx[3])
+                        bx[3] = max(0.0, 1.0 - bx[1])
                     it["image_face_box"] = bx
                     updated.append(slug_in)
                 except Exception:
@@ -8707,8 +8630,12 @@ def performer_image_upload(
                                 best = (x, y, ww, hh)
                         if best is not None:
                             x, y, ww, hh = best
-                            # Use pixel-based helper for true visual square before normalization
-                            face_box_norm = _square_pad_face_box_px(x, y, ww, hh, w, h)
+                            # Raw normalized rectangle (no square/padding)
+                            nx = max(0.0, min(1.0, x / w))
+                            ny = max(0.0, min(1.0, y / h))
+                            nw = max(0.0, min(1.0, ww / w))
+                            nh = max(0.0, min(1.0, hh / h))
+                            face_box_norm = [nx, ny, nw, nh]
             except Exception:
                 face_box_norm = None
             # Single concise log line

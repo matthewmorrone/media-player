@@ -305,6 +305,71 @@ function devLog(level, scope, ...args) {
   }
   catch(_) { }
 })();
+// --------------------------------------------------
+// Global modal dismissal: ESC to close topmost, click outside to dismiss
+// Applies to any element with class "modal" that uses the [hidden] attribute.
+// --------------------------------------------------
+(function wireGlobalModalDismiss(){
+  if (window.__modalDismissWired) return; // idempotent
+  window.__modalDismissWired = true;
+
+  function visibleModals() {
+    try {
+      const list = Array.from(document.querySelectorAll('.modal'));
+      return list.filter(m => m && !m.hidden && getComputedStyle(m).display !== 'none');
+    } catch(_) { return []; }
+  }
+  function closeModalEl(m) {
+    try {
+      if (!m) return;
+      m.hidden = true;
+      // Let specific modal code clean up if needed
+      try { m.dispatchEvent(new CustomEvent('modal:closed', { bubbles: true })); } catch(_) {}
+    } catch(_) {}
+  }
+  function closeTopModal() {
+    const mods = visibleModals();
+    if (!mods.length) return false;
+    // close the last one (assumed topmost in DOM order)
+    closeModalEl(mods[mods.length - 1]);
+    return true;
+  }
+  // Attach ESC handler once
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (closeTopModal()) {
+        try { e.stopPropagation(); } catch(_) {}
+      }
+    }
+  }, true);
+  // Backdrop click-to-close for all existing modals
+  function wireBackdrop(modal) {
+    if (!modal || modal._backdropWired) return;
+    modal._backdropWired = true;
+    modal.addEventListener('click', (ev) => {
+      try {
+        if (ev.target === modal) closeModalEl(modal);
+      } catch(_) {}
+    });
+  }
+  try { Array.from(document.querySelectorAll('.modal')).forEach(wireBackdrop); } catch(_) {}
+  // Observe future modal insertions
+  try {
+    const mo = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const n of Array.from(m.addedNodes || [])) {
+          if (n && n.nodeType === 1) {
+            const el = n;
+            if (el.classList && el.classList.contains('modal')) wireBackdrop(el);
+            try { el.querySelectorAll && el.querySelectorAll('.modal').forEach(wireBackdrop); } catch(_) {}
+          }
+        }
+      }
+    });
+    mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
+    window.__modalDismissObserver = mo;
+  } catch(_) {}
+})();
 // Lightweight no-op placeholders to avoid no-undef when optional helpers are not wired
 const loadArtifactStatuses = (..._args) => {};
 const refreshSidebarThumbnail = (..._args) => {};
@@ -4999,7 +5064,8 @@ function setupViewportFitPlayer() {
   }
     function saveSortState() {
       try { setLocalStorageJSON(SORT_LS_KEY, sortState || null); }
-    catch (_) {} }
+      catch (_) {}
+    }
     function sortKey(colId, f) {
       switch (colId) {
         case 'name': {
@@ -6747,7 +6813,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (byMethod !== 0) return byMethod;
         const byPath = a.path.localeCompare(b.path);
         // try {
-        //   console.log('[API] Tree sort:', { methodA: a.method, methodB: b.method, priorityA: am, priorityB: bm, pathA: a.path, pathB: b.path, result: byMethod || byPath });
+        //   if (debugEnabled()) console.log('[API] Tree sort:', { methodA: a.method, methodB: b.method, priorityA: am, priorityB: bm, pathA: a.path, pathB: b.path, result: byMethod || byPath });
         // }
         // catch (_) {}
         return byPath;
@@ -6927,7 +6993,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (byMethod !== 0) return byMethod;
       const byPath = String(a?.path || '').localeCompare(String(b?.path || ''));
       try {
-        console.log('[API] Flat sort:', { methodA: a?.method, methodB: b?.method, priorityA: am, priorityB: bm, pathA: a?.path, pathB: b?.path, result: byMethod || byPath });
+        if (debugEnabled()) console.log('[API] Flat sort:', { methodA: a?.method, methodB: b?.method, priorityA: am, priorityB: bm, pathA: a?.path, pathB: b?.path, result: byMethod || byPath });
       }
       catch (_) {}
       return byPath;
@@ -7090,27 +7156,27 @@ document.addEventListener('DOMContentLoaded', () => {
       // Capture basic clicks for extra observability
       try {
         endpointsToggleAll.addEventListener('pointerdown', (ev) => {
-          try { console.log('[API] Expand/Collapse All: pointerdown', { x: ev.clientX, y: ev.clientY, btn: ev.button }); }
+          try { if (debugEnabled()) console.log('[API] Expand/Collapse All: pointerdown', { x: ev.clientX, y: ev.clientY, btn: ev.button }); }
           catch (_) {}
         }, { passive: true });
       }
       catch (_) {}
       endpointsToggleAll.addEventListener('click', (ev) => {
-        try { console.log('[API] Expand/Collapse All: click', { text: endpointsToggleAll.textContent, aria: endpointsToggleAll.getAttribute('aria-expanded') }); }
+        try { if (debugEnabled()) console.log('[API] Expand/Collapse All: click', { text: endpointsToggleAll.textContent, aria: endpointsToggleAll.getAttribute('aria-expanded') }); }
         catch (_) {}
         const list = document.getElementById('apiEndpointsList');
         if (!list) {
-          try { console.warn('[API] ToggleAll click: #apiEndpointsList not found'); }
+          try { if (debugEnabled()) console.warn('[API] ToggleAll click: #apiEndpointsList not found'); }
         catch (_) {} return; }
         const treeToggle = document.getElementById('apiTreeToggle');
         const isTree = !treeToggle || treeToggle.checked;
         const isExpand = endpointsToggleAll.textContent.toLowerCase().includes('expand');
-        try { console.log('[API] Expand/Collapse All: state', { isTree, isExpand }); }
+        try { if (debugEnabled()) console.log('[API] Expand/Collapse All: state', { isTree, isExpand }); }
         catch (_) {}
         // In tree view, toggle all groups recursively
         if (isTree) {
           const allGroups = list.querySelectorAll('.api-group');
-          try { console.log('[API] Expand/Collapse All: groups found', allGroups.length); }
+          try { if (debugEnabled()) console.log('[API] Expand/Collapse All: groups found', allGroups.length); }
           catch (_) {}
           allGroups.forEach((g) => {
             g.setAttribute('data-open', isExpand ? '1' : '0');
@@ -7122,7 +7188,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // In both tree and flat views, toggle all endpoint details
         const allEndpoints = list.querySelectorAll('.api-endpoint');
-        try { console.log('[API] Expand/Collapse All: endpoints found', allEndpoints.length); }
+        try { if (debugEnabled()) console.log('[API] Expand/Collapse All: endpoints found', allEndpoints.length); }
         catch (_) {}
         allEndpoints.forEach((ep) => {
           ep.setAttribute('data-open', isExpand ? '1' : '0');
@@ -7139,7 +7205,7 @@ document.addEventListener('DOMContentLoaded', () => {
         endpointsToggleAll.textContent = isExpand ? 'Collapse All' : 'Expand All';
         try { endpointsToggleAll.setAttribute('aria-expanded', isExpand ? 'true' : 'false'); }
         catch (_) { }
-        try { console.log('[API] Expand/Collapse All: done', { newLabel: endpointsToggleAll.textContent, aria: endpointsToggleAll.getAttribute('aria-expanded') }); }
+        try { if (debugEnabled()) console.log('[API] Expand/Collapse All: done', { newLabel: endpointsToggleAll.textContent, aria: endpointsToggleAll.getAttribute('aria-expanded') }); }
         catch (_) {}
       });
     }
@@ -12201,59 +12267,25 @@ const Performers = (() => {
           warm.width = 4; warm.height = 4; const c2 = warm.getContext('2d');
           if (c2) c2.fillRect(0,0,4,4);
           await model.estimateFaces(warm, false);
-        } catch(_) { /* ignore warm-up errors */ }
+        }
+        catch(_) { /* ignore warm-up errors */ }
         __blazeFaceModel = model;
-        try { console.info('[FaceBox] BlazeFace model loaded (singleton)'); } catch(_) {}
+        try { if (debugEnabled()) console.info('[FaceBox] BlazeFace model loaded (singleton)'); }
+        catch(_) { }
         return __blazeFaceModel;
       }
       catch (e) {
         // Clear promise so subsequent attempts can retry
         __blazeFaceModelPromise = null;
-        try { console.warn('[FaceBox] Failed to load TFJS/BlazeFace', e); } catch(_) {}
+        try { if (debugEnabled()) console.warn('[FaceBox] Failed to load TFJS/BlazeFace', e); }
+        catch(_) { }
         return null;
       }
     })();
     return __blazeFaceModelPromise;
   }
 
-  // Pixel-based square + padding helper (mirrors backend _square_pad_face_box_px)
-  // MediaPipe-style framing rationale:
-  // - side = max(w,h) ensures smallest encompassing square around raw detector box.
-  // - pad (default 0.35) expands the square uniformly: sidePadded = side * (1 + 2*pad)
-  //   giving ~70% growth and capturing forehead/chin context similar to MediaPipe demo.
-  // - biasUp (default 0.10) shifts the square upward so eyes sit slightly below center;
-  //   this yields more natural avatar crops (less empty space under chin).
-  // - Result is clamped fully within image bounds then normalized to [0,1].
-  // Tuning guidance:
-  //   * Reduce pad (<0.25) for tighter thumbnails (risk: forehead cut off).
-  //   * Increase pad (>0.45) to include shoulders (risk: reduced facial emphasis).
-  //   * Adjust biasUp to 0 for symmetric framing; >0.15 often over-lifts on short foreheads.
-  function squarePadFaceBoxPx(x, y, w, h, W, H, pad = 0.35, biasUp = 0.10) {
-    x = Math.max(0, Math.min(W - 1, x));
-    y = Math.max(0, Math.min(H - 1, y));
-    w = Math.max(1, Math.min(W - x, w));
-    h = Math.max(1, Math.min(H - y, h));
-    const side = Math.max(w, h);
-    let sidePadded = side * (1 + pad * 2);
-    if (sidePadded > W) sidePadded = W;
-    if (sidePadded > H) sidePadded = H;
-    const cx = x + w * 0.5;
-    const cy = y + h * 0.5;
-    let sx = cx - sidePadded * 0.5;
-    let sy = cy - sidePadded * 0.5 - (biasUp * sidePadded);
-    if (sx < 0) sx = 0; if (sy < 0) sy = 0;
-    if (sx + sidePadded > W) sx = Math.max(0, W - sidePadded);
-    if (sy + sidePadded > H) sy = Math.max(0, H - sidePadded);
-    let nx = sx / W;
-    let ny = sy / H;
-    let nw = sidePadded / W;
-    let nh = sidePadded / H;
-    nx = Math.max(0, Math.min(1, nx));
-    ny = Math.max(0, Math.min(1, ny));
-    nw = Math.max(0, Math.min(1, nw));
-    nh = Math.max(0, Math.min(1, nh));
-    return [nx, ny, nw, nh];
-  }
+  // Square/padding helper removed: we now use raw detector rectangles normalized to [0,1].
 
   async function detectFaceBoxWithTF(canvas, W, H) {
     try {
@@ -12270,22 +12302,49 @@ const Performers = (() => {
         const h = Math.max(0, Math.floor((br[1] - tl[1])));
         if (w <= 1 || h <= 1) continue;
         const area = w * h;
-        if (area > bestA) { bestA = area; best = [x, y, w, h]; }
+        if (area > bestA) {
+          bestA = area; best = [x, y, w, h];
+        }
       }
       if (!best) {
-        if (faceDebugEnabled()) { try { console.info('[FaceBox][TFJS] no face predictions'); } catch(_) {} }
+        if (faceDebugEnabled()) {
+          try {
+            console.info('[FaceBox][TFJS] no face predictions');
+          }
+          catch(_) { }
+        }
         return null;
       }
       const [x, y, w, h] = best;
-      const box = squarePadFaceBoxPx(x, y, w, h, W, H); // returns normalized square padded box
+  const box = [x / W, y / H, w / W, h / H].map(v => Math.max(0, Math.min(1, v)));
       if (faceDebugEnabled()) {
-        try { console.info('[FaceBox][TFJS] raw px=['+x+','+y+','+w+','+h+'] final norm=['+box.map(v=>v.toFixed(3)).join(',')+']'); } catch(_) {}
+        try {
+          console.info('[FaceBox][TFJS] raw px=['+x+','+y+','+w+','+h+'] final norm=['+box.map(v=>v.toFixed(3)).join(',')+']');
+        }
+        catch(_) { }
       }
       return box;
-    } catch (e) {
-      if (faceDebugEnabled()) { try { console.warn('[FaceBox][TFJS] error', e); } catch(_) {} }
+    }
+    catch (e) {
+      if (faceDebugEnabled()) {
+        try {
+          console.warn('[FaceBox][TFJS] error', e);
+        }
+        catch(_) { }
+      }
       return null;
     }
+  }
+
+  function debugEnabled() {
+    try {
+      // Enable via localStorage 'mediaPlayer:debug' or ?debug=1
+      const ls = localStorage.getItem('mediaPlayer:debug');
+      if (ls === '1' || ls === 'true') return true;
+      if (typeof window !== 'undefined' && window.location && window.location.search.includes('debug=1')) return true;
+    }
+    catch(_) { }
+    return false;
   }
 
   function faceDebugEnabled() {
@@ -12367,10 +12426,10 @@ const Performers = (() => {
           }
           if (best) {
             const [x, y, w, h] = best;
-            box = squarePadFaceBoxPx(x, y, w, h, W, H); // normalized square padded
+            box = [x / W, y / H, w / W, h / H].map(v => Math.max(0, Math.min(1, v)));
             if (faceDebugEnabled()) {
               try { console.info('[FaceBox][Native] chosen px=['+x+','+y+','+w+','+h+'] norm=['+box.map(v=>v.toFixed(3)).join(',')+']'); }
-              catch(_) {}
+              catch(_) { }
             }
           }
           else {
@@ -12445,13 +12504,15 @@ const Performers = (() => {
     fbTitle = document.getElementById('faceBoxTitle');
     fbClose = document.getElementById('faceBoxClose');
     fbUpload = document.getElementById('faceBoxUploadBtn');
-    if (fbClose) fbClose.addEventListener('click', () => { try { fbModal.hidden = true; } catch(_){} });
+    if (fbClose) fbClose.addEventListener('click', () => { try { fbModal.hidden = true; }
+    catch(_){} });
     return true;
   }
 
   async function openFaceBoxModal({ performer, imgUrl }) {
     if (!ensureFaceBoxModalEls()) return;
-    try { fbModal.hidden = false; } catch(_){}
+    try { fbModal.hidden = false; }
+    catch(_){}
     if (fbTitle) fbTitle.textContent = performer && performer.name ? `${performer.name} — Image (Drag box to adjust)` : 'Image Preview';
     // Render external links
     try {
@@ -12466,7 +12527,8 @@ const Performers = (() => {
         linksEl.innerHTML = links.map(l => `<a href="${l.href}" target="_blank" rel="noopener noreferrer">${l.label}</a>`).join(' ');
         linksEl.classList.remove('hidden');
       }
-    } catch(_) {}
+    }
+    catch(_) { }
     if (fbImg) {
       fbImg.src = imgUrl || '';
       fbImg.onload = async () => {
@@ -12481,28 +12543,13 @@ const Performers = (() => {
           } else if (imgUrl) {
             fb = await detectFaceBoxForImage(imgUrl);
           }
-        } catch(_) {}
+        }
+        catch(_) { }
         if (!fbOverlay) return;
         const W = fbImg.clientWidth || fbImg.naturalWidth || 0;
         const H = fbImg.clientHeight || fbImg.naturalHeight || 0;
         if (Array.isArray(fb) && fb.length === 4 && W > 0 && H > 0) {
-          // Ensure box is square+padded with slight upward bias for head coverage
-          let [nx, ny, nw, nh] = fb.map(Number);
-          if (Math.abs(nw - nh) > 1e-6 || Math.max(nw, nh) < 0.5) {
-            ({ nx, ny, nw, nh } = (function squarePad(nx0, ny0, nw0, nh0) {
-              let cx = nx0 + nw0 * 0.5; let cy = ny0 + nh0 * 0.5;
-              let side = Math.max(nw0, nh0);
-              const pad = 0.35; const biasUp = 0.10;
-              let sidePadded = side * (1 + pad * 2);
-              sidePadded = Math.max(0, Math.min(1, sidePadded));
-              let sx = cx - sidePadded * 0.5;
-              let sy = cy - sidePadded * 0.5 - (biasUp * sidePadded);
-              if (sx < 0) sx = 0; if (sy < 0) sy = 0;
-              if (sx + sidePadded > 1) sx = Math.max(0, 1 - sidePadded);
-              if (sy + sidePadded > 1) sy = Math.max(0, 1 - sidePadded);
-              return { nx: sx, ny: sy, nw: sidePadded, nh: sidePadded };
-            })(nx, ny, nw, nh));
-          }
+          let [nx, ny, nw, nh] = fb.map(Number); // raw normalized box
           const x = Math.max(0, Math.round(nx * W));
           const y = Math.max(0, Math.round(ny * H));
           const w = Math.max(1, Math.round(nw * W));
@@ -12512,7 +12559,8 @@ const Performers = (() => {
           fbOverlay.style.width = w + 'px';
           fbOverlay.style.height = h + 'px';
           fbOverlay.hidden = false;
-          try { fbOverlay.dataset.box = fb.join(','); } catch(_){}
+          try { fbOverlay.dataset.box = fb.join(','); }
+          catch(_){}
           // Enable manual drag/resize (square locked)
           enableFaceBoxEditing({ performer, imgEl: fbImg, overlayEl: fbOverlay, W, H });
           const saveBtn = document.getElementById('faceBoxSaveBtn');
@@ -12529,11 +12577,14 @@ const Performers = (() => {
                 const resp = await fetch(url.toString(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 if (resp && resp.ok) {
                   performer.image_face_box = [nx, ny, nw, nh];
-                  try { updatePerformerAvatars(performer); } catch(_) {}
+                  try { updatePerformerAvatars(performer); }
+                  catch(_) { }
                 }
-              } catch(_) { /* ignore autosave errors */ }
+              }
+              catch(_) { /* ignore autosave errors */ }
             }
-          } catch(_) {}
+          }
+          catch(_) { }
         } else {
           fbOverlay.hidden = true;
         }
@@ -12547,7 +12598,8 @@ const Performers = (() => {
           fi.dataset.slug = performer.slug || '';
           fi.dataset.name = performer.name || '';
         }
-        try { fi.click(); } catch(_){}
+        try { fi.click(); }
+        catch(_){}
       };
     }
   }
@@ -12571,9 +12623,8 @@ const Performers = (() => {
       const iH = Math.max(1, imgEl.clientHeight || imgR.height || 1);
       const nx = Math.max(0, Math.min(1, ox / iW));
       const ny = Math.max(0, Math.min(1, oy / iH));
-      const side = Math.max(w, h);
-      const nw = Math.max(1, side) / iW; // square box normalized to image width
-      const nh = Math.max(1, side) / iH; // and height separately
+      const nw = Math.max(1, w) / iW; // raw width normalized
+      const nh = Math.max(1, h) / iH; // raw height normalized
       return [nx, ny, nw, nh];
     }
     function startDrag(e, mode) {
@@ -12612,14 +12663,26 @@ const Performers = (() => {
         overlayEl.style.top = ny + 'px';
         changed = true;
       } else if (dragState.mode === 'resize') {
-        let side = Math.max(20, Math.min(dragState.imgW, dragState.sw + Math.max(dx, dy)));
-        if (dragState.sx - dragState.imgX + side > dragState.imgW) side = dragState.imgW - (dragState.sx - dragState.imgX);
-        if (dragState.sy - dragState.imgY + side > dragState.imgH) side = dragState.imgH - (dragState.sy - dragState.imgY);
-        overlayEl.style.width = side + 'px';
-        overlayEl.style.height = side + 'px';
+        let newW = Math.max(20, dragState.sw + dx);
+        let newH = Math.max(20, dragState.sh + dy);
+        const maxW = dragState.imgW - (dragState.sx - dragState.imgX);
+        const maxH = dragState.imgH - (dragState.sy - dragState.imgY);
+        newW = Math.min(newW, maxW);
+        newH = Math.min(newH, maxH);
+        overlayEl.style.width = newW + 'px';
+        overlayEl.style.height = newH + 'px';
         changed = true;
       }
-      if (changed) scheduleAutoSave();
+      if (changed) {
+        // Live preview: update any visible performer avatars immediately
+        try {
+          const boxNow = currentNormBox();
+          if (Array.isArray(boxNow) && boxNow.length === 4) {
+            updatePerformerAvatarsLive(performer, boxNow);
+          }
+        } catch(_) {}
+        scheduleAutoSave();
+      }
     }
     function endDrag() {
       if (!dragState) return;
@@ -12650,8 +12713,10 @@ const Performers = (() => {
             (window.showToast||notify)('Face box saved', 'success');
             performer.image_face_box = [nx, ny, nw, nh];
             // Apply to any existing avatar tiles in-place
-            try { updatePerformerAvatars(performer); } catch(_) {}
-          } catch(e) {
+            try { updatePerformerAvatars(performer); }
+            catch(_) { }
+          }
+          catch(e) {
             notify('Failed to save face box: ' + (e && e.message ? e.message : 'error'), 'error');
           }
         });
@@ -12668,21 +12733,27 @@ const Performers = (() => {
           const payload = { x: nx, y: ny, w: nw, h: nh };
           const url = new URL('/api/performers/face-box', window.location.origin);
           url.searchParams.set('slug', performer.slug || performer.name || '');
-          const r = await fetch(url.toString(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          const r = await fetch(url.toString(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
           if (!r.ok) return;
           performer.image_face_box = [nx, ny, nw, nh];
-          try { updatePerformerAvatars(performer); } catch(_) {}
-        } catch(_) {}
+          try { updatePerformerAvatars(performer); }
+          catch(_) { }
+        }
+        catch(_) { }
       }, 600);
     }
   }
-  function updatePerformerAvatars(performer) {
-    if (!performer || !performer.image_face_box) return;
-    const box = performer.image_face_box;
-    // Target by slug first for reliability
+  // Live avatar preview (no persistence): apply box to matching performer cards immediately
+  function updatePerformerAvatarsLive(performer, box) {
+    if (!performer || !Array.isArray(box) || box.length !== 4) return;
     let targets = [];
     if (performer.slug) {
-      try { targets = Array.from(document.querySelectorAll(`.perf-card[data-slug="${CSS.escape(String(performer.slug))}"]`)); } catch(_) {}
+      try { targets = Array.from(document.querySelectorAll(`.perf-card[data-slug="${CSS.escape(String(performer.slug))}"]`)); }
+      catch(_) { }
     }
     if (!targets.length) {
       const all = document.querySelectorAll('.perf-card');
@@ -12691,7 +12762,45 @@ const Performers = (() => {
           const nameEl = c.querySelector('h3 a, h3');
           const nm = nameEl ? nameEl.textContent.trim() : '';
           if (nm && nm.toLowerCase() === String(performer.name||'').toLowerCase()) targets.push(c);
-        } catch(_) {}
+        }
+        catch(_) { }
+      }
+    }
+    for (const c of targets) {
+      try {
+        const avatarEl = c.querySelector('.pc-avatar');
+        if (!avatarEl) continue;
+        const [fx, fy, fw, fh] = box.map(Number);
+        const cx = fx + fw/2; const cy = fy + fh/2;
+        const px = Math.round(cx * 100); const py = Math.round(cy * 100);
+        avatarEl.style.backgroundPosition = `${px}% ${py}%`;
+        const TARGET_FRAC = 0.6;
+        const base = Math.max(fw, fh);
+        const safeFrac = Math.max(0.05, Math.min(1, base));
+        const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFrac) * 100));
+        avatarEl.style.backgroundSize = `${scaleW}% auto`;
+        // Intentionally do NOT set avatarEl.dataset.faceBox here to avoid implying persistence
+      } catch(_) { }
+    }
+  }
+  function updatePerformerAvatars(performer) {
+    if (!performer || !performer.image_face_box) return;
+    const box = performer.image_face_box;
+    // Target by slug first for reliability
+    let targets = [];
+    if (performer.slug) {
+      try { targets = Array.from(document.querySelectorAll(`.perf-card[data-slug="${CSS.escape(String(performer.slug))}"]`)); }
+      catch(_) { }
+    }
+    if (!targets.length) {
+      const all = document.querySelectorAll('.perf-card');
+      for (const c of all) {
+        try {
+          const nameEl = c.querySelector('h3 a, h3');
+          const nm = nameEl ? nameEl.textContent.trim() : '';
+          if (nm && nm.toLowerCase() === String(performer.name||'').toLowerCase()) targets.push(c);
+        }
+        catch(_) { }
       }
     }
     for (const c of targets) {
@@ -12703,16 +12812,22 @@ const Performers = (() => {
         const px = Math.round(cx * 100); const py = Math.round(cy * 100);
         avatarEl.style.backgroundPosition = `${px}% ${py}%`;
         const TARGET_FRAC = 0.6;
-        const safeFw = Math.max(0.05, Math.min(1, fw));
-        const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFw) * 100));
+        const base = Math.max(fw, fh);
+        const safeFrac = Math.max(0.05, Math.min(1, base));
+        const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFrac) * 100));
         avatarEl.style.backgroundSize = `${scaleW}% auto`;
         avatarEl.dataset.faceBox = box.join(',');
-      } catch(_) {}
+      }
+      catch(_) { }
     }
   }
   function initDom() {
     if (gridEl) return;
-    try { console.log('[Performers:initDom]'); }
+    try {
+      if (debugEnabled()) {
+        console.log('[Performers:initDom]');
+      }
+    }
     catch(_) { }
     gridEl = document.getElementById('performersGrid');
     searchEl = document.getElementById('performerSearch');
@@ -12861,7 +12976,7 @@ const Performers = (() => {
           }
         }
         try {
-          console.log('[Performers:handleFiles]', { count: list.length, hasZip, hasImage, hasDirHints, names: list.map(f=>f.name) });
+          if (debugEnabled()) console.log('[Performers:handleFiles]', { count: list.length, hasZip, hasImage, hasDirHints, names: list.map(f=>f.name) });
           if (hasZip && list.length === 1) {
             const fd = new FormData();
             fd.append('zip', list[0], list[0].name);
@@ -12870,7 +12985,8 @@ const Performers = (() => {
             summarizeAndToast(j, 'images');
             await fetchPerformers();
             // Optional client-side face box persistence if backend lacks OpenCV
-            try { await persistMissingFaceBoxesClientSide(); } catch(_) {}
+            try { await persistMissingFaceBoxesClientSide(); }
+            catch(_) { }
             return;
           }
           if (hasImage || hasDirHints) {
@@ -12886,7 +13002,8 @@ const Performers = (() => {
               if (!res.ok) throw new Error(j?.message || `HTTP ${res.status}`);
               summarizeAndToast(j, 'images');
               await fetchPerformers();
-              try { await persistMissingFaceBoxesClientSide(); } catch(_) {}
+              try { await persistMissingFaceBoxesClientSide(); }
+              catch(_) { }
               return;
             } finally {
               stop();
@@ -12958,7 +13075,10 @@ const Performers = (() => {
         dropZone.addEventListener('click', () => openChooser(false));
         dropZone.addEventListener('dblclick', () => openChooser(true));
         dropZone.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openChooser(false); }
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openChooser(false);
+          }
         });
       }
     }
@@ -12980,7 +13100,7 @@ const Performers = (() => {
     const r0 = performance.now ? performance.now() : Date.now();
     try {
       const withImg = performers.filter(p => p && p.image).length;
-      console.log('[Performers:render:start]', { performers: performers.length, withImg, selected: selected.size });
+      if (debugEnabled()) console.log('[Performers:render:start]', { performers: performers.length, withImg, selected: selected.size });
     }
     catch(_){ }
     gridEl.innerHTML = '';
@@ -13136,7 +13256,8 @@ const Performers = (() => {
               // Use encoded URL and quote it to handle spaces and special chars reliably
               const imgUrl = typeof p.image === 'string' ? encodeURI(p.image) : '';
               avatarEl.style.backgroundImage = `url("${imgUrl}")`;
-              try { avatarEl.dataset.imgUrl = imgUrl; } catch(_){}
+              try { avatarEl.dataset.imgUrl = imgUrl; }
+              catch(_){}
               // Default cover + center, then adjust if we have a face box
               avatarEl.style.backgroundSize = 'cover';
               avatarEl.style.backgroundPosition = 'center';
@@ -13145,41 +13266,7 @@ const Performers = (() => {
                 if (Array.isArray(fb) && fb.length === 4) {
                     let [fx, fy, fw, fh] = fb.map(Number);
                     // If server box is not square or appears tight (<0.5 side), attempt pixel-true correction using image dims
-                    if (Math.abs(fw - fh) > 1e-6 || Math.max(fw, fh) < 0.5) {
-                      // Load image dims (likely cached) and compute pixel-based square box, then update positioning
-                      (async () => {
-                        try {
-                          const dims = await new Promise((resolve) => {
-                            const im = new Image();
-                            im.onload = () => resolve({ W: im.naturalWidth || im.width || 0, H: im.naturalHeight || im.height || 0 });
-                            im.onerror = () => resolve({ W: 0, H: 0 });
-                            im.src = imgUrl;
-                          });
-                          const W = Math.max(1, dims.W || 0);
-                          const H = Math.max(1, dims.H || 0);
-                          if (W > 0 && H > 0 && avatarEl && !avatarEl.dataset.faceBoxUpgraded) {
-                            const x = Math.max(0, Math.round(fx * W));
-                            const y = Math.max(0, Math.round(fy * H));
-                            const w = Math.max(1, Math.round(fw * W));
-                            const h = Math.max(1, Math.round(fh * H));
-                            const [nnx, nny, nnw, nnh] = squarePadFaceBoxPx(x, y, w, h, W, H);
-                            fx = nnx; fy = nny; fw = nnw; fh = nnh;
-                            try { avatarEl.dataset.faceBoxUpgraded = '1'; } catch(_){}
-                          }
-                        } catch(_) {}
-                        // Recompute focus/zoom after potential upgrade
-                        const cx = fx + fw / 2;
-                        const cy = fy + fh / 2;
-                        const px = Math.round(cx * 100);
-                        const py = Math.round(cy * 100);
-                        avatarEl.style.backgroundPosition = `${px}% ${py}%`;
-                        const TARGET_FRAC = 0.6;
-                        const safeFw = Math.max(0.05, Math.min(1, fw));
-                        const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFw) * 100));
-                        avatarEl.style.backgroundSize = `${scaleW}% auto`;
-                        try { avatarEl.dataset.faceBox = [fx, fy, fw, fh].join(','); } catch(_){}
-                      })();
-                    }
+                    // No square upgrade: use raw box directly
                   // Compute a focus point at face center (for initial paint)
                   const cx = fx + fw / 2;
                   const cy = fy + fh / 2;
@@ -13189,9 +13276,10 @@ const Performers = (() => {
                   const py = Math.round(cy * 100);
                   avatarEl.style.backgroundPosition = `${px}% ${py}%`;
                   // Zoom so the face box roughly fills a target fraction of the avatar width
-                  const TARGET_FRAC = 0.6; // face spans ~60% of avatar width
-                  const safeFw = Math.max(0.05, Math.min(1, fw));
-                  const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFw) * 100));
+                  const TARGET_FRAC = 0.6; // face spans ~60% of avatar width/height whichever larger
+                  const base = Math.max(fw, fh);
+                  const safeFrac = Math.max(0.05, Math.min(1, base));
+                  const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFrac) * 100));
                   avatarEl.style.backgroundSize = `${scaleW}% auto`;
                   // Optionally, if face is small, we could zoom in slightly by switching to contain + scale.
                   // For now keep 'cover' to avoid letterboxing; future: adjust backgroundSize based on fw,fh.
@@ -13207,8 +13295,9 @@ const Performers = (() => {
                       const px = Math.round(cx * 100); const py = Math.round(cy * 100);
                       avatarEl.style.backgroundPosition = `${px}% ${py}%`;
                       const TARGET_FRAC = 0.6;
-                      const safeFw = Math.max(0.05, Math.min(1, fw));
-                      const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFw) * 100));
+                      const base = Math.max(fw, fh);
+                      const safeFrac = Math.max(0.05, Math.min(1, base));
+                      const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFrac) * 100));
                       avatarEl.style.backgroundSize = `${scaleW}% auto`;
                       avatarEl.dataset.faceBox = box.join(',');
                     }
@@ -13233,7 +13322,8 @@ const Performers = (() => {
               if (fi) {
                 fi.dataset.slug = p.slug;
                 fi.dataset.name = p.name;
-                try { fi.click(); } catch(_) {}
+                try { fi.click(); }
+                catch(_) { }
               }
               return;
             }
@@ -13262,13 +13352,13 @@ const Performers = (() => {
         if ((idx + 1) % 16 === 0) {
           const now = performance.now ? performance.now() : Date.now();
           const batchMs = Math.round(now - loopStart);
-          console.log('[Performers:render:batch]', { upTo: idx + 1, ms: batchMs });
+          if (debugEnabled()) console.log('[Performers:render:batch]', { upTo: idx + 1, ms: batchMs });
           loopStart = now;
         }
       });
       gridEl.appendChild(frag);
       const r1 = performance.now ? performance.now() : Date.now();
-      console.log('[Performers:render:append]', { items: pageItems.length, ms: Math.round(r1 - r0) });
+      if (debugEnabled()) console.log('[Performers:render:append]', { items: pageItems.length, ms: Math.round(r1 - r0) });
     }
     // pager UI: use server meta exclusively
     const infoText = srvTotal ? `Page ${srvPage} / ${srvTotalPages} • ${srvTotal} total` : '—';
@@ -13284,7 +13374,7 @@ const Performers = (() => {
     }
   updateSelectionUI();
   const r2 = performance.now ? performance.now() : Date.now();
-  console.log('[Performers:render:done]', { totalMs: Math.round(r2 - r0) });
+  if (debugEnabled()) console.log('[Performers:render:done]', { totalMs: Math.round(r2 - r0) });
     // Ensure performers grid loads on page load (idempotent)
     if (!window.__perfAutoFetched) {
       window.__perfAutoFetched = true;
@@ -13328,7 +13418,8 @@ const Performers = (() => {
         }
         catch (_) { }
       });
-    } catch(_) {}
+    }
+    catch(_) { }
   }
   // Client-side fallback: persist face boxes for performers that have images but no box yet.
   async function persistMissingFaceBoxesClientSide() {
@@ -13356,7 +13447,8 @@ const Performers = (() => {
         if (Array.isArray(box) && box.length === 4) {
           toUpdate.push({ slug: p.slug || p.name, x: box[0], y: box[1], w: box[2], h: box[3] });
         }
-      } catch(_) {}
+      }
+      catch(_) { }
     }
     if (toUpdate.length) {
       try {
@@ -13365,10 +13457,12 @@ const Performers = (() => {
           const p = Performers.list.find(pp => (pp.slug||pp.name) === u.slug);
           if (p) {
             p.image_face_box = [u.x, u.y, u.w, u.h];
-            try { updatePerformerAvatars(p); } catch(_) {}
+            try { updatePerformerAvatars(p); }
+            catch(_) { }
           }
         }
-      } catch(_) {}
+      }
+      catch(_) { }
     }
   }
   async function fetchPerformers() {
@@ -13377,7 +13471,9 @@ const Performers = (() => {
     try {
       // Guard: if a fetch is already in-flight (and not aborted), skip to avoid cascading loops
       if (Performers._inFlight) {
-        try { console.log('[Performers:fetch] skip (in-flight)'); }
+        try {
+          if (debugEnabled()) console.log('[Performers:fetch] skip (in-flight)');
+        }
         catch(_){ }
         return;
       }
@@ -13437,22 +13533,25 @@ const Performers = (() => {
         }
       }
       catch(_) { /* ignore UI hint errors */ }
+
       const t1 = performance.now ? performance.now() : Date.now();
       // Dump server timings if provided
-      if (lastDebug) {
-        console.log('[Performers:serverTimings]', lastDebug);
+      if (debugEnabled()) {
+        if (lastDebug) {
+          console.log('[Performers:serverTimings]', lastDebug);
+        }
+        console.log('[Performers:fetchPerformers]', {
+          url: url.toString(),
+          total: d.total,
+          page: d.page,
+          received: performers.length,
+          status: r.status,
+          contentLength: hdrLen,
+          netMs: Math.round(rEnd - rStart),
+          parseMs: Math.round(jEnd - jStart),
+          totalMs: Math.round(t1 - t0)
+        });
       }
-      console.log('[Performers:fetchPerformers]', {
-        url: url.toString(),
-        total: d.total,
-        page: d.page,
-        received: performers.length,
-        status: r.status,
-        contentLength: hdrLen,
-        netMs: Math.round(rEnd - rStart),
-        parseMs: Math.round(jEnd - jStart),
-        totalMs: Math.round(t1 - t0)
-      });
       // console.log(performers);
       // Update pagination from server meta if present
       const total = Number(d.total || 0);
@@ -13504,11 +13603,13 @@ const Performers = (() => {
           Performers._pollIntervalMs = 0;
         }
       }
-      catch(_) { setStatus('', false); }
+      catch(_) {
+        setStatus('', false);
+      }
       const r0 = performance.now ? performance.now() : Date.now();
       render();
       const r2 = performance.now ? performance.now() : Date.now();
-      console.log('[Performers:renderTotal]', { items: performers.length, ms: Math.round(r2 - r0) });
+      if (debugEnabled()) console.log('[Performers:renderTotal]', { items: performers.length, ms: Math.round(r2 - r0) });
     }
     catch (e) {
       if (e.name === 'AbortError') return;
@@ -14408,7 +14509,7 @@ const Performers = (() => {
           // Prefer unified handler when files are dropped (images / zip / mixed)
           const dt = e.dataTransfer;
           if (dt && dt.files && dt.files.length && window.__perfUnifiedHandleFiles) {
-            console.log('[Performers:DnD] handling files', dt.files.length);
+            if (debugEnabled()) console.log('[Performers:DnD] handling files', dt.files.length);
             await window.__perfUnifiedHandleFiles(dt.files);
           }
           else {
@@ -14749,7 +14850,7 @@ const Tags = (() => {
     renameInput = document.getElementById('tagRenameInput');
     renameSelectedWrap = document.getElementById('tagRenameSelected');
     try {
-      console.log('[Tags:initDom]', {
+      if (debugEnabled()) console.log('[Tags:initDom]', {
         gridEl: !!gridEl,
         mergeBtn: !!mergeBtn,
         mergePanel: !!mergePanel,
@@ -14769,7 +14870,7 @@ const Tags = (() => {
   function openMergeModal(fromName, otherName) {
     if (!mergePanel) return;
     try {
-      console.log(`[Tags:openMergeModal] start from="${fromName}" other="${otherName}" hasPanel=${!!mergePanel}`);
+      if (debugEnabled()) console.log(`[Tags:openMergeModal] start from="${fromName}" other="${otherName}" hasPanel=${!!mergePanel}`);
       if (mergeSelectedWrap) {
         mergeSelectedWrap.innerHTML = '';
         const makeChip = (name) => {
@@ -14802,13 +14903,17 @@ const Tags = (() => {
         const vis = cs ? cs.visibility : 'n/a';
         const zi = cs ? cs.zIndex : 'n/a';
         const cd = mergeConfirmBtn ? mergeConfirmBtn.disabled : 'n/a';
-        console.log(`[Tags:openMergeModal] shown hidden=${hidden} rect=${w}x${h} display=${disp} visibility=${vis} zIndex=${zi} confirmDisabled=${cd}`);
+        if (debugEnabled()) console.log(`[Tags:openMergeModal] shown hidden=${hidden} rect=${w}x${h} display=${disp} visibility=${vis} zIndex=${zi} confirmDisabled=${cd}`);
       }
-      catch(_) { console.log('[Tags:openMergeModal] shown'); }
+      catch(_) {
+        if (debugEnabled()) console.log('[Tags:openMergeModal] shown');
+      }
       setTimeout(() => {
-        try { mergeIntoInput && mergeIntoInput.focus(); }
-      catch(_) { }
-    }, 0);
+        try {
+          mergeIntoInput && mergeIntoInput.focus();
+        }
+        catch(_) { }
+      }, 0);
     }
     catch (_) { }
   }
@@ -14816,13 +14921,15 @@ const Tags = (() => {
     if (!mergePanel) return;
     hide(mergePanel);
     mergePanel.removeAttribute('data-open');
-    try { console.log('[Tags:closeMergeModal]'); }
+    try {
+      if (debugEnabled()) console.log('[Tags:closeMergeModal]');
+    }
     catch(_) { }
   }
   function openRenameModal(currentName) {
     if (!renamePanel) return;
     try {
-      console.log('[Tags:openRenameModal] start');
+      if (debugEnabled()) console.log('[Tags:openRenameModal] start');
       if (renameSelectedWrap) {
         renameSelectedWrap.innerHTML = '';
         const span = document.createElement('span');
@@ -14851,7 +14958,9 @@ const Tags = (() => {
     if (!renamePanel) return;
     hide(renamePanel);
     renamePanel.removeAttribute('data-open');
-    try { console.log('[Tags:closeRenameModal]'); }
+    try {
+      if (debugEnabled()) console.log('[Tags:closeRenameModal]');
+    }
     catch(_) { }
   }
   function ensureControlsVisible() {
@@ -14898,13 +15007,15 @@ const Tags = (() => {
       const md = mergeBtn ? mergeBtn.disabled : '?';
       const rd = renameBtn ? renameBtn.disabled : '?';
       const dd = deleteBtn ? deleteBtn.disabled : '?';
-      console.log(`[Tags:updateButtons] size=${selected.size} mergeDisabled=${md} renameDisabled=${rd} deleteDisabled=${dd}`);
+      if (debugEnabled()) console.log(`[Tags:updateButtons] size=${selected.size} mergeDisabled=${md} renameDisabled=${rd} deleteDisabled=${dd}`);
     }
     catch (_) {}
   }
   function updateSelectionUI() {
     if (!gridEl) return;
-    try { console.log(`[Tags:updateSelectionUI] start size=${selected.size}`); }
+    try {
+      if (debugEnabled()) console.log(`[Tags:updateSelectionUI] start size=${selected.size}`);
+    }
     catch(_) { }
     gridEl.querySelectorAll('.perf-card').forEach((c) => {
       const key = c.dataset.slug;
@@ -14920,7 +15031,9 @@ const Tags = (() => {
       }
     });
     updateButtons();
-    try { console.log(`[Tags:updateSelectionUI] end size=${selected.size}`); }
+    try {
+      if (debugEnabled()) console.log(`[Tags:updateSelectionUI] end size=${selected.size}`);
+    }
     catch(_) { }
   }
   function normKey(obj) {
@@ -14929,7 +15042,9 @@ const Tags = (() => {
     return (obj && obj.name) ? String(obj.name) : (obj.slug || _slugify(obj.name || ''));
   }
   function toggleSelect(slug, opts = { range: false, anchor: false }) {
-  try { console.log(`[Tags:toggleSelect] before slug="${slug}" size=${selected.size} range=${!!opts.range} anchor=${!!opts.anchor} shiftAnchor=${shiftAnchor??''}`); }
+  try {
+    if (debugEnabled()) console.log(`[Tags:toggleSelect] before slug="${slug}" size=${selected.size} range=${!!opts.range} anchor=${!!opts.anchor} shiftAnchor=${shiftAnchor??''}`);
+  }
   catch(_) { }
     if (opts.range && shiftAnchor) {
       const arr = tags;
@@ -14939,16 +15054,20 @@ const Tags = (() => {
         const [start, end] = idxA < idxB ? [idxA, idxB] : [idxB, idxA];
         for (let i = start; i <= end; i++) selected.add(normKey(arr[i]));
         updateSelectionUI();
-        try { console.log(`[Tags:toggleSelect] range-add start=${Math.min(idxA, idxB)} end=${Math.max(idxA, idxB)} size=${selected.size}`); }
+        try {
+          if (debugEnabled()) console.log(`[Tags:toggleSelect] range-add start=${Math.min(idxA, idxB)} end=${Math.max(idxA, idxB)} size=${selected.size}`);
+        }
         catch(_) { }
         return;
       }
     }
     if (selected.has(slug)) selected.delete(slug);
     else selected.add(slug);
-  if (opts.anchor) shiftAnchor = slug;
+    if (opts.anchor) shiftAnchor = slug;
     updateSelectionUI();
-    try { console.log(`[Tags:toggleSelect] after slug="${slug}" size=${selected.size} shiftAnchor=${shiftAnchor??''}`); }
+    try {
+      if (debugEnabled()) console.log(`[Tags:toggleSelect] after slug="${slug}" size=${selected.size} shiftAnchor=${shiftAnchor??''}`);
+    }
     catch(_) { }
   }
   function openLibraryForTag(tagObj) {
@@ -15562,16 +15681,24 @@ const Tags = (() => {
     if (mergeBtn && !mergeBtn._wired) {
       mergeBtn._wired = true;
       mergeBtn.addEventListener('click', async () => {
-        try { console.log(`[Tags:mergeBtn:click] size=${selected.size} selected=${Array.from(selected).join(',')}`); }
+        try {
+          console.log(`[Tags:mergeBtn:click] size=${selected.size} selected=${Array.from(selected).join(',')}`);
+        }
         catch(_) { }
         if (selected.size !== 2) {
-          try { console.log('[Tags:mergeBtn:click] not-enough-selected'); }
-        catch(_) { } return; }
+          try {
+            if (debugEnabled()) console.log('[Tags:mergeBtn:click] not-enough-selected');
+          }
+          catch(_) { }
+          return;
+        }
         const arr = [...selected];
         // Show custom merge modal instead of prompt
         const a = arr[0];
         const b = arr[1];
-        try { console.log(`[Tags:mergeBtn:click] opening-modal a="${a}" b="${b}"`); }
+        try {
+          if (debugEnabled()) console.log(`[Tags:mergeBtn:click] opening-modal a="${a}" b="${b}"`);
+        }
         catch(_) { }
         openMergeModal(a, b);
       });
@@ -15587,14 +15714,16 @@ const Tags = (() => {
         mergeIntoInput.addEventListener('input', () => {
           const v = (mergeIntoInput && mergeIntoInput.value || '').trim();
           if (mergeConfirmBtn) mergeConfirmBtn.disabled = !v;
-          try { console.log(`[Tags:mergeModal:input] value="${v}" confirmDisabled=${mergeConfirmBtn ? mergeConfirmBtn.disabled : 'n/a'}`); }
+          try {
+            if (debugEnabled()) console.log(`[Tags:mergeModal:input] value="${v}" confirmDisabled=${mergeConfirmBtn ? mergeConfirmBtn.disabled : 'n/a'}`);
+          }
           catch(_) { }
         });
         mergeIntoInput.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') {
             e.preventDefault();
             const can = (mergeConfirmBtn && !mergeConfirmBtn.disabled);
-            try { console.log(`[Tags:mergeModal:keydown Enter] canConfirm=${!!can}`); }
+            try { if (debugEnabled()) console.log(`[Tags:mergeModal:keydown Enter] canConfirm=${!!can}`); }
             catch(_) { }
             if (can) mergeConfirmBtn.click();
           }
@@ -15603,20 +15732,20 @@ const Tags = (() => {
       if (mergeConfirmBtn) {
         mergeConfirmBtn.addEventListener('click', async () => {
           try {
-            try { console.log(`[Tags:mergeModal:confirm:click] start size=${selected.size} selected=${Array.from(selected).join(',')}`); }
+            try { if (debugEnabled()) console.log(`[Tags:mergeModal:confirm:click] start size=${selected.size} selected=${Array.from(selected).join(',')}`); }
             catch(_) { }
             if (selected.size !== 2) {
-              try { console.log('[Tags:mergeModal:confirm] wrong-selected-size'); }
+            try { if (debugEnabled()) console.log('[Tags:mergeModal:confirm] wrong-selected-size'); }
             catch(_) { } closeMergeModal(); return; }
             const arr = [...selected];
             const intoName = (mergeIntoInput && mergeIntoInput.value.trim()) || '';
             if (!intoName) return;
             const fromName = arr.find((s) => s !== intoName) || arr[0];
             const url = `/api/registry/tags/merge?from_name=${encodeURIComponent(fromName)}&into_name=${encodeURIComponent(intoName)}`;
-            try { console.log(`[Tags:mergeModal:confirm] request url=${url} from="${fromName}" into="${intoName}"`); }
+            try { if (debugEnabled()) console.log(`[Tags:mergeModal:confirm] request url=${url} from="${fromName}" into="${intoName}"`); }
             catch(_) { }
             const r = await fetch(url, {method: 'POST'});
-            try { console.log(`[Tags:mergeModal:confirm] response ok=${r.ok} status=${r.status}`); }
+            try { if (debugEnabled()) console.log(`[Tags:mergeModal:confirm] response ok=${r.ok} status=${r.status}`); }
             catch(_) { }
             if (!r.ok) throw new Error('Merge failed');
             if (window.showToast) window.showToast(`Merged '${fromName}' into '${intoName}'`, 'is-success');
@@ -15666,7 +15795,7 @@ const Tags = (() => {
     if (!renameInput) return;
     const oldName = Array.from(selected)[0] || '';
     const newName = (renameInput.value || '').trim();
-    try { console.log(`[Tags:renameConfirm] old="${oldName}" new="${newName}"`); }
+    try { if (debugEnabled()) console.log(`[Tags:renameConfirm] old="${oldName}" new="${newName}"`); }
     catch(_) { }
     if (!newName || !oldName || newName === oldName) {
       closeRenameModal();
@@ -15682,7 +15811,7 @@ const Tags = (() => {
       if (!r.ok) {
         const msg = (j && j.error) ? String(j.error) : `Rename failed (${r.status})`;
         if (window.showToast) window.showToast(msg, 'is-error');
-        try { console.log(`[Tags:renameConfirm] error ${msg}`); }
+        try { if (debugEnabled()) console.log(`[Tags:renameConfirm] error ${msg}`); }
         catch(_) { }
         return;
       }
@@ -15726,23 +15855,23 @@ const Tags = (() => {
       } while (p <= totalPages);
       const total = rows.length;
       const sum = rows.reduce((acc, x) => acc + (Number.isFinite(x.count) ? x.count : 0), 0);
-      console.groupCollapsed('All tags (name, count)');
+      if (debugEnabled()) console.groupCollapsed('All tags (name, count)');
       try {
-        console.table(rows);
+        if (debugEnabled()) console.table(rows);
       }
       catch (_) {
-        console.log(rows);
+        if (debugEnabled()) console.log(rows);
       }
-      console.log(`Total tags: ${total}, total file refs across tags: ${sum}`);
-      console.groupEnd();
+      if (debugEnabled()) console.log(`Total tags: ${total}, total file refs across tags: ${sum}`);
+      if (debugEnabled()) console.groupEnd();
     }
     catch (e) {
-      console.warn('Failed to retrieve all tags', e);
+      if (debugEnabled()) console.warn('Failed to retrieve all tags', e);
     }
   }
   function debugMerge(a = 'Vintage', b = 'vintage') {
     try {
-      console.log('[Tags:debugMerge] attempting to open modal', { a, b });
+      if (debugEnabled()) console.log('[Tags:debugMerge] attempting to open modal', { a, b });
       initDom();
       ensureControlsVisible();
       openMergeModal(a, b);
@@ -15754,7 +15883,7 @@ const Tags = (() => {
       const btn = typeof mergeBtn !== 'undefined' ? mergeBtn : document.getElementById('tagMergeBtn');
       const del = typeof deleteBtn !== 'undefined' ? deleteBtn : document.getElementById('tagDeleteBtn');
       const panel = typeof mergePanel !== 'undefined' ? mergePanel : document.getElementById('tagMergeModal');
-      console.log('[Tags:debugState]', {
+      if (debugEnabled()) console.log('[Tags:debugState]', {
         selected: Array.from(selected || []),
         mergeDisabled: btn ? btn.disabled : undefined,
         deleteDisabled: del ? del.disabled : undefined,
@@ -18463,7 +18592,7 @@ else {
   const isFireTV = document.documentElement.classList.contains('firetv');
   if (!isFireTV) return;
 
-  console.log('Fire TV mode activated');
+  if (debugEnabled()) console.log('Fire TV mode activated');
 
   // Grid navigation state
   let currentFocusIndex = 0;
