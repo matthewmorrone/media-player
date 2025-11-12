@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 import logging
 import os
@@ -604,3 +605,348 @@ def test_uvicorn_access_filter_behavior(monkeypatch, app_module):
         assert filt.filter(allow)
     finally:
         logger.filters[:] = original_filters
+
+
+def test_artifacts_import_and_video_discovery(tmp_path, app_module, monkeypatch):
+    import artifacts as cli
+
+    repo_root = Path(__file__).resolve().parents[1]
+    monkeypatch.chdir(repo_root)
+    module = cli.import_app_module()
+    assert module is app_module
+
+    alpha = tmp_path / "alpha.mp4"
+    alpha.write_bytes(b"data")
+    hidden_dir = tmp_path / ".artifacts"
+    hidden_dir.mkdir()
+    (hidden_dir / "alpha.preview.webm").write_bytes(b"preview")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    beta = nested / "beta.mp4"
+    beta.write_text("clip")
+
+    videos = cli.find_videos(app_module, tmp_path, recursive=False)
+    assert videos == [alpha]
+
+    recursive = cli.find_videos(app_module, tmp_path, recursive=True)
+    assert recursive == [alpha, beta]
+
+
+def test_artifact_task_helpers_invoke_expected_methods(tmp_path):
+    import artifacts as cli
+
+    calls: list[tuple[str, tuple]] = []
+    progress_events: list[tuple[int, int]] = []
+
+    class Dummy:
+        def generate_thumbnail(self, path, *, force, time_spec, quality):
+            calls.append(("thumb", (force, time_spec, quality)))
+            assert force is True
+            assert time_spec == "middle"
+            assert quality == 2
+
+        def generate_hover_preview(self, path, *, segments, seg_dur, width, fmt, progress_cb, cancel_check):
+            calls.append(("hover", (segments, seg_dur, width, fmt)))
+            assert segments == 9
+            assert seg_dur == 0.8
+            assert width == 240
+            assert fmt == "mp4"
+            assert progress_cb is progress
+            assert cancel_check is cancel
+            progress_cb(1, segments)
+
+        def _sprite_defaults(self):
+            return {"interval": "2.5", "width": "320", "cols": "5", "rows": "3", "quality": "75"}
+
+        def generate_sprite_sheet(self, path, *, interval, width, cols, rows, quality):
+            calls.append(("sprites", (interval, width, cols, rows, quality)))
+            assert isinstance(interval, float)
+            assert (width, cols, rows, quality) == (320, 5, 3, 75)
+
+        def generate_scene_artifacts(self, path, *, threshold, limit, gen_thumbs, gen_clips, thumbs_width, clip_duration):
+            calls.append(("scenes", (threshold, limit, gen_thumbs, gen_clips, thumbs_width, clip_duration)))
+            assert threshold == 0.4
+            assert limit == 0
+            assert gen_thumbs is False
+            assert gen_clips is True
+            assert thumbs_width == 320
+            assert clip_duration == 2.0
+
+        def compute_heatmaps(self, path, *, interval, mode, png):
+            calls.append(("heatmaps", (interval, mode, png)))
+            assert interval == 5.0
+            assert mode == "both"
+            assert png is True
+
+        def phash_create_single(self, path, *, frames, algo, combine):
+            calls.append(("phash", (frames, algo, combine)))
+            assert (frames, algo, combine) == (5, "ahash", "xor")
+
+        def metadata_single(self, path, *, force):
+            calls.append(("metadata", (force,)))
+            assert force is False
+
+    dummy = Dummy()
+    target = tmp_path / "clip.mp4"
+    def progress(step: int, total: int):
+        progress_events.append((step, total))
+
+    def cancel():
+        return False
+
+    cli.task_thumb(dummy, target, force=True)
+    cli.task_hover(dummy, target, progress=progress, cancel=cancel, fmt="mp4")
+    cli.task_sprites(dummy, target)
+    cli.task_scenes(dummy, target, thumbs=False, clips=True)
+    cli.task_heatmaps(dummy, target, png=True)
+    cli.task_phash(dummy, target)
+    cli.task_metadata(dummy, target, force=False)
+
+    order = [name for name, _ in calls]
+    assert order == [
+        "thumb",
+        "hover",
+        "sprites",
+        "scenes",
+        "heatmaps",
+        "phash",
+        "metadata",
+    ]
+    assert progress_events == [(1, 9)]
+
+
+def test_artifacts_main_handles_missing_root(tmp_path, capsys):
+    import artifacts as cli
+
+    missing = tmp_path / "missing"
+    code = cli.main(["--root", str(missing)])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "Root not found" in captured.err
+
+
+def test_artifacts_main_no_videos(monkeypatch, tmp_path, capsys):
+    import artifacts as cli
+
+    root = tmp_path / "library"
+    root.mkdir()
+
+    class Stub:
+        MEDIA_EXTS = {".mp4", ".mkv"}
+
+    monkeypatch.setattr(cli, "import_app_module", lambda: Stub())
+    monkeypatch.setattr(cli, "find_videos", lambda m, base, recursive: [])
+    code = cli.main(["--root", str(root)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "No video files found" in out
+
+
+def test_artifacts_main_runs_all_tasks(monkeypatch, tmp_path, capsys):
+    import artifacts as cli
+
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"binary")
+
+    class StubModule:
+        MEDIA_EXTS = {".mp4"}
+
+        def metadata_path(self, v: Path) -> Path:
+            return tmp_path / f"{v.stem}.metadata.json"
+
+        def thumbs_path(self, v: Path) -> Path:
+            return tmp_path / f"{v.stem}.thumb.jpg"
+
+        def artifact_dir(self, v: Path) -> Path:
+            d = tmp_path / f"{v.stem}.artifacts"
+            d.mkdir(exist_ok=True)
+            return d
+
+        def sprite_sheet_paths(self, v: Path):
+            base = self.artifact_dir(v)
+            return base / f"{v.stem}.sprites.jpg", base / f"{v.stem}.sprites.json"
+
+        def scenes_json_exists(self, v: Path) -> bool:
+            return False
+
+        def scenes_json_path(self, v: Path) -> Path:
+            return self.artifact_dir(v) / f"{v.stem}.scenes.json"
+
+        def heatmaps_json_exists(self, v: Path) -> bool:
+            return False
+
+        def heatmaps_json_path(self, v: Path) -> Path:
+            return self.artifact_dir(v) / f"{v.stem}.heatmaps.json"
+
+        def phash_path(self, v: Path) -> Path:
+            return self.artifact_dir(v) / f"{v.stem}.phash.json"
+
+    stub = StubModule()
+
+    tasks_called: list[str] = []
+
+    monkeypatch.setattr(cli, "import_app_module", lambda: stub)
+    monkeypatch.setattr(cli, "find_videos", lambda m, base, recursive: [video])
+    monkeypatch.setattr(cli.signal, "signal", lambda signum, handler: None)
+
+    def record(name):
+        def _inner(*args, **kwargs):
+            tasks_called.append(name)
+            return None
+
+        return _inner
+
+    monkeypatch.setattr(cli, "task_metadata", record("metadata"))
+    monkeypatch.setattr(cli, "task_thumb", record("thumb"))
+    monkeypatch.setattr(cli, "task_hover", record("hover"))
+    monkeypatch.setattr(cli, "task_sprites", record("sprites"))
+    monkeypatch.setattr(cli, "task_scenes", record("scenes"))
+    monkeypatch.setattr(cli, "task_heatmaps", record("heatmaps"))
+    monkeypatch.setattr(cli, "task_phash", record("phash"))
+
+    class ImmediateFuture:
+        def __init__(self, value=None, error=None):
+            self._value = value
+            self._error = error
+            self._cancelled = False
+
+        def result(self):
+            if self._error:
+                raise self._error
+            return self._value
+
+        def cancel(self):
+            self._cancelled = True
+
+    class ImmediateExecutor:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            try:
+                value = fn(*args, **kwargs)
+                return ImmediateFuture(value=value)
+            except Exception as exc:
+                return ImmediateFuture(error=exc)
+
+    monkeypatch.setattr(cli.cf, "ThreadPoolExecutor", ImmediateExecutor)
+    monkeypatch.setattr(cli.cf, "as_completed", lambda futures: futures)
+
+    code = cli.main([
+        "--root",
+        str(tmp_path),
+        "--recompute-all",
+        "--concurrency",
+        "1",
+        "--hover-fmt",
+        "mp4",
+    ])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "Processing 1 video" in captured.out
+    assert "Completed successfully" in captured.out
+    assert tasks_called == [
+        "metadata",
+        "thumb",
+        "hover",
+        "sprites",
+        "scenes",
+        "heatmaps",
+        "phash",
+    ]
+
+
+def test_reload_path_matching(tmp_path, monkeypatch):
+    import reload as strict_reload
+
+    monkeypatch.setattr(strict_reload, "INCLUDE", ["**/*.py", ".special"])
+    monkeypatch.setattr(strict_reload, "EXCLUDE", ["**/ignore.py"])
+
+    sample = tmp_path / "module.py"
+    sample.write_text("print('hi')")
+    ignored = tmp_path / "ignore.py"
+    ignored.write_text("print('no')")
+    special = tmp_path / "config.special"
+    special.write_text("1")
+
+    assert strict_reload._matches_any(sample, strict_reload.INCLUDE)
+    assert strict_reload._matches_any(special, strict_reload.INCLUDE)
+    assert strict_reload._should_watch(sample)
+    assert not strict_reload._should_watch(ignored)
+
+
+def test_reload_hash_and_snapshot(tmp_path, monkeypatch):
+    import reload as strict_reload
+
+    target = tmp_path / "file.txt"
+    target.write_text("payload")
+    expected = hashlib.sha256(b"payload").hexdigest()
+    assert strict_reload._hash_file(target) == expected
+
+    monkeypatch.setattr(strict_reload, "INCLUDE", ["**/*.txt"])
+    monkeypatch.setattr(strict_reload, "EXCLUDE", [])
+    snap = strict_reload._snapshot(tmp_path)
+    assert target in snap
+    assert snap[target] == expected
+
+
+def test_reload_start_and_restart(monkeypatch):
+    import reload as strict_reload
+    import subprocess
+
+    commands = []
+
+    class DummyProc:
+        def __init__(self, cmd):
+            commands.append(cmd)
+            self.terminated = False
+            self.killed = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired(cmd="uvicorn", timeout=timeout)
+
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr(strict_reload.subprocess, "Popen", DummyProc)
+    proc = strict_reload._start_server()
+    assert commands and commands[0][0] == "uvicorn"
+
+    strict_reload._restart(proc)
+    assert proc.terminated is True
+    assert proc.killed is True
+
+
+def test_reload_main_without_watchfiles(monkeypatch, capsys):
+    import reload as strict_reload
+
+    monkeypatch.setattr(strict_reload, "WATCHFILES_OK", False)
+    captured_exec = {}
+
+    def fake_execvp(cmd, args):
+        captured_exec["cmd"] = cmd
+        captured_exec["args"] = args
+
+    monkeypatch.setattr(strict_reload.os, "execvp", fake_execvp)
+    code = strict_reload.main()
+    output = capsys.readouterr().out
+    assert "watchfiles is not installed" in output
+    assert code == 0
+    assert captured_exec["cmd"] == "uvicorn"
+    assert captured_exec["args"] == [
+        "uvicorn",
+        "app:app",
+        "--host",
+        strict_reload.HOST,
+        "--port",
+        strict_reload.PORT,
+    ]
