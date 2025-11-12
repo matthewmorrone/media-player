@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -237,3 +238,254 @@ def test_thumbnail_create_and_get(app_module, client, tmp_path):
     assert fetch.status_code == 200
     assert fetch.headers["Content-Type"].startswith("image/")
     assert fetch.content
+
+
+def test_health_redirect(client):
+    response = client.get("/health", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/api/health"
+
+
+def test_static_assets_served(client):
+    index_html = client.get("/")
+    assert index_html.status_code == 200
+    assert "<!doctype html" in index_html.text.lower()
+
+    css_resp = client.get("/index.css")
+    assert css_resp.status_code == 200
+    assert "body" in css_resp.text
+
+    js_resp = client.get("/index.js")
+    assert js_resp.status_code == 200
+    assert "function" in js_resp.text
+
+
+def test_config_endpoint_includes_capabilities(app_module, client, tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "ffmpeg_available", lambda: False)
+    monkeypatch.setattr(app_module, "ffprobe_available", lambda: False)
+    cfg = client.get("/config")
+    assert cfg.status_code == 200
+    payload = cfg.json()
+    assert payload["root"] == str(tmp_path)
+    assert payload["capabilities"]["subtitles_backend"] in {"stub", "auto"}
+    assert payload["features"]["sprites"] is True
+
+
+def test_root_set_endpoint_validates_paths(client, tmp_path):
+    new_root = tmp_path / "new_root"
+    new_root.mkdir()
+    ok = client.post("/api/root/set", json={"root": str(new_root)})
+    assert ok.status_code == 200
+    assert ok.json()["data"]["root"] == str(new_root.resolve())
+
+    missing = client.post("/api/root/set", json={"root": str(tmp_path / "missing")})
+    assert missing.status_code == 404
+
+
+def test_tags_export_and_import_roundtrip(app_module, client, tmp_path):
+    video = tmp_path / "tagged.mp4"
+    _create_video(app_module, video)
+
+    export = client.get("/tags/export")
+    assert export.status_code == 200
+    data = export.json()
+    assert data["count"] == 1
+    assert data["videos"][0]["tags"] == []
+
+    payload = {
+        "videos": [
+            {
+                "path": str(video),
+                "tags": ["alpha", "beta"],
+                "performers": ["lead"],
+                "description": "desc",
+                "rating": 7,
+            }
+        ],
+        "replace": True,
+    }
+    imported = client.post("/tags/import", json=payload)
+    assert imported.status_code == 200
+    assert imported.json() == {"updated": 1}
+
+    tag_sidecar = json.loads((app_module._tags_file(video)).read_text())  # type: ignore[attr-defined]
+    assert tag_sidecar["tags"] == ["alpha", "beta"]
+    assert tag_sidecar["performers"] == ["lead"]
+    assert tag_sidecar["description"] == "desc"
+    assert tag_sidecar["rating"] == 5
+
+
+def test_artifact_dir_creation(app_module, tmp_path):
+    video = tmp_path / "movies" / "sample.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.touch()
+
+    artifact_directory = app_module.artifact_dir(video)
+
+    assert artifact_directory == video.parent / ".artifacts"
+    assert artifact_directory.exists()
+    assert artifact_directory.is_dir()
+
+
+def test_metadata_single_stub_written_when_ffprobe_disabled(app_module, tmp_path, monkeypatch):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake video")
+
+    monkeypatch.setenv("FFPROBE_DISABLE", "1")
+    try:
+        app_module.metadata_single(video, force=True)
+    finally:
+        monkeypatch.delenv("FFPROBE_DISABLE", raising=False)
+
+    metadata_file = app_module.metadata_path(video)
+    assert metadata_file.exists()
+
+    data = json.loads(metadata_file.read_text())
+    assert data.get("format", {}).get("duration") == "0.0"
+    video_streams = [s for s in data.get("streams", []) if (s or {}).get("codec_type") == "video"]
+    assert video_streams, "expected at least one video stream entry"
+    stream = video_streams[0]
+    assert stream.get("width") == 640
+    assert stream.get("height") == 360
+
+
+def test_meta_summary_cached_tracks_sidecar_changes(app_module, tmp_path):
+    video = tmp_path / "movie.mp4"
+    video.touch()
+
+    metadata_file = app_module.metadata_path(video)
+    first_payload = {
+        "format": {"duration": "12.5", "tags": {"title": "First"}},
+        "streams": [{"codec_type": "video", "width": 1920, "height": 1080}],
+    }
+    metadata_file.write_text(json.dumps(first_payload))
+
+    duration, title, width, height = app_module._meta_summary_cached(video)
+    assert duration == 12.5
+    assert title == "First"
+    assert width == 1920
+    assert height == 1080
+
+    cache = app_module.STATE.get("_meta_cache")
+    key = str(video.resolve())
+    assert isinstance(cache, dict)
+    assert key in cache
+
+    second_payload = {
+        "format": {"duration": "21.0", "tags": {"title": "Second"}},
+        "streams": [{"codec_type": "video", "width": 1280, "height": 720}],
+    }
+    metadata_file.write_text(json.dumps(second_payload))
+    current_mtime = metadata_file.stat().st_mtime
+    os.utime(metadata_file, (current_mtime + 5, current_mtime + 5))
+
+    duration2, title2, width2, height2 = app_module._meta_summary_cached(video)
+    assert duration2 == 21.0
+    assert title2 == "Second"
+    assert width2 == 1280
+    assert height2 == 720
+
+
+def test_faces_exists_check_requires_embeddings(app_module, tmp_path):
+    video = tmp_path / "faces.mp4"
+    video.touch()
+    faces_file = app_module.faces_path(video)
+
+    real_faces = {
+        "faces": [
+            {"embedding": [0.1, 0.2], "box": [10, 20, 30, 40]},
+        ]
+    }
+    faces_file.write_text(json.dumps(real_faces))
+    assert app_module.faces_exists_check(video)
+
+    stub_faces = {
+        "faces": [
+            {"embedding": [], "box": [0, 0, 100, 100]},
+        ]
+    }
+    faces_file.write_text(json.dumps(stub_faces))
+    os.utime(faces_file, None)
+    assert not app_module.faces_exists_check(video)
+
+
+def test_find_subtitles_prefers_artifact_directory(app_module, tmp_path):
+    video = tmp_path / "show.mkv"
+    video.touch()
+
+    art_sub = app_module.artifact_dir(video) / f"{video.stem}.subtitles.srt"
+    art_sub.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+
+    side_sub = video.with_suffix(".subtitles.srt")
+    side_sub.write_text("1\n00:00:00,000 --> 00:00:02,000\nSide\n")
+
+    found = app_module.find_subtitles(video)
+    assert found == art_sub
+
+    art_sub.unlink()
+    found_side = app_module.find_subtitles(video)
+    assert found_side == side_sub
+
+
+def test_parse_time_spec_variants(app_module):
+    assert app_module.parse_time_spec("start", 100.0) == 0.0
+    assert app_module.parse_time_spec("50%", 200.0) == 100.0
+    assert app_module.parse_time_spec("10", None) == 10.0
+    assert app_module.parse_time_spec("middle", 60.0) == 30.0
+    assert app_module.parse_time_spec("-5", None) == 0.0
+
+
+def test_artifact_kinds_for_stem_includes_known_suffixes(app_module):
+    kinds = app_module._artifact_kinds_for_stem("sample")
+    expected = {
+        "sample.metadata.json",
+        "sample.thumbnail.jpg",
+        "sample.phash.json",
+        "sample.sprites.jpg",
+        "sample.sprites.json",
+    }
+    assert expected.issubset(kinds)
+
+
+def test_build_artifacts_info_reflects_present_files(app_module, tmp_path):
+    video = tmp_path / "info.mp4"
+    _create_video(app_module, video)
+
+    thumb = app_module.thumbs_path(video)
+    thumb.parent.mkdir(parents=True, exist_ok=True)
+    thumb.write_bytes(b"0")
+    phash = app_module.phash_path(video)
+    phash.parent.mkdir(parents=True, exist_ok=True)
+    phash.write_text(json.dumps({"phash": "abc"}))
+    subtitle = app_module.artifact_dir(video) / f"{video.stem}.subtitles.srt"
+    subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+
+    info = app_module._build_artifacts_info(video)
+    assert info["cover"] is True
+    assert info["phash"] is True
+    assert info["subtitles"] is True
+    assert info["faces"] is False
+
+
+def test_find_mp4s_respects_recursion(app_module, tmp_path):
+    root = tmp_path
+    (root / "a.mp4").write_bytes(b"a")
+    nested_dir = root / "nested"
+    nested_dir.mkdir()
+    (nested_dir / "b.mp4").write_bytes(b"b")
+    (nested_dir / "c.txt").write_text("noop")
+
+    non_recursive = app_module._find_mp4s(root, recursive=False)
+    assert [p.name for p in non_recursive] == ["a.mp4"]
+
+    recursive = app_module._find_mp4s(root, recursive=True)
+    assert [p.name for p in recursive] == ["a.mp4", "b.mp4"]
+
+
+def test_require_ffmpeg_or_error_guard(app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "ffmpeg_available", lambda: True)
+    app_module._require_ffmpeg_or_error("thumbs")
+
+    monkeypatch.setattr(app_module, "ffmpeg_available", lambda: False)
+    with pytest.raises(Exception):
+        app_module._require_ffmpeg_or_error("thumbs")
