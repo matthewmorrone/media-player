@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from fastapi.testclient import TestClient
@@ -489,3 +491,116 @@ def test_require_ffmpeg_or_error_guard(app_module, monkeypatch):
     monkeypatch.setattr(app_module, "ffmpeg_available", lambda: False)
     with pytest.raises(Exception):
         app_module._require_ffmpeg_or_error("thumbs")
+
+
+def test_ffmpeg_threads_flags_and_timelimit(monkeypatch, app_module):
+    monkeypatch.setenv("FFMPEG_THREADS", "4")
+    monkeypatch.setenv("FFMPEG_TIMELIMIT", "120")
+    assert app_module._ffmpeg_threads_flags() == ["-threads", "4", "-timelimit", "120"]
+
+    monkeypatch.setenv("FFMPEG_THREADS", "not-a-number")
+    monkeypatch.setenv("FFMPEG_TIMELIMIT", "0")
+    assert app_module._ffmpeg_threads_flags() == ["-threads", "1"]
+
+
+def test_ffmpeg_hwaccel_and_vp9_flags(monkeypatch, app_module):
+    monkeypatch.setenv("FFMPEG_HWACCEL", "auto")
+    assert app_module._ffmpeg_hwaccel_flags() == ["-hwaccel", "auto"]
+
+    monkeypatch.setenv("VP9_CPU_USED", "20")
+    flags = app_module._vp9_realtime_flags()
+    assert "-cpu-used" in flags
+    idx = flags.index("-cpu-used")
+    assert flags[idx + 1] == "15"  # clamped max
+
+
+def test_effective_preview_crf_and_scene_quality(monkeypatch, app_module):
+    monkeypatch.setenv("THUMBNAIL_QUALITY", "2")
+    assert app_module._effective_preview_crf_vp9() == 30
+    assert app_module._effective_preview_crf_h264() == 18
+
+    monkeypatch.setenv("THUMBNAIL_QUALITY", "31")
+    assert app_module._effective_preview_crf_vp9() == 55
+    assert app_module._effective_preview_crf_h264() == 44
+
+    monkeypatch.setenv("SCENE_THUMB_QUALITY", "50")
+    assert app_module._default_scene_thumb_q() == 31
+
+    monkeypatch.setenv("SCENE_CLIP_CRF", "5")
+    assert app_module._default_scene_clip_crf() == 10
+
+
+def test_has_module_and_module_version(monkeypatch, app_module):
+    assert app_module._has_module("json") is True
+    assert app_module._has_module("nonexistent_module_xyz") is False
+
+    fake = ModuleType("fake_module_version")
+    fake.__version__ = (1, 2, 3)
+    monkeypatch.setitem(sys.modules, "fake_module_version", fake)
+    try:
+        assert app_module._module_version("fake_module_version") == "1.2.3"
+    finally:
+        sys.modules.pop("fake_module_version", None)
+
+    fake_missing = ModuleType("fake_missing_version")
+    monkeypatch.setitem(sys.modules, "fake_missing_version", fake_missing)
+    try:
+        assert app_module._module_version("fake_missing_version") is None
+    finally:
+        sys.modules.pop("fake_missing_version", None)
+
+
+def test_scenes_helpers_and_sprite_paths(app_module, tmp_path):
+    video = tmp_path / "scene.mp4"
+    video.write_bytes(b"data")
+
+    directory = app_module.scenes_dir(video)
+    assert directory.exists()
+    assert directory.name == f"{video.stem}.scenes"
+
+    json_path = app_module.scenes_json_path(video)
+    json_path.write_text("")
+    assert not app_module.scenes_json_exists(video)
+
+    json_path.write_text("{\"scenes\": []}")
+    assert app_module.scenes_json_exists(video)
+
+    sheet, meta = app_module.sprite_sheet_paths(video)
+    assert sheet.name.endswith(app_module.SUFFIX_SPRITES_JPG)
+    assert meta.name.endswith(app_module.SUFFIX_SPRITES_JSON)
+
+
+def test_uvicorn_access_filter_behavior(monkeypatch, app_module):
+    logger = logging.getLogger("uvicorn.access")
+    original_filters = list(logger.filters)
+    try:
+        logger.filters.clear()
+        app_module._install_uvicorn_access_filter_once()
+        filters = [f for f in logger.filters if isinstance(f, app_module._UvicornAccessFilter)]
+        assert len(filters) == 1
+        filt = filters[0]
+
+        suppress = logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            __file__,
+            0,
+            '"GET /api/tasks/jobs HTTP/1.1" 200 OK',
+            (),
+            None,
+        )
+        assert not filt.filter(suppress)
+
+        monkeypatch.setenv("ENABLE_GET_ACCESS_LOG", "1")
+        allow = logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            __file__,
+            0,
+            '"GET /api/other HTTP/1.1" 200 OK',
+            (),
+            None,
+        )
+        assert filt.filter(allow)
+    finally:
+        logger.filters[:] = original_filters
