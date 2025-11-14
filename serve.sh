@@ -2,8 +2,23 @@
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Activate local venv if present
-[ -d .venv ] && source .venv/bin/activate
+# Activate a usable venv: prefer local if not a broken pseudo-symlink, else HOME fallback
+use_local=0
+if [ -d .venv ] && [ -f .venv/bin/activate ]; then
+  if [ -f .venv/bin/python ] && [ -x .venv/bin/python ]; then
+    # Detect Samba/NAS pseudo-symlink stub files (begin with 'XSym')
+    if ! head -c 4 .venv/bin/python 2>/dev/null | grep -q '^XSym'; then
+      use_local=1
+    fi
+  fi
+fi
+if [ "$use_local" = "1" ]; then
+  # shellcheck source=/dev/null
+  source .venv/bin/activate
+elif [ -d "$HOME/.venvs/media-player" ] && [ -f "$HOME/.venvs/media-player/bin/activate" ]; then
+  # shellcheck source=/dev/null
+  source "$HOME/.venvs/media-player/bin/activate"
+fi
 
 # Defaults
 HOST="${HOST:-0.0.0.0}"
@@ -68,6 +83,9 @@ choose_runner() {
   if [ -x ".venv/bin/uvicorn" ]; then
     echo ".venv/bin/uvicorn"; return 0
   fi
+  if [ -x "$HOME/.venvs/media-player/bin/uvicorn" ]; then
+    echo "$HOME/.venvs/media-player/bin/uvicorn"; return 0
+  fi
   if python3 -c 'import uvicorn' >/dev/null 2>&1; then
     echo "python3 -m uvicorn"; return 0
   fi
@@ -83,6 +101,7 @@ RUN_UVICORN="$(choose_runner || true)"
 if [ -z "$RUN_UVICORN" ] || ! probe_runner "$RUN_UVICORN"; then
   for cand in "$(command -v uvicorn 2>/dev/null || true)" \
              ".venv/bin/uvicorn" \
+             "$HOME/.venvs/media-player/bin/uvicorn" \
              "python3 -m uvicorn"; do
     if [ -n "$cand" ] && probe_runner "$cand"; then
       RUN_UVICORN="$cand"; break

@@ -1,277 +1,36 @@
 from __future__ import annotations
-from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Callable
-
-# Legacy square/padding helpers removed; face boxes are stored in raw normalized form [x,y,w,h].
-import json
-import copy
-import mimetypes
-from email.utils import formatdate
 import os
-import shutil
+import re
+import json
+import time
+import math
+import logging
+import threading
 import subprocess
 import signal
-import sys
 import tempfile
-import threading
-import re
-import time
-import uuid
-import shlex
-import logging
-import asyncio
-try:
-    from pydantic import BaseModel, Field  # type: ignore
-except Exception:  # pragma: no cover
-    try:
-        from pydantic.v1 import BaseModel  # type: ignore
-        from pydantic.v1 import Field  # type: ignore
-    except Exception:  # pragma: no cover
-        class BaseModel:  # fallback minimal stub
-            def __init__(self, **data):
-                for k, v in data.items():
-                    setattr(self, k, v)
-            def dict(self, *args, **kwargs):  # type: ignore
-                return dict(getattr(self, "__dict__", {}))
-            def model_dump(self, *args, **kwargs):  # type: ignore
-                return dict(getattr(self, "__dict__", {}))
-        def Field(default=None, **kwargs):  # type: ignore
-            return default
+import shutil
+import concurrent.futures
+import mimetypes
+import io
 from difflib import SequenceMatcher
+from contextlib import asynccontextmanager
 
-# Ensure application logs (including performers persistence) are visible
-def _install_app_logger_once() -> None:
-    try:
-        level_name = str(os.environ.get("MEDIA_PLAYER_LOG_LEVEL") or "INFO").upper()
-        level = getattr(logging, level_name, logging.INFO)
-        root_logger = logging.getLogger()
-        if getattr(root_logger, "_app_logger_installed", False):
-            return
-        # If no handlers, attach a simple stdout handler
-        if not root_logger.handlers:
-            h = logging.StreamHandler(sys.stdout)
-            h.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s"))
-            root_logger.addHandler(h)
-        root_logger.setLevel(level)
-        setattr(root_logger, "_app_logger_installed", True)
-        logging.info("[app] logger initialized at level=%s", level_name)
-    except Exception:
-        pass
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Callable, Iterable, cast
+import asyncio
+import uuid
+import sys
+import copy
+from email.utils import formatdate
+from pydantic import BaseModel, Field
+from PIL import Image
 
-_install_app_logger_once()
-
-from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response # type: ignore
-from fastapi import Body, UploadFile, File  # type: ignore
-from fastapi.responses import ( # type: ignore
-    FileResponse,
-    HTMLResponse,
-    JSONResponse,
-    StreamingResponse,
-    RedirectResponse,
-)  # type: ignore
-from fastapi.staticfiles import StaticFiles  # type: ignore
-try:
-    from fastapi.middleware.cors import CORSMiddleware  # type: ignore
-except Exception:
-    # Fallback stub so the app can still start when fastapi.middleware.cors is unavailable.
-    class CORSMiddleware:  # type: ignore
-        def __init__(self, app, **kwargs):
-            self.app = app
-        async def __call__(self, scope, receive, send):
-            await self.app(scope, receive, send)
-# De-duplicate redundant FastAPI / APIRouter / CORSMiddleware imports
-# (removed duplicate lines that followed)
-# from fastapi import FastAPI
-# from fastapi import APIRouter
-# from fastapi.middleware.cors import CORSMiddleware
-
-# Optional PIL import (used in a few endpoints); tolerate absence
-try:
-    from PIL import Image  # type: ignore
-except Exception:  # pragma: no cover
-    Image = None  # type: ignore
-
-# -----------------------------
-# Artifact suffix/constants
-# -----------------------------
-SUFFIX_METADATA_JSON = ".metadata.json"
-SUFFIX_THUMBNAIL_JPG = ".thumbnail.jpg"
-SUFFIX_PHASH_JSON = ".phash.json"
-SUFFIX_SCENES_JSON = ".scenes.json"
-SUFFIX_SPRITES_JPG = ".sprites.jpg"
-SUFFIX_SPRITES_JSON = ".sprites.json"
-SUFFIX_HEATMAPS_JSON = ".heatmaps.json"
-SUFFIX_HEATMAPS_PNG = ".heatmaps.png"
-SUFFIX_FACES_JSON = ".faces.json"
-SUFFIX_PREVIEW_WEBM = ".preview.webm"
-SUFFIX_PREVIEW_MP4 = ".preview.mp4"
-SUFFIX_PREVIEW_JSON = ".preview.json"
-SUFFIX_WAVEFORM_PNG = ".waveform.png"
-SUFFIX_MOTION_JSON = ".motion.json"
-
-# Global server state
-# Initialize root from MEDIA_ROOT if provided and valid; otherwise fall back to CWD
-def _init_media_root() -> Path:
-    env_root = os.environ.get("MEDIA_ROOT")
-    if env_root:
-        try:
-            p = Path(env_root).expanduser().resolve()
-            if p.exists() and p.is_dir():
-                return p
-        except Exception:
-            pass
-    return Path.cwd().resolve()
-
-STATE: dict[str, Any] = {
-    "root": _init_media_root(),
-}
-
-# Lightweight in-memory cache for parsed metadata sidecars to reduce disk I/O.
-# Keyed by absolute video path; stores sidecar mtime and a small summary dict.
-STATE["_meta_cache"] = {}
-
-
-def _load_server_config() -> dict:
-    """
-    Load optional server-side config JSON.
-    Looks for path in MEDIA_PLAYER_CONFIG env var, else ./config.json.
-    Returns an empty dict on any error.
-    Example keys:
-    {"sprites": {"interval": 10, "width": 320, "cols": 10, "rows": 10, "quality": 4}}
-    """
-    try:
-        cand = os.environ.get("MEDIA_PLAYER_CONFIG") or str((Path.cwd() / "config.json").resolve())
-        p = Path(cand)
-        if p.exists() and p.is_file():
-            return json.loads(p.read_text())
-    except Exception:
-        pass
-    return {}
-
-
-STATE["config"] = _load_server_config()
-STATE["config_path"] = os.environ.get("MEDIA_PLAYER_CONFIG") or str((Path.cwd() / "config.json").resolve())
-_CONFIG_LOCK = threading.Lock()
-
-# Short-lived cache for repair previews to accelerate subsequent apply
-# Keyed by absolute base directory string. Entries expire after 10 minutes.
-STATE["_repair_preview_cache"] = {}
-
-
-def _sprite_defaults() -> dict[str, int | float]:
-    cfg = (STATE.get("config") or {}).get("sprites") or {}
-    return {
-        "interval": float(cfg.get("interval", 10.0)),
-        "width": int(cfg.get("width", 320)),
-        "cols": int(cfg.get("cols", 10)),
-        "rows": int(cfg.get("rows", 10)),
-        "quality": int(cfg.get("quality", 4)),
-    }
-
-
-# -----------------------------
-# Access log filtering for chatty polling endpoints
-# -----------------------------
-# Suppress uvicorn access logs for known high-frequency polling endpoints to keep logs clean.
-# This only affects access logs; application error logs remain visible.
-_POLLING_LOG_PATHS: tuple[str, ...] = (
-    "/api/tasks/jobs",
-    "/api/tasks/coverage",
-    "/api/artifacts/orphans",
-    "/api/jobs/events",
-)
-
-class _UvicornAccessFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
-        try:
-            msg = record.getMessage()
-        except Exception:
-            return True
-        # Message usually contains: "\"GET /path?query HTTP/1.1\" 200 OK"
-        # We match on the path segment to suppress specific endpoints.
-        try:
-            # Optionally allow GET/HEAD access logs via env; default is to suppress GET/HEAD noise
-            allow_get = str(os.environ.get("ENABLE_GET_ACCESS_LOG", "0")).lower() in ("1", "true", "yes")
-            allow_head = str(os.environ.get("ENABLE_HEAD_ACCESS_LOG", "0")).lower() in ("1", "true", "yes")
-        except Exception:
-            allow_get = False
-            allow_head = False
-        # Global escape hatch: disable all access logs if requested
-        try:
-            disable_all = str(os.environ.get("DISABLE_ACCESS_LOG", "0")).lower() in ("1", "true", "yes")
-        except Exception:
-            disable_all = False
-        if disable_all:
-            return False
-        try:
-            method = None
-            # crude parse: first token inside quotes is method
-            q1 = msg.find('"')
-            if q1 != -1:
-                q2 = msg.find('"', q1 + 1)
-                if q2 != -1:
-                    reqline = msg[q1+1:q2]
-                    parts = reqline.split()
-                    if parts:
-                        method = parts[0]
-        except Exception:
-            method = None
-        if method == "GET" and not allow_get:
-            return False
-        if method == "HEAD" and not allow_head:
-            return False
-        for p in _POLLING_LOG_PATHS:
-            if f" {p} " in msg or f" {p}?" in msg:
-                return False
-        return True
-
-def _install_uvicorn_access_filter_once() -> None:
-    try:
-        logger = logging.getLogger("uvicorn.access")
-        # Avoid stacking filters on hot reloads
-        if not any(isinstance(f, _UvicornAccessFilter) for f in getattr(logger, "filters", [])):
-            logger.addFilter(_UvicornAccessFilter())
-    except Exception:
-        # Non-fatal if logging isn't configured yet
-        pass
-
-# Install filter at import time so it applies to subsequent requests
-_install_uvicorn_access_filter_once()
-
-def ffmpeg_available() -> bool:
-    return shutil.which("ffmpeg") is not None
-
-def ffprobe_available() -> bool:
-    return shutil.which("ffprobe") is not None
-
-def _ffmpeg_threads_flags() -> list[str]:
-    """
-    Global threads control for ffmpeg encoders/filters plus optional time limit.
-    - Threads: default to 1 (safer for low-power devices). If FFMPEG_THREADS is set
-      and > 0, use that value.
-    - Timelimit: default to 600 seconds. If FFMPEG_TIMELIMIT (>0) is set, append
-      "-timelimit <seconds>" to cap each ffmpeg run.
-    Returns a list of flags to append to ffmpeg invocations.
-    """
-    # Threads
-    try:
-        v = os.environ.get("FFMPEG_THREADS")
-        n = int(v) if v is not None and str(v).strip() != "" else 0
-    except Exception:
-        n = 0
-    # Conservative built-in default: 1 thread unless explicitly overridden
-    if n <= 0:
-        n = 1
-    flags: list[str] = ["-threads", str(n)]
-    # Optional hard runtime cap to avoid hangs
-    try:
-        # Built-in default timelimit 600s unless overridden by env
-        tl = int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600)
-    except Exception:
-        tl = 600
-    if tl and tl > 0:
-        flags += ["-timelimit", str(tl)]
-    return flags
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Body, Request, UploadFile, File
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse, RedirectResponse
+from starlette.responses import Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 def _ffmpeg_hwaccel_flags() -> list[str]:
     """
@@ -282,6 +41,26 @@ def _ffmpeg_hwaccel_flags() -> list[str]:
     if v:
         return ["-hwaccel", str(v)]
     return []
+
+# Global server state and config lock
+STATE: Dict[str, Any] = {}
+STATE["root"] = Path(os.environ.get("MEDIA_ROOT", ".")).expanduser().resolve()
+STATE.setdefault("config", {})
+STATE.setdefault("config_path", None)
+_CONFIG_LOCK = threading.Lock()
+
+def _sprite_defaults() -> Dict[str, Any]:
+    """
+    Server-side defaults for sprites generation. Frontend can override via UI.
+    """
+    return {
+        "interval": 12.0,
+        "width": 240,
+        "cols": 8,
+        "rows": 8,
+        "quality": 6,
+        "keyframes_first": True,
+    }
 
 def _vp9_realtime_flags() -> list[str]:
     """
@@ -331,6 +110,45 @@ def _effective_preview_crf_h264() -> int:
         crf = int(18 + (tq - 2) * (26 / 29))
         return max(10, min(51, crf))
     return _default_preview_crf_h264()
+
+def _ffmpeg_threads_flags() -> list[str]:
+    """
+    Build ffmpeg threading flags from env. When unset, return [].
+    - FFMPEG_THREADS=auto -> ["-threads", "0"] (ffmpeg auto threads)
+    - FFMPEG_THREADS=<int> -> ["-threads", str(int)]
+    """
+    v = os.environ.get("FFMPEG_THREADS")
+    if not v:
+        return []
+    if str(v).strip().lower() == "auto":
+        return ["-threads", "0"]
+    try:
+        n = int(str(v).strip())
+        if n >= 0:
+            return ["-threads", str(n)]
+    except Exception:
+        pass
+    return []
+
+def ffmpeg_available() -> bool:
+    """
+    Return True if an ffmpeg executable is available on PATH (or via FFMPEG env).
+    """
+    try:
+        cmd = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+        return bool(cmd)
+    except Exception:
+        return False
+
+def ffprobe_available() -> bool:
+    """
+    Return True if an ffprobe executable is available on PATH (or via FFPROBE env).
+    """
+    try:
+        cmd = os.environ.get("FFPROBE") or shutil.which("ffprobe")
+        return bool(cmd)
+    except Exception:
+        return False
 
 def _default_scene_thumb_q() -> int:
     # JPEG/MJPEG scale: 2(best)..31(worst)
@@ -517,6 +335,22 @@ def motion_json_path(video: Path) -> Path:
 SUFFIX_SUBTITLES_SRT = ".subtitles.srt"
 HIDDEN_DIR_SUFFIX_PREVIEWS = ".previews"
 
+# Common artifact suffixes used across the server. Keep in sync with path helpers above.
+SUFFIX_METADATA_JSON = ".metadata.json"
+SUFFIX_THUMBNAIL_JPG = ".thumbnail.jpg"
+SUFFIX_PHASH_JSON = ".phash.json"
+SUFFIX_SCENES_JSON = ".scenes.json"
+SUFFIX_SPRITES_JPG = ".sprites.jpg"
+SUFFIX_SPRITES_JSON = ".sprites.json"
+SUFFIX_HEATMAPS_JSON = ".heatmaps.json"
+SUFFIX_HEATMAPS_PNG = ".heatmaps.png"
+SUFFIX_FACES_JSON = ".faces.json"
+SUFFIX_PREVIEW_WEBM = ".preview.webm"
+SUFFIX_PREVIEW_MP4 = ".preview.mp4"
+SUFFIX_PREVIEW_JSON = ".preview.json"
+SUFFIX_WAVEFORM_PNG = ".waveform.png"
+SUFFIX_MOTION_JSON = ".motion.json"
+
 def _file_nonempty(p: Path, min_size: int = 64) -> bool:
     """
     Return True if file exists and has at least min_size bytes (guards against zero-byte stubs).
@@ -536,6 +370,87 @@ JOB_CTX = _JobContext()
 # Track live subprocesses per job so we can terminate on cancel
 JOB_PROCS: dict[str, set[subprocess.Popen]] = {}
 JOB_HEARTBEATS: dict[str, float] = {}
+
+# Guarded background workers registry to prevent spawning duplicate infinite workers
+_WORKER_THREADS: dict[str, threading.Thread] = {}
+_WORKER_MTX = threading.Lock()
+
+def _start_worker_once(key: str, target: Callable, *args, **kwargs) -> bool:
+    """Start a long-lived worker thread once by key. Returns True if started now.
+    If a previous thread exists and is alive, do nothing and return False.
+    """
+    try:
+        with _WORKER_MTX:
+            t = _WORKER_THREADS.get(key)
+            if t is not None and t.is_alive():
+                return False
+            th = threading.Thread(target=target, args=args or (), kwargs=kwargs or {}, name=f"worker-{key}", daemon=True)
+            _WORKER_THREADS[key] = th
+            th.start()
+            return True
+    except Exception:
+        return False
+
+# Shared bounded thread pool for per-item batch processing across endpoints.
+# Caps thread creation on constrained devices (e.g., Raspberry Pi), preventing
+# "can't start new thread" crashes from unbounded per-file threads.
+try:
+    _CPU_CT = os.cpu_count() or 2  # type: ignore[name-defined]
+except Exception:
+    _CPU_CT = 2  # conservative fallback
+
+def _env_int_safe(name: str, default: int) -> int:
+    try:
+        v = int(os.environ.get(name, str(default)))  # type: ignore[name-defined]
+        return v
+    except Exception:
+        return default
+
+_BATCH_WORKERS = max(1, _env_int_safe("BATCH_WORKERS", min(4, max(2, _CPU_CT // 2))))
+try:
+    _BATCH_EXEC: Optional[concurrent.futures.ThreadPoolExecutor] = concurrent.futures.ThreadPoolExecutor(
+        max_workers=_BATCH_WORKERS,
+        thread_name_prefix="batch-items",
+    )
+except Exception:
+    _BATCH_EXEC = None
+
+def _run_batch_items(items: list[Path], fn: Callable[[Path], None]) -> None:
+    """Run per-item work on a shared bounded pool. Falls back to sequential."""
+    if not items:
+        return
+    if _BATCH_EXEC is None:
+        for it in items:
+            fn(it)
+        return
+    futs: list[concurrent.futures.Future] = []
+    for it in items:
+        try:
+            futs.append(_BATCH_EXEC.submit(fn, it))
+        except Exception:
+            # If submission fails (pool saturated or executor unavailable), run inline
+            fn(it)
+    for fu in futs:
+        try:
+            fu.result()
+        except Exception:
+            # Exceptions are already handled within fn in most cases
+            pass
+
+# Shared, bounded executor for restoring queued jobs on startup
+def _init_restore_executor() -> Optional[concurrent.futures.ThreadPoolExecutor]:
+    try:
+        # Default 2; never exceed JOB_MAX_CONCURRENCY
+        rw = _env_int_safe("RESTORE_WORKERS", min(2, int(JOB_MAX_CONCURRENCY)))
+        rw = max(1, min(int(JOB_MAX_CONCURRENCY), int(rw)))
+    except Exception:
+        rw = 1
+    try:
+        return concurrent.futures.ThreadPoolExecutor(max_workers=rw, thread_name_prefix="job-restore")
+    except Exception:
+        return None
+
+_RESTORE_EXEC = _init_restore_executor()
 
 def _register_job_proc(jid: str, proc: subprocess.Popen) -> None:
     with JOB_LOCK:
@@ -831,7 +746,7 @@ def extract_duration(ffprobe_json: Optional[dict]) -> Optional[float]:
     except Exception:
         return None
 
-def _meta_summary_cached(video: Path) -> tuple[Optional[float], Optional[str], Optional[int], Optional[int]]:
+def _metadata_summary_cached(video: Path) -> tuple[Optional[float], Optional[str], Optional[int], Optional[int]]:
     """
     Return (duration, title, width, height) using a small cache by sidecar mtime.
     Avoids re-reading/parsing the JSON on every /api/library call across many files.
@@ -843,7 +758,7 @@ def _meta_summary_cached(video: Path) -> tuple[Optional[float], Optional[str], O
         st = mpath.stat()
         mt = float(getattr(st, "st_mtime", 0.0) or 0.0)
         key = str(video.resolve())
-        cache = STATE.get("_meta_cache")  # type: ignore[assignment]
+        cache = STATE.get("_metadata_cache")  # type: ignore[assignment]
         if isinstance(cache, dict):
             ent = cache.get(key)
             if ent and isinstance(ent, dict) and ent.get("mt") == mt:
@@ -885,7 +800,7 @@ def _meta_summary_cached(video: Path) -> tuple[Optional[float], Optional[str], O
     except Exception:
         return None, None, None, None
 
-def _meta_bitrate_codecs_cached(video: Path) -> tuple[Optional[int], Optional[str], Optional[str]]:
+def _metadata_bitrate_codecs_cached(video: Path) -> tuple[Optional[int], Optional[str], Optional[str]]:
     """
     Return (bitrate, vcodec, acodec) using the same small cache keyed by sidecar mtime.
     Safe and fast: parses JSON sidecar once per mtime.
@@ -897,7 +812,7 @@ def _meta_bitrate_codecs_cached(video: Path) -> tuple[Optional[int], Optional[st
         st = mpath.stat()
         mt = float(getattr(st, "st_mtime", 0.0) or 0.0)
         key = str(video.resolve())
-        cache = STATE.get("_meta_cache")  # type: ignore[assignment]
+        cache = STATE.get("_metadata_cache")  # type: ignore[assignment]
         if isinstance(cache, dict):
             ent = cache.get(key)
             if ent and isinstance(ent, dict) and ent.get("mt") == mt:
@@ -1018,7 +933,7 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
             duration = extract_duration(json.loads(metadata_path(video).read_text()))
     except Exception:
         duration = None
-    _log("thumbnail", f"thumbnail meta path={video} dur={duration if duration is not None else 'na'} source={'cached' if 'mpath' in locals() and mpath.exists() else 'generated'}")
+    _log("thumbnail", f"thumbnail metadata path={video} dur={duration if duration is not None else 'na'} source={'cached' if 'mpath' in locals() and mpath.exists() else 'generated'}")
     t = parse_time_spec(time_spec, duration)
     _log("thumbnail", f"thumbnail time_spec_resolved path={video} time={t:.3f}s from={time_spec}")
     # Use mjpeg to write jpg
@@ -1940,7 +1855,7 @@ def generate_motion_activity(video: Path, *, force: bool = False, interval: floa
         for idx, fp in enumerate(frames):
             try:
                 im = Image.open(fp).convert("L")
-                px = list(im.getdata())
+                px = list(cast(Iterable[int], im.getdata()))
                 im.close()
             except Exception:
                 continue
@@ -2537,8 +2452,125 @@ def generate_sprite_sheet(
     if ffmpeg_available():
         # Lock per file to prevent concurrent sprite jobs for same video
         with _PerFileLock(video, key="sprites"):
+            # First try: keyframe-driven sampling (default ON). Much faster on long-GOP.
+            # Disable by setting SPRITES_KEYFRAMES=0/false
+            try:
+                kf_env = os.environ.get("SPRITES_KEYFRAMES")
+                use_keyframes = not (kf_env in ("0", "false", "False"))
+            except Exception:
+                use_keyframes = True
+            if use_keyframes:
+                try:
+                    # Build a single-pass pipeline that selects I-frames only, scales, and tiles.
+                    # -skip_frame nokey hints decoder to skip non-keyframes; filter guards selection.
+                    vf_kf = (
+                        f"select='eq(pict_type\\,I)',"
+                        f"scale={int(width)}:-2:flags=lanczos,"
+                        f"tile={int(cols)}x{int(rows)}"
+                    )
+                    cmd_kf = [
+                        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
+                        *(_ffmpeg_hwaccel_flags()),
+                        "-skip_frame", "nokey",
+                        "-i", str(video),
+                        "-an",
+                        "-vf", vf_kf,
+                        "-vsync", "vfr",
+                        "-frames:v", "1",
+                        *(_ffmpeg_threads_flags()),
+                        str(sheet),
+                    ]
+                    try:
+                        print("[sprites][keyframes] ffmpeg:", " ".join(shlex.quote(x) for x in cmd_kf))  # type: ignore[name-defined]
+                    except Exception:
+                        pass
+                    proc = _run(cmd_kf)
+                    if int(proc.returncode) != 0:
+                        raise RuntimeError("keyframe sprite generation failed")
+                    # Compute tile geometry and validate uniqueness; fallback if too few distinct tiles
+                    try:
+                        from PIL import Image  # type: ignore
+                        with Image.open(sheet) as im:
+                            sheet_w, sheet_h = im.size
+                    except Exception:
+                        sheet_w = int(width * cols)
+                        sheet_h = int((width * 9 // 16) * rows)
+                    tile_w = int(max(1, sheet_w // max(1, cols)))
+                    tile_h = int(max(1, sheet_h // max(1, rows)))
+
+                    # Uniqueness check similar to legacy path
+                    try:
+                        from PIL import Image  # type: ignore
+                        import hashlib
+
+                        def _unique_tiles_count(path: Path, tw: int, th: int, c: int, r: int) -> int:
+                            try:
+                                with Image.open(path) as _im:
+                                    _im = _im.convert('RGB')
+                                    _hashes: list[str] = []
+                                    for _rr in range(r):
+                                        for _cc in range(c):
+                                            _box = (_cc * tw, _rr * th, (_cc + 1) * tw, (_rr + 1) * th)
+                                            _tile = _im.crop(_box)
+                                            _h = hashlib.md5(_tile.tobytes()).hexdigest()
+                                            _hashes.append(_h)
+                                    return len(set(_hashes))
+                            except Exception:
+                                return 0
+
+                        total_tiles_kf = int(cols * rows)
+                        min_unique_kf = max(1, total_tiles_kf // 4)
+                        unique_kf = _unique_tiles_count(sheet, tile_w, tile_h, int(cols), int(rows))
+                    except Exception:
+                        unique_kf = max(1, int(cols) * int(rows))
+
+                    if not _file_nonempty(sheet, min_size=64) or unique_kf < min_unique_kf:
+                        # Drop and fallback to non-keyframe strategies
+                        try:
+                            print(f"[sprites][keyframes] insufficient unique tiles ({unique_kf} < {min_unique_kf}); falling back")
+                        except Exception:
+                            pass
+                        try:
+                            sheet.unlink(missing_ok=True)  # type: ignore[call-arg]
+                        except Exception:
+                            try:
+                                sheet.unlink()
+                            except Exception:
+                                pass
+                    else:
+                        # Write metadata
+                        metadata = {
+                            "cols": int(cols),
+                            "rows": int(rows),
+                            "interval": float(interval),  # nominal interval retained for UI hints
+                            "width": int(width),
+                            "tile_width": int(tile_w),
+                            "tile_height": int(tile_h),
+                            "frames": int(int(cols) * int(rows)),
+                            "grid": [int(cols), int(rows)],
+                            "tile": [int(tile_w), int(tile_h)],
+                            "keyframes_sampling": True,
+                        }
+                        j.write_text(json.dumps(metadata, indent=2))
+                        try:
+                            print(f"[sprites][keyframes] sheet created {sheet.name} tiles={int(cols)*int(rows)}")
+                        except Exception:
+                            pass
+                        if progress_cb:
+                            try:
+                                progress_cb(1, 1)
+                            except Exception:
+                                pass
+                        return
+                except Exception:
+                    # Proceed to even/legacy strategies
+                    try:
+                        print("[sprites][keyframes] path failed; trying other strategies")
+                    except Exception:
+                        pass
             # Optional even sampling path: sample frames uniformly across full duration rather than fixed fps window
-            use_even = True
+            # Default DISABLED; enable via SPRITES_EVEN_SAMPLING=1 or auto-switch when estimated time is large.
+            use_even = False
             try:
                 env_even = os.environ.get("SPRITES_EVEN_SAMPLING")
                 if env_even not in (None, ""):
@@ -2556,6 +2588,37 @@ def generate_sprite_sheet(
                         dur = extract_duration(json.loads(metadata_path(video).read_text()))
                 except Exception:
                     dur = None
+            # Auto-switch heuristic: if the legacy tile path would need to scan a long interval
+            # (interval * tiles) beyond a threshold, prefer even sampling for speed when possible.
+            if not use_even:
+                try:
+                    total_tiles_est = int(cols * rows)
+                    est_secs = float(interval) * float(total_tiles_est)
+                except Exception:
+                    est_secs = 0.0
+                if est_secs >= float(os.environ.get("SPRITES_AUTO_EVEN_SEC", "300")):
+                    _pil_ok = True
+                    try:
+                        from PIL import Image  # type: ignore
+                        _ = Image
+                    except Exception:
+                        _pil_ok = False
+                    if _pil_ok:
+                        # Ensure we have duration handy for even sampling segmenting
+                        try:
+                            if metadata_path(video).exists():
+                                dur = extract_duration(json.loads(metadata_path(video).read_text()))
+                            else:
+                                metadata_single(video, force=False)
+                                dur = extract_duration(json.loads(metadata_path(video).read_text()))
+                        except Exception:
+                            dur = None
+                        if dur and float(dur) > 0:
+                            try:
+                                print(f"[sprites] auto-switch to even sampling (est~{est_secs:.1f}s, tiles={int(cols)*int(rows)})")
+                            except Exception:
+                                pass
+                            use_even = True
             if use_even and dur and isinstance(dur, (int, float)) and float(dur) > 0:
                 total_tiles = int(cols * rows)
                 # Guard: if absurdly large grid, fallback to legacy (performance)
@@ -2584,9 +2647,8 @@ def generate_sprite_sheet(
                             # Parallel extraction with bounded worker pool
                             import concurrent.futures
                             # Determine pool size
-                            # Base pool size is limited for fairness so multiple sprite jobs can advance concurrently.
-                            # Without this, the first job could monopolize all ffmpeg slots and starve others (appearing as if only one job progresses).
-                            pool_size = 1  # fair default (one extraction at a time per job)
+                            # Default to a modest parallelism for speed while respecting global ffmpeg concurrency.
+                            pool_size = min(4, _FFMPEG_CONCURRENCY)
                             fair_mode = True
                             try:
                                 fair_env = os.environ.get("SPRITES_EVEN_FAIR")
@@ -2710,23 +2772,23 @@ def generate_sprite_sheet(
                             except Exception:
                                 mosaic.save(sheet, format="JPEG")
                             # Write index JSON with time mapping
-                            frames_meta = []
+                            frames_metadata = []
                             for k, ts in enumerate(times):
-                                frames_meta.append({"i": k, "t": ts})
-                            meta = {
+                                frames_metadata.append({"i": k, "t": ts})
+                            metadata = {
                                 "cols": cols,
                                 "rows": rows,
                                 "interval": segment,  # average spacing
                                 "width": width,
                                 "tile_width": tile_w,
                                 "tile_height": tile_h,
-                                "frames": frames_meta[: total_tiles],
+                                "frames": frames_metadata[: total_tiles],
                                 "grid": [cols, rows],
                                 "tile": [tile_w, tile_h],
                                 "even_sampling": True,
                                 "duration": _dur_f,
                             }
-                            j.write_text(json.dumps(meta, indent=2))
+                            j.write_text(json.dumps(metadata, indent=2))
                             if progress_cb:
                                 try:
                                     progress_cb(steps, steps)
@@ -3090,7 +3152,7 @@ def generate_sprite_sheet(
                 if not _file_nonempty(sheet, min_size=64):
                     raise RuntimeError("sprite sheet output missing or too small after processing")
                 frames = int(cols * rows)
-                meta = {
+                metadata = {
                     "cols": int(cols),
                     "rows": int(rows),
                     "interval": float(interval),
@@ -3102,7 +3164,7 @@ def generate_sprite_sheet(
                     "grid": [int(cols), int(rows)],
                     "tile": [int(tile_w), int(tile_h)],
                 }
-                j.write_text(json.dumps(meta, indent=2))
+                j.write_text(json.dumps(metadata, indent=2))
                 try:
                     print(f"[sprites] wrote {sheet.name} and {j.name}")
                 except Exception:
@@ -3122,7 +3184,7 @@ def generate_sprite_sheet(
             for c in range(cols):
                 sheet_img.paste(tile, (c * tile_w, r * tile_h))
         sheet_img.save(sheet)
-        meta = {
+        metadata = {
             "cols": int(cols),
             "rows": int(rows),
             "interval": float(interval),
@@ -3133,7 +3195,7 @@ def generate_sprite_sheet(
             "grid": [int(cols), int(rows)],
             "tile": [int(tile_w), int(tile_h)],
         }
-        j.write_text(json.dumps(meta, indent=2))
+        j.write_text(json.dumps(metadata, indent=2))
         return
     except Exception:
         # Absolute stub if everything else failed
@@ -3321,7 +3383,7 @@ def compute_heatmaps(
                 if proc.returncode == 0 and frame_path.exists():
                     try:
                         img = Image.open(frame_path)
-                        px = list(img.getdata())
+                        px = list(cast(Iterable[int], img.getdata()))
                         img.close()
                         v = (sum(px) / (len(px) * 255.0)) if px else 0.0
                         samples.append({"t": round(t, 3), "v": max(0.0, min(1.0, float(v)))})
@@ -4241,8 +4303,10 @@ def list_all_routes(include_head: bool = Query(default=False)):
     try:
         routes = []
         for route in app.routes:
-            if hasattr(route, 'methods') and hasattr(route, 'path'):
-                for method in route.methods:
+            methods = getattr(route, 'methods', None)
+            path = getattr(route, 'path', None)
+            if methods and path:
+                for method in methods:
                     if method == 'HEAD' and not include_head:
                         continue
                     # Best-effort extraction of description from multiple sources
@@ -4261,18 +4325,18 @@ def list_all_routes(include_head: bool = Query(default=False)):
                             pass
                     # Only use static descriptions from ROUTE_DESCRIPTIONS; no heuristics in runtime
                     if not desc:
-                        key = f"{method} {route.path}"
+                        key = f"{method} {path}"
                         desc = ROUTE_DESCRIPTIONS.get(key, '')
                     # Derive a concise summary (single line)
                     summary = (getattr(route, 'summary', '') or '').strip()
                     if not summary:
                         # Use description first line or default to METHOD PATH
-                        summary = (desc.split('\n', 1)[0]).strip() or f"{method} {route.path}"
+                        summary = (desc.split('\n', 1)[0]).strip() or f"{method} {path}"
                     if not summary:
-                        summary = f"{method} {route.path}"
+                        summary = f"{method} {path}"
                     routes.append({
                         "method": method,
-                        "path": route.path,
+                        "path": path,
                         "summary": summary,
                         "description": desc,
                         "name": getattr(route, 'name', ''),
@@ -4314,13 +4378,15 @@ def export_route_descriptions(include_head: bool = Query(default=True)):
         # Gather all methods/paths
         seen: dict[str, str] = dict(ROUTE_DESCRIPTIONS)
         for route in app.routes:
-            if hasattr(route, 'methods') and hasattr(route, 'path'):
-                for method in route.methods:
+            methods = getattr(route, 'methods', None)
+            path = getattr(route, 'path', None)
+            if methods and path:
+                for method in methods:
                     if method == 'HEAD' and not include_head:
                         continue
-                    key = f"{method} {route.path}"
+                    key = f"{method} {path}"
                     if key not in seen:
-                        seen[key] = _guess_description(method, route.path)
+                        seen[key] = _guess_description(method, path)
         # Persist to JSON file (sorted by key for stable diffs)
         base = Path(__file__).parent
         fp = base / "static" / "routes.json"
@@ -4644,21 +4710,37 @@ def _restore_jobs_on_start() -> None:
         return
     with JOB_LOCK:
         items = list(JOBS.items())
+    # Submit restore jobs through a bounded executor to prevent spawning hundreds of threads
+    submits: int = 0
     for jid, j in items:
         try:
             if j.get("state") == "queued" and isinstance(j.get("request"), dict):
                 req_data = j["request"]
-                # Validate minimal fields
                 task = str(req_data.get("task") or j.get("type") or "")
                 directory = req_data.get("directory") or j.get("path") or str(STATE["root"])  # type: ignore[assignment]
                 recursive = bool(req_data.get("recursive", False))
                 force = bool(req_data.get("force", False))
                 params = dict(req_data.get("params") or {})
                 jr = JobRequest(task=task, directory=directory, recursive=recursive, force=force, params=params)
-                def _runner(jid=jid, jr=jr):
-                    with JOB_RUN_SEM:
-                        _run_job_worker(jid, jr)
-                threading.Thread(target=_runner, name=f"job-restore-{task}-{jid}", daemon=True).start()
+                def _runner(_jid=jid, _jr=jr):
+                    try:
+                        with JOB_RUN_SEM:
+                            _run_job_worker(_jid, _jr)
+                    except Exception:
+                        pass
+                if _RESTORE_EXEC is not None:
+                    try:
+                        _RESTORE_EXEC.submit(_runner)
+                        submits += 1
+                        continue
+                    except Exception:
+                        pass
+                # Fallback: start a single conservative thread if executor unavailable
+                try:
+                    threading.Thread(target=_runner, name=f"job-restore-{task}-{jid}", daemon=True).start()
+                    submits += 1
+                except Exception:
+                    pass
         except Exception:
             continue
 
@@ -4737,7 +4819,7 @@ def _set_job_current(jid: str, current_path: Optional[str]) -> None:
     })
 
 
-def _new_job(job_type: str, path: str) -> str:
+def _new_job(job_type: str, path: str, *, priority: bool = False) -> str:
     jid = uuid.uuid4().hex[:12]
     base_type = _normalize_job_type(job_type)
     with JOB_LOCK:
@@ -4746,13 +4828,15 @@ def _new_job(job_type: str, path: str) -> str:
             "type": base_type,
             "path": path,
             "state": "queued",
-            "created_at": time.time(),
+            # If priority, bias created_at slightly earlier to promote ordering fairly
+            "created_at": (time.time() - 1000.0) if priority else time.time(),
             "started_at": None,
             "ended_at": None,
             "error": None,
             "total": None,
             "processed": None,
             "result": None,
+            "priority": bool(priority),
         }
         JOB_CANCEL_EVENTS[jid] = threading.Event()
     _persist_job(jid)
@@ -4971,7 +5055,7 @@ def jobs_reap_orphans(max_idle: float = Query(default=300.0), min_age: float = Q
 
 
 
-def _wrap_job(job_type: str, path: str, fn):
+def _wrap_job(job_type: str, path: str, fn, *, priority: bool = False):
     # Conservatively skip if same job already queued/running to avoid duplicates.
     try:
         existing = _find_active_job(job_type, path)
@@ -4979,12 +5063,9 @@ def _wrap_job(job_type: str, path: str, fn):
             return api_success({"job": existing, "queued": True, "skipped": True, "reason": "already queued/running"})
     except Exception:
         pass
-    jid = _new_job(job_type, path)
+    jid = _new_job(job_type, path, priority=priority)
     try:
-        # FIFO gate: wait until this job is the earliest queued before starting.
-        # Jobs marked 'restored' (from persisted state with auto-restore disabled)
-        # are ignored by the turn calculation and won't block new work.
-        _wait_for_turn(jid)
+        # Start as soon as a concurrency slot is available; no extra FIFO gating.
         # Enforce global job concurrency even for synchronous (request-thread) jobs
         fp = Path(path)
         lock = _file_task_lock(fp, job_type)
@@ -5017,7 +5098,7 @@ def _wrap_job(job_type: str, path: str, fn):
         raise
 
 
-def _wrap_job_background(job_type: str, path: str, fn):
+def _wrap_job_background(job_type: str, path: str, fn, *, priority: bool = False):
     """
     Run a job in a background thread and return immediately with a job id.
     This avoids coupling long-running work to the HTTP request lifecycle.
@@ -5029,11 +5110,10 @@ def _wrap_job_background(job_type: str, path: str, fn):
             return api_success({"job": existing, "queued": True, "skipped": True, "reason": "already queued/running"})
     except Exception:
         pass
-    jid = _new_job(job_type, path)
+    jid = _new_job(job_type, path, priority=priority)
     def _runner():
         try:
-            # FIFO gate: wait until this job is the earliest queued before starting
-            _wait_for_turn(jid)
+            # Start as soon as a concurrency slot is available
             # Determine whether to use a "light-slot" start (release JOB_RUN_SEM immediately
             # after transitioning to running) to allow more ffmpeg-heavy jobs to overlap.
             # Controlled via env:
@@ -5871,7 +5951,7 @@ def tags_import(payload: TagsImport):
     return {"updated": count}
 
 
-def _load_meta_summary(root: Path, recursive: bool) -> dict[str, dict]:
+def _load_metadata_summary(root: Path, recursive: bool) -> dict[str, dict]:
     # Pre-scan once for duration/codecs
     out: dict[str, dict] = {}
     for v in _find_mp4s(root, recursive):
@@ -5955,25 +6035,25 @@ def _parse_artifact_name(name: str) -> tuple[str, str] | None:
                 return stem, suf
     return None
 
-def _collect_media_and_meta(root: Path) -> tuple[dict[str, Path], dict[str, dict]]:
+def _collect_media_and_metadata(root: Path) -> tuple[dict[str, Path], dict[str, dict]]:
     """
-    Return (media_by_stem, meta_by_stem) for fast lookup.
+    Return (media_by_stem, metadata_by_stem) for fast lookup.
     - media_by_stem: map of media stem -> path
-    - meta_by_stem: map of media stem -> meta summary (duration, codecs)
+    - metadata_by_stem: map of media stem -> metadata summary (duration, codecs)
     """
     media: dict[str, Path] = {}
     for v in _find_mp4s(root, recursive=True):
         media[v.stem] = v
-    # Load meta summaries once
-    meta: dict[str, dict] = {}
-    summaries = _load_meta_summary(root, recursive=True)
+    # Load metadata summaries once
+    metadata: dict[str, dict] = {}
+    summaries = _load_metadata_summary(root, recursive=True)
     for v in _find_mp4s(root, recursive=True):
         try:
             rel = str(v.relative_to(root))
         except Exception:
             rel = v.name
-        meta[v.stem] = summaries.get(rel) or {}
-    return media, meta
+        metadata[v.stem] = summaries.get(rel) or {}
+    return media, metadata
 
 ## Removed legacy: /videos endpoint
 
@@ -6019,7 +6099,7 @@ def _list_dir(root: Path, rel: str):
             width_val = None
             height_val = None
             try:
-                duration_val, title_val, width_val, height_val = _meta_summary_cached(entry)
+                duration_val, title_val, width_val, height_val = _metadata_summary_cached(entry)
             except Exception:
                 duration_val = None
             # Artifact presence
@@ -6143,7 +6223,7 @@ def _enrich_file_basic(entry: dict) -> dict:
         width_val = None
         height_val = None
         try:
-            duration_val, title_val, width_val, height_val = _meta_summary_cached(fp)
+            duration_val, title_val, width_val, height_val = _metadata_summary_cached(fp)
         except Exception:
             pass
         phash_exists = False
@@ -6430,7 +6510,7 @@ def get_library(
 
     # Resolution filter (by height preferred, width heuristic fallback, filename token fallback)
     if res_min is not None or res_max is not None:
-        def _tier_from_meta(f: dict) -> Optional[int]:
+        def _tier_from_metadata(f: dict) -> Optional[int]:
             try:
                 h = f.get("height")
                 w = f.get("width")
@@ -6450,7 +6530,7 @@ def get_library(
                 if relp:
                     try:
                         fp = safe_join(STATE["root"], relp)
-                        _d, _t, _w, _h = _meta_summary_cached(fp)
+                        _d, _t, _w, _h = _metadata_summary_cached(fp)
                         if isinstance(_h, (int, float)) and _h:
                             return int(_h)
                         if isinstance(_w, (int, float)) and _w:
@@ -6478,7 +6558,7 @@ def get_library(
         lo = int(res_min) if res_min is not None else None
         hi = int(res_max) if res_max is not None else None
         files = [f for f in files if (
-            (lambda r: (lo is None or (r is not None and r >= lo)) and (hi is None or (r is not None and r <= hi)))(_tier_from_meta(f))
+            (lambda r: (lo is None or (r is not None and r >= lo)) and (hi is None or (r is not None and r <= hi)))(_tier_from_metadata(f))
         )]
     t_filters = time.time()
     try:
@@ -6514,7 +6594,7 @@ def get_library(
                                     f["ctime"] = 0.0
                 except Exception:
                     pass
-            def _ensure_meta_basic(f: dict):
+            def _ensure_metadata_basic(f: dict):
                 # duration/width/height
                 try:
                     relp = f.get("path") or ""
@@ -6524,7 +6604,7 @@ def get_library(
                     need_w = ("width" in flt_obj) and (f.get("width") in (None, ""))
                     need_h = ("height" in flt_obj) and (f.get("height") in (None, ""))
                     if need_d or need_w or need_h:
-                        d, _t, w, h = _meta_summary_cached(safe_join(STATE["root"], relp))
+                        d, _t, w, h = _metadata_summary_cached(safe_join(STATE["root"], relp))
                         if d is not None and need_d:
                             f["duration"] = d
                         if w is not None and need_w:
@@ -6542,7 +6622,7 @@ def get_library(
                     need_vc = ("vcodec" in flt_obj) and (f.get("vcodec") in (None, ""))
                     need_ac = ("acodec" in flt_obj) and (f.get("acodec") in (None, ""))
                     if need_br or need_vc or need_ac:
-                        br, vc, ac = _meta_bitrate_codecs_cached(safe_join(STATE["root"], relp))
+                        br, vc, ac = _metadata_bitrate_codecs_cached(safe_join(STATE["root"], relp))
                         if need_br and br is not None:
                             f.setdefault("bitrate", br)
                         if need_vc and vc is not None:
@@ -6678,12 +6758,12 @@ def get_library(
                 if k in ("mtime", "ctime"):
                     _ensure_time_fields(f)
                 if k in ("duration", "width", "height"):
-                    _ensure_meta_basic(f)
+                    _ensure_metadata_basic(f)
                 if k in ("bitrate", "vcodec", "acodec"):
                     _ensure_bitrate_codecs(f)
                 if k in ("phash","chapters","sprites","heatmaps","subtitles","faces","thumbnail","preview"):
                     _ensure_flags(f)
-                if k == "meta":
+                if k == "metadata":
                     # Treat presence of metadata sidecar as boolean
                     try:
                         relp = f.get("path") or ""
@@ -6748,7 +6828,7 @@ def get_library(
                 f["ctime"] = 0.0
         files.sort(key=lambda f: (float(f.get("ctime") or 0.0), str(f.get("path") or "")), reverse=reverse)
     elif sort in ("width", "height", "duration"):
-        # Ensure numeric meta fields present using cached metadata
+        # Ensure numeric metadata fields present using cached metadata
         for f in files:
             try:
                 has_all = all(k in f and f.get(k) not in (None, "") for k in ("duration" if sort == "duration" else (sort,)))
@@ -6758,7 +6838,7 @@ def get_library(
                 if not relp:
                     continue
                 fp = safe_join(STATE["root"], relp)
-                d, _t, w, h = _meta_summary_cached(fp)
+                d, _t, w, h = _metadata_summary_cached(fp)
                 if d is not None and f.get("duration") in (None, ""):
                     f["duration"] = d
                 if w is not None and f.get("width") in (None, ""):
@@ -6784,7 +6864,7 @@ def get_library(
                 if not relp:
                     continue
                 fp = safe_join(STATE["root"], relp)
-                br, vc, ac = _meta_bitrate_codecs_cached(fp)
+                br, vc, ac = _metadata_bitrate_codecs_cached(fp)
                 if br is not None:
                     f.setdefault("bitrate", br)
                 if vc is not None:
@@ -6896,30 +6976,30 @@ def api_duplicates_list(
             if not isinstance(h_hex, str):
                 continue
             # Gather lightweight metadata signals
-            meta: dict | None = None
+            metadata: dict | None = None
             mpath = metadata_path(v)
             if mpath.exists():
                 try:
-                    meta = json.loads(mpath.read_text())
+                    metadata = json.loads(mpath.read_text())
                 except Exception:
-                    meta = None
+                    metadata = None
             else:
                 # opportunistically compute metadata if ffprobe is available
                 try:
                     metadata_single(v, force=False)
                     if mpath.exists():
-                        meta = json.loads(mpath.read_text())
+                        metadata = json.loads(mpath.read_text())
                 except Exception:
-                    meta = None
+                    metadata = None
             # Extract comparable features
-            dur = extract_duration(meta) if meta else None
+            dur = extract_duration(metadata) if metadata else None
             width = height = None
             v_bitrate = None
             a_bitrate = None
             title = None
             try:
-                if isinstance(meta, dict):
-                    fmt = meta.get("format", {}) or {}
+                if isinstance(metadata, dict):
+                    fmt = metadata.get("format", {}) or {}
                     try:
                         _vb = fmt.get("bit_rate")
                         v_bitrate = float(_vb) if _vb is not None else None
@@ -6929,7 +7009,7 @@ def api_duplicates_list(
                         title = (fmt.get("tags", {}) or {}).get("title")
                     except Exception:
                         title = None
-                    for st in meta.get("streams", []) or []:
+                    for st in metadata.get("streams", []) or []:
                         if (st or {}).get("codec_type") == "video":
                             try:
                                 width = int(st.get("width") or 0) or None
@@ -7028,7 +7108,7 @@ def api_duplicates_list(
                     "bits": bits,
                     "distance": dist,
                     "phash_similarity": sim,
-                    "meta_bonus": round(bonus, 4),
+                    "metadata_bonus": round(bonus, 4),
                 })
     pairs.sort(key=lambda x: x["similarity"], reverse=True)
 
@@ -7124,8 +7204,8 @@ def api_phash_duplicates(
             "distance_mode": "xor",
             "frame_count": None,  # not available without deeper sidecar parse; left nullable
             "group_count": len(c),
-            # representative_meta will attempt to provide small metadata (size/duration) when available
-            "representative_meta": None,
+            # representative_metadata will attempt to provide small metadata (size/duration) when available
+            "representative_metadata": None,
             # group_details may include optional phash hex if sidecars exist; best-effort only
             "group_details": None,
         }
@@ -7143,15 +7223,15 @@ def api_phash_duplicates(
                         p = (STATE["root"] / p).resolve()
                 except Exception:
                     pass
-                meta = None
+                metadata = None
                 try:
                     mp = metadata_path(p)
                     if mp.exists():
-                        meta_j = json.loads(mp.read_text())
-                        meta = {"duration": extract_duration(meta_j), "size": p.stat().st_size if p.exists() else None}
+                        metadata_j = json.loads(mp.read_text())
+                        metadata = {"duration": extract_duration(metadata_j), "size": p.stat().st_size if p.exists() else None}
                 except Exception:
-                    meta = None
-                item["representative_meta"] = meta
+                    metadata = None
+                item["representative_metadata"] = metadata
             # group_details: try to include phash hex per member when available
             details = []
             for m in item.get("group", []) or []:
@@ -7195,8 +7275,8 @@ def api_phash_duplicates(
 # -----------------
 # Lightweight Compare (metadata + pHash distance)
 # -----------------
-@api.get("/compare/meta")
-def api_compare_meta(
+@api.get("/compare/metadata")
+def api_compare_metadata(
     path_a: str = Query(..., description="First video path (relative to root)"),
     path_b: str = Query(..., description="Second video path (relative to root)"),
 ):
@@ -7207,20 +7287,20 @@ def api_compare_meta(
     if not pa.exists() or not pb.exists():
         raise_api_error("One or both files not found", status_code=404)
 
-    def basic_meta(p: Path) -> dict:
-        meta_path = metadata_path(p)
-        meta = None
-        if meta_path.exists():
+    def basic_metadata(p: Path) -> dict:
+        _metadata_path = metadata_path(p)
+        metadata = None
+        if _metadata_path.exists():
             try:
-                meta = json.loads(meta_path.read_text())
+                metadata = json.loads(_metadata_path.read_text())
             except Exception:
-                meta = None
+                metadata = None
         dur = None
         width = height = None
         try:
-            if meta:
-                dur = extract_duration(meta)
-                for st in meta.get("streams", []) or []:
+            if metadata:
+                dur = extract_duration(metadata)
+                for st in metadata.get("streams", []) or []:
                     if (st or {}).get("codec_type") == "video":
                         try:
                             width = int(st.get("width") or 0) or None
@@ -7242,8 +7322,8 @@ def api_compare_meta(
             "size": size,
         }
 
-    a_meta = basic_meta(pa)
-    b_meta = basic_meta(pb)
+    a_metadata = basic_metadata(pa)
+    b_metadata = basic_metadata(pb)
 
     # pHash distance
     def read_hex(p: Path) -> Optional[str]:
@@ -7272,28 +7352,28 @@ def api_compare_meta(
     # Metrics
     duration_diff_sec = None
     try:
-        if a_meta.get("duration") is not None and b_meta.get("duration") is not None:
-            duration_diff_sec = abs(float(a_meta["duration"]) - float(b_meta["duration"]))
+        if a_metadata.get("duration") is not None and b_metadata.get("duration") is not None:
+            duration_diff_sec = abs(float(a_metadata["duration"]) - float(b_metadata["duration"]))
     except Exception:
         pass
 
     size_diff_bytes = None
     try:
-        if a_meta.get("size") is not None and b_meta.get("size") is not None:
-            size_diff_bytes = abs(int(a_meta["size"]) - int(b_meta["size"]))
+        if a_metadata.get("size") is not None and b_metadata.get("size") is not None:
+            size_diff_bytes = abs(int(a_metadata["size"]) - int(b_metadata["size"]))
     except Exception:
         pass
 
     same_resolution = None
     try:
-        if a_meta.get("width") and b_meta.get("width") and a_meta.get("height") and b_meta.get("height"):
-            same_resolution = (a_meta["width"], a_meta["height"]) == (b_meta["width"], b_meta["height"])
+        if a_metadata.get("width") and b_metadata.get("width") and a_metadata.get("height") and b_metadata.get("height"):
+            same_resolution = (a_metadata["width"], a_metadata["height"]) == (b_metadata["width"], b_metadata["height"])
     except Exception:
         pass
 
     return api_success({
-        "a": a_meta,
-        "b": b_meta,
+        "a": a_metadata,
+        "b": b_metadata,
         "metrics": {
             "duration_diff_sec": duration_diff_sec,
             "size_diff_bytes": size_diff_bytes,
@@ -8732,7 +8812,7 @@ def performers_images_upload_zip(
                     skipped += 1
                     errors.append(f"extract failed: {m.filename}")
                     continue
-        files: list[UploadFile] = []
+        files: list[Any] = []
         class _F:
             def __init__(self, path: Path, rel: str):
                 self.file = open(path, 'rb')
@@ -8750,8 +8830,8 @@ def performers_images_upload_zip(
                 wrapper_lower = wrapper.lower()
                 if wrapper_lower in {"output", "images", "img", "performers", "upload"} or len(wrapper_lower) <= 3 or wrapper_lower.startswith("out"):
                     for p in files:
-                        fn = p.filename
-                        if fn.startswith(wrapper + "/"):
+                        fn = getattr(p, 'filename', None)
+                        if isinstance(fn, str) and fn.startswith(wrapper + "/"):
                             p.filename = fn[len(wrapper) + 1:]
                     try:
                         logging.info("[performers:upload-zip] flattened wrapper '%s' for %d file(s)", wrapper, len(files))
@@ -9387,9 +9467,9 @@ def api_compare(
         raise_api_error("ffmpeg not available", status_code=500)
 
     def _probe_dim(p: Path) -> tuple[Optional[int], Optional[int]]:
-        meta = _ffprobe_streams_safe(p)
+        metadata = _ffprobe_streams_safe(p)
         try:
-            for st in meta.get("streams", []) or []:
+            for st in metadata.get("streams", []) or []:
                 if (st or {}).get("codec_type") == "video":
                     w = st.get("width")
                     h = st.get("height")
@@ -9676,7 +9756,7 @@ def thumbnail_head_canonical(path: str = Query(...)):
 
 
 @api.post("/thumbnail")
-def thumbnail_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
+def thumbnail_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False), priority: bool = Query(default=False)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
     _log("thumbnail", f"thumbnail api.create start path={path} t={t} q={quality} ow={int(bool(overwrite))}")
@@ -9715,7 +9795,7 @@ def thumbnail_create(path: str = Query(...), t: Optional[str | float] = Query(de
 
     try:
         # Run as a background job so the HTTP request returns quickly; progress appears in Jobs UI
-        return _wrap_job_background("thumbnail", str(video.relative_to(STATE["root"])), _do)
+        return _wrap_job_background("thumbnail", str(video.relative_to(STATE["root"])), _do, priority=bool(priority))
     except Exception as e:  # noqa: BLE001
         _log("thumbnail", f"thumbnail api.create fail path={path} err={e}")
         raise_api_error(f"thumbnail create failed: {e}", status_code=500)
@@ -9802,19 +9882,15 @@ def thumbnail_create_batch(
                                 pass
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
-            for p in vids:
-                t = threading.Thread(target=_process, args=(p,), name=f"thumbnail-batch-item-{p.name}", daemon=True)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
+            # Bounded per-item concurrency via shared pool
+            _run_batch_items(vids, _process)
             _finish_job(sup_jid, None)
             _log("thumbnail", f"thumbnail api.batch end base={base} count={len(vids)} job={sup_jid}")
         except Exception as e:
             _log("thumbnail", f"thumbnail api.batch fail base={base} err={e}")
             _finish_job(sup_jid, str(e))
 
-    threading.Thread(target=_worker, daemon=True).start()
+    _start_worker_once(f"batch-thumbnail-{sup_jid}", _worker)
     return api_success({"started": True, "job": sup_jid})
 
 
@@ -9986,7 +10062,7 @@ def _preview_info_path(video: Path) -> Path:
 
 
 @api.post("/preview")
-def preview_create(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False), fmt: str = Query(default="webm")):
+def preview_create(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False), fmt: str = Query(default="webm"), priority: bool = Query(default=False)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
     # Hard-require ffmpeg for real preview generation; don't create jobs if missing
@@ -10000,19 +10076,19 @@ def preview_create(path: str = Query(...), segments: int = Query(default=9), seg
     except Exception:
         sync_flag = False
     # Note: we can't read query param 'sync' directly here without adding a function arg; add it:
-    return _preview_create_impl(video, segments=segments, seg_dur=seg_dur, width=width, overwrite=overwrite, background=not sync_flag, fmt=fmt)
+    return _preview_create_impl(video, segments=segments, seg_dur=seg_dur, width=width, overwrite=overwrite, background=not sync_flag, fmt=fmt, priority=bool(priority))
 
 
 @api.post("/preview/bg")
-def preview_create_background(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False), fmt: str = Query(default="webm")):
+def preview_create_background(path: str = Query(...), segments: int = Query(default=9), seg_dur: float = Query(default=0.8), width: int = Query(default=240), overwrite: bool = Query(default=False), fmt: str = Query(default="webm"), priority: bool = Query(default=False)):
     """Explicit background preview creation endpoint; always queues job and returns job id immediately."""
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
     _require_ffmpeg_or_error("previews")
-    return _preview_create_impl(video, segments=segments, seg_dur=seg_dur, width=width, overwrite=overwrite, background=True, fmt=fmt)
+    return _preview_create_impl(video, segments=segments, seg_dur=seg_dur, width=width, overwrite=overwrite, background=True, fmt=fmt, priority=bool(priority))
 
 
-def _preview_create_impl(video: Path, *, segments: int, seg_dur: float, width: int, overwrite: bool, background: bool, fmt: str = "webm"):
+def _preview_create_impl(video: Path, *, segments: int, seg_dur: float, width: int, overwrite: bool, background: bool, fmt: str = "webm", priority: bool = False):
     # Shared implementation used by sync and background endpoints.
     def _do():
         # If exists and not overwriting, return early
@@ -10069,9 +10145,9 @@ def _preview_create_impl(video: Path, *, segments: int, seg_dur: float, width: i
     try:
         rel = str(video.relative_to(STATE["root"]))
         if background:
-            return _wrap_job_background("preview", rel, _do)
+            return _wrap_job_background("preview", rel, _do, priority=priority)
         else:
-            return _wrap_job("preview", rel, _do)
+            return _wrap_job("preview", rel, _do, priority=priority)
     except Exception as e:
         raise_api_error(f"preview create failed: {e}", status_code=500)
 
@@ -10190,18 +10266,13 @@ def preview_create_batch(
                         _finish_job(jid, str(e))
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
-            for p in vids:
-                t = threading.Thread(target=_process, args=(p,), name=f"preview-batch-item-{p.name}", daemon=True)
-                threads.append(t)
-                t.start()
-            # Wait for all items to complete
-            for t in threads:
-                t.join()
+            # Bounded per-item concurrency via shared pool
+            _run_batch_items(vids, _process)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
 
-    threading.Thread(target=_worker, daemon=True).start()
+    _start_worker_once(f"batch-preview-{sup_jid}", _worker)
     return api_success({"started": True, "job": sup_jid})
 
 
@@ -10247,7 +10318,7 @@ async def preview_delete(request: Request, path: str | None = Query(default=None
         pass
 
     deleted = 0
-    meta_deleted = 0
+    metadata_deleted = 0
     errors = 0
     def _p(msg: str):
         try:
@@ -10268,8 +10339,8 @@ async def preview_delete(request: Request, path: str | None = Query(default=None
                             deleted += 1
                             _p(f"deleted preview {candidate}")
                         else:
-                            meta_deleted += 1
-                            _p(f"deleted preview meta {candidate}")
+                            metadata_deleted += 1
+                            _p(f"deleted preview metadata {candidate}")
                     except Exception:
                         errors += 1
                         _p(f"failed deleting direct artifact {candidate}")
@@ -10294,14 +10365,14 @@ async def preview_delete(request: Request, path: str | None = Query(default=None
                 errors += 1
                 _p(f"failed deleting derived preview (mp4) {candidate}")
             try:
-                meta = preview_json_path(candidate)
-                if meta.exists():
-                    meta.unlink()
-                    meta_deleted += 1
-                    _p(f"deleted derived preview meta {meta} (source={candidate})")
+                metadata = preview_json_path(candidate)
+                if metadata.exists():
+                    metadata.unlink()
+                    metadata_deleted += 1
+                    _p(f"deleted derived preview metadata {metadata} (source={candidate})")
             except Exception:
                 errors += 1
-                _p(f"failed deleting derived preview meta {candidate}")
+                _p(f"failed deleting derived preview metadata {candidate}")
         except Exception:
             errors += 1
             _p(f"unexpected error deleting candidate {candidate}")
@@ -10309,7 +10380,7 @@ async def preview_delete(request: Request, path: str | None = Query(default=None
     result = {
         "requested": len(targets),
         "deleted_video_previews": deleted,
-        "deleted_metadata": meta_deleted,
+        "deleted_metadata": metadata_deleted,
         "errors": errors,
         "mode": "single" if path else ("batch" if body_paths else "global"),
     }
@@ -10445,7 +10516,7 @@ def artifacts_status(path: str = Query(...)):
 
 
 @api.post("/phash")
-def phash_create(path: str = Query(...), frames: int = Query(default=5), algo: str = Query(default="ahash"), combine: str = Query(default="xor")):
+def phash_create(path: str = Query(...), frames: int = Query(default=5), algo: str = Query(default="ahash"), combine: str = Query(default="xor"), priority: bool = Query(default=False)):
     fp = safe_join(STATE["root"], path)
     _frames = int(frames)
     _algo = str(algo)
@@ -10462,7 +10533,7 @@ def phash_create(path: str = Query(...), frames: int = Query(default=5), algo: s
             pass
         return api_success({"created": True, "path": str(phash_path(fp))})
     try:
-        return _wrap_job("phash", str(fp.relative_to(STATE["root"])), _do)
+        return _wrap_job("phash", str(fp.relative_to(STATE["root"])), _do, priority=bool(priority))
     except Exception as e:
         import traceback, sys
         try:
@@ -10514,16 +10585,11 @@ def phash_create_batch(
                         _finish_job(jid, str(e))
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
-            for p in vids:
-                t = threading.Thread(target=_process, args=(p,), name=f"phash-batch-item-{p.name}", daemon=True)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
+            _run_batch_items(vids, _process)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
-    threading.Thread(target=_worker, daemon=True).start()
+    _start_worker_once(f"batch-phash-{sup_jid}", _worker)
     return api_success({"started": True, "job": sup_jid})
 
 
@@ -10636,7 +10702,7 @@ def markers_store_head(path: str = Query(...)):
 
 
 @api.post("/markers/detect")
-def markers_detect(path: str = Query(...), threshold: float = Query(default=0.4), limit: int = Query(default=0), thumbnails: bool = Query(default=False), clips: bool = Query(default=False), thumbnails_width: int = Query(default=320), clip_duration: float = Query(default=2.0), fast: bool = Query(default=True)):
+def markers_detect(path: str = Query(...), threshold: float = Query(default=0.4), limit: int = Query(default=0), thumbnails: bool = Query(default=False), clips: bool = Query(default=False), thumbnails_width: int = Query(default=320), clip_duration: float = Query(default=2.0), fast: bool = Query(default=True), priority: bool = Query(default=False)):
     fp = safe_join(STATE["root"], path)
     # Marker detection and outputs require ffmpeg present
     _require_ffmpeg_or_error("marker detection")
@@ -10645,7 +10711,7 @@ def markers_detect(path: str = Query(...), threshold: float = Query(default=0.4)
     # process concurrency is still bounded by _FFMPEG_SEM; per-file lock prevents
     # duplicate work on the same video. Opt-out by setting SCENES_LIGHT_SLOT=0.
     light_slot = os.environ.get("SCENES_LIGHT_SLOT", "1") != "0"
-    jid = _new_job("markers", str(fp.relative_to(STATE["root"])))
+    jid = _new_job("markers", str(fp.relative_to(STATE["root"])), priority=bool(priority))
     def _runner():
         try:
             _wait_for_turn(jid)
@@ -10921,12 +10987,7 @@ def markers_detect_batch(
                         _finish_job(jid, str(_e))
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
-            for p in vids:
-                t = threading.Thread(target=_process, args=(p,), name=f"markers-batch-item-{p.name}", daemon=True)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
+            _run_batch_items(vids, _process)
             # Persist supervisor state and heartbeat at end
             try:
                 _persist_job(sup_jid)
@@ -10935,7 +10996,7 @@ def markers_detect_batch(
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
-    threading.Thread(target=_worker, daemon=True).start()
+    _start_worker_once(f"batch-markers-{sup_jid}", _worker)
     return api_success({"started": True, "job": sup_jid})
 
 
@@ -10971,7 +11032,7 @@ def sprites_sheet(path: str = Query(...)):
 
 
 @api.post("/sprites/create")
-def sprites_create(path: str = Query(...), interval: float = Query(default=12.0), width: int = Query(default=240), cols: int = Query(default=8), rows: int = Query(default=8), quality: int = Query(default=6)):
+def sprites_create(path: str = Query(...), interval: float = Query(default=12.0), width: int = Query(default=240), cols: int = Query(default=8), rows: int = Query(default=8), quality: int = Query(default=6), priority: bool = Query(default=False)):
     fp = safe_join(STATE["root"], path)
     # Sprites need ffmpeg for high-quality real output; block if unavailable
     _require_ffmpeg_or_error("sprites generation")
@@ -10998,7 +11059,7 @@ def sprites_create(path: str = Query(...), interval: float = Query(default=12.0)
         return api_success({"created": True})
     # Use background wrapper so UI returns immediately; job status polled/SSE updated asynchronously
     try:
-        return _wrap_job_background("sprites", str(fp.relative_to(STATE["root"])), _do)
+        return _wrap_job_background("sprites", str(fp.relative_to(STATE["root"])), _do, priority=bool(priority))
     except Exception as e:
         raise_api_error(f"sprites failed: {e}", status_code=500)
 
@@ -11039,16 +11100,11 @@ def sprites_create_batch(path: str = Query(default=""), recursive: bool = Query(
                         _finish_job(jid, str(e))
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
-            for p in vids:
-                t = threading.Thread(target=_process, args=(p,), name=f"sprites-batch-item-{p.name}", daemon=True)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
+            _run_batch_items(vids, _process)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
-    threading.Thread(target=_worker, daemon=True).start()
+    _start_worker_once(f"batch-sprites-{sup_jid}", _worker)
     return api_success({"started": True, "job": sup_jid})
 
 
@@ -11166,7 +11222,7 @@ def heatmaps_head(path: str = Query(...)):
 
 
 @api.post("/heatmaps/create")
-def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=True), force: bool = Query(default=False)):
+def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=True), force: bool = Query(default=False), priority: bool = Query(default=False)):
     fp = safe_join(STATE["root"], path)
     # Heatmap sampling uses ffmpeg signalstats; block if missing
     _require_ffmpeg_or_error("heatmaps generation")
@@ -11181,7 +11237,7 @@ def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0)
         d = compute_heatmaps(fp, float(interval), str(mode), bool(png), progress_cb=_pcb)
         return api_success({"created": True, "path": str(heatmaps_json_path(fp)), "samples": len(d.get("samples", []))})
     try:
-        return _wrap_job("heatmaps", str(fp.relative_to(STATE["root"])), _do)
+        return _wrap_job("heatmaps", str(fp.relative_to(STATE["root"])), _do, priority=bool(priority))
     except Exception as e:
         raise_api_error(f"heatmaps failed: {e}", status_code=500)
 
@@ -11224,16 +11280,11 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
                         _finish_job(jid, str(e))
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
-            for p in vids:
-                t = threading.Thread(target=_process, args=(p,), name=f"heatmaps-batch-item-{p.name}", daemon=True)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
+            _run_batch_items(vids, _process)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
-    threading.Thread(target=_worker, daemon=True).start()
+    _start_worker_once(f"batch-heatmaps-{sup_jid}", _worker)
     return api_success({"started": True, "job": sup_jid})
 
 
@@ -11456,7 +11507,7 @@ def metadata_list_head(path: str = Query(default=""), recursive: bool = Query(de
 
 
 @api.post("/metadata/create")
-def metadata_create(path: str = Query(...)):
+def metadata_create(path: str = Query(...), priority: bool = Query(default=False)):
     fp = safe_join(STATE["root"], path)
     if not fp.exists() or not fp.is_file():
         raise_api_error("Not found", status_code=404)
@@ -11490,7 +11541,7 @@ def metadata_create(path: str = Query(...)):
         }
         return api_success(summary)
     try:
-        return _wrap_job("metadata", str(fp.relative_to(STATE["root"])), _do)
+        return _wrap_job("metadata", str(fp.relative_to(STATE["root"])), _do, priority=bool(priority))
     except Exception as e:  # noqa: BLE001
         raise_api_error(f"metadata create failed: {e}", status_code=500)
 
@@ -11527,16 +11578,11 @@ def metadata_create_batch(path: str = Query(default=""), recursive: bool = Query
                         _finish_job(jid, str(e))
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
-            for p in vids:
-                t = threading.Thread(target=_process, args=(p,), name=f"metadata-batch-item-{p.name}", daemon=True)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
+            _run_batch_items(vids, _process)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
-    threading.Thread(target=_worker, daemon=True).start()
+    _start_worker_once(f"batch-metadata-{sup_jid}", _worker)
     return api_success({"started": True, "job": sup_jid})
 
 
@@ -11680,6 +11726,7 @@ def subtitles_create(
     overwrite: bool = Query(default=False),
     language: str = Query(default="en"),
     translate: bool = Query(default=False),
+    priority: bool = Query(default=False),
 ):
     fp = safe_join(STATE["root"], path)
     out_dir = artifact_dir(fp)
@@ -11711,7 +11758,7 @@ def subtitles_create(
         generate_subtitles(fp, out_file, model=_Ns.subtitles_model, language=_Ns.subtitles_language, translate=_Ns.subtitles_translate, progress_cb=_pcb)
         return api_success({"created": True, "path": str(out_file)})
     try:
-        return _wrap_job("subtitles", str(fp.relative_to(STATE["root"])), _do)
+        return _wrap_job("subtitles", str(fp.relative_to(STATE["root"])), _do, priority=bool(priority))
     except Exception as e:
         raise_api_error(f"Subtitle generation failed: {e}", status_code=500)
 
@@ -11792,16 +11839,11 @@ def subtitles_create_batch(
                         _finish_job(jid, str(e))
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
-            for p in vids:
-                t = threading.Thread(target=_process, args=(p,), name=f"subtitles-batch-item-{p.name}", daemon=True)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
+            _run_batch_items(vids, _process)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
-    threading.Thread(target=_worker, daemon=True).start()
+    _start_worker_once(f"batch-subtitles-{sup_jid}", _worker)
     return api_success({"started": True, "job": sup_jid})
 
 
@@ -12222,7 +12264,7 @@ def _compute_fallback_embedding_for_box(video: Path, t: float, box: List[int]) -
                 y1 = min(max(0, y), max(0, H - 1))
                 if x2 > x1 and y2 > y1:
                     im = im.crop((x1, y1, x2, y2)).convert("L").resize((32, 32))
-                    px = list(im.getdata())
+                    px = list(cast(Iterable[int], im.getdata()))
                     # Average-pool to 8x8 grid
                     vec: List[float] = []
                     for ry in range(8):
@@ -12346,6 +12388,7 @@ def faces_create(
     min_size_frac: float = Query(default=0.10),
     backend: str = Query(default="auto", pattern="^(auto|opencv|insightface)$"),
     background: bool = Query(default=False),
+    priority: bool = Query(default=False),
 ):
     fp = safe_join(STATE["root"], path)
     # Background mode for UI progress: return immediately with job id and report progress via SSE/polling
@@ -12364,7 +12407,7 @@ def faces_create(
             )
             return {"created": True, "path": str(faces_path(fp))}
         # create job and start thread
-        jid = _new_job("faces", rel)
+        jid = _new_job("faces", rel, priority=bool(priority))
         _start_job(jid)
         def _bg():
             try:
@@ -12378,7 +12421,7 @@ def faces_create(
         threading.Thread(target=_bg, name=f"job-faces-{Path(path).name}", daemon=True).start()
         return api_success({"job": jid, "queued": True})
     # Synchronous mode (used by tests and scripts); still emits job progress while running
-    jid = _new_job("faces", str(fp.relative_to(STATE["root"])) )
+    jid = _new_job("faces", str(fp.relative_to(STATE["root"])) , priority=bool(priority))
     _start_job(jid)
     try:
         compute_face_embeddings(
@@ -12452,16 +12495,11 @@ def faces_create_batch(
                         _finish_job(jid, str(e))
                 finally:
                     _set_job_progress(sup_jid, processed_inc=1)
-            for p in vids:
-                t = threading.Thread(target=_process, args=(p,), name=f"faces-batch-item-{p.name}", daemon=True)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
+            _run_batch_items(vids, _process)
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
-    threading.Thread(target=_worker, daemon=True).start()
+    _start_worker_once(f"batch-faces-{sup_jid}", _worker)
     return api_success({"started": True, "job": sup_jid})
 
 
@@ -13410,10 +13448,12 @@ def artifacts_orphans_status(
             if f.is_file() and _parse_artifact_name(f.name):
                 artifacts.append(f)
 
-    media_by_stem, _ = _collect_media_and_meta(base)
+    media_by_stem, _ = _collect_media_and_metadata(base)
 
-    orphaned: list[str] = []
+    orphaned: list[str] = []  # per-file orphaned artifacts (legacy)
     matched: list[str] = []
+    # Track unique orphan stems to avoid over-counting same-name sidecars
+    orphaned_stems: dict[str, str] = {}
 
     for art in artifacts:
         try:
@@ -13453,15 +13493,27 @@ def artifacts_orphans_status(
             if media_exists:
                 matched.append(str(art.relative_to(base)))
             else:
-                orphaned.append(str(art.relative_to(base)))
+                relp = str(art.relative_to(base))
+                orphaned.append(relp)
+                try:
+                    # Record a representative file per orphan stem
+                    if a_stem not in orphaned_stems:
+                        orphaned_stems[a_stem] = relp
+                except Exception:
+                    pass
         except Exception:
             continue
 
     return api_success({
         "total_artifacts": len(artifacts),
         "matched": len(matched),
-        "orphaned": len(orphaned),
-        "orphaned_files": orphaned[:100]  # Limit to first 100 for display
+        # Report unique stems as the main orphan count (more accurate)
+        "orphaned": len(orphaned_stems),
+        # Provide legacy per-file count for UIs that still need it
+        "orphaned_files_total": len(orphaned),
+        "orphaned_files": orphaned[:100],  # Limit to first 100 for display
+        # Provide sample representatives for unique stems
+        "orphaned_stem_examples": list(orphaned_stems.values())[:100],
     })
 
 @app.post("/api/artifacts/cleanup")
@@ -13517,9 +13569,9 @@ def artifacts_repair_preview(path: str = Query(default=""), local_only: bool = Q
     media_by_stem: dict[str, Path] = {}
     media_by_dir: dict[Path, list[tuple[str, Path]]] = {}
     media_durations: dict[str, float] = {}
-    meta_by_stem: dict[str, dict] = {}
+    metadata_by_stem: dict[str, dict] = {}
     if not local_only:
-        media_by_stem, meta_by_stem = _collect_media_and_meta(base)
+        media_by_stem, metadata_by_stem = _collect_media_and_metadata(base)
         # Index media by parent dir to prefer local matches
         for stem, v in media_by_stem.items():
             try:
@@ -13528,13 +13580,16 @@ def artifacts_repair_preview(path: str = Query(default=""), local_only: bool = Q
                 pass
         for stem, v in media_by_stem.items():
             try:
-                m = meta_by_stem.get(stem) or {}
+                m = metadata_by_stem.get(stem) or {}
                 d = m.get("duration")
                 if isinstance(d, (int, float)):
                     media_durations[stem] = float(d)
             except Exception:
                 pass
     orphan_duration_cache: dict[str, float] = {}
+    # Caches to accelerate local-only scans
+    media_dir_files_cache: dict[Path, list[tuple[str, Path]]] = {}
+    media_duration_path_cache: dict[Path, float] = {}
     renamed: list[dict] = []
     repaired_count = 0
     for art in artifacts:
@@ -13549,6 +13604,25 @@ def artifacts_repair_preview(path: str = Query(default=""), local_only: bool = Q
             cand_media = media_by_stem.get(a_stem)
             if cand_media and cand_media.exists():
                 continue
+            # In local-only mode, also check for a same-stem media file in the parent directory
+            if local_only:
+                try:
+                    found_same_stem = False
+                    for de in os.scandir(parent_dir.parent):
+                        if not de.is_file():
+                            continue
+                        name = de.name
+                        if name.startswith('.'):
+                            continue
+                        stem, ext = os.path.splitext(name)
+                        if ext.lower() in {".mp4", ".mkv", ".mov", ".avi", ".m4v", ".webm"} and stem == a_stem:
+                            found_same_stem = True
+                            break
+                    if found_same_stem:
+                        # Artifact already corresponds to an existing local media file with same stem
+                        continue
+                except Exception:
+                    pass
             # Attempt reassociation (repair heuristics)
             a_duration: float | None = None
             try:
@@ -13559,9 +13633,9 @@ def artifacts_repair_preview(path: str = Query(default=""), local_only: bool = Q
                         raw = json.loads(art.read_text())
                         a_duration = extract_duration(raw)
                     else:
-                        meta_file = parent_dir / f"{a_stem}{SUFFIX_METADATA_JSON}"
-                        if meta_file.exists():
-                            raw = json.loads(meta_file.read_text())
+                        metadata_file = parent_dir / f"{a_stem}{SUFFIX_METADATA_JSON}"
+                        if metadata_file.exists():
+                            raw = json.loads(metadata_file.read_text())
                             a_duration = extract_duration(raw)
                     if isinstance(a_duration, (int, float)):
                         orphan_duration_cache[a_stem] = float(a_duration)
@@ -13571,23 +13645,47 @@ def artifacts_repair_preview(path: str = Query(default=""), local_only: bool = Q
             local_candidates: list[tuple[str, Path]] = []
             try:
                 if local_only:
-                    # Build candidate list from local media directory
-                    cands: list[tuple[str, Path]] = []
-                    for de in os.scandir(parent_dir.parent):
-                        if not de.is_file():
-                            continue
-                        name = de.name
-                        if name.startswith('.'):
-                            continue
-                        ext = os.path.splitext(name)[1].lower()
-                        if ext in {".mp4", ".mkv", ".mov", ".avi", ".m4v", ".webm"}:
-                            vp = Path(de.path)
-                            cands.append((vp.stem, vp))
+                    # Build once per directory: list of (stem, path) for video files
+                    media_dir = parent_dir.parent
+                    cands = media_dir_files_cache.get(media_dir)
+                    if cands is None:
+                        cands = []
+                        try:
+                            for de in os.scandir(media_dir):
+                                if not de.is_file():
+                                    continue
+                                name = de.name
+                                if name.startswith('.'):
+                                    continue
+                                ext = os.path.splitext(name)[1].lower()
+                                if ext in {".mp4", ".mkv", ".mov", ".avi", ".m4v", ".webm"}:
+                                    vp = Path(de.path)
+                                    cands.append((vp.stem, vp))
+                        except Exception:
+                            cands = []
+                        media_dir_files_cache[media_dir] = cands
                     local_candidates = cands
                 else:
                     local_candidates = media_by_dir.get(parent_dir.parent, []) or []
             except Exception:
                 local_candidates = []
+            # Fast-path: if exact same stem exists in local candidates, prefer it immediately
+            if local_candidates:
+                for stem, v in local_candidates:
+                    if stem.lower() == a_stem_lower:
+                        matched = v
+                        dst_dir = artifact_dir(matched)
+                        new_name = f"{matched.stem}{kind}"
+                        dst_path = dst_dir / new_name
+                        try:
+                            if str(dst_path) == str(art) or (art.name == new_name and art.parent == dst_dir):
+                                matched = None  # identity; skip
+                            else:
+                                renamed.append({"from": str(art), "to": str(dst_path), "confidence": 1.0, "strategy": "exact"})
+                                repaired_count += 1
+                                continue
+                        except Exception:
+                            pass
             def _score_candidates(cands: list[tuple[str, Path]], cur_best: tuple[float, Path] | None) -> tuple[float, Path] | None:
                 best_local = cur_best
                 for stem, v in cands:
@@ -13633,6 +13731,12 @@ def artifacts_repair_preview(path: str = Query(default=""), local_only: bool = Q
                 dst_dir = artifact_dir(matched)
                 new_name = f"{matched.stem}{kind}"
                 dst_path = dst_dir / new_name
+                # Skip identity mappings (artifact already at the correct destination)
+                try:
+                    if str(dst_path) == str(art) or (art.name == new_name and art.parent == dst_dir):
+                        continue
+                except Exception:
+                    pass
                 try:
                     conf = float(best[0]) if isinstance(best, tuple) else 1.0
                 except Exception:
@@ -13676,56 +13780,93 @@ def _iter_artifacts_repair_preview_stream(base: Path, *, local_only: bool = True
             for f in p.iterdir():
                 if f.is_file() and _parse_artifact_name(f.name):
                     artifacts.append(f)
+
+        # Optional global indices when not local-only
         media_by_stem: dict[str, Path] = {}
         media_by_dir: dict[Path, list[tuple[str, Path]]] = {}
         media_durations: dict[str, float] = {}
-        meta_by_stem: dict[str, dict] = {}
+        metadata_by_stem: dict[str, dict] = {}
         if not local_only:
-            media_by_stem, meta_by_stem = _collect_media_and_meta(base)
+            media_by_stem, metadata_by_stem = _collect_media_and_metadata(base)
+            # Index media by parent dir to prefer local matches
             for stem, v in media_by_stem.items():
                 try:
                     media_by_dir.setdefault(v.parent, []).append((stem, v))
                 except Exception:
                     pass
-            for stem, v in media_by_stem.items():
+            for stem in list(media_by_stem.keys()):
                 try:
-                    m = meta_by_stem.get(stem) or {}
+                    m = metadata_by_stem.get(stem) or {}
                     d = m.get("duration")
                     if isinstance(d, (int, float)):
                         media_durations[stem] = float(d)
                 except Exception:
                     pass
+
+        # Caches
         orphan_duration_cache: dict[str, float] = {}
+        media_dir_files_cache: dict[Path, list[tuple[str, Path]]] = {}
+        media_duration_path_cache: dict[Path, float] = {}
+
         repaired_count = 0
         total = len(artifacts)
+
         # Initialize/seed cache for this base so apply can reuse results quickly
         try:
             cache = STATE.get("_repair_preview_cache")
             if isinstance(cache, dict):
-                cache[str(base)] = {"ts": time.time(), "renamed": [], "repaired_count": 0, "total": len(artifacts)}
+                cache[str(base)] = {"ts": time.time(), "renamed": [], "repaired_count": 0, "total": total}
         except Exception:
             pass
+
         # Emit header with totals
         yield (json.dumps({"type": "start", "total": total}) + "\n").encode()
+
         processed = 0
         for art in artifacts:
             processed += 1
             try:
                 parsed = _parse_artifact_name(art.name)
                 if not parsed:
+                    # Not a recognized artifact; skip
+                    if processed % 25 == 0:
+                        yield (json.dumps({"type": "progress", "processed": processed, "total": total}) + "\n").encode()
                     continue
                 a_stem, kind = parsed
                 a_stem_lower = a_stem.lower()
                 parent_dir = art.parent
+
                 # If exact media exists with the same stem, it's not an orphan — skip
-                cand_media = media_by_stem.get(a_stem)
-                if cand_media and cand_media.exists():
-                    # Still emit lightweight progress updates occasionally
-                    if processed % 25 == 0:
-                        yield (json.dumps({"type": "progress", "processed": processed, "total": total}) + "\n").encode()
-                    continue
+                if not local_only:
+                    cand_media = media_by_stem.get(a_stem)
+                    if cand_media and cand_media.exists():
+                        if processed % 25 == 0:
+                            yield (json.dumps({"type": "progress", "processed": processed, "total": total}) + "\n").encode()
+                        continue
+
+                # In local-only mode, also check for a same-stem media file in the parent directory
+                if local_only:
+                    try:
+                        found_same_stem = False
+                        for de in os.scandir(parent_dir.parent):
+                            if not de.is_file():
+                                continue
+                            name = de.name
+                            if name.startswith('.'):
+                                continue
+                            stem, ext = os.path.splitext(name)
+                            if ext.lower() in {".mp4", ".mkv", ".mov", ".avi", ".m4v", ".webm"} and stem == a_stem:
+                                found_same_stem = True
+                                break
+                        if found_same_stem:
+                            if processed % 25 == 0:
+                                yield (json.dumps({"type": "progress", "processed": processed, "total": total}) + "\n").encode()
+                            continue
+                    except Exception:
+                        pass
+
                 # Attempt reassociation (repair heuristics)
-                a_duration: float | None = None
+                a_duration: Optional[float] = None
                 try:
                     if a_stem in orphan_duration_cache:
                         a_duration = orphan_duration_cache[a_stem]
@@ -13734,35 +13875,83 @@ def _iter_artifacts_repair_preview_stream(base: Path, *, local_only: bool = True
                             raw = json.loads(art.read_text())
                             a_duration = extract_duration(raw)
                         else:
-                            meta_file = parent_dir / f"{a_stem}{SUFFIX_METADATA_JSON}"
-                            if meta_file.exists():
-                                raw = json.loads(meta_file.read_text())
+                            metadata_file = parent_dir / f"{a_stem}{SUFFIX_METADATA_JSON}"
+                            if metadata_file.exists():
+                                raw = json.loads(metadata_file.read_text())
                                 a_duration = extract_duration(raw)
                         if isinstance(a_duration, (int, float)):
                             orphan_duration_cache[a_stem] = float(a_duration)
                 except Exception:
                     a_duration = None
-                best: tuple[float, Path] | None = None
+
+                # Build candidate list for local-only matching
                 local_candidates: list[tuple[str, Path]] = []
                 try:
                     if local_only:
-                        cands: list[tuple[str, Path]] = []
-                        for de in os.scandir(parent_dir.parent):
-                            if not de.is_file():
-                                continue
-                            name = de.name
-                            if name.startswith('.'):
-                                continue
-                            ext = os.path.splitext(name)[1].lower()
-                            if ext in {".mp4", ".mkv", ".mov", ".avi", ".m4v", ".webm"}:
-                                vp = Path(de.path)
-                                cands.append((vp.stem, vp))
+                        media_dir = parent_dir.parent
+                        cands = media_dir_files_cache.get(media_dir)
+                        if cands is None:
+                            cands = []
+                            try:
+                                for de in os.scandir(media_dir):
+                                    if not de.is_file():
+                                        continue
+                                    name = de.name
+                                    if name.startswith('.'):
+                                        continue
+                                    ext = os.path.splitext(name)[1].lower()
+                                    if ext in {".mp4", ".mkv", ".mov", ".avi", ".m4v", ".webm"}:
+                                        vp = Path(de.path)
+                                        cands.append((vp.stem, vp))
+                            except Exception:
+                                cands = []
+                            media_dir_files_cache[media_dir] = cands
                         local_candidates = cands
                     else:
                         local_candidates = media_by_dir.get(parent_dir.parent, []) or []
                 except Exception:
                     local_candidates = []
-                def _score_candidates(cands: list[tuple[str, Path]], cur_best: tuple[float, Path] | None) -> tuple[float, Path] | None:
+
+                # Fast-path: if exact same stem exists in local candidates, prefer it immediately
+                if local_candidates:
+                    try:
+                        exact = next(((s, v) for (s, v) in local_candidates if s.lower() == a_stem_lower), None)
+                    except Exception:
+                        exact = None
+                    if exact is not None:
+                        _, matched_v = exact
+                        dst_dir = artifact_dir(matched_v)
+                        new_name = f"{matched_v.stem}{kind}"
+                        dst_path = dst_dir / new_name
+                        try:
+                            # Skip identity mappings
+                            if str(dst_path) == str(art) or (art.name == new_name and art.parent == dst_dir):
+                                pass
+                            else:
+                                entry = {"type": "item", "from": str(art), "to": str(dst_path), "confidence": 1.0, "strategy": "exact"}
+                                yield (json.dumps(entry) + "\n").encode()
+                                # Update cache
+                                try:
+                                    cache = STATE.get("_repair_preview_cache")
+                                    if isinstance(cache, dict):
+                                        ce = cache.get(str(base))
+                                        if isinstance(ce, dict):
+                                            lst = ce.get("renamed")
+                                            if isinstance(lst, list):
+                                                lst.append({k: v for k, v in entry.items() if k != "type"})
+                                            ce["repaired_count"] = int((ce.get("repaired_count") or 0)) + 1
+                                            ce["ts"] = time.time()
+                                except Exception:
+                                    pass
+                                repaired_count += 1
+                                if processed % 25 == 0:
+                                    yield (json.dumps({"type": "progress", "processed": processed, "total": total}) + "\n").encode()
+                                continue
+                        except Exception:
+                            pass
+
+                # Scoring-based fallback
+                def _score_candidates(cands: list[tuple[str, Path]], cur_best: Optional[tuple[float, Path]]) -> Optional[tuple[float, Path]]:
                     best_local = cur_best
                     for stem, v in cands:
                         try:
@@ -13779,10 +13968,14 @@ def _iter_artifacts_repair_preview_stream(base: Path, *, local_only: bool = True
                             d: Optional[float] = None
                             if local_only:
                                 try:
-                                    mf = metadata_path(v)
-                                    if mf.exists():
-                                        raw = json.loads(mf.read_text())
-                                        d = extract_duration(raw) or None
+                                    dv = media_duration_path_cache.get(v)
+                                    if dv is None:
+                                        mf = metadata_path(v)
+                                        if mf.exists():
+                                            raw = json.loads(mf.read_text())
+                                            dv = extract_duration(raw) or None
+                                        media_duration_path_cache[v] = float(dv) if isinstance(dv, (int, float)) else 0.0
+                                    d = dv if isinstance(dv, (int, float)) else None
                                 except Exception:
                                     d = None
                             else:
@@ -13794,6 +13987,8 @@ def _iter_artifacts_repair_preview_stream(base: Path, *, local_only: bool = True
                         if best_local is None or score > best_local[0]:
                             best_local = (score, v)
                     return best_local
+
+                best: Optional[tuple[float, Path]] = None
                 if local_candidates:
                     best = _score_candidates(local_candidates, None)
                 if not local_only:
@@ -13805,6 +14000,14 @@ def _iter_artifacts_repair_preview_stream(base: Path, *, local_only: bool = True
                     dst_dir = artifact_dir(matched)
                     new_name = f"{matched.stem}{kind}"
                     dst_path = dst_dir / new_name
+                    # Skip identity mappings (artifact already at the correct destination)
+                    try:
+                        if str(dst_path) == str(art) or (art.name == new_name and art.parent == dst_dir):
+                            if processed % 25 == 0:
+                                yield (json.dumps({"type": "progress", "processed": processed, "total": total}) + "\n").encode()
+                            continue
+                    except Exception:
+                        pass
                     try:
                         conf = float(best[0]) if isinstance(best, tuple) else 1.0
                     except Exception:
@@ -13825,6 +14028,7 @@ def _iter_artifacts_repair_preview_stream(base: Path, *, local_only: bool = True
                     except Exception:
                         pass
                     repaired_count += 1
+
                 # Emit progress every 25 items to avoid too chatty streams
                 if processed % 25 == 0:
                     yield (json.dumps({"type": "progress", "processed": processed, "total": total}) + "\n").encode()
@@ -13833,6 +14037,7 @@ def _iter_artifacts_repair_preview_stream(base: Path, *, local_only: bool = True
                 if processed % 25 == 0:
                     yield (json.dumps({"type": "progress", "processed": processed, "total": total}) + "\n").encode()
                 continue
+
         # Done
         yield (json.dumps({"type": "done", "repaired_count": repaired_count, "total": total}) + "\n").encode()
         try:
@@ -16416,11 +16621,11 @@ def _handle_cleanup_artifacts_job(jid: str, jr: JobRequest, base: Path) -> None:
     # In strict mode (no reassociation), avoid building global media indexes.
     # This keeps cleanup extremely fast by doing small per-directory checks.
     media_by_stem: dict[str, Path] = {}
-    meta_by_stem: dict[str, dict] = {}
+    metadata_by_stem: dict[str, dict] = {}
     media_by_dir: dict[Path, list[tuple[str, Path]]] = {}
     media_durations: dict[str, float] = {}
     if reassociate and not local_only:
-        media_by_stem, meta_by_stem = _collect_media_and_meta(base_dir)
+        media_by_stem, metadata_by_stem = _collect_media_and_metadata(base_dir)
         # Build a fast index of media by their immediate parent directory to avoid
         # O(N*M) global scans when trying to re-associate orphan artifacts. In
         # practice, correct matches overwhelmingly live next to the original media.
@@ -16432,7 +16637,7 @@ def _handle_cleanup_artifacts_job(jid: str, jr: JobRequest, base: Path) -> None:
                 pass
         for stem, v in media_by_stem.items():
             try:
-                m = meta_by_stem.get(stem) or {}
+                m = metadata_by_stem.get(stem) or {}
                 d = m.get("duration")
                 if isinstance(d, (int, float)):
                     media_durations[stem] = float(d)
@@ -16563,9 +16768,9 @@ def _handle_cleanup_artifacts_job(jid: str, jr: JobRequest, base: Path) -> None:
                             raw = json.loads(art.read_text())
                             a_duration = extract_duration(raw)
                         else:
-                            meta_file = parent_dir / f"{a_stem}{SUFFIX_METADATA_JSON}"
-                            if meta_file.exists():
-                                raw = json.loads(meta_file.read_text())
+                            metadata_file = parent_dir / f"{a_stem}{SUFFIX_METADATA_JSON}"
+                            if metadata_file.exists():
+                                raw = json.loads(metadata_file.read_text())
                                 a_duration = extract_duration(raw)
                         if isinstance(a_duration, (int, float)):
                             orphan_duration_cache[a_stem] = float(a_duration)
@@ -17436,12 +17641,12 @@ def api_action_split(req: SplitActionRequest):
     every = float(req.every or 0.0)
     if not (every and every > 0):
         raise HTTPException(400, "every (seconds) must be > 0")
-    dur, _title, _w, _h = _meta_summary_cached(src)
+    dur, _title, _w, _h = _metadata_summary_cached(src)
     if not dur or dur <= 0:
         try:
             # Generate metadata sidecar if missing, then re-read
             metadata_single(src, force=False)
-            dur, _t2, _w2, _h2 = _meta_summary_cached(src)
+            dur, _t2, _w2, _h2 = _metadata_summary_cached(src)
         except Exception:
             dur = None
     if not dur or dur <= 0:
@@ -17765,22 +17970,24 @@ def _handle_integrity_scan_job(jid: str, jr: JobRequest, base: Path) -> None:
             except Exception:
                 v_mtime = 0.0
             for k in kinds:
-                paths = art_map.get(k, [])
-                exists_any = False
-                stale_any = False
-                for ap in paths:
-                    if ap.exists():
-                        exists_any = True
-                        all_artifact_files.append(ap)
-                        try:
-                            if v_mtime and ap.stat().st_mtime < v_mtime:
-                                stale_any = True
-                        except Exception:
-                            pass
-                if not exists_any:
-                    missing.append(k)
-                elif stale_any:
-                    stale.append(k)
+                try:
+                    paths = art_map.get(k, [])
+                    exists_any = False
+                    stale_any = False
+                    for pth in paths:
+                        if pth.exists() and pth.is_file():
+                            exists_any = True
+                            try:
+                                if v_mtime and pth.stat().st_mtime < v_mtime:
+                                    stale_any = True
+                            except Exception:
+                                pass
+                    if not exists_any:
+                        missing.append(k)
+                    elif stale_any:
+                        stale.append(k)
+                except Exception:
+                    continue
             if include_ok or missing or stale:
                 results.append({
                     "file": rel(v),
@@ -18576,7 +18783,7 @@ def api_stats(path: str = Query(default=""), recursive: bool = Query(default=Tru
             total_size += int(getattr(st, "st_size", 0) or 0)
         except Exception:
             pass
-        dur, _title, width, height = _meta_summary_cached(p)
+        dur, _title, width, height = _metadata_summary_cached(p)
         if dur:
             try:
                 total_duration += float(dur)

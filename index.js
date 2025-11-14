@@ -373,6 +373,8 @@ function devLog(level, scope, ...args) {
 // Lightweight no-op placeholders to avoid no-undef when optional helpers are not wired
 const loadArtifactStatuses = (..._args) => {};
 const refreshSidebarThumbnail = (..._args) => {};
+// Default SSE to unavailable until /config explicitly enables it (prevents 404 probes)
+try { if (typeof window !== 'undefined') window.__JOBS_SSE_UNAVAILABLE = true; } catch(_) {}
 // Local slugify for tag/name normalization where needed
 const _slugify = (s) => String(s ?? '')
 .toLowerCase()
@@ -628,8 +630,8 @@ function wireAdjustments() {
   // Apply adjustments after each new video metadata loads
   try {
     const v = document.getElementById('playerVideo');
-    if (v && !v._adjMetaWired) {
-      v._adjMetaWired = true;
+    if (v && !v._adjMetadataWired) {
+      v._adjMetadataWired = true;
       v.addEventListener('loadedmetadata', () => applyVideoAdjustments());
     }
   }
@@ -934,7 +936,7 @@ function videoCard(v) {
     ? (v.thumbnail || v.thumb || v.thumbnail_url)
     : (v && v.path ? `/api/thumbnail?path=${encodeURIComponent(v.path)}` : '');
   // Duration/size: accept multiple field shapes for robustness
-  const durationSecRaw = (v && (v.duration ?? v.dur ?? v.length ?? (v.meta && v.meta.duration) ?? (v.info && v.info.duration))) ?? null;
+  const durationSecRaw = (v && (v.duration ?? v.dur ?? v.length ?? (v.metadata && v.metadata.duration) ?? (v.info && v.info.duration))) ?? null;
   const durationSec = Number(durationSecRaw);
   const dur = fmtDuration(Number.isFinite(durationSec) ? durationSec : NaN);
   const sizeRaw = (v && (v.size ?? v.bytes ?? v.filesize)) ?? null;
@@ -954,6 +956,25 @@ function videoCard(v) {
   checkbox.addEventListener('click', (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
+    // Support Shift-click range selection via checkbox as well
+    if (ev.shiftKey) {
+      try {
+        if (lastSelectedPath) {
+          selectRange(lastSelectedPath, v.path);
+          lastSelectedPath = v.path;
+          return;
+        }
+      }
+      catch (_) { }
+      // No prior anchor: select current and set anchor
+      if (!selectedItems.has(v.path)) {
+        selectedItems.add(v.path);
+        updateCardSelection(v.path);
+        updateSelectionUI();
+      }
+      lastSelectedPath = v.path;
+      return;
+    }
     toggleSelection(ev, v.path);
   });
   // Keyboard support for accessibility
@@ -1058,7 +1079,7 @@ function videoCard(v) {
     catch (_) {}
   });
   // Defer assigning src for non-eager tiles to reduce main thread contention.
-  // We attach data attributes for deferred meta computation as well.
+  // We attach data attributes for deferred metadata computation as well.
   el.dataset.w = String(v.width || '');
   el.dataset.h = String(v.height || '');
   el.dataset.name = String(v.title || v.name || '');
@@ -1095,7 +1116,7 @@ function videoCard(v) {
   }
   // Resolution / quality badge: prefer height (common convention)
   // Defer quality / resolution overlay population until element intersects viewport (reduces synchronous cost).
-  el._needsMeta = true;
+  el._needsMetadata = true;
   // Add video preview functionality
   el.addEventListener('mouseenter', async () => {
     if (!previewEnabled) return;
@@ -1212,9 +1233,9 @@ function videoCard(v) {
 // -----------------------------
 if (!window.__tileIO) {
   try {
-    const computeTileMeta = (card) => {
-      if (!card || !card._needsMeta) return;
-      card._needsMeta = false;
+    const computeTileMetadata = (card) => {
+      if (!card || !card._needsMetadata) return;
+      card._needsMetadata = false;
       try {
         const w = Number(card.dataset.w || '');
         const h = Number(card.dataset.h || '');
@@ -1314,11 +1335,11 @@ if (!window.__tileIO) {
           }
         }
         catch (_) { }
-        card._metaApplied = true;
+        card._metadataApplied = true;
       }
       catch (_) { }
     };
-    window.__computeTileMeta = computeTileMeta;
+    window.__computeTileMetadata = computeTileMetadata;
     // Prefer viewport root for broad compatibility. If the library panel is an actual
     // scroll container (content taller than its client height), use it; otherwise fall back
     // to the viewport so mobile/body scrolling still triggers intersections.
@@ -1333,7 +1354,7 @@ if (!window.__tileIO) {
         if (!e.isIntersecting) continue;
         const node = e.target;
         const card = node.closest('.card');
-        if (card && card._needsMeta) computeTileMeta(card);
+        if (card && card._needsMetadata) computeTileMetadata(card);
         if (node.dataset && node.dataset.src && !node.src) {
           // Preflight and possibly generate for /api/thumbnail URLs before assigning
           const src = node.dataset.src;
@@ -1412,6 +1433,12 @@ function currentPath() {
 let __libLoading = false;
 let __libReloadRequested = false;
 async function loadLibrary() {
+  // Run only when Library tab is active; otherwise do nothing
+  try {
+    if (!window.tabSystem || window.tabSystem.getActiveTab() !== 'library') {
+      return;
+    }
+  } catch(_) {}
   if (__libLoading) {
     try { devLog('debug', 'library', 'coalesce'); }
     catch (_) {}
@@ -2674,10 +2701,8 @@ async function loadStats() {
   }
   catch (e) { }
 }
-// run on initial load
-window.addEventListener('DOMContentLoaded', () => {
-  setTimeout(loadStats, 500);
-});
+// Lazy load Stats: only when Stats tab becomes active
+// (initial eager load removed to avoid loading inactive tab content)
 // Unified input live search (uncommitted text acts as search term)
 if (unifiedInput) {
   unifiedInput.addEventListener('input', () => {
@@ -2769,6 +2794,316 @@ document.querySelectorAll('.artifact-gen-btn[data-artifact]').forEach((btn) => {
     triggerArtifactJob(artifact);
   });
 });
+
+// List chips: trigger the same artifact actions scoped to that row's file
+function resolveArtifactRequest(artifact, filePath) {
+  const a = String(artifact || '').toLowerCase();
+  const qp = encodeURIComponent(filePath || '');
+  // Map aliases used in list chips to API artifact names
+  const norm = (key) => ({ metadata: 'metadata', chapters: 'markers', scenes: 'markers' }[key] || key);
+  const k = norm(a);
+  // Return { url, method }
+  switch (k) {
+    case 'metadata':
+      return { url: `/api/metadata/create?path=${qp}&priority=1`, method: 'POST' };
+    case 'thumbnail':
+      return { url: `/api/thumbnail?path=${qp}&overwrite=0&priority=1`, method: 'POST' };
+    case 'preview':
+      return { url: `/api/preview/bg?path=${qp}&priority=1`, method: 'POST' };
+    case 'sprites':
+      return { url: `/api/sprites/create?path=${qp}&priority=1` , method: 'POST' };
+    case 'heatmaps':
+      return { url: `/api/heatmaps/create?path=${qp}&priority=1`, method: 'POST' };
+    case 'subtitles':
+      return { url: `/api/subtitles/create?path=${qp}&priority=1`, method: 'POST' };
+    case 'faces':
+      return { url: `/api/faces/create?path=${qp}&priority=1`, method: 'POST' };
+    case 'phash':
+      return { url: `/api/phash?path=${qp}&priority=1`, method: 'POST' };
+    case 'waveform': {
+      const qf = encodeURIComponent(filePath || '');
+      return { url: `/waveform?file=${qf}&force=1`, method: 'GET' };
+    }
+    case 'motion': {
+      const qf = encodeURIComponent(filePath || '');
+      return { url: `/motion?file=${qf}&force=1`, method: 'GET' };
+    }
+    case 'markers':
+      return { url: `/api/markers/detect?path=${qp}&priority=1`, method: 'POST' };
+    default:
+      return null;
+  }
+}
+
+// Unified artifact chip renderer used by both Sidebar and List
+function normalizeArtifactKey(key) {
+  const k = String(key || '').toLowerCase();
+  if (k === 'meta') return 'metadata';
+  if (k === 'chapters' || k === 'scenes') return 'markers';
+  if (k === 'previews') return 'preview';
+  if (k === 'heatmap') return 'heatmaps'; // input alias
+  return k;
+}
+
+const ARTIFACT_DEFS = [
+  { key: 'metadata', label: 'Metadata', statusKey: 'metadata' },
+  { key: 'thumbnail', label: 'Thumb', statusKey: 'thumbnail' },
+  { key: 'preview', label: 'Preview', statusKey: 'preview' },
+  { key: 'sprites', label: 'Sprite', statusKey: 'sprites' },
+  { key: 'markers', label: 'Scenes', statusKey: 'markers' },
+  { key: 'subtitles', label: 'Subs', statusKey: 'subtitles' },
+  { key: 'heatmaps', label: 'Heat', statusKey: 'heatmap' },
+  { key: 'faces', label: 'Faces', statusKey: 'faces' },
+  { key: 'phash', label: 'pHash', statusKey: 'phash' },
+  { kedy: 'waveform', label: 'Wave', statusKey: 'waveform' },
+  { key: 'motion', label: 'Motion', statusKey: 'motion' },
+];
+
+function getArtifactDefs(keys) {
+  if (Array.isArray(keys) && keys.length) {
+    const want = new Set(keys.map(normalizeArtifactKey));
+    return ARTIFACT_DEFS.filter(d => want.has(d.key));
+  }
+  return ARTIFACT_DEFS;
+}
+
+// --- Chip sync helpers: keep list and sidebar chips in sync for a given file ---
+function setChipLoadingFor(path, chipKey, loading = true) {
+  try {
+    const selSafe = (s) => s.replace(/\"/g, '\\\"');
+    const domKey = normalizeArtifactKey(chipKey);
+    const row = document.querySelector(`[data-path="${selSafe(path || '')}"]`);
+    if (row) {
+      let c = null;
+      try { c = row.querySelector(`.chips-list [data-key="${domKey}"]`); } catch(_) {}
+      if (!c) {
+        try { c = row.querySelector(`.chips-list [data-key="${chipKey}"]`); } catch(_) {}
+      }
+      if (c) {
+        if (loading) c.dataset.loading = '1'; else c.removeAttribute('data-loading');
+      }
+    }
+  } catch(_) {}
+  try {
+    const side = (function(){
+      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${domKey}"]`); } catch(_) { return null; }
+    })() || (function(){
+      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${chipKey}"]`); } catch(_) { return null; }
+    })();
+    if (side) {
+      if (loading) side.dataset.loading = '1'; else side.removeAttribute('data-loading');
+    }
+  } catch(_) {}
+}
+
+function setChipPresentFor(path, chipKey) {
+  try {
+    const selSafe = (s) => s.replace(/\"/g, '\\\"');
+    const domKey = normalizeArtifactKey(chipKey);
+    const row = document.querySelector(`[data-path="${selSafe(path || '')}"]`);
+    if (row) {
+      let c = null;
+      try { c = row.querySelector(`.chips-list [data-key="${domKey}"]`); } catch(_) {}
+      if (!c) {
+        try { c = row.querySelector(`.chips-list [data-key="${chipKey}"]`); } catch(_) {}
+      }
+      if (c) applyChipPresent(c);
+    }
+  } catch(_) {}
+  try {
+    const side = (function(){
+      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${domKey}"]`); } catch(_) { return null; }
+    })() || (function(){
+      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${chipKey}"]`); } catch(_) { return null; }
+    })();
+    if (side) applyChipPresent(side);
+  } catch(_) {}
+}
+
+function makeArtifactEl(style, def, present) {
+  // Unify visuals: both styles use "artifact-chip" badge with state attributes
+  const el = document.createElement('div');
+  el.className = 'badge-pill artifact-chip';
+  el.dataset.key = def.key;
+  const lab = document.createElement('span'); lab.className = 'label'; lab.textContent = def.label;
+  const st = document.createElement('span'); st.className = 'status'; st.setAttribute('aria-hidden', 'true'); st.textContent = present ? '✓' : '✗';
+  el.dataset.present = present ? '1' : '0';
+  el.appendChild(lab); el.appendChild(st);
+  return el;
+}
+
+async function renderArtifactChips(container, filePath, opts = {}) {
+  if (!container) return;
+  const style = opts.style || 'chip'; // 'chip' or 'badge'
+  const defList = getArtifactDefs(opts.keys);
+  let status = opts.status || null;
+  if (!status) status = await fetchArtifactStatusForPath(filePath);
+  container.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (const def of defList) {
+    let present = !!(status && status[def.statusKey]);
+    const el = makeArtifactEl(style, def, present);
+    el.addEventListener('click', (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      triggerArtifactForPath(filePath, def.key, el);
+    });
+    // Metadata verification (list-friendly): prefer unified status first (cheap),
+    // then optionally confirm via metadata in the background. Avoid long spinners.
+    if (!present && def.key === 'metadata' && filePath) {
+      // While verifying, show neutral loading state (avoid flashing red)
+      try { el.dataset.loading = '1'; } catch(_) {}
+      try { setChipLoadingFor(filePath, 'metadata', true); } catch(_) {}
+      // Failsafe: ensure we never leave the chip spinning indefinitely
+      let cleared = false;
+      const clearLoading = () => {
+        if (cleared) return; cleared = true;
+        try { el.removeAttribute('data-loading'); } catch(_) {}
+        try { setChipLoadingFor(filePath, 'metadata', false); } catch(_) {}
+      };
+      const fsTimer = setTimeout(clearLoading, 8000);
+      // 1) Quick check: unified /artifacts/status
+      fetchArtifactStatusForPath(filePath).then((st) => {
+        if (st && st.metadata) {
+          applyChipPresent(el);
+          try { setChipPresentFor(filePath, 'metadata'); } catch(_) {}
+          try { clearTimeout(fsTimer); } catch(_) {}
+          cleared = true;
+          return;
+        }
+        // 2) Optional confirm via /api/metadata (do not keep spinner if absent)
+        clearLoading();
+        fetchMetadataCached(filePath).then((d) => {
+          if (!d) return;
+          applyChipPresent(el);
+          try { setChipPresentFor(filePath, 'metadata'); } catch(_) {}
+        });
+      }).catch(() => {
+        // network error: just clear loading
+        clearLoading();
+      });
+    }
+    frag.appendChild(el);
+  }
+  container.appendChild(frag);
+}
+
+async function triggerArtifactForPath(filePath, artifact, chipEl = null) {
+  if (!filePath || !artifact) {
+    showMessageModal('No file or artifact specified.', { title: 'Generate Artifact' });
+    return;
+  }
+  const req = resolveArtifactRequest(artifact, filePath);
+  if (!req) {
+    showMessageModal(`Unknown artifact: ${artifact}`, { title: 'Generate Artifact' });
+    return;
+  }
+  try {
+    // Set loading on both the clicked chip and its counterpart (list/sidebar)
+    try { setChipLoadingFor(filePath, artifact, true); } catch(_) {}
+    if (chipEl) {
+      try {
+        if (chipEl.classList.contains('artifact-chip')) {
+          chipEl.dataset.loading = '1';
+        } else {
+          chipEl.classList.add('btn-busy');
+        }
+      } catch(_) {}
+    }
+  } catch (_) {}
+  try {
+    const r = await fetch(req.url, { method: req.method || 'POST' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    // Success: background jobs will reconcile UI; nothing else to do here
+    try {
+      // Lightly poll artifacts/status to flip the chip to ✓ when done
+      pollArtifactStatusAndUpdateChip(filePath, artifact, chipEl);
+    } catch(_) {}
+  }
+  catch (e) {
+    showMessageModal(`Failed to generate ${artifact}: ${e.message || e}`, { title: 'Generate Artifact' });
+  }
+  finally {
+    // Do not clear spinner here; it will be cleared when the artifact is detected
+  }
+}
+
+// Map chip key to artifacts/status payload key
+function mapChipKeyToStatusKey(key) {
+  const k = String(key || '').toLowerCase();
+  if (k === 'metadata') return 'metadata';
+  if (k === 'chapters' || k === 'scenes' || k === 'markers') return 'markers';
+  if (k === 'heatmaps' || k === 'heatmap') return 'heatmap';
+  // passthroughs: thumbnail, preview, sprites, subtitles, faces
+  return k;
+}
+
+function applyChipPresent(chip) {
+  if (!chip) return;
+  // Unified badge style
+  if (chip.classList.contains('artifact-chip') || chip.classList.contains('badge-pill')) {
+    chip.dataset.present = '1';
+    try { chip.classList.remove('btn-busy'); } catch(_) {}
+    try { chip.removeAttribute('data-loading'); } catch(_) {}
+    try {
+      const st = chip.querySelector('.status');
+      if (st) st.textContent = '✓';
+    } catch(_) {}
+    return;
+  }
+  // Legacy fallback: plain chip element
+  if (chip.classList.contains('chip')) {
+    const key = chip.getAttribute('data-key') || '';
+    const label = key === 'chapters' ? 'Scenes' : (chip.textContent || '').replace(/^✕\s*/, '') || 'OK';
+    chip.className = 'chip chip--ok';
+    chip.textContent = label;
+    chip.title = `${label} present`;
+    try { chip.classList.remove('btn-busy'); } catch(_) {}
+  }
+}
+
+async function fetchArtifactStatusForPath(path) {
+  try {
+    const u = new URL('/api/artifacts/status', window.location.origin);
+    u.searchParams.set('path', path);
+    const r = await fetch(u.toString());
+    if (!r.ok) return null;
+    const j = await r.json();
+    return (j && (j.data || j)) || null;
+  } catch(_) { return null; }
+}
+
+// Poll status for up to ~60s, updating the provided chip when ready
+function pollArtifactStatusAndUpdateChip(path, chipKey, chipEl) {
+  const statusKey = mapChipKeyToStatusKey(chipKey);
+  if (!statusKey) return;
+  const rowEl = (() => {
+    try { return document.querySelector(`[data-path="${(path || '').replace(/"/g, '\\"')}"]`); }
+    catch(_) { return null; }
+  })();
+  const start = Date.now();
+  const maxMs = 60000; // 60s cap
+  const intervalMs = 2000;
+  let stop = false;
+  const timer = setInterval(async () => {
+    if (stop) return;
+    if (!document.contains(chipEl) && rowEl && !document.contains(rowEl)) {
+      // Row no longer in DOM; stop polling
+      clearInterval(timer); stop = true; return;
+    }
+    if (Date.now() - start > maxMs) {
+      clearInterval(timer); stop = true; return;
+    }
+    const st = await fetchArtifactStatusForPath(path);
+    if (!st) return;
+    if (st[statusKey]) {
+      // Update both list and sidebar badges for this file/key
+      try { setChipPresentFor(path, chipKey); } catch(_) {}
+      // Also update a directly supplied element, if any (covers transient DOM)
+      try { if (chipEl) applyChipPresent(chipEl); } catch(_) {}
+      clearInterval(timer); stop = true;
+    }
+  }, intervalMs);
+}
 orderToggle.addEventListener('click', () => {
   // Mark that the user explicitly chose an order; future sort changes won't auto-reset it
   orderToggle.dataset.userSet = '1';
@@ -3557,9 +3892,21 @@ let lastSelectedPath = null;
 function handleCardClick(event, path) {
   // If any items are selected, or if Ctrl/Shift is pressed, handle as selection
   if (selectedItems.size > 0 || event.ctrlKey || event.metaKey || event.shiftKey) {
-    if (event.shiftKey && lastSelectedPath) {
-      // Shift-click: select range
-      selectRange(lastSelectedPath, path);
+    if (event.shiftKey) {
+      // Shift-click: select range if we have an anchor; otherwise set anchor by selecting current
+      if (lastSelectedPath) {
+        selectRange(lastSelectedPath, path);
+        lastSelectedPath = path;
+        return;
+      }
+      // No anchor yet: select current and set anchor
+      if (!selectedItems.has(path)) {
+        selectedItems.add(path);
+        updateCardSelection(path);
+        updateSelectionUI();
+      }
+      lastSelectedPath = path;
+      return;
     }
     else if (event.ctrlKey || event.metaKey) {
       // Ctrl-click: toggle individual item
@@ -3617,6 +3964,7 @@ function toggleSelection(event, path) {
   }
   updateSelectionUI();
   updateCardSelection(path);
+  try { lastSelectedPath = path; } catch (_) { }
 }
 function updateSelectionUI() {
   const count = selectedItems.size;
@@ -3627,6 +3975,13 @@ function updateSelectionUI() {
   else {
     hide(selectionBar);
   }
+  // Keep Tasks tab's Selected Files counter in sync with library selection
+  try {
+    if (window.tasksManager && typeof window.tasksManager.updateSelectedFileCount === 'function') {
+      window.tasksManager.updateSelectedFileCount();
+    }
+  }
+  catch (_) { /* non-fatal */ }
 }
 function updateCardSelection(path) {
   const card = document.querySelector(`[data-path="${path}"]`);
@@ -4548,6 +4903,39 @@ else {
 window.TabRouter = TabRouter;
 window.TabSystem = TabSystem;
 window.tabSystem = tabSystem;
+// Lightweight lazy-init manager for tabs: run setup on first visible
+(function initLazyTabs(){
+  try {
+    const loaded = new Set();
+    const inits = new Map();
+    const ensure = (tabId) => {
+      if (!tabId || loaded.has(tabId)) return;
+      // Mark as loaded BEFORE running init to avoid re-entrant loops
+      loaded.add(tabId);
+      const fn = inits.get(tabId);
+      if (typeof fn === 'function') {
+        try { fn(); } catch (_) {}
+      }
+    };
+    const register = (tabId, fn) => { if (tabId && typeof fn === 'function') inits.set(tabId, fn); };
+    window.__LazyTabs = { register, ensure };
+    // Run init for the active tab once the first switch occurs
+    window.addEventListener('tabchange', (e) => {
+      try { ensure(e && e.detail && e.detail.activeTab); } catch (_) {}
+    });
+    // In case the initial tab is already visible before any tabchange
+    const runInitial = () => {
+      try {
+        const ts = window.tabSystem;
+        const id = ts && typeof ts.getActiveTab === 'function' ? ts.getActiveTab() : null;
+        if (id) ensure(id);
+      } catch (_) {}
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', runInitial, { once: true });
+    } else { setTimeout(runInitial, 0); }
+  } catch (_) {}
+})();
 // Ensure video + controls fit in viewport without vertical scroll (YouTube-like behavior)
 function setupViewportFitPlayer() {
   const playerPanel = document.getElementById('player-panel');
@@ -4595,7 +4983,7 @@ function setupViewportFitPlayer() {
   }
 }
 // --- List Tab (compact table view) ---
-(function setupListTab() {
+function setupListTab() {
   const COL_LS_KEY = 'mediaPlayer:list:columns';
   const SORT_LS_KEY = 'mediaPlayer:list:sort';
   const WRAP_LS_KEY = 'mediaPlayer:list:wrap';
@@ -4798,16 +5186,16 @@ function setupViewportFitPlayer() {
     return false;
   }
   const ART_COLS = [
-    {id: 'art-meta',   label: 'Meta',   keys: ['has_metadata','metadata'], width: 54},
-    {id: 'art-thumb',  label: 'Thumb',  keys: ['has_thumbnail','thumbnail','thumbnails'], width: 54},
-    {id: 'art-sprite', label: 'Sprite', keys: ['has_sprites','sprites'], width: 54},
-    {id: 'art-preview',label: 'Preview',keys: ['has_preview','preview','previewUrl'], width: 60},
-    {id: 'art-wave',   label: 'Wave',   keys: ['has_waveform','waveform'], width: 54},
-    {id: 'art-scenes', label: 'Scenes', keys: ['has_scenes','scenes','chapters'], width: 60},
-    {id: 'art-faces',  label: 'Faces',  keys: ['has_faces','faces'], width: 54},
-    {id: 'subs',       label: 'Subs',   keys: ['has_subtitles','subtitles'], width: 50},
-    {id: 'art-heat',   label: 'Heat',   keys: ['has_heatmaps','heatmaps'], width: 54},
-    {id: 'art-motion', label: 'Motion', keys: ['has_motion','motion'], width: 60},
+    {id: 'art-metadata', label: 'Metadata', keys: ['has_metadata','metadata'], width: 54},
+    {id: 'art-thumb',    label: 'Thumb',    keys: ['has_thumbnail','thumbnail','thumbnails'], width: 54},
+    {id: 'art-sprite',   label: 'Sprite',   keys: ['has_sprites','sprites'], width: 54},
+    {id: 'art-preview',  label: 'Preview',  keys: ['has_preview','preview','previewUrl'], width: 60},
+    {id: 'art-wave',     label: 'Wave',     keys: ['has_waveform','waveform'], width: 54},
+    {id: 'art-scenes',   label: 'Scenes',   keys: ['has_scenes','scenes','chapters'], width: 60},
+    {id: 'art-faces',    label: 'Faces',    keys: ['has_faces','faces'], width: 54},
+    {id: 'subs',         label: 'Subs',     keys: ['has_subtitles','subtitles'], width: 50},
+    {id: 'art-heat',     label: 'Heat',     keys: ['has_heatmaps','heatmaps'], width: 54},
+    {id: 'art-motion',   label: 'Motion',   keys: ['has_motion','motion'], width: 60},
   ];
   for (const ac of ART_COLS) {
     DEFAULT_COLS.push({ id: ac.id, label: ac.label, width: ac.width, visible: false,
@@ -4821,7 +5209,7 @@ function setupViewportFitPlayer() {
         };
         apply(present);
         // Special-case Metadata: if unknown from quick flags, confirm via metadata fetch
-        if (!present && ac.id === 'art-meta' && f && f.path) {
+        if (!present && ac.id === 'art-metadata' && f && f.path) {
           fetchMetadataCached(f.path).then((d) => {
             if (!td.isConnected) return;
             apply(Boolean(d));
@@ -4836,53 +5224,24 @@ function setupViewportFitPlayer() {
     render: (td, f) => {
       const cont = document.createElement('div');
       cont.className = 'chips-list';
-      const items = [
-        { key: 'meta',      label: 'Meta',    keys: ['has_metadata','metadata'] },
-        { key: 'thumbnail', label: 'Thumb',   keys: ['has_thumbnail','thumbnail','thumbnails'] },
-        { key: 'sprites',   label: 'Sprite',  keys: ['has_sprites','sprites'] },
-        { key: 'preview',   label: 'Preview', keys: ['has_preview','preview','previewUrl'] },
-        { key: 'chapters',  label: 'Scenes',  keys: ['has_scenes','scenes','chapters'] },
-        { key: 'subtitles', label: 'Subs',    keys: ['has_subtitles','subtitles'] },
-        { key: 'heatmaps',  label: 'Heat',    keys: ['has_heatmaps','heatmaps'] },
-        { key: 'faces',     label: 'Faces',   keys: ['has_faces','faces'] },
-        { key: 'waveform',  label: 'Wave',    keys: ['has_waveform','waveform'] },
-        { key: 'motion',    label: 'Motion',  keys: ['has_motion','motion'] },
-      ];
-      // Render a chip for each artifact: green if present, red with ✕ if missing
-      for (const it of items) {
-        try {
-          const present = hasArtifact(f, it.keys);
-          const chip = document.createElement('span');
-          chip.dataset.key = it.key || it.label.toLowerCase();
-          chip.className = present ? 'chip chip--ok' : 'chip chip--missing';
-          chip.textContent = present ? it.label : `✕ ${it.label}`;
-          chip.title = present ? `${it.label} present` : `${it.label} missing`;
-          cont.appendChild(chip);
-        }
-        catch(_) { }
-      }
-      // Lazy-check metadata presence and update the Meta chip if needed
-      try {
-        if (f && f.path) {
-          const metaChip = () => cont.querySelector('[data-key="meta"]');
-          const metaInitiallyPresent = hasArtifact(f, ['has_metadata','metadata']);
-          if (!metaInitiallyPresent) {
-            fetchMetadataCached(f.path).then((d) => {
-              if (!td.isConnected) return;
-              if (d) {
-                const c = metaChip();
-                if (c) {
-                  c.className = 'chip chip--ok';
-                  c.textContent = 'Meta';
-                  c.title = 'Meta present';
-                }
-              }
-            });
-          }
-        }
-      }
-      catch(_) { }
       td.appendChild(cont);
+      // Derive initial status map from row data to avoid network fetch
+      try {
+        const status = {};
+        const pres = (keys) => hasArtifact(f, keys);
+        status.metadata = pres(['has_metadata','metadata']);
+        status.thumbnail = pres(['has_thumbnail','thumbnail','thumbnails']);
+        status.sprites = pres(['has_sprites','sprites']);
+        status.preview = pres(['has_preview','preview','previewUrl']);
+        status.markers = pres(['has_scenes','scenes','chapters']);
+        status.subtitles = pres(['has_subtitles','subtitles']);
+        status.heatmap = pres(['has_heatmaps','heatmaps']);
+        status.faces = pres(['has_faces','faces']);
+        status.waveform = pres(['has_waveform','waveform']);
+        status.motion = pres(['has_motion','motion']);
+        const keys = ['metadata','thumbnail','sprites','preview','markers','subtitles','heatmaps','faces','waveform','motion'];
+        renderArtifactChips(cont, f.path || '', { style: 'chip', keys, status });
+      } catch(_) { }
     }
   });
   function pad2(n) { n = Number(n)||0; return n < 10 ? '0'+n : String(n); }
@@ -5005,7 +5364,7 @@ function setupViewportFitPlayer() {
       closeFilterMenu();
     }
     function isArtifactsFilterActive() {
-      const keys = ['meta','thumbnail','sprites','chapters','subtitles','heatmaps','faces','preview'];
+      const keys = ['metadata','thumbnail','sprites','chapters','subtitles','heatmaps','faces','preview'];
       return keys.some((k)=> listFilters && listFilters[k]);
     }
     function isFilterActiveForKey(key, colId) {
@@ -5072,7 +5431,7 @@ function setupViewportFitPlayer() {
       }
       else if (colId === 'artifacts') {
         const items = [
-          { k:'meta', label:'Meta' }, { k:'thumbnail', label:'Thumb' }, { k:'sprites', label:'Sprite' }, { k:'chapters', label:'Scenes' },
+          { k:'metadata', label:'Metadata' }, { k:'thumbnail', label:'Thumb' }, { k:'sprites', label:'Sprite' }, { k:'chapters', label:'Scenes' },
           { k:'subtitles', label:'Subs' }, { k:'heatmaps', label:'Heat' }, { k:'faces', label:'Faces' }, { k:'preview', label:'Preview' }
         ];
         const wrap = document.createElement('div'); wrap.className='values';
@@ -5743,17 +6102,19 @@ function setupViewportFitPlayer() {
     }
     addListTab(ts); return true;
   };
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-      tryInstall();
-    }, {once: true});
-  }
-  else if (!tryInstall()) setTimeout(tryInstall, 0);
-})();
+  if (!tryInstall()) setTimeout(tryInstall, 0);
+  // If List is already active (first-time activation), load immediately
+  try {
+    if (window.tabSystem && typeof window.tabSystem.getActiveTab === 'function' && window.tabSystem.getActiveTab() === 'list') {
+      setTimeout(() => { try { loadPage(); } catch (_) {} }, 0);
+    }
+  } catch (_) {}
+}
+try { window.__LazyTabs && window.__LazyTabs.register('list', setupListTab); } catch (_) {}
 // --- Similar Tab (pHash duplicates) ---
 // Minimal tab that lists similar pairs from /api/duplicates with quick Play A/B
 // --- Similar Tab (pHash duplicates) ---
-(function setupSimilarTab() {
+function setupSimilarTab() {
   function install(ts) {
     // Require existing static panel
     const panel = document.getElementById('similar-panel');
@@ -5937,8 +6298,14 @@ function setupViewportFitPlayer() {
       const hash = (window.location.hash || '').replace(/^#/, '');
       if (hash === 'similar') {
         restoreSettings();
-        ts.switchToTab('similar');
-        loadSimilar();
+        // Only switch if not already active; delay to avoid re-entrant init loops
+        try {
+          const cur = (window.tabSystem && typeof window.tabSystem.getActiveTab === 'function') ? window.tabSystem.getActiveTab() : null;
+          if (cur !== 'similar') {
+            setTimeout(() => { try { ts.switchToTab('similar'); } catch(_) {} }, 0);
+          }
+        } catch(_) {}
+        setTimeout(() => { try { loadSimilar(); } catch(_) {} }, 0);
       }
     }
     catch (_) { /* noop */ }
@@ -5950,18 +6317,15 @@ function setupViewportFitPlayer() {
     const res = install(ts);
     return Boolean(res);
   };
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-      tryInstall();
-    }, {once: true});
-  }
-  else {
-    if (!tryInstall()) {
-      // In case tabSystem is assigned slightly later, retry once on next tick
-      setTimeout(tryInstall, 0);
+  if (!tryInstall()) setTimeout(tryInstall, 0);
+  // If Similar is already active (first-time activation), load immediately
+  try {
+    if (window.tabSystem && typeof window.tabSystem.getActiveTab === 'function' && window.tabSystem.getActiveTab() === 'similar') {
+      setTimeout(() => { try { restoreSettings(); } catch (_) {} try { loadSimilar(); } catch (_) {} }, 0);
     }
-  }
-})();
+  } catch (_) {}
+}
+try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab); } catch (_) {}
 
 // =============================
 // Performers Graph (Cytoscape)
@@ -7364,8 +7728,11 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
     wireComposer();
-    // Load on init, when tab becomes active, or if deep-linked
-    loadSpecAndRender();
+    // Load only when visible (active) or if deep-linked
+    try {
+      const isActive = ts && typeof ts.getActiveTab === 'function' && ts.getActiveTab() === 'api';
+      if (isActive) loadSpecAndRender();
+    } catch (_) {}
     if (ts) {
       window.addEventListener('tabchange', (ev) => {
         if (ev?.detail?.activeTab === 'api') loadSpecAndRender();
@@ -10507,7 +10874,7 @@ const Player = (() => {
       // Ensure metadata is ready
       if (!Number.isFinite(duration) || duration <= 0) {
         await new Promise((res) => {
-          const onMeta = () => {
+          const onMetadata = () => {
             videoEl.removeEventListener('loadedmetadata', onMeta);
             res();
           };
@@ -11638,70 +12005,16 @@ const Player = (() => {
   let spriteHoverEnabled = false;
   async function loadArtifactStatuses() {
     if (!currentPath) return;
-    // Lazy acquire (in case of markup changes) without assuming globals exist
-    const badgeThumbnail = window.badgeThumbnail || document.getElementById('badge-thumbnail');
-    const badgeThumbnailStatus = window.badgeThumbnailStatus || document.getElementById('badge-thumbnail-status');
-    const badgePreview = window.badgePreview || document.getElementById('badge-preview');
-    const badgePreviewStatus = window.badgePreviewStatus || document.getElementById('badge-preview-status');
-    const badgeSprites = window.badgeSprites || document.getElementById('badge-sprites');
-    const badgeSpritesStatus = window.badgeSpritesStatus || document.getElementById('badge-sprites-status');
-    const badgeScenes = window.badgeScenes || document.getElementById('badge-scenes');
-    const badgeScenesStatus = window.badgeScenesStatus || document.getElementById('badge-scenes-status');
-    const badgeSubtitles = window.badgeSubtitles || document.getElementById('badge-subtitles');
-    const badgeSubtitlesStatus = window.badgeSubtitlesStatus || document.getElementById('badge-subtitles-status');
-    const badgeFaces = window.badgeFaces || document.getElementById('badge-faces');
-    const badgeFacesStatus = window.badgeFacesStatus || document.getElementById('badge-faces-status');
-    const badgePhash = window.badgePhash || document.getElementById('badge-phash');
-    const badgePhashStatus = window.badgePhashStatus || document.getElementById('badge-phash-status');
-    const badgeHeatmap = window.badgeHeatmap || document.getElementById('badge-heatmaps');
-    const badgeHeatmapStatus = window.badgeHeatmapStatus || document.getElementById('badge-heatmaps-status');
-    const badgeMeta = window.badgeMeta || document.getElementById('badge-metadata');
-    const badgeMetaStatus = window.badgeMetaStatus || document.getElementById('badge-metadata-status');
+    const cont = document.getElementById('artifactBadgesSidebar');
+    if (!cont) return;
+    const d = await fetchArtifactStatusForPath(currentPath);
+    // cache unified for other consumers
     try {
-      const u = new URL('/api/artifacts/status', window.location.origin);
-      u.searchParams.set('path', currentPath);
-      const r = await fetch(u.toString());
-      if (!r.ok) {
-        throw new Error('artifact status ' + r.status);
-      }
-      const j = await r.json();
-      const d = j && (j.data || j);
-      // cache
       window.__artifactStatus = window.__artifactStatus || {};
-      window.__artifactStatus[currentPath] = d;
-      const set = (present, badgeEl, statusEl) => {
-        if (statusEl) statusEl.textContent = present ? '✓' : '✗';
-        if (badgeEl) badgeEl.dataset.present = present ? '1' : '0';
-      };
-      // Backend returns `thumbnail` and `heatmap` (singular).
-      set(Boolean(d.thumbnail), badgeThumbnail, badgeThumbnailStatus);
-      set(Boolean(d.preview ?? d.hover), badgePreview, badgePreviewStatus);
-      set(Boolean(d.sprites), badgeSprites, badgeSpritesStatus);
-      set(Boolean(d.markers), badgeScenes, badgeScenesStatus);
-      set(Boolean(d.subtitles), badgeSubtitles, badgeSubtitlesStatus);
-      set(Boolean(d.faces), badgeFaces, badgeFacesStatus);
-      set(Boolean(d.phash), badgePhash, badgePhashStatus);
-      set(Boolean(d.heatmaps ?? d.heatmap), badgeHeatmap, badgeHeatmapStatus);
-      set(Boolean(d.metadata), badgeMeta, badgeMetaStatus);
-    }
-    catch (_) {
-      // On failure, mark unknowns as missing (do not spam console)
-      const badges = [
-        [badgeThumbnail, badgeThumbnailStatus],
-        [badgePreview, badgePreviewStatus],
-        [badgeSprites, badgeSpritesStatus],
-        [badgeScenes, badgeScenesStatus],
-        [badgeSubtitles, badgeSubtitlesStatus],
-        [badgeFaces, badgeFacesStatus],
-        [badgePhash, badgePhashStatus],
-        [badgeHeatmap, badgeHeatmapStatus],
-        [badgeMeta, badgeMetaStatus],
-      ];
-      for (const [b, s] of badges) {
-        if (s) s.textContent = '✗';
-        if (b) b.dataset.present = '0';
-      }
-    }
+      window.__artifactStatus[currentPath] = d || {};
+    } catch(_) {}
+    const keys = ['metadata','thumbnail','preview','phash','sprites','heatmaps','subtitles','markers','faces'];
+    await renderArtifactChips(cont, currentPath, { style: 'badge', keys, status: d || {} });
   }
   function wireBadgeActions() {
     const gen = async (kind) => {
@@ -11893,23 +12206,23 @@ const Player = (() => {
       }
       const interval = Number(idx.interval || 0);
       // Support both numeric frame count and array of frame metadata with timestamps
-      const framesMeta = Array.isArray(idx.frames) ? idx.frames : null;
+      const framesMetadata = Array.isArray(idx.frames) ? idx.frames : null;
       let totalFrames = cols * rows;
-      if (framesMeta && framesMeta.length) {
-        totalFrames = framesMeta.length;
+      if (framesMetadata && framesMetadata.length) {
+        totalFrames = framesMetadata.length;
       }
       else if (Number.isFinite(Number(idx.frames))) {
         totalFrames = Math.max(1, Number(idx.frames));
       }
-      const metaDur = Number(idx.duration || idx.video_duration || (framesMeta && framesMeta.length ? (Number(framesMeta[framesMeta.length - 1]?.t ?? framesMeta[framesMeta.length - 1]?.time ?? 0) || 0) : 0) || vidDur || 0);
+      const metaDur = Number(idx.duration || idx.video_duration || (framesMetadata && framesMetadata.length ? (Number(framesMetadata[framesMetadata.length - 1]?.t ?? framesMetadata[framesMetadata.length - 1]?.time ?? 0) || 0) : 0) || vidDur || 0);
       // Choose a frame index based on available metadata
       let frame = 0;
-      if (framesMeta && framesMeta.length) {
-        // framesMeta is usually small (<= 100). Linear search for nearest is fine and avoids per-move allocations.
+      if (framesMetadata && framesMetadata.length) {
+        // framesMetadata is usually small (<= 100). Linear search for nearest is fine and avoids per-move allocations.
         let nearest = 0;
         let bestDiff = Infinity;
-        for (let i = 0; i < framesMeta.length; i++) {
-          const ft = Number(framesMeta[i]?.t ?? framesMeta[i]?.time ?? (i * (metaDur / Math.max(1, framesMeta.length - 1))));
+        for (let i = 0; i < framesMetadata.length; i++) {
+          const ft = Number(framesMetadata[i]?.t ?? framesMetadata[i]?.time ?? (i * (metaDur / Math.max(1, framesMetadata.length - 1))));
           const d = Math.abs(ft - t);
           if (d < bestDiff) {
             bestDiff = d; nearest = i;
@@ -12354,7 +12667,7 @@ const Performers = (() => {
   // Pagination state
   let page = 1;
   let pageSize = 32;
-  // Server pagination meta (set after fetch)
+  // Server pagination metadata (set after fetch)
   let srvTotal = 0;
   let srvTotalPages = 1;
   let srvPage = 1;
@@ -13500,7 +13813,7 @@ const Performers = (() => {
       const r1 = performance.now ? performance.now() : Date.now();
       if (debugEnabled()) console.log('[Performers:render:append]', { items: pageItems.length, ms: Math.round(r1 - r0) });
     }
-    // pager UI: use server meta exclusively
+    // pager UI: use server metadata exclusively
     const infoText = srvTotal ? `Page ${srvPage} / ${srvTotalPages} • ${srvTotal} total` : '—';
     if (pager && pageInfo && prevBtn && nextBtn) {
       pageInfo.textContent = infoText;
@@ -13693,7 +14006,7 @@ const Performers = (() => {
         });
       }
       // console.log(performers);
-      // Update pagination from server meta if present
+      // Update pagination from server metadata if present
       const total = Number(d.total || 0);
       const totalPages = Number(d.total_pages || 1);
       const curPage = Number(d.page || page || 1);
@@ -16139,7 +16452,8 @@ class TasksManager {
   }
   init() {
     this.initEventListeners();
-    // SSE job events deferred until /config confirms capability (prevents 404 noise)
+    // SSE + polling are now strictly tied to the Tasks tab being active
+    // (no background polling while hidden)
     this.startJobPolling();
     // Immediate first jobs fetch so table populates without waiting for passive poll interval
     // (and adjust container height once rows exist)
@@ -16158,8 +16472,6 @@ class TasksManager {
     setTimeout(() => this.loadDefaultsAndHydrate(), 0);
     // Persist changes on any option input change
     setTimeout(() => this.wireOptionPersistence(), 0);
-    // One-shot early jobs fetch: if any active jobs exist, surface Tasks tab immediately
-    this._initialActiveCheck();
     // Local elapsed time updater: refresh end-time (elapsed) display every second while viewing Tasks
     if (!this._elapsedTimer) {
       this._elapsedTimer = setInterval(() => {
@@ -16174,6 +16486,35 @@ class TasksManager {
     }
     // Initialize pause/resume controls
     setTimeout(() => this.initPauseResumeControls(), 0);
+    // Start/stop SSE and polling strictly on tab visibility
+    window.addEventListener('tabchange', (e) => {
+      const active = e && e.detail && e.detail.activeTab;
+      if (active === 'tasks') {
+        // Start polling immediately and try first refresh
+        try { this._startPollingNow && this._startPollingNow(); } catch(_) {}
+        try { this.refreshJobs(); this.loadCoverage(); } catch(_) {}
+        // Attach SSE only when explicitly enabled by config and not marked unavailable
+        if (window.__JOBS_SSE_ENABLED && !window.__JOBS_SSE_UNAVAILABLE) {
+          try { this.initJobEvents && this.initJobEvents(); } catch(_) {}
+        }
+      } else {
+        // Stop polling and detach SSE to avoid background loads
+        try { this._stopPollingNow && this._stopPollingNow(); } catch(_) {}
+        try { this.stopJobEvents && this.stopJobEvents(); } catch(_) {}
+      }
+    });
+    // If Tasks is already active at init time, kick everything off
+    try {
+      if (window.tabSystem && window.tabSystem.getActiveTab && window.tabSystem.getActiveTab() === 'tasks') {
+        this._startPollingNow && this._startPollingNow();
+        this.refreshJobs();
+        this.loadCoverage();
+        if (window.__JOBS_SSE_ENABLED && !window.__JOBS_SSE_UNAVAILABLE) {
+          this.initJobEvents && this.initJobEvents();
+        }
+      }
+    }
+    catch(_) {}
   }
   async _initialActiveCheck() {
     try {
@@ -16228,11 +16569,12 @@ class TasksManager {
         this.capabilities.ffprobe = Boolean(
           deps.ffprobe ?? data.ffprobe ?? true,
         );
+        // Detect SSE support from server and update runtime flag
+        try { window.__JOBS_SSE_ENABLED = Boolean(feats.jobs_sse); } catch(_) {}
         // Now that we know if SSE exists, decide whether to attach
-        if (window.__JOBS_SSE_ENABLED && feats.jobs_sse && !window.__JOBS_SSE_UNAVAILABLE) {
+        if (window.__JOBS_SSE_ENABLED && !window.__JOBS_SSE_UNAVAILABLE) {
           this.initJobEvents();
-        }
-        else {
+        } else {
           window.__JOBS_SSE_UNAVAILABLE = true;
         }
         this.capabilities.subtitles_enabled = Boolean(
@@ -16546,9 +16888,13 @@ class TasksManager {
     banner.appendChild(dismiss);
   }
   initJobEvents() {
+    // Respect feature gating from /config to avoid 404 probes
+    if (!window.__JOBS_SSE_ENABLED) return;
     // New approach: avoid any preflight fetches that can 404. Attempt primary EventSource;
     // on immediate failure, try alias once.
     if (window.__JOBS_SSE_UNAVAILABLE) return;
+    // If an EventSource already exists, don't attach twice
+    if (this._jobEventSource && this._jobEventSource.readyState !== 2) return;
     const primary = '/jobs/events';
     const fallback = '/api/jobs/events';
     const throttle = 400;
@@ -16684,6 +17030,17 @@ class TasksManager {
       attach(fallback, true);
     }
   }
+  stopJobEvents() {
+    try {
+      if (this._jobEventSource) {
+        this._jobEventSource.close();
+      }
+    }
+    catch(_) {}
+    finally {
+      this._jobEventSource = null;
+    }
+  }
   initEventListeners() {
     // Batch operation buttons
     document.querySelectorAll('[data-operation]').forEach((btn) => {
@@ -16700,7 +17057,10 @@ class TasksManager {
     document
     .querySelectorAll('input[name="fileSelection"]')
     .forEach((radio) => {
-      radio.addEventListener('change', () => this.updateSelectedFileCount());
+      radio.addEventListener('change', () => {
+        this.updateSelectedFileCount();
+        try { this.updateCoverageDisplay(); } catch(_) {}
+      });
     });
     // Listen for tab changes to update selected file count and load initial data
     window.addEventListener('tabchange', (e) => {
@@ -17312,6 +17672,54 @@ class TasksManager {
   updateCoverageDisplay() {
     // If coverage not loaded yet, keep buttons hidden
     if (!this._coverageLoaded) return;
+    // Determine if we should scope coverage to the current selection
+    const selectedRadio = document.querySelector('input[name="fileSelection"]:checked');
+    const useSelected = selectedRadio && selectedRadio.value === 'selected' && selectedItems && selectedItems.size > 0;
+    // Helper to compute selected-only coverage using cached per-file artifact status
+    const computeSelectedCoverage = () => {
+      const cov = {
+        metadata: {processed: 0, total: 0, missing: 0},
+        thumbnails: {processed: 0, total: 0, missing: 0},
+        sprites: {processed: 0, total: 0, missing: 0},
+        previews: {processed: 0, total: 0, missing: 0},
+        phash: {processed: 0, total: 0, missing: 0},
+        markers: {processed: 0, total: 0, missing: 0},
+        heatmaps: {processed: 0, total: 0, missing: 0},
+        subtitles: {processed: 0, total: 0, missing: 0},
+        faces: {processed: 0, total: 0, missing: 0},
+      };
+      try {
+        const statusCache = (window.__artifactStatus || {});
+        const total = selectedItems.size;
+        const presentFor = (st, key) => {
+          if (!st) return false;
+          switch (key) {
+            case 'metadata': return Boolean(st.metadata);
+            case 'thumbnails': return Boolean(st.thumbnail || st.thumbnails);
+            case 'sprites': return Boolean(st.sprites);
+            case 'previews': return Boolean(st.preview != null ? st.preview : st.hover);
+            case 'phash': return Boolean(st.phash);
+            case 'markers': return Boolean(st.markers);
+            case 'heatmaps': return Boolean(st.heatmaps);
+            case 'subtitles': return Boolean(st.subtitles);
+            case 'faces': return Boolean(st.faces);
+            default: return false;
+          }
+        };
+        const keys = Object.keys(cov);
+        // Initialize totals
+        keys.forEach((k) => { cov[k].total = total; });
+        // Tally processed from cache (unknown -> treated as missing)
+        for (const p of selectedItems) {
+          const st = statusCache[p];
+          keys.forEach((k) => { if (presentFor(st, k)) cov[k].processed++; });
+        }
+        // Compute missing as remainder (non-negative)
+        keys.forEach((k) => { cov[k].missing = Math.max(0, (cov[k].total || 0) - (cov[k].processed || 0)); });
+      } catch(_) {}
+      return cov;
+    };
+    const selectedCoverage = useSelected ? computeSelectedCoverage() : null;
     const artifacts = [
       'metadata',
       'thumbnails',
@@ -17324,7 +17732,8 @@ class TasksManager {
       'faces',
     ];
     artifacts.forEach((artifact) => {
-      const data = this.coverage[artifact] || {
+      const dataSource = useSelected && selectedCoverage ? selectedCoverage : this.coverage;
+      const data = (dataSource && dataSource[artifact]) || {
         processed: 0,
         missing: 0,
         total: 0,
@@ -17409,7 +17818,7 @@ class TasksManager {
       }
     });
     // Mirror faces coverage to embeddings UI (embeddings share faces.json presence)
-    const facesData = this.coverage.faces || {processed: 0, total: 0};
+    const facesData = (useSelected && selectedCoverage ? selectedCoverage.faces : (this.coverage.faces || {processed: 0, total: 0})) || {processed: 0, total: 0};
     const embedProcessed = facesData.processed || 0;
     const embedTotal = facesData.total || 0;
     const embedPct = embedTotal > 0 ? Math.round((embedProcessed / embedTotal) * 100) : 0;
@@ -17574,7 +17983,7 @@ class TasksManager {
           else if (/subtitle|caption/.test(task)) artifact = 'subtitles';
           else if (/face/.test(task)) artifact = 'faces';
           else if (/phash/.test(task)) artifact = 'phash';
-          else if (/meta/.test(task)) artifact = 'metadata';
+          else if (/metadata/.test(task)) artifact = 'metadata';
           else if (/cover|thumb/.test(task)) artifact = 'thumbnail';
         }
         if (!artifact) continue;
@@ -17624,10 +18033,10 @@ class TasksManager {
     // Aggregate metadata jobs into a single synthetic row with progress based on coverage
     let forRender = all;
     try {
-      const metaJobs = all.filter((j) => (j.artifact || '').toLowerCase() === 'metadata' || /meta/.test((j.task || '').toLowerCase()));
-      if (metaJobs && metaJobs.length) {
-        const anyRunning = metaJobs.some((j) => this.normalizeStatus(j) === 'running');
-        const anyQueued = metaJobs.some((j) => this.normalizeStatus(j) === 'queued');
+      const metadataJobs = all.filter((j) => (j.artifact || '').toLowerCase() === 'metadata' || /metadata/.test((j.task || '').toLowerCase()));
+      if (metadataJobs && metadataJobs.length) {
+        const anyRunning = metadataJobs.some((j) => this.normalizeStatus(j) === 'running');
+        const anyQueued = metadataJobs.some((j) => this.normalizeStatus(j) === 'queued');
         const active = anyRunning || anyQueued;
         if (active) {
           // Compute progress from coverage if available
@@ -17635,10 +18044,10 @@ class TasksManager {
           const processed = Number(cov.processed || 0);
           const total = Number(cov.total || 0);
           const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((processed / total) * 100))) : 0;
-          const createdTime = metaJobs.reduce((acc, j) => Math.min(acc || Infinity, j.createdTime || Infinity), Infinity);
-          const startTime = metaJobs.reduce((acc, j) => Math.min(acc || Infinity, j.startTime || Infinity), Infinity);
+          const createdTime = metadataJobs.reduce((acc, j) => Math.min(acc || Infinity, j.createdTime || Infinity), Infinity);
+          const startTime = metadataJobs.reduce((acc, j) => Math.min(acc || Infinity, j.startTime || Infinity), Infinity);
           const synthetic = {
-            id: '__meta_aggregate',
+            id: '__metadata_aggregate',
             task: 'Metadata (batch)',
             file: '',
             status: anyRunning ? 'running' : 'queued',
@@ -17650,11 +18059,11 @@ class TasksManager {
             artifact: 'metadata',
             _synthetic: true,
           };
-          forRender = all.filter((j) => !metaJobs.includes(j)).concat([synthetic]);
+          forRender = all.filter((j) => !metadataJobs.includes(j)).concat([synthetic]);
         }
         else {
           // When not active, hide metadata per-file rows (they tend to be noisy)
-          forRender = all.filter((j) => !metaJobs.includes(j));
+          forRender = all.filter((j) => !metadataJobs.includes(j));
         }
       }
     }
@@ -18143,110 +18552,54 @@ class TasksManager {
     const selectedRadio = document.querySelector('input[name="fileSelection"]:checked');
     const countEl = document.getElementById('selectedFileCount');
     if (selectedRadio && countEl) {
+      // Always show the current selection count, even when not selected
+      const n = (selectedItems && selectedItems.size) ? selectedItems.size : 0;
+      countEl.textContent = String(n);
+      // If "Selected files" mode is active, re-render coverage tiles to reflect scoped counts
       if (selectedRadio.value === 'selected') {
-        // Get count from library selection
-        countEl.textContent = selectedItems.size;
-      }
-      else {
-        countEl.textContent = '0';
+        try { this.updateCoverageDisplay(); } catch(_) {}
       }
     }
   }
   startJobPolling() {
-    // Adaptive polling with passive mode while tasks tab hidden
-    const FAST = 1500;
-    const PASSIVE = 6000;
-    const SLOW = 15000;
-    const MAX_BACKOFF = 60000;
+    // Poll only while Tasks tab is active; stop entirely when hidden
+    const INTERVAL = 1500;
     if (this._jobPollTimer) clearInterval(this._jobPollTimer);
     this._jobPollInFlight = this._jobPollInFlight || {jobs: false, coverage: false};
-    this._jobPollFailures = 0;
-    let passiveMode = true;
-    // until user views tasks or active job causes auto-switch
-    let currentInterval = PASSIVE;
-    const restartTimer = (ms) => {
-      if (!Number.isFinite(ms) || ms <= 0) return;
-      if (ms === currentInterval && this._jobPollTimer) return;
-      currentInterval = ms;
-      if (this._jobPollTimer) clearInterval(this._jobPollTimer);
-      this._jobPollTimer = setInterval(tick, currentInterval);
-    };
     const doPoll = async () => {
-      const activeTab = tabSystem && tabSystem.getActiveTab ? tabSystem.getActiveTab() : null;
-      const tabIsTasks = activeTab === 'tasks';
       // Skip overlap
       if (this._jobPollInFlight.jobs || this._jobPollInFlight.coverage) return;
       try {
         this._jobPollInFlight.jobs = true;
-        const jobs = await this.refreshJobs();
-        if (!tabIsTasks && jobs && Array.isArray(jobs)) {
-          const hasActive = jobs.some((j) => {
-            const st = (j.state || '').toLowerCase();
-            return st === 'running' || st === 'queued' || st === 'pending' || st === 'starting';
-          });
-          if (hasActive) {
-            try {
-              tabSystem.switchToTab('tasks');
-              passiveMode = false;
-              restartTimer(FAST);
-            }
-            catch (_) { }
-          }
-        }
+        await this.refreshJobs();
       }
-      catch (_) {
-        this._jobPollFailures++;
-      }
+      catch (_) { }
       finally {
         this._jobPollInFlight.jobs = false;
       }
-      if (tabIsTasks) {
-        passiveMode = false;
-        try {
-          this._jobPollInFlight.coverage = true;
-          await this.loadCoverage();
-        }
-        catch (_) { /* ignore */ }
-        finally {
-          this._jobPollInFlight.coverage = false;
-        }
-        // Ensure we are in FAST mode while viewing tasks
-        restartTimer(FAST);
+      try {
+        this._jobPollInFlight.coverage = true;
+        await this.loadCoverage();
       }
-      // Backoff on repeated failures
-      if (this._jobPollFailures >= 2) {
-        const next = Math.min(currentInterval * 2, MAX_BACKOFF);
-        restartTimer(next);
-        this._jobPollFailures = 0;
-        // apply once per adjustment
-      }
-      else if (!passiveMode && currentInterval !== FAST) {
-        restartTimer(FAST);
+      catch (_) { }
+      finally {
+        this._jobPollInFlight.coverage = false;
       }
     };
-    const tick = () => {
-      doPoll();
+    const tick = () => { doPoll(); };
+    this._startPollingNow = () => {
+      if (this._jobPollTimer) return;
+      this._jobPollTimer = setInterval(tick, INTERVAL);
+      // Kick an immediate fetch on start
+      tick();
     };
-    this._jobPollTimer = setInterval(tick, currentInterval);
-    // Wrap refreshJobs to adapt interval dynamically
-    const origRefresh = this.refreshJobs.bind(this);
-    this.refreshJobs = async (...args) => {
-      const result = await origRefresh(...args);
-      // Adjust timer if interval changed
-      const activeTab = tabSystem && tabSystem.getActiveTab ? tabSystem.getActiveTab() : null;
-      if (activeTab === 'tasks' && !passiveMode && currentInterval !== FAST) {
-        restartTimer(FAST);
-      }
-      return result;
-    };
-    this._onJobEventsConnected = () => {
-      // When SSE connected, relax to SLOW but only if user is on tasks tab (otherwise keep passive)
-      if (!this._jobPollTimer) return;
-      const activeTab = tabSystem && tabSystem.getActiveTab ? tabSystem.getActiveTab() : null;
-      if (activeTab === 'tasks') {
-        restartTimer(SLOW);
+    this._stopPollingNow = () => {
+      if (this._jobPollTimer) {
+        clearInterval(this._jobPollTimer);
+        this._jobPollTimer = null;
       }
     };
+    // Do not start automatically here; tabchange handler in init() will control lifecycle
   }
   showNotification(message, type = 'info') {
     // Host container (idempotent)
@@ -18622,59 +18975,65 @@ class TasksManager {
     renamesList.appendChild(frag);
   }
 }
-// Initialize tasks manager when DOM is ready
+// Lazy initialize Tasks tab only when activated
 let tasksManager;
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    tasksManager = new TasksManager();
-    try {
-      window.tasksManager = tasksManager;
-    }
-    catch (_) { }
-  });
-}
-else {
-  // Script likely loaded with defer, DOM is ready;
-  // safe to init now
+function __initTasksTabOnce() {
+  if (tasksManager) return;
   tasksManager = new TasksManager();
-  try {
-    window.tasksManager = tasksManager;
-  }
-  catch (_) { }
+  try { window.tasksManager = tasksManager; } catch(_) {}
   const previewBtn = document.getElementById('previewOrphansBtn');
   const cleanupBtn = document.getElementById('cleanupOrphansBtn');
   const previewRepairsBtn = document.getElementById('previewRepairsBtn');
   const applyRepairsBtn = document.getElementById('applyRepairsBtn');
-  if (previewBtn) {
-    previewBtn.addEventListener('click', () => {
-      if (tasksManager) {
-        tasksManager.previewOrphans();
-      }
-    });
+  if (previewBtn && !previewBtn._wiredLazy) {
+    previewBtn._wiredLazy = true;
+    previewBtn.addEventListener('click', () => tasksManager && tasksManager.previewOrphans());
   }
-  if (cleanupBtn) {
-    cleanupBtn.addEventListener('click', () => {
-      if (tasksManager) {
-        tasksManager.cleanupOrphans();
-      }
-    });
+  if (cleanupBtn && !cleanupBtn._wiredLazy) {
+    cleanupBtn._wiredLazy = true;
+    cleanupBtn.addEventListener('click', () => tasksManager && tasksManager.cleanupOrphans());
   }
-  if (previewRepairsBtn) {
-    previewRepairsBtn.addEventListener('click', () => {
-      if (tasksManager) {
-        tasksManager.previewRepairs();
-      }
-    });
+  if (previewRepairsBtn && !previewRepairsBtn._wiredLazy) {
+    previewRepairsBtn._wiredLazy = true;
+    previewRepairsBtn.addEventListener('click', () => tasksManager && tasksManager.previewRepairs());
   }
-  if (applyRepairsBtn) {
-    applyRepairsBtn.addEventListener('click', () => {
-      if (tasksManager) {
-        tasksManager.applyRepairs();
-      }
-    });
+  if (applyRepairsBtn && !applyRepairsBtn._wiredLazy) {
+    applyRepairsBtn._wiredLazy = true;
+    applyRepairsBtn.addEventListener('click', () => tasksManager && tasksManager.applyRepairs());
   }
-  // Heatmap preview button removed per redesign.
 }
+
+// Global lazy tab initializers
+(function setupLazyTabInits(){
+  const initFor = (tab) => {
+    if (tab === 'tasks') __initTasksTabOnce();
+    if (tab === 'stats') {
+      try { loadStats && loadStats(); } catch(_) {}
+    }
+  };
+  const initActiveNow = () => {
+    try {
+      if (window.tabSystem && window.tabSystem.getActiveTab) {
+        const t = window.tabSystem.getActiveTab();
+        initFor(t);
+      }
+    }
+    catch(_){}
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      // Initialize for currently active tab only
+      setTimeout(initActiveNow, 0);
+    }, {once:true});
+  } else {
+    setTimeout(initActiveNow, 0);
+  }
+  // Initialize when a new tab becomes active (once per tab)
+  window.addEventListener('tabchange', (e) => {
+    const tab = e && e.detail && e.detail.activeTab;
+    initFor(tab);
+  });
+})();
 // -----------------------------
 // Sidebar toggle: non-intrusive handle between sidebar and player
 // -----------------------------

@@ -170,7 +170,7 @@
   "POST /api/routes/descriptions/export": "Export the documented route descriptions as JSON",
   "GET /api/openapi.json": "OpenAPI specification document under the /api base (JSON)",
   "GET /api/compare": "Compare two videos visually or by metadata (query-driven)",
-  "GET /api/compare/meta": "Return a structured metadata comparison for two videos",
+  "GET /api/compare/metadata": "Return a structured metadata comparison for two videos",
   "POST /api/admin/panic-kill": "Immediately terminate runaway ffmpeg processes and workers",
   "POST /api/autotag/preview": "Dry-run automatic tag assignment and return a preview of changes",
   "POST /api/autotag/scan": "Scan library and assign tags based on filename patterns and metadata",

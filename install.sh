@@ -1,4 +1,4 @@
-!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Minimal setup script: create/activate a project-local venv and install deps.
@@ -14,6 +14,9 @@ cd "$SCRIPT_DIR"
 DO_REQUIRED=1
 DO_OPTIONAL=0
 DO_APT_OPENCV=0
+
+# Preferred fallback venv location for filesystems that don't support symlinks
+FALLBACK_VENV="${FALLBACK_VENV:-$HOME/.venvs/media-player}"
 
 # Baked-in dependency sets (no external files needed)
 # Adjust these arrays if you need to tweak dependencies.
@@ -80,30 +83,45 @@ if [ ! -x "$VENV_PATH/bin/python" ]; then
   if ! "$PY_BIN" -m venv --copies "$VENV_PATH" 2>/dev/null; then
     echo "[install] Failed to create venv on external volume, trying fallback location..."
     # Fallback: create venv in home directory if external volume fails
-    FALLBACK_VENV="$HOME/.venvs/media-player"
     echo "[install] Using fallback venv at $FALLBACK_VENV"
     mkdir -p "$(dirname "$FALLBACK_VENV")"
-    "$PY_BIN" -m venv "$FALLBACK_VENV"
-    # Create a symlink or wrapper script to the fallback
-    if ln -sf "$FALLBACK_VENV" "$VENV_PATH" 2>/dev/null; then
-      echo "[install] Created symlink to fallback venv"
-    else
-      # If symlink fails, just update VENV_PATH to point to fallback
-      VENV_PATH="$FALLBACK_VENV"
-      echo "[install] Using fallback venv directly"
+    "$PY_BIN" -m venv --copies "$FALLBACK_VENV"
+    # Always use fallback directly to avoid pseudo-symlinks on network/USB filesystems
+    VENV_PATH="$FALLBACK_VENV"
+    echo "[install] Using fallback venv directly at $VENV_PATH"
+  fi
+fi
+
+# Validate venv interpreter: avoid Samba/NAS pseudo-symlinks (files starting with 'XSym')
+if [ -f "$VENV_PATH/bin/python" ]; then
+  if head -c 4 "$VENV_PATH/bin/python" 2>/dev/null | grep -q '^XSym'; then
+    echo "[install] Detected non-executable symlink stub for venv python; switching to fallback $FALLBACK_VENV"
+    mkdir -p "$(dirname "$FALLBACK_VENV")"
+    if [ ! -x "$FALLBACK_VENV/bin/python" ]; then
+      "$PY_BIN" -m venv --copies "$FALLBACK_VENV"
     fi
+    VENV_PATH="$FALLBACK_VENV"
   fi
 fi
 
 # shellcheck source=/dev/null
 source "$VENV_PATH/bin/activate"
-echo "[install] Using interpreter: $(command -v python)"
+# Determine explicit venv executables (some venvs lack a 'python' shim)
+PY_EXE="$VENV_PATH/bin/python"
+if [ ! -x "$PY_EXE" ] && [ -x "$VENV_PATH/bin/python3" ]; then
+  PY_EXE="$VENV_PATH/bin/python3"
+fi
+PIP_EXE="$VENV_PATH/bin/pip"
+if [ ! -x "$PIP_EXE" ]; then
+  PIP_EXE="$PY_EXE -m pip"
+fi
+echo "[install] Using interpreter: $PY_EXE"
 
-python -m pip install --upgrade pip wheel setuptools
+eval "$PY_EXE -m pip install --upgrade pip wheel setuptools"
 
 if [ "$DO_REQUIRED" = "1" ]; then
   echo "[install] Installing required packages: ${REQUIRED_PKGS[*]}"
-  pip install "${REQUIRED_PKGS[@]}"
+  eval "$PIP_EXE install ${REQUIRED_PKGS[*]}"
 else
   echo "[install] Skipping required dependency installation (per flag)."
 fi
@@ -193,7 +211,7 @@ if [ "$DO_OPTIONAL" = "1" ]; then
     # Determine venv site-packages path (robust)
     VENV_SITE=""
     # Try sysconfig (preferred)
-    VENV_SITE="$(python -c 'import sysconfig; p=sysconfig.get_paths(); print(p.get("purelib") or p.get("platlib") or "")' 2>/dev/null || true)"
+    VENV_SITE="$($PY_EXE -c 'import sysconfig; p=sysconfig.get_paths(); print(p.get("purelib") or p.get("platlib") or "")' 2>/dev/null || true)"
     # If empty or not a directory, try deriving from VENV_PATH
     if [ -z "$VENV_SITE" ] || [ ! -d "$VENV_SITE" ]; then
       if [ -n "${VENV_PATH:-}" ] && [ -d "$VENV_PATH" ]; then
@@ -205,7 +223,7 @@ if [ "$DO_OPTIONAL" = "1" ]; then
     fi
     # Last resort: site.getsitepackages()
     if [ -z "$VENV_SITE" ] || [ ! -d "$VENV_SITE" ]; then
-      VENV_SITE="$(python -c 'import site; import sys; print(next((p for p in site.getsitepackages() if p.endswith("site-packages")), ""))' 2>/dev/null || true)"
+      VENV_SITE="$($PY_EXE -c 'import site; import sys; print(next((p for p in site.getsitepackages() if p.endswith("site-packages")), ""))' 2>/dev/null || true)"
     fi
     [ -n "$VENV_SITE" ] && echo "[install] venv site-packages: $VENV_SITE"
 
@@ -213,18 +231,18 @@ if [ "$DO_OPTIONAL" = "1" ]; then
       echo "$SYS_SITE_DIR" > "$VENV_SITE/opencv-system.pth"
       echo "[install] Linked system OpenCV via $VENV_SITE/opencv-system.pth -> $SYS_SITE_DIR"
       echo "[install] Verifying OpenCV import in venv ..."
-      if python - <<'PY'
+      if "$PY_EXE" - <<'PY'
 import cv2, numpy as np
 print('[install] OpenCV import check: OK', cv2.__version__, 'NumPy', np.__version__)
 PY
       then
         return 0
       else
-        NV="$(python -c 'import numpy as np; import sys; v=str(getattr(np, "__version__", "")); print(v.split(".")[0] if v else "")' 2>/dev/null || true)"
+        NV="$($PY_EXE -c 'import numpy as np; import sys; v=str(getattr(np, "__version__", "")); print(v.split(".")[0] if v else "")' 2>/dev/null || true)"
         if [ "$NV" = "2" ]; then
           echo "[install] Detected NumPy 2.x with system OpenCV built for NumPy 1.x; pinning NumPy to <2 (1.26.x) for compatibility ..."
-          python -m pip install 'numpy<2,>=1.25' || python -m pip install 'numpy<2'
-          if python - <<'PY'
+          eval "$PY_EXE -m pip install 'numpy<2,>=1.25'" || eval "$PY_EXE -m pip install 'numpy<2'"
+          if "$PY_EXE" - <<'PY'
 import cv2, numpy as np
 print('[install] OpenCV import check (after numpy pin): OK', cv2.__version__, 'NumPy', np.__version__)
 PY
@@ -256,13 +274,13 @@ PY
     echo "[install] Installing optional packages: ${OPTIONAL_PKGS[*]}"
     # Install numpy first for better wheel resolution on ARM
     if printf '%s\n' "${OPTIONAL_PKGS[@]}" | grep -q '^numpy$'; then
-      pip install numpy || echo "[install] WARNING: numpy failed to install — continuing"
+      eval "$PIP_EXE install numpy" || echo "[install] WARNING: numpy failed to install — continuing"
     fi
     # Install remaining optional packages one by one to allow partial success
     for pkg in "${OPTIONAL_PKGS[@]}"; do
       if [ "$pkg" = "numpy" ]; then continue; fi
       echo "[install] pip install $pkg"
-      if ! pip install "$pkg"; then
+      if ! eval "$PIP_EXE install $pkg"; then
         echo "[install] WARNING: failed to install $pkg — continuing"
         # Fallback for OpenCV on Debian/Raspberry Pi: use system python3-opencv inside venv
         if [ "$pkg" = "opencv-python-headless" ] && [ "$UNAME_S" = "Linux" ]; then
@@ -278,9 +296,9 @@ fi
 echo "[install] Done. Start the server with: ./serve.sh"
 
 # Post-step: ensure problematic reloader is not installed
-if pip show watchfiles >/dev/null 2>&1; then
+if eval "$PIP_EXE show watchfiles" >/dev/null 2>&1; then
   echo "[install] Removing watchfiles to avoid memory issues/spurious reloads"
-  pip uninstall -y watchfiles || true
+  eval "$PIP_EXE uninstall -y watchfiles" || true
 fi
 
 # If optional extras are requested, also set up whisper.cpp automatically on Linux
