@@ -2734,7 +2734,7 @@ function drawPieChart(canvas, dataObj) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  const entries = Object.entries(dataObj).filter(([, v]) => Number(v) > 0);
+  const entries = Object.entries(dataObj || {}).filter(([, v]) => Number(v) > 0);
   const total = entries.reduce((s, [, v]) => s + Number(v), 0);
   const w = canvas.width;
   const h = canvas.height;
@@ -2742,8 +2742,7 @@ function drawPieChart(canvas, dataObj) {
   const cy = h / 2;
   const radius = Math.min(w, h) * 0.4;
   ctx.clearRect(0, 0, w, h);
-  if (total === 0) {
-    // draw placeholder
+  if (!entries.length || !total) {
     ctx.fillStyle = '#222';
     ctx.fillRect(0, 0, w, h);
     ctx.fillStyle = '#999';
@@ -2755,7 +2754,7 @@ function drawPieChart(canvas, dataObj) {
   }
   const colors = ['#4dc9f6', '#f67019', '#f53794', '#537bc4', '#acc236', '#166a8f', '#00a950', '#58595b'];
   let start = -Math.PI / 2;
-  entries.forEach(([k, v], i) => {
+  entries.forEach(([, v], i) => {
     const frac = Number(v) / total;
     const angle = frac * Math.PI * 2;
     ctx.beginPath();
@@ -2904,37 +2903,53 @@ document.querySelectorAll('.artifact-gen-btn[data-artifact]').forEach((btn) => {
 function resolveArtifactRequest(artifact, filePath) {
   const a = String(artifact || '').toLowerCase();
   const qp = encodeURIComponent(filePath || '');
-  // Map aliases used in list chips to API artifact names
-  const norm = (key) => ({ metadata: 'metadata', chapters: 'markers', scenes: 'markers' }[key] || key);
-  const k = norm(a);
-  // Return { url, method }
+  // Normalize common aliases
+  const normMap = {
+    meta: 'metadata',
+    chapters: 'markers',
+    scenes: 'markers',
+    markers: 'markers',
+    thumb: 'thumbnail',
+    thumbnail: 'thumbnail',
+    preview: 'preview',
+    previews: 'preview',
+    sprite: 'sprites',
+    sprites: 'sprites',
+    subs: 'subtitles',
+    subtitles: 'subtitles',
+    heat: 'heatmaps',
+    heatmap: 'heatmaps',
+    heatmaps: 'heatmaps',
+    faces: 'faces',
+    phash: 'phash',
+    waveform: 'waveform',
+    wave: 'waveform',
+    motion: 'motion',
+  };
+  const k = normMap[a] || a;
   switch (k) {
     case 'metadata':
-      return { url: `/api/metadata/create?path=${qp}&priority=1`, method: 'POST' };
+      return { url: `/api/metadata?path=${qp}`, method: 'POST' };
     case 'thumbnail':
-      return { url: `/api/thumbnail?path=${qp}&overwrite=0&priority=1`, method: 'POST' };
+      return { url: `/api/thumbnail?path=${qp}&t=middle&quality=2&overwrite=0`, method: 'POST' };
     case 'preview':
-      return { url: `/api/preview/bg?path=${qp}&priority=1`, method: 'POST' };
+      return { url: `/api/preview?path=${qp}`, method: 'POST' };
     case 'sprites':
-      return { url: `/api/sprites/create?path=${qp}&priority=1` , method: 'POST' };
-    case 'heatmaps':
-      return { url: `/api/heatmaps/create?path=${qp}&priority=1`, method: 'POST' };
-    case 'subtitles':
-      return { url: `/api/subtitles/create?path=${qp}&priority=1`, method: 'POST' };
-    case 'faces':
-      return { url: `/api/faces/create?path=${qp}&priority=1`, method: 'POST' };
-    case 'phash':
-      return { url: `/api/phash?path=${qp}&priority=1`, method: 'POST' };
-    case 'waveform': {
-      const qf = encodeURIComponent(filePath || '');
-      return { url: `/waveform?file=${qf}&force=1`, method: 'GET' };
-    }
-    case 'motion': {
-      const qf = encodeURIComponent(filePath || '');
-      return { url: `/motion?file=${qf}&force=1`, method: 'GET' };
-    }
+      return { url: `/api/sprites/create?path=${qp}`, method: 'POST' };
     case 'markers':
       return { url: `/api/markers/detect?path=${qp}&priority=1`, method: 'POST' };
+    case 'subtitles':
+      return { url: `/api/subtitles/create?path=${qp}`, method: 'POST' };
+    case 'heatmaps':
+      return { url: `/api/heatmaps/create?path=${qp}`, method: 'POST' };
+    case 'faces':
+      return { url: `/api/faces/create?path=${qp}`, method: 'POST' };
+    case 'phash':
+      return { url: `/api/phash?path=${qp}`, method: 'POST' };
+    // Waveform & motion may not be implemented; return null so UI can message
+    case 'waveform':
+    case 'motion':
+      return null;
     default:
       return null;
   }
@@ -5255,23 +5270,23 @@ function setupListTab() {
     {id: 'size', label: 'Size', width: 90, visible: true, get: (f) => fmtSize(Number(f.size)) },
     {id: 'width', label: 'Width', width: 90, visible: true, render: (td, f) => {
       const w = Number(f.width);
-      td.textContent = Number.isFinite(w) && w > 0 ? String(w) : '';
+      td.textContent = Number.isFinite(w) && w > 0 ? `${w} px` : '';
       if ((!Number.isFinite(w) || w <= 0) && f.path) {
         fetchMetadataCached(f.path).then((d) => {
           if (!d || !td.isConnected) return;
-          const val = Number(d.width);
-          if (Number.isFinite(val) && val > 0) td.textContent = String(val);
+            const val = Number(d.width);
+            if (Number.isFinite(val) && val > 0) td.textContent = `${val} px`;
         });
       }
     } },
     {id: 'height', label: 'Height', width: 90, visible: true, render: (td, f) => {
       const h = Number(f.height);
-      td.textContent = Number.isFinite(h) && h > 0 ? String(h) : '';
+      td.textContent = Number.isFinite(h) && h > 0 ? `${h} px` : '';
       if ((!Number.isFinite(h) || h <= 0) && f.path) {
         fetchMetadataCached(f.path).then((d) => {
           if (!d || !td.isConnected) return;
           const val = Number(d.height);
-          if (Number.isFinite(val) && val > 0) td.textContent = String(val);
+          if (Number.isFinite(val) && val > 0) td.textContent = `${val} px`;
         });
       }
     } },
@@ -5379,7 +5394,8 @@ function setupListTab() {
     });
   }
   // Merged Artifacts column using chips UI (visible by default)
-  DEFAULT_COLS.push({ id: 'artifacts', label: 'Artifacts', width: 220, visible: true,
+  // Widen merged Artifacts column default width so chips do not wrap by default
+  DEFAULT_COLS.push({ id: 'artifacts', label: 'Artifacts', width: 520, visible: true,
     render: (td, f) => {
       const cont = document.createElement('div');
       cont.className = 'chips-list';
@@ -5403,6 +5419,387 @@ function setupListTab() {
       } catch(_) { }
     }
   });
+
+  // Performers column (chips). Visible by default; wide to avoid wrapping.
+  DEFAULT_COLS.push({ id: 'performers', label: 'Performers', width: 340, visible: true,
+    render: (td, f) => {
+      const cont = document.createElement('div'); cont.className = 'chips-list performers-chips'; td.appendChild(cont);
+      let currentPerformerNames = [];
+      const apply = (names) => {
+        cont.innerHTML = '';
+        const arr = Array.isArray(names) ? names.filter(Boolean) : [];
+        currentPerformerNames = arr.map(n => typeof n === 'object' && n ? (n.name || n.label || String(n)) : String(n));
+        arr.forEach((entry) => {
+          const isObj = entry && typeof entry === 'object';
+          const name = isObj ? (entry.name || entry.label || String(entry)) : String(entry);
+          const isUnconfirmed = !!(isObj && (entry.suggested || entry.unconfirmed || entry.confirmed === false));
+          const chip = document.createElement('span'); chip.className = 'chip chip--performer' + (isUnconfirmed ? ' chip--pending' : ''); chip.textContent = name;
+          if (isUnconfirmed) {
+            chip.title = `Confirm performer: ${name}`;
+            chip.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              try {
+                const url = new URL('/api/media/performers/add', window.location.origin);
+                url.searchParams.set('path', f.path || '');
+                url.searchParams.set('performer', name);
+                const resp = await fetch(url.toString(), {method:'POST'});
+                if (resp.ok) {
+                  const j = await resp.json();
+                  const list = j?.data?.performers || j?.performers || [];
+                  apply(list);
+                }
+              } catch(_) {}
+            });
+          } else {
+            chip.title = `Filter by performer: ${name}`;
+            chip.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              if (!libraryPerformerFilters.includes(name)) libraryPerformerFilters.push(name);
+              try { setLocalStorageJSON('filters.performers', libraryPerformerFilters); } catch(_) {}
+              try { if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips(); } catch(_) {}
+              try { if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState(); } catch(_) {}
+              currentPage = 1; loadLibrary();
+            });
+          }
+          cont.appendChild(chip);
+        });
+        // Suggestions (show even if some present, limited, exclude existing)
+        ensureRegistries().then(()=>renderSuggestions('performer', arr));
+      };
+      // Inline edit using contentEditable chip input (keeps chips visible)
+      function startEdit() {
+        if (!f.path || td._editing) return;
+        td._editing = true;
+        // Render current chips (and suggestions) then append an inline chip-input
+        apply(f.performers || currentPerformerNames);
+        const input = document.createElement('span');
+        input.className = 'chip-input';
+        input.contentEditable = 'true';
+        input.setAttribute('role', 'textbox');
+        input.setAttribute('aria-label', 'Add performers');
+        input.dataset.placeholder = 'Add performer…';
+        cont.appendChild(input);
+
+        async function commitTokens(tokens) {
+          const parts = (tokens || []).map(s=>String(s||'').trim()).filter(Boolean);
+          if (!parts.length) return;
+          for (const p of parts) {
+            try {
+              const url = new URL('/api/media/performers/add', window.location.origin);
+              url.searchParams.set('path', f.path);
+              url.searchParams.set('performer', p);
+              await fetch(url.toString(), {method:'POST'});
+            } catch(_) {}
+          }
+          // Refresh chips; remain in edit if td still editing
+          const d = await fetchMetadataCached(f.path).catch(()=>null);
+          if (!td.isConnected) return;
+          apply(d?.performers || d?.perfs || d?.actors || []);
+          if (td._editing) {
+            cont.appendChild(input);
+            placeCaretAtEnd(input);
+          }
+        }
+
+        function placeCaretAtEnd(el){
+          try {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            range.collapse(false);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          } catch(_) {}
+        }
+
+        function tokenize(str){
+          return String(str||'').split(/[,\n]+/).map(s=>s.trim()).filter(Boolean);
+        }
+
+        input.addEventListener('keydown', (e) => {
+          // Keep typing isolated from global shortcuts (space, arrows, etc.)
+          e.stopPropagation();
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const raw = input.textContent || '';
+            input.textContent = '';
+            commitTokens(tokenize(raw));
+          } else if (e.key === ',' ) {
+            e.preventDefault();
+            const raw = input.textContent || '';
+            input.textContent = '';
+            commitTokens(tokenize(raw));
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            td._editing = false;
+            apply(f.performers || currentPerformerNames);
+          }
+        });
+        input.addEventListener('blur', () => {
+          if (!td._editing) return;
+          const raw = (input.textContent || '').trim();
+          td._editing = false;
+          if (raw) commitTokens(tokenize(raw));
+          else apply(f.performers || currentPerformerNames);
+        });
+        input.focus();
+      }
+      td.addEventListener('dblclick', (e) => {
+        if (e.target.closest('.chip') || e.target.closest('.chip-suggest')) return; // avoid edit when clicking existing chips
+        startEdit();
+      });
+      const ensureRegistries = async () => {
+        window.__REG = window.__REG || {};
+        if (!window.__REG.performers) {
+          try {
+            const r = await fetch('/api/registry/performers');
+            if (r.ok) {
+              const j = await r.json();
+              window.__REG.performers = Array.isArray(j?.data?.performers) ? j.data.performers : (Array.isArray(j?.performers) ? j.performers : []);
+            } else { window.__REG.performers = []; }
+          } catch(_) { window.__REG.performers = []; }
+        }
+      };
+      const renderSuggestions = (kind, existing) => {
+        try {
+          const baseName = (f?.name || (f?.path ? f.path.split('/').pop() : '') || '').replace(/\.[^.]+$/, '');
+          const baseLower = baseName.toLowerCase();
+          const norm = (s) => String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+          const baseNorm = ' ' + norm(baseLower) + ' ';
+          const containsWord = (needle) => {
+            const n = ' ' + norm(needle) + ' ';
+            return n.trim().split(/\s+/).every((tok) => baseNorm.includes(' ' + tok + ' '));
+          };
+          const names = (window.__REG.performers || []).map(p => p?.name).filter(Boolean);
+          const have = new Set((existing||[]).map(x => String(x).toLowerCase()));
+          const sug = [];
+            for (const nm of names) {
+              const low = String(nm).toLowerCase();
+              if (have.has(low)) continue;
+              if (containsWord(low)) sug.push(nm);
+              if (sug.length >= 6) break;
+            }
+          if (!sug.length) return;
+          // Append suggestions block
+          const wrap = document.createElement('div'); wrap.className = 'chips-suggestions-inline';
+          sug.forEach((nm) => {
+            const chip = document.createElement('span'); chip.className = 'chip chip-suggest'; chip.textContent = nm; chip.title = 'Add performer';
+            chip.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              try {
+                const url = new URL('/api/media/performers/add', window.location.origin);
+                url.searchParams.set('path', f.path || '');
+                url.searchParams.set('performer', nm);
+                const resp = await fetch(url.toString(), {method:'POST'});
+                if (resp.ok) {
+                  const j = await resp.json();
+                  const list = j?.data?.performers || j?.performers || [];
+                  apply(list);
+                }
+              } catch(_) { /* ignore */ }
+            });
+            wrap.appendChild(chip);
+          });
+          cont.appendChild(wrap);
+        } catch(_) {}
+      };
+      // Prefer direct row data; fallback to metadata fetch
+      let initial = f && (f.performers || f.perfs || f.actors);
+      if (Array.isArray(initial) && initial.length) { ensureRegistries().then(()=>apply(initial)); }
+      else if (f && f.path) {
+        ensureRegistries().then(()=>{
+          fetchMetadataCached(f.path).then((d) => { if (!td.isConnected) return; apply(d && (d.performers || d.perfs || d.actors || [])); });
+        });
+      } else { ensureRegistries().then(()=>apply([])); }
+    }
+  });
+
+  // Tags column (chips). Visible by default; wide to avoid wrapping.
+  DEFAULT_COLS.push({ id: 'tags', label: 'Tags', width: 340, visible: true,
+    render: (td, f) => {
+      const cont = document.createElement('div'); cont.className = 'chips-list tags-chips'; td.appendChild(cont);
+      let currentTagNames = [];
+      const apply = (tags) => {
+        cont.innerHTML = '';
+        const arr = Array.isArray(tags) ? tags.filter(Boolean) : [];
+        currentTagNames = arr.map(t => typeof t === 'object' && t ? (t.name || t.label || String(t)) : String(t));
+        arr.forEach((entry) => {
+          const isObj = entry && typeof entry === 'object';
+          const tag = isObj ? (entry.name || entry.label || String(entry)) : String(entry);
+          const isUnconfirmed = !!(isObj && (entry.suggested || entry.unconfirmed || entry.confirmed === false));
+          const chip = document.createElement('span'); chip.className = 'chip chip--tag' + (isUnconfirmed ? ' chip--pending' : ''); chip.textContent = tag;
+          if (isUnconfirmed) {
+            chip.title = `Confirm tag: ${tag}`;
+            chip.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              try {
+                const url = new URL('/api/media/tags/add', window.location.origin);
+                url.searchParams.set('path', f.path || '');
+                url.searchParams.set('tag', tag);
+                const resp = await fetch(url.toString(), {method:'POST'});
+                if (resp.ok) {
+                  const j = await resp.json();
+                  const list = j?.data?.tags || j?.tags || [];
+                  apply(list);
+                }
+              } catch(_) {}
+            });
+          } else {
+            chip.title = `Filter by tag: ${tag}`;
+            chip.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              if (!libraryTagFilters.includes(tag)) libraryTagFilters.push(tag);
+              try { setLocalStorageJSON('filters.tags', libraryTagFilters); } catch(_) {}
+              try { if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips(); } catch(_) {}
+              try { if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState(); } catch(_) {}
+              currentPage = 1; loadLibrary();
+            });
+          }
+          cont.appendChild(chip);
+        });
+        ensureRegistries().then(()=>renderSuggestions('tag', arr));
+      };
+      function startEdit() {
+        if (!f.path || td._editing) return;
+        td._editing = true;
+        // Render current chips then append contentEditable chip-input
+        apply(f.tags || currentTagNames);
+        const input = document.createElement('span');
+        input.className = 'chip-input';
+        input.contentEditable = 'true';
+        input.setAttribute('role', 'textbox');
+        input.setAttribute('aria-label', 'Add tags');
+        input.dataset.placeholder = 'Add tag…';
+        cont.appendChild(input);
+
+        async function commitTokens(tokens) {
+          const parts = (tokens || []).map(s=>String(s||'').trim()).filter(Boolean);
+          if (!parts.length) return;
+          for (const p of parts) {
+            try {
+              const url = new URL('/api/media/tags/add', window.location.origin);
+              url.searchParams.set('path', f.path);
+              url.searchParams.set('tag', p);
+              await fetch(url.toString(), {method:'POST'});
+            } catch(_) {}
+          }
+          const d = await fetchMetadataCached(f.path).catch(()=>null);
+          if (!td.isConnected) return;
+          apply(d?.tags || d?.tag_names || []);
+          if (td._editing) {
+            cont.appendChild(input);
+            placeCaretAtEnd(input);
+          }
+        }
+
+        function placeCaretAtEnd(el){
+          try {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            range.collapse(false);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          } catch(_) {}
+        }
+        function tokenize(str){
+          return String(str||'').split(/[,\n]+/).map(s=>s.trim()).filter(Boolean);
+        }
+        input.addEventListener('keydown', (e) => {
+          // Keep typing isolated from global shortcuts
+          e.stopPropagation();
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const raw = input.textContent || '';
+            input.textContent = '';
+            commitTokens(tokenize(raw));
+          } else if (e.key === ',') {
+            e.preventDefault();
+            const raw = input.textContent || '';
+            input.textContent = '';
+            commitTokens(tokenize(raw));
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            td._editing = false;
+            apply(f.tags || currentTagNames);
+          }
+        });
+        input.addEventListener('blur', () => {
+          if (!td._editing) return;
+          const raw = (input.textContent || '').trim();
+          td._editing = false;
+          if (raw) commitTokens(tokenize(raw));
+          else apply(f.tags || currentTagNames);
+        });
+        input.focus();
+      }
+      td.addEventListener('dblclick', (e) => {
+        if (e.target.closest('.chip') || e.target.closest('.chip-suggest')) return;
+        startEdit();
+      });
+      const ensureRegistries = async () => {
+        window.__REG = window.__REG || {};
+        if (!window.__REG.tags) {
+          try {
+            const r = await fetch('/api/registry/tags');
+            if (r.ok) {
+              const j = await r.json();
+              window.__REG.tags = Array.isArray(j?.data?.tags) ? j.data.tags : (Array.isArray(j?.tags) ? j.tags : []);
+            } else { window.__REG.tags = []; }
+          } catch(_) { window.__REG.tags = []; }
+        }
+      };
+      const renderSuggestions = (kind, existing) => {
+        try {
+          const baseName = (f?.name || (f?.path ? f.path.split('/').pop() : '') || '').replace(/\.[^.]+$/, '');
+          const baseLower = baseName.toLowerCase();
+          const norm = (s) => String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+          const baseNorm = ' ' + norm(baseLower) + ' ';
+          const containsWord = (needle) => {
+            const n = ' ' + norm(needle) + ' ';
+            return n.trim().split(/\s+/).every((tok) => baseNorm.includes(' ' + tok + ' '));
+          };
+          const names = (window.__REG.tags || []).map(t => t?.name).filter(Boolean);
+          const have = new Set((existing||[]).map(x => String(x).toLowerCase()));
+          const sug = [];
+          for (const nm of names) {
+            const low = String(nm).toLowerCase();
+            if (have.has(low)) continue;
+            if (containsWord(low)) sug.push(nm);
+            if (sug.length >= 6) break;
+          }
+          if (!sug.length) return;
+          const wrap = document.createElement('div'); wrap.className = 'chips-suggestions-inline';
+          sug.forEach((nm) => {
+            const chip = document.createElement('span'); chip.className = 'chip chip-suggest'; chip.textContent = nm; chip.title = 'Add tag';
+            chip.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              try {
+                const url = new URL('/api/media/tags/add', window.location.origin);
+                url.searchParams.set('path', f.path || '');
+                url.searchParams.set('tag', nm);
+                const resp = await fetch(url.toString(), {method:'POST'});
+                if (resp.ok) {
+                  const j = await resp.json();
+                  const list = j?.data?.tags || j?.tags || [];
+                  apply(list);
+                }
+              } catch(_) { }
+            });
+            wrap.appendChild(chip);
+          });
+          cont.appendChild(wrap);
+        } catch(_) {}
+      };
+      let initial = f && (f.tags || f.tag_names);
+      if (Array.isArray(initial) && initial.length) { ensureRegistries().then(()=>apply(initial)); }
+      else if (f && f.path) {
+        ensureRegistries().then(()=>{
+          fetchMetadataCached(f.path).then((d) => { if (!td.isConnected) return; apply(d && (d.tags || d.tag_names || [])); });
+        });
+      } else { ensureRegistries().then(()=>apply([])); }
+    }
+  });
   function pad2(n) { n = Number(n)||0; return n < 10 ? '0'+n : String(n); }
   function formatDateTime(sec) {
     const t = Number(sec)||0; if (!t) return '';
@@ -5418,10 +5815,35 @@ function setupListTab() {
   function loadCols() {
     try {
       const raw = getLocalStorageItem(COL_LS_KEY, {type: 'json', fallback: null});
-      if (!raw) return DEFAULT_COLS.map((c) => ({ ...c}));
-      // Merge to keep future default additions
-      const map = new Map(raw.map((c) => [c.id, c]));
-      return DEFAULT_COLS.map((d) => ({ ...d, ...(map.get(d.id) || {}) }));
+      if (!Array.isArray(raw) || !raw.length) {
+        return DEFAULT_COLS.map((c) => ({ ...c }));
+      }
+      // Preserve saved order: merge each saved entry with current default (if exists)
+      const defMap = new Map(DEFAULT_COLS.map(d => [d.id, d]));
+      const seen = new Set();
+      const merged = [];
+      for (const r of raw) {
+        if (!r || !r.id) continue;
+        const def = defMap.get(r.id);
+        if (def) {
+          merged.push({ ...def, ...r });
+          seen.add(r.id);
+        } else {
+          // Unknown (legacy or removed) column id: keep minimal structure
+          merged.push({ ...r });
+        }
+      }
+      // Append any new default columns not present in saved set, preserving their relative default order
+      for (const d of DEFAULT_COLS) {
+        if (!seen.has(d.id)) merged.push({ ...d });
+      }
+      // Ensure the select checkbox column stays first if present
+      const selIdx = merged.findIndex(c => c.id === 'select');
+      if (selIdx > 0) {
+        const [sel] = merged.splice(selIdx, 1);
+        merged.unshift(sel);
+      }
+      return merged;
     }
     catch (_) {
       return DEFAULT_COLS.map((c) => ({ ...c}));
@@ -5539,7 +5961,7 @@ function setupListTab() {
       closeFilterMenu();
       const menu = document.createElement('div');
       menu.className = 'list-filter-menu';
-      const keyMap = { format:'format', codec:'vcodec', vcodec:'vcodec', acodec:'acodec', bitrate:'bitrate', duration:'duration', size:'size', width:'width', height:'height', mtime:'mtime', created:'ctime', artifacts:'artifacts' };
+      const keyMap = { format:'format', codec:'vcodec', vcodec:'vcodec', acodec:'acodec', bitrate:'bitrate', duration:'duration', size:'size', width:'width', height:'height', mtime:'mtime', created:'ctime', artifacts:'artifacts', tags:'tags', performers:'performers' };
       const key = keyMap[colId] || null;
       function row(el){ const r=document.createElement('div'); r.className='row'; if (el) r.appendChild(el); return r; }
       function btn(label){ const b=document.createElement('button'); b.className='btn-sm'; b.textContent=label; return b; }
@@ -5569,9 +5991,9 @@ function setupListTab() {
       else if (key === 'bitrate' || key==='duration' || key==='size' || key==='width' || key==='height') {
         const cur = listFilters[key] || {};
         const sel=document.createElement('select'); sel.className='control-select';
-        sel.innerHTML = '<option value="">—</option><option value="gt">&gt;</option><option value="lt">&lt;</option><option value="eq">=</option>';
+        sel.innerHTML = '<option value="">—</option><option value="gt">&gt;</option><option value="ge">≥</option><option value="lt">&lt;</option><option value="le">≤</option><option value="eq">=</option>';
         const inp=document.createElement('input'); inp.type='number'; inp.className='chips-input'; inp.placeholder='value';
-        const op = cur.gt!=null?'gt':cur.lt!=null?'lt':cur.eq!=null?'eq':''; if (op) sel.value=op; const vv=(cur.gt??cur.lt??cur.eq); if (vv!=null) inp.value=String(vv);
+        const op = cur.gt!=null?'gt':cur.ge!=null?'ge':cur.lt!=null?'lt':cur.le!=null?'le':cur.eq!=null?'eq':''; if (op) sel.value=op; const vv=(cur.gt??cur.ge??cur.lt??cur.le??cur.eq); if (vv!=null) inp.value=String(vv);
         const r=document.createElement('div'); r.className='row'; r.appendChild(sel); r.appendChild(inp); menu.appendChild(r);
         const footer=document.createElement('div'); footer.className='footer'; const clearB=btn('Clear'); const applyB=btn('Apply');
         clearB.addEventListener('click', async ()=>{ delete listFilters[key]; saveListFilters(listFilters); closeFilterMenu(); page=1; await loadPage(); });
@@ -5602,11 +6024,60 @@ function setupListTab() {
           const cur=listFilters[k]; if (cur && 'bool' in cur) sel.value = cur.bool===true?'yes':(cur.bool===false?'no':'');
           const sp=document.createElement('span'); sp.textContent=label;
           lab.appendChild(sp); lab.appendChild(sel); wrap.appendChild(lab);
+          sel.addEventListener('change', async () => {
+            const v = sel.value;
+            if (v === 'yes') listFilters[k] = { bool: true };
+            else if (v === 'no') listFilters[k] = { bool: false };
+            else delete listFilters[k];
+            saveListFilters(listFilters);
+            page = 1;
+            await loadPage();
+          });
         });
         menu.appendChild(wrap);
-        const footer=document.createElement('div'); footer.className='footer'; const clearB=btn('Clear'); const applyB=btn('Apply');
+        const footer=document.createElement('div'); footer.className='footer'; const clearB=btn('Clear');
         clearB.addEventListener('click', async ()=>{ items.forEach(({k})=>{ delete listFilters[k]; }); saveListFilters(listFilters); closeFilterMenu(); page=1; await loadPage(); });
-        applyB.addEventListener('click', async ()=>{ const sels=Array.from(wrap.querySelectorAll('select.control-select')); sels.forEach((sel)=>{ const k=sel.dataset.key; if (sel.value==='yes') listFilters[k]={ bool: true }; else if (sel.value==='no') listFilters[k]={ bool: false }; else delete listFilters[k]; }); saveListFilters(listFilters); closeFilterMenu(); page=1; await loadPage(); });
+        footer.appendChild(clearB); menu.appendChild(footer);
+      }
+      else if (key === 'tags' || key === 'performers') {
+        const isTags = key === 'tags';
+        const values = uniqueValues(filesCache, (f) => {
+          const arr = isTags ? (f.tags || f.tag_names || []) : (f.performers || f.perfs || f.actors || []);
+          return Array.isArray(arr) ? arr.map(String).join('|') : '';
+        }).flatMap(s => (s ? s.split('|') : []));
+        const uniq = Array.from(new Set(values.filter(Boolean))).sort();
+        const cur = listFilters[key] || {};
+        const selIn = new Set(Array.isArray(cur.in) ? cur.in.map(String) : []);
+        const selNot = new Set(Array.isArray(cur.not_in) ? cur.not_in.map(String) : []);
+        const mkGroup = (title, selectedSet) => {
+          const wrap = document.createElement('div');
+          wrap.className = 'values';
+          const hdr = document.createElement('div'); hdr.className = 'hint-sm'; hdr.textContent = title; hdr.style.margin = '4px 0 2px';
+          menu.appendChild(hdr);
+          uniq.slice(0, 200).forEach((val) => {
+            const lab = document.createElement('label');
+            const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = selectedSet.has(val); cb.value = val;
+            const sp = document.createElement('span'); sp.textContent = val;
+            lab.appendChild(cb); lab.appendChild(sp); wrap.appendChild(lab);
+          });
+          return wrap;
+        };
+        const incWrap = mkGroup('Include any of', selIn);
+        const excWrap = mkGroup('Exclude any of', selNot);
+        menu.appendChild(incWrap);
+        menu.appendChild(excWrap);
+        const footer = document.createElement('div'); footer.className = 'footer';
+        const clearB = btn('Clear'); const applyB = btn('Apply');
+        clearB.addEventListener('click', async () => { delete listFilters[key]; saveListFilters(listFilters); closeFilterMenu(); page=1; await loadPage(); });
+        applyB.addEventListener('click', async () => {
+          const valsIn = Array.from(incWrap.querySelectorAll('input[type="checkbox"]:checked')).map((cb)=>cb.value);
+          const valsNot = Array.from(excWrap.querySelectorAll('input[type="checkbox"]:checked')).map((cb)=>cb.value);
+          const obj = {};
+          if (valsIn.length) obj.in = valsIn;
+          if (valsNot.length) obj.not_in = valsNot;
+          if (Object.keys(obj).length) setFilterForKey(key, obj); else delete listFilters[key];
+          saveListFilters(listFilters); closeFilterMenu(); page=1; await loadPage();
+        });
         footer.appendChild(clearB); footer.appendChild(applyB); menu.appendChild(footer);
       }
       else {
@@ -5712,6 +6183,9 @@ function setupListTab() {
             master.id = 'listSelectAll';
             master.setAttribute('aria-label', 'Select all on page');
             wrapEl.appendChild(master);
+            // Remove drag and resize affordances from the select column header
+            const dh = th.querySelector('.col-drag-handle'); if (dh) dh.remove();
+            if (rz) rz.remove();
           } else {
             const title = document.createElement('span');
             title.className = 'list-head-title';
@@ -5726,7 +6200,7 @@ function setupListTab() {
             wrapEl.appendChild(ind);
           }
           // Column filter trigger
-          const keyMap = { format:'format', codec:'vcodec', vcodec:'vcodec', acodec:'acodec', bitrate:'bitrate', duration:'duration', size:'size', width:'width', height:'height', mtime:'mtime', created:'ctime', artifacts:'artifacts' };
+          const keyMap = { format:'format', codec:'vcodec', vcodec:'vcodec', acodec:'acodec', bitrate:'bitrate', duration:'duration', size:'size', width:'width', height:'height', mtime:'mtime', created:'ctime', artifacts:'artifacts', tags:'tags', performers:'performers' };
           const fkey = keyMap[c.id] || (c.id === 'artifacts' ? 'artifacts' : null);
           if (fkey) {
             const trig = document.createElement('span');
@@ -5779,7 +6253,7 @@ function setupListTab() {
           }
           applyColumnWidths();
         };
-        rz && rz.addEventListener('mousedown', (ev) => {
+        if (c.id !== 'select' && rz) rz.addEventListener('mousedown', (ev) => {
           startX = ev.clientX;
           startW = th.getBoundingClientRect().width;
           colTds = Array.from(panel.querySelectorAll(`#listTable td.col-${c.id}`));
@@ -5788,7 +6262,7 @@ function setupListTab() {
           ev.preventDefault();
         });
         // Double-click on the resizer: auto-size column to fit the widest non-wrapping content
-        rz && rz.addEventListener('dblclick', (ev) => {
+        if (c.id !== 'select' && rz) rz.addEventListener('dblclick', (ev) => {
           ev.stopPropagation(); // prevent triggering sort on header dblclick
           try {
             const target = computeAutoWidth(panel, c.id);
@@ -5932,11 +6406,6 @@ function setupListTab() {
           const path = f.path || '';
           if (!path) return;
           if (e.target && e.target.closest('.list-row-checkbox')) return; // ignore direct checkbox clicks
-          if (e.detail === 2) {
-            try { if (window.tabSystem) window.tabSystem.switchToTab('player'); } catch(_) {}
-            try { if (window.Player?.open) window.Player.open(path); } catch(_) {}
-            return;
-          }
           // Shift-click range selection for rows
           const rowsAll = Array.from(tbody.querySelectorAll('tr[data-path]'));
           const idx = rowsAll.indexOf(tr);
@@ -6040,9 +6509,19 @@ function setupListTab() {
     function describeFilter(key, val) {
       if (!val) return null;
       if (val.in && Array.isArray(val.in)) return key + ':' + val.in.join(',');
+      if (val.not_in && Array.isArray(val.not_in)) {
+        const inc = (val.in && Array.isArray(val.in) && val.in.length) ? ('+' + val.in.join(',')) : '';
+        const exc = (val.not_in.length ? ('-' + val.not_in.join(',')) : '');
+        return key + ':' + [inc, exc].filter(Boolean).join(' ');
+      }
       if (val.bool === true) return key + ':yes';
       if (val.bool === false) return key + ':no';
-      for (const op of ['gt','lt','eq']) { if (val[op] != null) return key + ':' + op + ' ' + val[op]; }
+      for (const op of ['gt','ge','lt','le','eq']) {
+        if (val[op] != null) {
+          const sym = op==='gt'?'>':op==='ge'?'≥':op==='lt'?'<':op==='le'?'≤':'=';
+          return key + ':' + sym + ' ' + val[op];
+        }
+      }
       if (val.after != null || val.before != null) {
         const a = val.after ? 'after ' + new Date(val.after*1000).toISOString().slice(0,16).replace('T',' ') : '';
         const b = val.before ? 'before ' + new Date(val.before*1000).toISOString().slice(0,16).replace('T',' ') : '';
@@ -6083,6 +6562,8 @@ function setupListTab() {
     function renderColumnsPanel() {
       colsBody.innerHTML = '';
       cols.forEach((c, idx) => {
+        // Skip showing the visibility toggle entry for the selection checkbox column
+        if (c.id === 'select') return;
         let item;
         if (itemTpl && itemTpl.content) item = itemTpl.content.firstElementChild.cloneNode(true);
         else {
@@ -9633,7 +10114,7 @@ const Player = (() => {
     document.addEventListener('keydown', (e) => {
       if (!videoEl) return;
       const tag = (document.activeElement && document.activeElement.tagName) || '';
-      const inForm = /INPUT|TEXTAREA|SELECT|BUTTON/.test(tag);
+      const inForm = /INPUT|TEXTAREA|SELECT|BUTTON/.test(tag) || (document.activeElement && document.activeElement.isContentEditable === true);
       // Prevent page scroll when focused on body and using space/arrow keys for player
       if (e.key === ' ' || e.key === 'Spacebar' || e.code === 'Space' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         if (!inForm) {
@@ -12582,7 +13063,8 @@ const Player = (() => {
       if (window.tabSystem?.getActiveTab() !== 'player') return;
       // Ignore if typing into inputs/selects
       const tag = (document.activeElement?.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      const inCE = !!document.activeElement && document.activeElement.isContentEditable === true;
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || inCE) return;
       if (e.code === 'Space') {
         e.preventDefault();
         if (!videoEl) return;
@@ -19384,189 +19866,7 @@ function __initTasksTabOnce() {
   });
 })();
 
-// =============================================================
-// Fire TV / Android TV Mode Support
-// =============================================================
-(function initFireTVMode() {
-  const isFireTV = document.documentElement.classList.contains('firetv');
-  if (!isFireTV) return;
-
-  if (debugEnabled()) console.log('Fire TV mode activated');
-
-  // Grid navigation state
-  let currentFocusIndex = 0;
-  let gridItems = [];
-  let headerHideTimer = null;
-  let lastActivityTime = Date.now();
-
-  // Update grid items reference
-  function updateGridItems() {
-    gridItems = Array.from(document.querySelectorAll('.grid .card'));
-    gridItems.forEach((item, index) => {
-      item.setAttribute('tabindex', index === currentFocusIndex ? '0' : '-1');
-    });
-  }
-
-  // Focus management
-  function focusItem(index) {
-    if (index < 0 || index >= gridItems.length) return;
-
-    gridItems[currentFocusIndex]?.setAttribute('tabindex', '-1');
-    currentFocusIndex = index;
-    gridItems[currentFocusIndex]?.setAttribute('tabindex', '0');
-    gridItems[currentFocusIndex]?.focus();
-  }
-
-  // Calculate grid dimensions for navigation
-  function getGridDimensions() {
-    if (!gridItems.length) return { cols: 0, rows: 0 };
-
-    const container = document.querySelector('.grid');
-    const containerRect = container.getBoundingClientRect();
-    const firstItem = gridItems[0];
-    const firstItemRect = firstItem.getBoundingClientRect();
-
-    // Calculate approximate columns based on item width and container width
-    const itemWidth = firstItemRect.width;
-    const containerWidth = containerRect.width;
-    const gap = 20; // From CSS
-    const cols = Math.floor((containerWidth + gap) / (itemWidth + gap));
-
-    return {
-      cols: Math.max(1, cols),
-      rows: Math.ceil(gridItems.length / cols)
-    };
-  }
-
-  // Header auto-hide functionality
-  function showHeader() {
-    const header = document.querySelector('header');
-    if (header) {
-      header.classList.remove('hidden');
-    }
-  }
-
-  function hideHeader() {
-    const header = document.querySelector('header');
-    if (header) {
-      header.classList.add('hidden');
-    }
-  }
-
-  function resetHeaderTimer() {
-    lastActivityTime = Date.now();
-    showHeader();
-
-    clearTimeout(headerHideTimer);
-    headerHideTimer = setTimeout(() => {
-      if (Date.now() - lastActivityTime >= 3000) {
-        hideHeader();
-      }
-    }, 3000);
-  }
-
-  // D-pad navigation
-  function handleDPadNavigation(e) {
-    if (!gridItems.length) return;
-    // Don't steal keys while typing in inputs/textareas/selects/contenteditable
-    const ae = document.activeElement;
-    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) {
-      return;
-    }
-
-    const { cols } = getGridDimensions();
-    let newIndex = currentFocusIndex;
-
-    switch (e.key) {
-      case 'ArrowUp':
-        newIndex = Math.max(0, currentFocusIndex - cols);
-      break;
-      case 'ArrowDown':
-        newIndex = Math.min(gridItems.length - 1, currentFocusIndex + cols);
-      break;
-      case 'ArrowLeft':
-        if (currentFocusIndex % cols !== 0) {
-          newIndex = currentFocusIndex - 1;
-        }
-      break;
-      case 'ArrowRight':
-        if ((currentFocusIndex + 1) % cols !== 0 && currentFocusIndex + 1 < gridItems.length) {
-          newIndex = currentFocusIndex + 1;
-        }
-      break;
-      case 'Enter':
-      case ' ':
-        // Activate current item
-        gridItems[currentFocusIndex]?.click();
-      return;
-      case 'Escape':
-      case 'Backspace':
-        // Exit focus mode: blur current item and reveal header
-        try { gridItems[currentFocusIndex]?.blur(); }
-        catch (_) {}
-        showHeader();
-      return;
-      default:
-      return;
-    }
-
-    if (newIndex !== currentFocusIndex) {
-      e.preventDefault();
-      focusItem(newIndex);
-      resetHeaderTimer();
-    }
-  }
-
-  // Initialize Fire TV mode
-  function initializeFireTV() {
-    // Set up initial grid state
-    updateGridItems();
-
-    // Focus first item if available
-    if (gridItems.length > 0) {
-      focusItem(0);
-    }
-
-    // Start header timer
-    resetHeaderTimer();
-
-    // Global keydown handler for D-pad navigation
-    document.addEventListener('keydown', (e) => {
-      resetHeaderTimer();
-      handleDPadNavigation(e);
-    });
-
-    // Update grid items when library changes
-    const observer = new MutationObserver(() => {
-      const newGridItems = Array.from(document.querySelectorAll('.grid .card'));
-      if (newGridItems.length !== gridItems.length) {
-        updateGridItems();
-        // Reset focus to first item if current focus is out of bounds
-        if (currentFocusIndex >= gridItems.length) {
-          currentFocusIndex = 0;
-          if (gridItems.length > 0) {
-            focusItem(0);
-          }
-        }
-      }
-    });
-
-    observer.observe(document.querySelector('.grid') || document.body, {
-      childList: true,
-      subtree: true
-    });
-
-    // Reset activity on any user interaction
-    ['click', 'keydown', 'mousemove', 'touchstart'].forEach(eventType => {
-      document.addEventListener(eventType, resetHeaderTimer, { passive: true });
-    });
-  }
-
-  // Initialize when DOM is ready
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeFireTV, { once: true });
-  }
-  else {
-    initializeFireTV();
-  }
-})();
+  // =============================================================
+  // Fire TV / Android TV Mode Support
+  // =============================================================
+  // Temporarily disabled due to syntax recovery; will re-enable after grid is stable.

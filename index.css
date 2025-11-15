@@ -808,7 +808,7 @@ see top of file) */
 .list-head-cell {
   display: flex;
   align-items: center;
-  gap: 8px;
+  /* gap: 8px; */
   /* allow inner title to shrink properly for ellipsis */
   min-width: 0;
 }
@@ -836,8 +836,14 @@ see top of file) */
 
 /* Pager containers */
 .list-pager { display: flex; align-items: center; gap: 8px; }
-.list-controls .list-pager { margin-left: auto; }
+.list-controls .list-pager { margin-left: 0; }
 .list-pager-bottom { display: flex; justify-content: flex-end; margin-top: 8px; }
+
+/* Remove drag/resize affordances from the select (checkbox) header column */
+#listTable thead th.col-select .col-drag-handle,
+#listTable thead th.col-select .col-resizer { display: none !important; pointer-events: none !important; }
+#listTable thead th.col-select { cursor: default; }
+#listTable thead th.col-select .list-head-cell { justify-content: center; }
 
 /* Columns panel dynamic positioning override */
 
@@ -887,11 +893,64 @@ th .col-drag-handle:active {
 .artifact-filter-chips .chip { font-size:11px; padding:2px 6px; border-radius:12px; background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14); display:inline-flex; align-items:center; gap:4px; }
 .artifact-filter-chips .chip--clear { background: rgba(79,140,255,0.18); border-color: rgba(79,140,255,0.45); }
 
+/* Merged Artifacts column: ensure wide enough initially (matches widened JS default 520px) */
+.list-table thead th.col-artifacts,
+.list-table tbody td.col-artifacts { min-width:520px; }
+/* Prevent wrapping when table nowrap mode is active */
+#listTable.nowrap tbody td.col-artifacts .chips-list { flex-wrap: nowrap; white-space: nowrap; }
+/* Optional horizontal scroll if still overflow (keeps single line) */
+#listTable.nowrap tbody td.col-artifacts .chips-list { overflow-x: auto; }
+/* Add px units to width/height via JS; ensure no extra layout constraints needed here */
+
+/* Performers & Tags columns chip styling (reuse artifact chip aesthetics) */
+.list-table tbody td.col-performers .chips-list,
+.list-table tbody td.col-tags .chips-list { display:flex; flex-wrap:wrap; gap:6px; }
+.list-table tbody td.col-performers .chip,
+.list-table tbody td.col-tags .chip { font-size:11px; padding:2px 6px; border-radius:12px; background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14); cursor:pointer; }
+.list-table tbody td.col-performers .chip:hover,
+.list-table tbody td.col-tags .chip:hover { background: rgba(255,255,255,0.14); }
+/* No-wrap mode: keep single line with horizontal scroll */
+#listTable.nowrap tbody td.col-performers .chips-list,
+#listTable.nowrap tbody td.col-tags .chips-list { flex-wrap:nowrap; white-space:nowrap; overflow-x:auto; }
+/* Inline suggestions (list performers/tags) */
+.list-table tbody td.col-performers .chips-suggestions-inline,
+.list-table tbody td.col-tags .chips-suggestions-inline { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+.list-table tbody td.col-performers .chip-suggest,
+.list-table tbody td.col-tags .chip-suggest { font-size:11px; padding:2px 6px; border-radius:12px; background: rgba(79,140,255,0.18); border:1px solid rgba(79,140,255,0.45); cursor:pointer; }
+.list-table tbody td.col-performers .chip-suggest:hover,
+.list-table tbody td.col-tags .chip-suggest:hover { background: rgba(79,140,255,0.30); }
+/* Pending (unconfirmed) chips and suggestion chips: leading question mark */
+.list-table tbody td.col-performers .chip-suggest::before,
+.list-table tbody td.col-tags .chip-suggest::before,
+.list-table tbody td.col-performers .chip--pending::before,
+.list-table tbody td.col-tags .chip--pending::before { content:'?'; font-weight:600; opacity:.7; margin-right:4px; }
+/* Inline edit input styling */
+.inline-edit-wrap { display:flex; width:100%; }
+.inline-edit-input { width:100%; font-size:11px; padding:4px 6px; border-radius:6px; border:1px solid rgba(255,255,255,0.25); background: rgba(0,0,0,0.35); color:inherit; }
+.inline-edit-input:focus { outline:2px solid rgba(79,140,255,0.6); }
+
+/* ContentEditable chip-style inline input that preserves chip layout */
+.chips-list .chip-input { display:inline-flex; align-items:center; min-width:18px; min-height:20px; padding:2px 6px; margin:0; border-radius:12px; background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14); font-size:11px; outline:none; cursor:text; }
+.chips-list .chip-input:focus { background: rgba(255,255,255,0.10); border-color: rgba(79,140,255,0.45); box-shadow: 0 0 0 2px rgba(79,140,255,0.25) inset; }
+.chips-list .chip-input:empty:before { content: attr(data-placeholder); color: var(--muted); opacity: .7; }
+/* No-wrap mode: keep inline editor on one line with horizontal scroll */
+#listTable.nowrap tbody td.col-performers .chips-list .chip-input,
+#listTable.nowrap tbody td.col-tags .chips-list .chip-input { white-space:nowrap; }
+
+/* Autocomplete dropdown for chip editors */
+.list-table tbody td.col-performers, .list-table tbody td.col-tags { position: relative; }
+.chip-suggest-menu { position:absolute; top:100%; left:0; margin-top:4px; z-index:500; background: var(--panel-bg,#1e293b); border:1px solid rgba(255,255,255,0.18); border-radius:6px; padding:4px 0; min-width:160px; max-width:260px; box-shadow:0 6px 16px rgba(0,0,0,.45); max-height:220px; overflow-y:auto; }
+.chip-suggest-menu[hidden] { display:none; }
+.chip-suggest-item { padding:4px 10px; font-size:11px; cursor:pointer; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
+.chip-suggest-item:hover, .chip-suggest-item.active { background: rgba(79,140,255,0.30); }
+
 /* Compact, centered utility columns (open/action + artifact presence) */
 .list-table thead th.col-open,
 .list-table tbody td.col-open,
 .list-table thead th[class^="col-art-"],
+.list-table thead th[class*=" col-art-"],
 .list-table tbody td[class^="col-art-"],
+.list-table tbody td[class*=" col-art-"],
 .list-table thead th.col-subs,
 .list-table tbody td.col-subs {
   text-align: center;
@@ -914,6 +973,7 @@ th .col-drag-handle:active {
 }
 /* New status glyphs for artifact presence */
 .list-table tbody td[class^="col-art-"] .status,
+.list-table tbody td[class*=" col-art-"] .status,
 .list-table tbody td.col-subs .status {
   font-size: 12px;
   font-weight: 600;
@@ -924,6 +984,15 @@ th .col-drag-handle:active {
   height: 1.25em;
   line-height: 1.25em;
 }
+.list-table thead th[class^="col-art-"] .list-head-cell,
+.list-table thead th[class*=" col-art-"] .list-head-cell { justify-content: center; }
+/* Center chips/statuses within artifact cells */
+#listTable tbody td[class^="col-art-"] .chips-list,
+#listTable tbody td[class*=" col-art-"] .chips-list { justify-content: center; }
+#listTable.nowrap tbody td[class^="col-art-"] .chips-list,
+#listTable.nowrap tbody td[class*=" col-art-"] .chips-list { justify-content: center; }
+.list-table tbody td[class^="col-art-"] .status,
+.list-table tbody td[class*=" col-art-"] .status { margin: 0 auto; }
 .status--present { color: #22c55e; } /* green check */
 .status--missing { color: #ef4444; } /* red X */
 

@@ -6278,6 +6278,39 @@ def _enrich_file_basic(entry: dict) -> dict:
         entry.setdefault("heatmaps", heatmaps_exists)
         entry.setdefault("subtitles", subtitles_exists)
         entry.setdefault("faces", faces_exists)
+        # Tags/performers from sidecar (populate for page slice to power list columns)
+        try:
+            tf = _tags_file(fp)
+            tags_arr = []
+            perf_arr = []
+            if tf.exists():
+                try:
+                    td = json.loads(tf.read_text())
+                    _t = td.get("tags") or []
+                    _p = td.get("performers") or []
+                    if isinstance(_t, list):
+                        tags_arr = [str(x) for x in _t if str(x).strip()]
+                    if isinstance(_p, list):
+                        perf_arr = [str(x) for x in _p if str(x).strip()]
+                except Exception:
+                    tags_arr = []
+                    perf_arr = []
+            # Merge/override with media attribute store (authoritative for current performers/tags)
+            try:
+                ent = _MEDIA_ATTR.get(str(rel_path))
+                if isinstance(ent, dict):
+                    mt_tags = ent.get("tags")
+                    mt_perfs = ent.get("performers")
+                    if isinstance(mt_tags, list) and mt_tags:
+                        tags_arr = [str(x) for x in mt_tags if str(x).strip()]
+                    if isinstance(mt_perfs, list) and mt_perfs:
+                        perf_arr = [str(x) for x in mt_perfs if str(x).strip()]
+            except Exception:
+                pass
+            entry.setdefault("tags", tags_arr)
+            entry.setdefault("performers", perf_arr)
+        except Exception:
+            pass
         # Thumbnail / preview
         try:
             if thumbnails_path(fp).exists():
@@ -6428,6 +6461,20 @@ def get_library(
                         vp.add(ss)
             except Exception:
                 pass
+        # Merge with media attribute store (authoritative current state)
+        try:
+            ent = _MEDIA_ATTR.get(rel_path)
+            if isinstance(ent, dict):
+                for t in (ent.get("tags") or []):
+                    ss = _slugify(str(t))
+                    if ss:
+                        vt.add(ss)
+                for p in (ent.get("performers") or []):
+                    ss = _slugify(str(p))
+                    if ss:
+                        vp.add(ss)
+        except Exception:
+            pass
         return vt, vp
 
     pre_filter_count = len(files)
@@ -6645,6 +6692,15 @@ def get_library(
                             f.setdefault("format", (f.get("ext") or "").lstrip("."))
                 except Exception:
                     pass
+            def _ensure_sidecar_sets(f: dict) -> tuple[set[str], set[str]]:
+                try:
+                    relp = f.get("path") or ""
+                    if not relp:
+                        return set(), set()
+                    vt, vp = _load_sidecar_sets(relp)
+                    return vt, vp
+                except Exception:
+                    return set(), set()
             # Sidecar/flags booleans only if requested (can be costly across many files)
             def _ensure_flags(f: dict):
                 try:
@@ -6700,6 +6756,30 @@ def get_library(
                 if not isinstance(cond, dict):
                     # equality fallback
                     return str(val).lower() == str(cond).lower()
+                # If the value is a collection (tags/performers), support include/exclude semantics
+                if isinstance(val, (list, set, tuple)):
+                    try:
+                        sval = set()
+                        for x in val:
+                            try:
+                                sx = _slugify(str(x))
+                            except Exception:
+                                sx = str(x).strip().lower()
+                            if sx:
+                                sval.add(sx)
+                        arr_in = cond.get("in")
+                        if isinstance(arr_in, list):
+                            want = {(_slugify(str(x)) or str(x).strip().lower()) for x in arr_in if str(x).strip()}
+                            if want and sval.isdisjoint(want):
+                                return False
+                        arr_not = cond.get("not_in")
+                        if isinstance(arr_not, list):
+                            notwant = {(_slugify(str(x)) or str(x).strip().lower()) for x in arr_not if str(x).strip()}
+                            if notwant and not sval.isdisjoint(notwant):
+                                return False
+                        return True
+                    except Exception:
+                        return True
                 # in-list
                 arr_in = cond.get("in")
                 if isinstance(arr_in, list):
@@ -6763,6 +6843,10 @@ def get_library(
                     _ensure_bitrate_codecs(f)
                 if k in ("phash","chapters","sprites","heatmaps","subtitles","faces","thumbnail","preview"):
                     _ensure_flags(f)
+                # Provide set values for tags/performers to allow include/exclude matching
+                if k in ("tags", "performers"):
+                    vt, vp = _ensure_sidecar_sets(f)
+                    return vt if k == "tags" else vp
                 if k == "metadata":
                     # Treat presence of metadata sidecar as boolean
                     try:
