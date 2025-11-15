@@ -396,6 +396,69 @@ const grid = document.getElementById('grid');
 try { devLog('info', 'app', 'script loaded build=reset-debug-1', {ts: Date.now()}); }
 catch (_) {}
 
+// Artifact Filters Popover (Library Grid)
+(function wireArtifactFiltersUI(){
+  const btn = document.getElementById('artifactFiltersBtn');
+  const menu = document.getElementById('artifactFiltersMenu');
+  if (!btn || !menu) return;
+  const artDefs = [
+    ['metadata','Metadata'],['thumbnail','Thumbnail'],['sprites','Sprites'],['chapters','Scenes'],['subtitles','Subtitles'],['heatmaps','Heatmaps'],['faces','Faces'],['preview','Preview'],['waveform','Waveform'],['motion','Motion']
+  ];
+  function render(){
+    menu.innerHTML='';
+    const wrap=document.createElement('div'); wrap.className='values';
+    artDefs.forEach(([k,label])=>{
+      const lab=document.createElement('label'); lab.style.display='flex'; lab.style.alignItems='center'; lab.style.gap='8px'; lab.style.padding='2px 4px';
+      const sel=document.createElement('select'); sel.className='control-select'; sel.dataset.key=k; sel.innerHTML='<option value="">Any</option><option value="yes">Yes</option><option value="no">No</option>';
+      const cur=libraryArtifactFilters[k]; if (cur===true) sel.value='yes'; else if (cur===false) sel.value='no';
+      const sp=document.createElement('span'); sp.textContent=label;
+      lab.appendChild(sp); lab.appendChild(sel); wrap.appendChild(lab);
+    });
+    menu.appendChild(wrap);
+    const footer=document.createElement('div'); footer.className='footer'; footer.style.display='flex'; footer.style.gap='8px'; footer.style.justifyContent='flex-end'; footer.style.marginTop='10px';
+    const clearB=document.createElement('button'); clearB.className='btn-sm'; clearB.textContent='Clear';
+    const applyB=document.createElement('button'); applyB.className='btn-sm'; applyB.textContent='Apply';
+    clearB.addEventListener('click', async ()=>{ libraryArtifactFilters={}; saveLibraryArtifactFilters(libraryArtifactFilters); hide(); currentPage=1; await loadLibrary(); try { renderArtifactFilterChips(); } catch(_) {} });
+    applyB.addEventListener('click', async ()=>{
+      const sels=Array.from(menu.querySelectorAll('select.control-select'));
+      const obj={}; sels.forEach(sel=>{ const k=sel.dataset.key; if (sel.value==='yes') obj[k]=true; else if (sel.value==='no') obj[k]=false; });
+      libraryArtifactFilters=obj; saveLibraryArtifactFilters(libraryArtifactFilters); hide(); currentPage=1; await loadLibrary(); try { renderArtifactFilterChips(); } catch(_) {}
+    });
+    footer.appendChild(clearB); footer.appendChild(applyB); menu.appendChild(footer);
+  }
+  function position(){ const br=btn.getBoundingClientRect(); menu.style.left=br.left+'px'; menu.style.top=(br.bottom+6)+'px'; }
+  function show(){ render(); position(); menu.hidden=false; btn.setAttribute('aria-expanded','true'); setTimeout(()=>document.addEventListener('click', onDoc,true),0); }
+  function hide(){ if (!menu.hidden){ menu.hidden=true; btn.setAttribute('aria-expanded','false'); document.removeEventListener('click', onDoc,true);} }
+  function onDoc(e){ if (menu.contains(e.target) || e.target===btn) return; hide(); }
+  btn.addEventListener('click', (e)=>{ e.preventDefault(); if (menu.hidden) show(); else hide(); });
+})();
+
+// Render artifact filter chips next to Artifacts button
+function renderArtifactFilterChips(){
+  const host = document.getElementById('artifactFilterChips');
+  if (!host) return;
+  host.innerHTML='';
+  const entries = Object.entries(libraryArtifactFilters || {}).filter(([k,v])=> v===true || v===false);
+  if (!entries.length){ host.hidden = true; return; }
+  entries.forEach(([k,v])=>{
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = (v? k+':Y' : k+':N');
+    chip.title = v ? ('Has '+k) : ('Missing '+k);
+    chip.addEventListener('click', (e)=>{ e.preventDefault(); const btn=document.getElementById('artifactFiltersBtn'); if(btn) btn.click(); });
+    const clear = document.createElement('button'); clear.type='button'; clear.textContent='×'; clear.setAttribute('aria-label','Remove '+k+' artifact filter');
+    clear.addEventListener('click', async (e)=>{ e.stopPropagation(); delete libraryArtifactFilters[k]; saveLibraryArtifactFilters(libraryArtifactFilters); currentPage=1; await loadLibrary(); renderArtifactFilterChips(); });
+    chip.appendChild(clear);
+    host.appendChild(chip);
+  });
+  const clearAll = document.createElement('span'); clearAll.className='chip chip--artifact chip--clear'; clearAll.textContent='Clear Artifacts';
+  const btnAll = document.createElement('button'); btnAll.type='button'; btnAll.textContent='×'; btnAll.setAttribute('aria-label','Clear all artifact filters');
+  btnAll.addEventListener('click', async (e)=>{ e.stopPropagation(); libraryArtifactFilters={}; saveLibraryArtifactFilters(libraryArtifactFilters); currentPage=1; await loadLibrary(); renderArtifactFilterChips(); });
+  clearAll.appendChild(btnAll); host.appendChild(clearAll);
+  host.hidden = false;
+}
+try { renderArtifactFilterChips(); } catch(_) {}
+
 // --------------------------------------------------
 // Global Player Reset (moved to top-level so it's definitely defined & wired)
 // --------------------------------------------------
@@ -707,6 +770,10 @@ let currentDensity = 12;
 let libraryTagFilters = [];
 let libraryPerformerFilters = [];
 let librarySearchTerms = [];
+// Artifact presence filters for grid (Yes/No). Keys map to server artifact flags.
+const LIB_ART_FILTERS_LS_KEY = 'library.artifact.filters.v1';
+let libraryArtifactFilters = (() => { try { return getLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, {}) || {}; } catch(_) { return {}; } })();
+function saveLibraryArtifactFilters(obj) { try { setLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, obj || {}); } catch(_) {} }
 // plain text search tokens (chips)
 let autoRandomEnabled = false;
 let lastCardHeight = 230; // updated after first render of cards
@@ -1571,6 +1638,17 @@ async function loadLibrary() {
     if (libraryPerformerFilters.length) {
       params.set('performers', libraryPerformerFilters.join(','));
     }
+    // Artifact filters: build filters object compatible with list tab format
+    const artKeys = ['metadata','thumbnail','sprites','chapters','subtitles','heatmaps','faces','preview','waveform','motion'];
+    const artFilterPayload = {};
+    for (const k of artKeys) {
+      const v = libraryArtifactFilters[k];
+      if (v === true) artFilterPayload[k] = { bool: true };
+      else if (v === false) artFilterPayload[k] = { bool: false };
+    }
+    if (Object.keys(artFilterPayload).length) {
+      try { params.set('filters', JSON.stringify(artFilterPayload)); } catch(_) {}
+    }
   const endpoint = '/api/library' + (params.toString() ? ('?' + params.toString()) : '');
   try { devLog('info', 'library', 'request', { page: currentPage, pageSize, path: (currentPath()||''), sort: (overrideFromSortState || sortSelect.value || 'date'), order: (orderToggle.dataset.order||'desc') }); }
   catch (_) {}
@@ -1902,6 +1980,19 @@ async function loadLibrary() {
         frag.appendChild(nodes[i]);
       }
       grid.appendChild(frag);
+      // Ensure initially visible cards get their metadata overlays immediately (e.g., 1080p labels)
+      try {
+        const cards = Array.from(grid.querySelectorAll('.card'));
+        const vh = (typeof window !== 'undefined') ? window.innerHeight : 0;
+        const computeMeta = window.__computeTileMetadata || null;
+        if (computeMeta && vh) {
+          for (const c of cards) {
+            if (!c || !c._needsMetadata) continue;
+            const r = c.getBoundingClientRect();
+            if (r.top < vh && r.bottom > 0) computeMeta(c);
+          }
+        }
+      } catch(_) {}
       if (i < nodes.length) {
         if (window.requestIdleCallback) {
           requestIdleCallback(insertBatch, {timeout: 120});
@@ -1950,6 +2041,19 @@ async function loadLibrary() {
       nodes.forEach((n) => frag.appendChild(n));
       grid.appendChild(frag);
       show(grid);
+      // One-shot immediate metadata for visible cards
+      try {
+        const cards = Array.from(grid.querySelectorAll('.card'));
+        const vh = (typeof window !== 'undefined') ? window.innerHeight : 0;
+        const computeMeta = window.__computeTileMetadata || null;
+        if (computeMeta && vh) {
+          for (const c of cards) {
+            if (!c || !c._needsMetadata) continue;
+            const r = c.getBoundingClientRect();
+            if (r.top < vh && r.bottom > 0) computeMeta(c);
+          }
+        }
+      } catch(_) {}
       requestAnimationFrame(() => enforceGridSideSpacing());
       finishInsertion();
       // Do not auto-trigger; wait for explicit bottom overscroll.
@@ -2337,7 +2441,8 @@ function setupInfiniteScrollSentinel() {
     infiniteScrollSentinel.style.height = '1px';
     infiniteScrollSentinel.style.marginTop = '1px';
   }
-  const gridParent = grid && grid.parentNode ? grid.parentNode : panel;
+  // Keep the sentinel inside the grid to avoid impacting siblings (e.g., sticky controls panel)
+  const gridParent = grid || panel;
   if (!infiniteScrollSentinel.parentNode) {
     gridParent.appendChild(infiniteScrollSentinel);
   }
@@ -2839,23 +2944,27 @@ function resolveArtifactRequest(artifact, filePath) {
 function normalizeArtifactKey(key) {
   const k = String(key || '').toLowerCase();
   if (k === 'meta') return 'metadata';
-  if (k === 'chapters' || k === 'scenes') return 'markers';
-  if (k === 'previews') return 'preview';
-  if (k === 'heatmap') return 'heatmaps'; // input alias
+  if (k === 'thumb' || k === 'thumbnail') return 'thumbnail';
+  if (k === 'sprite' || k === 'sprites') return 'sprites';
+  if (k === 'subs' || k === 'subtitles') return 'subtitles';
+  if (k === 'chapters' || k === 'scenes' || k === 'markers') return 'markers';
+  if (k === 'previews' || k === 'preview') return 'preview';
+  if (k === 'heat' || k === 'heatmap' || k === 'heatmaps') return 'heatmaps';
+  if (k === 'wave' || k === 'waveform') return 'waveform';
   return k;
 }
 
 const ARTIFACT_DEFS = [
   { key: 'metadata', label: 'Metadata', statusKey: 'metadata' },
-  { key: 'thumbnail', label: 'Thumb', statusKey: 'thumbnail' },
+  { key: 'thumbnail', label: 'Thumbnail', statusKey: 'thumbnail' },
   { key: 'preview', label: 'Preview', statusKey: 'preview' },
-  { key: 'sprites', label: 'Sprite', statusKey: 'sprites' },
+  { key: 'sprites', label: 'Sprites', statusKey: 'sprites' },
   { key: 'markers', label: 'Scenes', statusKey: 'markers' },
-  { key: 'subtitles', label: 'Subs', statusKey: 'subtitles' },
-  { key: 'heatmaps', label: 'Heat', statusKey: 'heatmap' },
+  { key: 'subtitles', label: 'Subtitles', statusKey: 'subtitles' },
+  { key: 'heatmaps', label: 'Heatmaps', statusKey: 'heatmap' },
   { key: 'faces', label: 'Faces', statusKey: 'faces' },
   { key: 'phash', label: 'pHash', statusKey: 'phash' },
-  { kedy: 'waveform', label: 'Wave', statusKey: 'waveform' },
+  { key: 'waveform', label: 'Waveform', statusKey: 'waveform' },
   { key: 'motion', label: 'Motion', statusKey: 'motion' },
 ];
 
@@ -3997,6 +4106,28 @@ function updateCardSelection(path) {
     }
   }
 }
+// Shift-click support when clicking directly on card checkboxes (range select)
+document.addEventListener('click', (e) => {
+  const box = e.target.closest('.card-checkbox');
+  if (!box) return;
+  const card = box.closest('.card[data-path]');
+  if (!card) return;
+  const path = card.dataset.path || '';
+  if (!path) return;
+  if (e.shiftKey) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!lastSelectedPath) {
+      if (!selectedItems.has(path)) selectedItems.add(path);
+      updateCardSelection(path);
+      updateSelectionUI();
+      lastSelectedPath = path;
+      return;
+    }
+    selectRange(lastSelectedPath, path);
+    lastSelectedPath = path;
+  }
+});
 // Selection controls
 selectAllBtn.addEventListener('click', () => {
   document.querySelectorAll('.card[data-path]').forEach((card) => {
@@ -5016,70 +5147,98 @@ function setupListTab() {
       return Promise.resolve(null);
     }
   }
-  // Compute the natural non-wrapping width for a given column id based on current DOM
+  // Compute natural width for a column based on body cell textual/content width only.
+  // Uses an off-DOM measurement element for more accurate sizing unaffected by table layout.
   function computeAutoWidth(panel, colId) {
     try {
-      const th = panel.querySelector(`#listTable th.col-${colId}`);
       const tds = Array.from(panel.querySelectorAll(`#listTable td.col-${colId}`));
-      if (!th) return null;
-      const els = [th, ...tds];
-      const saved = new Map();
-      for (const el of els) {
-        saved.set(el, {
-          width: el.style.width,
-          minWidth: el.style.minWidth,
-          maxWidth: el.style.maxWidth,
-          whiteSpace: el.style.whiteSpace,
-        });
-        el.style.width = 'auto';
-        el.style.minWidth = '0';
-        el.style.maxWidth = 'none';
-        el.style.whiteSpace = 'nowrap';
-      }
-      let maxW = Math.ceil(th.scrollWidth);
+      if (!tds.length) return null;
+      const meas = document.createElement('div');
+      meas.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;top:-9999px;white-space:nowrap;font:inherit;font-size:inherit;font-weight:inherit;line-height:inherit;';
+      document.body.appendChild(meas);
+      let max = 0;
       for (const td of tds) {
-        const w = Math.ceil(td.scrollWidth);
-        if (w > maxW) maxW = w;
+        // Prefer anchor/text content inside cell if present
+        let text = td.textContent || '';
+        // If there are multiple chips or elements, concatenate their text for rough width
+        if (!text && td.children.length) {
+          text = Array.from(td.children).map(ch => ch.textContent || '').join(' ');
+        }
+        meas.textContent = text;
+        const w = meas.scrollWidth;
+        if (w > max) max = w;
       }
-      const target = Math.max(60, maxW + 12);
-      for (const el of els) {
-        const s = saved.get(el) || {};
-        if (s.width != null) el.style.width = s.width; else el.style.removeProperty('width');
-        if (s.minWidth != null) el.style.minWidth = s.minWidth; else el.style.removeProperty('min-width');
-        if (s.maxWidth != null) el.style.maxWidth = s.maxWidth; else el.style.removeProperty('max-width');
-        if (s.whiteSpace != null) el.style.whiteSpace = s.whiteSpace; else el.style.removeProperty('white-space');
-      }
+      document.body.removeChild(meas);
+      // Add padding/gap allowance (~24px) + buffer for resizer grip
+      const target = Math.max(60, Math.ceil(max) + 24);
       return target;
-    }
-    catch(_) {
+    } catch(_) {
       return null;
     }
   }
   // Default column definitions (id, label, width px, visible, accessor)
+  let listLastAnchorIndex = null; // anchor for shift-click range selection in list
   const DEFAULT_COLS = [
-    {id: 'open', label: 'Link', width: 44, visible: true, render: (td, f) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.title = 'Open in player';
-      btn.setAttribute('aria-label', 'Open in player');
-      btn.textContent = '↗';
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
+    {id: 'select', label: '', width: 34, visible: true, render: (td, f) => {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'list-row-checkbox';
+      cb.setAttribute('aria-label', 'Select row');
+      const path = f.path || '';
+      cb.checked = selectedItems.has(path);
+      cb.addEventListener('click', (e) => {
         e.stopPropagation();
-        try { if (window.tabSystem) window.tabSystem.switchToTab('player'); }
-        catch(_) { }
-        try { if (window.Player?.open) window.Player.open(f.path); }
-        catch(_) { }
+        if (!path) return;
+        // Shift-click range selection for checkboxes: extend from anchor to current
+        if (e.shiftKey) {
+          const rowsAll = Array.from(document.querySelectorAll('#listTable tbody tr[data-path]'));
+          const currentTr = cb.closest('tr');
+          const idx = rowsAll.indexOf(currentTr);
+          if (idx !== -1) {
+            if (listLastAnchorIndex == null) {
+              listLastAnchorIndex = idx;
+            } else {
+              const targetChecked = cb.checked;
+              const a = Math.min(listLastAnchorIndex, idx);
+              const b = Math.max(listLastAnchorIndex, idx);
+              for (let i = a; i <= b; i++) {
+                const p = rowsAll[i].dataset.path || '';
+                if (!p) continue;
+                if (targetChecked) selectedItems.add(p); else selectedItems.delete(p);
+                const rowCb = rowsAll[i].querySelector('.list-row-checkbox');
+                if (rowCb) rowCb.checked = targetChecked;
+                rowsAll[i].setAttribute('data-selected', targetChecked ? '1' : '0');
+              }
+              listLastAnchorIndex = idx;
+              try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); } catch(_) {}
+              try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); } catch(_) {}
+              return; // done handling shift range
+            }
+          }
+        }
+        if (cb.checked) selectedItems.add(path); else selectedItems.delete(path);
+        try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); } catch(_) {}
+        try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); } catch(_) {}
       });
-      td.appendChild(btn);
-    } },
-    {id: 'name', label: 'Name', width: 260, visible: true, get: (f) => {
+      td.appendChild(cb);
+    }},
+    {id: 'name', label: 'Name', width: 260, visible: true, render: (td, f) => {
       let s = f.title || f.name || f.path || '';
       const slash = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
       if (slash >= 0) s = s.slice(slash + 1);
       const dot = s.lastIndexOf('.');
       if (dot > 0) s = s.slice(0, dot);
-      return s;
+      const a = document.createElement('a');
+      a.href = '#player/v/' + encodeURIComponent(f.path || '');
+      a.textContent = s;
+      a.setAttribute('aria-label', 'Open "' + s + '" in player');
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try { if (window.tabSystem) window.tabSystem.switchToTab('player'); } catch(_) {}
+        try { if (window.Player?.open) window.Player.open(f.path); } catch(_) {}
+      });
+      td.appendChild(a);
     } },
     {id: 'path', label: 'Path', width: 320, visible: true, get: (f) => f.path || '' },
     {id: 'duration', label: 'Duration', width: 90, visible: true, render: (td, f) => {
@@ -5186,16 +5345,16 @@ function setupListTab() {
     return false;
   }
   const ART_COLS = [
-    {id: 'art-metadata', label: 'Metadata', keys: ['has_metadata','metadata'], width: 54},
-    {id: 'art-thumb',    label: 'Thumb',    keys: ['has_thumbnail','thumbnail','thumbnails'], width: 54},
-    {id: 'art-sprite',   label: 'Sprite',   keys: ['has_sprites','sprites'], width: 54},
-    {id: 'art-preview',  label: 'Preview',  keys: ['has_preview','preview','previewUrl'], width: 60},
-    {id: 'art-wave',     label: 'Wave',     keys: ['has_waveform','waveform'], width: 54},
-    {id: 'art-scenes',   label: 'Scenes',   keys: ['has_scenes','scenes','chapters'], width: 60},
-    {id: 'art-faces',    label: 'Faces',    keys: ['has_faces','faces'], width: 54},
-    {id: 'subs',         label: 'Subs',     keys: ['has_subtitles','subtitles'], width: 50},
-    {id: 'art-heat',     label: 'Heat',     keys: ['has_heatmaps','heatmaps'], width: 54},
-    {id: 'art-motion',   label: 'Motion',   keys: ['has_motion','motion'], width: 60},
+    {id: 'art-metadata',  label: 'Metadata',  keys: ['has_metadata','metadata'], width: 54},
+    {id: 'art-thumbnail', label: 'Thumbnail', keys: ['has_thumbnail','thumbnail','thumbnails'], width: 78},
+    {id: 'art-sprites',   label: 'Sprites',   keys: ['has_sprites','sprites'], width: 64},
+    {id: 'art-preview',   label: 'Preview',   keys: ['has_preview','preview','previewUrl'], width: 60},
+    {id: 'art-waveform',  label: 'Waveform',  keys: ['has_waveform','waveform'], width: 80},
+    {id: 'art-scenes',    label: 'Scenes',    keys: ['has_scenes','scenes','chapters'], width: 60},
+    {id: 'art-faces',     label: 'Faces',     keys: ['has_faces','faces'], width: 54},
+    {id: 'art-subtitles', label: 'Subtitles', keys: ['has_subtitles','subtitles'], width: 78},
+    {id: 'art-heatmaps',  label: 'Heatmaps',  keys: ['has_heatmaps','heatmaps'], width: 74},
+    {id: 'art-motion',    label: 'Motion',    keys: ['has_motion','motion'], width: 60},
   ];
   for (const ac of ART_COLS) {
     DEFAULT_COLS.push({ id: ac.id, label: ac.label, width: ac.width, visible: false,
@@ -5431,8 +5590,9 @@ function setupListTab() {
       }
       else if (colId === 'artifacts') {
         const items = [
-          { k:'metadata', label:'Metadata' }, { k:'thumbnail', label:'Thumb' }, { k:'sprites', label:'Sprite' }, { k:'chapters', label:'Scenes' },
-          { k:'subtitles', label:'Subs' }, { k:'heatmaps', label:'Heat' }, { k:'faces', label:'Faces' }, { k:'preview', label:'Preview' }
+          { k:'metadata', label:'Metadata' }, { k:'thumbnail', label:'Thumbnail' }, { k:'sprites', label:'Sprites' }, { k:'chapters', label:'Scenes' },
+          { k:'subtitles', label:'Subtitles' }, { k:'heatmaps', label:'Heatmaps' }, { k:'faces', label:'Faces' }, { k:'preview', label:'Preview' },
+          { k:'waveform', label:'Waveform' }, { k:'motion', label:'Motion' }
         ];
         const wrap = document.createElement('div'); wrap.className='values';
         items.forEach(({k,label})=>{
@@ -5539,9 +5699,25 @@ function setupListTab() {
           th.appendChild(rz);
         }
         const wrapEl = th.querySelector('.list-head-cell');
+        // Ensure drag handle lives inside the wrap so it stays inline with title
+        const dragHandle = th.querySelector('.col-drag-handle');
+        if (dragHandle && wrapEl && !wrapEl.contains(dragHandle)) {
+          wrapEl.prepend(dragHandle);
+        }
         const rz = th.querySelector('.col-resizer');
         if (wrapEl) {
-          wrapEl.textContent = c.label;
+          if (c.id === 'select') {
+            const master = document.createElement('input');
+            master.type = 'checkbox';
+            master.id = 'listSelectAll';
+            master.setAttribute('aria-label', 'Select all on page');
+            wrapEl.appendChild(master);
+          } else {
+            const title = document.createElement('span');
+            title.className = 'list-head-title';
+            title.textContent = c.label;
+            wrapEl.appendChild(title);
+          }
           if (sortState && sortState.id === c.id) {
             const ind = document.createElement('span');
             ind.className = 'sort-ind';
@@ -5615,57 +5791,35 @@ function setupListTab() {
         rz && rz.addEventListener('dblclick', (ev) => {
           ev.stopPropagation(); // prevent triggering sort on header dblclick
           try {
-            // Temporarily remove width constraints and force no-wrap to measure natural widths
-            const tds = Array.from(panel.querySelectorAll(`#listTable td.col-${c.id}`));
-            const els = [th, ...tds];
-            const saved = new Map();
-            for (const el of els) {
-              saved.set(el, {
-                width: el.style.width,
-                minWidth: el.style.minWidth,
-                maxWidth: el.style.maxWidth,
-                whiteSpace: el.style.whiteSpace,
-              });
-              el.style.width = 'auto';
-              el.style.minWidth = '0';
-              el.style.maxWidth = 'none';
-              el.style.whiteSpace = 'nowrap';
+            const target = computeAutoWidth(panel, c.id);
+            if (target) {
+              const idx = cols.findIndex((x) => x.id === c.id);
+              if (idx >= 0) {
+                cols[idx] = { ...cols[idx], width: target };
+                saveCols(cols);
+                applyColumnWidths();
+              }
             }
-            // Force reflow and measure scrollWidth which reflects no-wrap content width incl. padding
-            let maxW = Math.ceil(th.scrollWidth);
-            for (const td of tds) {
-              const w = Math.ceil(td.scrollWidth);
-              if (w > maxW) maxW = w;
-            }
-            // Add a small buffer to account for resizer handle/gaps
-            const target = Math.max(60, maxW + 12);
-            // Restore inline styles
-            for (const el of els) {
-              const s = saved.get(el) || {};
-              if (s.width != null) el.style.width = s.width; else el.style.removeProperty('width');
-              if (s.minWidth != null) el.style.minWidth = s.minWidth; else el.style.removeProperty('min-width');
-              if (s.maxWidth != null) el.style.maxWidth = s.maxWidth; else el.style.removeProperty('max-width');
-              if (s.whiteSpace != null) el.style.whiteSpace = s.whiteSpace; else el.style.removeProperty('white-space');
-            }
-            // Persist new width and apply
-            const idx = cols.findIndex((x) => x.id === c.id);
-            if (idx >= 0) {
-              cols[idx] = { ...cols[idx], width: target };
-              saveCols(cols);
-            }
-            applyColumnWidths();
           }
           catch (_) {
             // no-op
           }
         });
         th.addEventListener('dblclick', async (ev) => {
+          if (c.id === 'select') return; // disable sorting for checkbox column
           if (ev.target && (ev.target.closest('.col-resizer') || ev.target.closest('.col-drag-handle'))) return;
           const numericCols = new Set(['duration','size','width','height','mtime','bitrate','created']);
+          // 3-state cycle: unset -> asc/desc(default) -> opposite -> unset
           if (sortState && sortState.id === c.id) {
-            sortState.asc = !sortState.asc;
-          }
-          else {
+            if (sortState.asc === true) {
+              sortState.asc = false; // asc -> desc
+            } else if (sortState.asc === false) {
+              sortState = null; // desc -> unset
+            } else {
+              sortState = { id: c.id, asc: !numericCols.has(c.id) }; // fallback
+            }
+          } else {
+            // initial apply: non-numeric asc, numeric desc to match previous behavior
             sortState = { id: c.id, asc: !numericCols.has(c.id) };
           }
           saveSortState();
@@ -5685,7 +5839,7 @@ function setupListTab() {
             format: 'format',
             ext: 'ext',
           };
-          const serverKey = SERVER_SORT_MAP[c.id];
+          const serverKey = sortState ? SERVER_SORT_MAP[c.id] : null;
           if (serverKey) {
             try { if (sortSelect) sortSelect.value = serverKey; }
             catch(_) { }
@@ -5694,13 +5848,16 @@ function setupListTab() {
             page = 1; listClientAllMode = false;
             await loadPage();
           }
-          else {
+          else if (sortState) {
             const CLIENT_SORT_LIMIT = 1000;
             if (Number(total) > CLIENT_SORT_LIMIT) {
               notify('Sorting by this column is not supported server-side for large libraries. Use filters or choose a supported sort.', 'info');
               return;
             }
             await loadAllAndRender();
+          } else {
+            // Unset: revert to server default sort select value
+            page = 1; listClientAllMode = false; await loadPage();
           }
         });
         headRow.appendChild(th);
@@ -5772,25 +5929,43 @@ function setupListTab() {
         else tr = document.createElement('tr');
         tr.dataset.path = f.path || '';
         tr.addEventListener('click', (e) => {
-          // selection toggle with meta/ctrl, or single-select row
-          const sel = tr.getAttribute('data-selected') === '1';
-          const nextSel = e.metaKey || e.ctrlKey ? !sel : true;
-          // clear other selections if not multi
-          if (!(e.metaKey || e.ctrlKey)) {
-            tbody.querySelectorAll('tr[data-selected="1"]').forEach((r) => r.setAttribute('data-selected', '0'));
+          const path = f.path || '';
+          if (!path) return;
+          if (e.target && e.target.closest('.list-row-checkbox')) return; // ignore direct checkbox clicks
+          if (e.detail === 2) {
+            try { if (window.tabSystem) window.tabSystem.switchToTab('player'); } catch(_) {}
+            try { if (window.Player?.open) window.Player.open(path); } catch(_) {}
+            return;
           }
-          tr.setAttribute('data-selected', nextSel ? '1' : '0');
-          if (!e.metaKey && !e.ctrlKey && e.detail === 2) {
-            // double click open
-            try {
-              if (window.tabSystem) window.tabSystem.switchToTab('player');
+          // Shift-click range selection for rows
+          const rowsAll = Array.from(tbody.querySelectorAll('tr[data-path]'));
+          const idx = rowsAll.indexOf(tr);
+          if (e.shiftKey && idx !== -1) {
+            if (listLastAnchorIndex == null) {
+              listLastAnchorIndex = idx;
+            } else {
+              selectedItems.clear();
+              const a = Math.min(listLastAnchorIndex, idx);
+              const b = Math.max(listLastAnchorIndex, idx);
+              for (let i = a; i <= b; i++) {
+                const p = rowsAll[i].dataset.path || '';
+                if (p) selectedItems.add(p);
+              }
+              listLastAnchorIndex = idx;
+              try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); } catch(_) {}
+              try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); } catch(_) {}
+              return;
             }
-            catch (_) { }
-            try {
-              if (window.Player?.open) window.Player.open(f.path);
-            }
-            catch (_) { }
           }
+          if (e.metaKey || e.ctrlKey) {
+            if (selectedItems.has(path)) selectedItems.delete(path); else selectedItems.add(path);
+          } else {
+            selectedItems.clear();
+            selectedItems.add(path);
+            if (idx !== -1) listLastAnchorIndex = idx; // update anchor on plain click
+          }
+          try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); } catch(_) {}
+          try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); } catch(_) {}
         });
         visible.forEach((c) => {
           let td;
@@ -5811,6 +5986,7 @@ function setupListTab() {
         frag.appendChild(tr);
       });
       tbody.appendChild(frag);
+      try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); } catch(_) {}
     }
     function applyColumnWidths() {
       // Ensure column widths are applied consistently to header and body cells
@@ -5826,6 +6002,83 @@ function setupListTab() {
         return `#listTable th.col-${c.id}, #listTable td.col-${c.id}{width:${w}px;min-width:${w}px;max-width:${w}px;}`;
       }).join('\n');
       styleEl.textContent = rules;
+    }
+    // Sync list selection UI (rows + master checkbox)
+    function updateListSelectionUI() {
+      try {
+        const rows = Array.from(tbody.querySelectorAll('tr[data-path]'));
+        let selectedOnPage = 0;
+        rows.forEach((tr) => {
+          const p = tr.dataset.path || '';
+          const sel = selectedItems.has(p);
+          if (sel) selectedOnPage++;
+          tr.setAttribute('data-selected', sel ? '1' : '0');
+          const cb = tr.querySelector('.list-row-checkbox');
+          if (cb) cb.checked = sel;
+        });
+        const master = headRow.querySelector('#listSelectAll');
+        if (master) {
+          if (!rows.length) { master.checked=false; master.indeterminate=false; }
+          else if (selectedOnPage === 0) { master.checked=false; master.indeterminate=false; }
+          else if (selectedOnPage === rows.length) { master.checked=true; master.indeterminate=false; }
+          else { master.checked=false; master.indeterminate=true; }
+          if (!master._wired) {
+            master._wired = true;
+            master.addEventListener('change', () => {
+              const rowsNow = Array.from(tbody.querySelectorAll('tr[data-path]'));
+              if (master.checked) rowsNow.forEach((r)=>{ const p=r.dataset.path; if (p) selectedItems.add(p); });
+              else rowsNow.forEach((r)=>{ const p=r.dataset.path; if (p) selectedItems.delete(p); });
+              try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); } catch(_) {}
+              try { updateListSelectionUI(); } catch(_) {}
+            });
+          }
+        }
+      } catch(_) {}
+    }
+    window.__updateListSelectionUI = updateListSelectionUI;
+    // Filter chips rendering helpers
+    function describeFilter(key, val) {
+      if (!val) return null;
+      if (val.in && Array.isArray(val.in)) return key + ':' + val.in.join(',');
+      if (val.bool === true) return key + ':yes';
+      if (val.bool === false) return key + ':no';
+      for (const op of ['gt','lt','eq']) { if (val[op] != null) return key + ':' + op + ' ' + val[op]; }
+      if (val.after != null || val.before != null) {
+        const a = val.after ? 'after ' + new Date(val.after*1000).toISOString().slice(0,16).replace('T',' ') : '';
+        const b = val.before ? 'before ' + new Date(val.before*1000).toISOString().slice(0,16).replace('T',' ') : '';
+        return key + ':' + [a,b].filter(Boolean).join(' ');
+      }
+      return key;
+    }
+    function renderFilterChips() {
+      const host = panel.querySelector('#listFilterChips');
+      if (!host) return;
+      host.innerHTML = '';
+      const keys = Object.keys(listFilters || {}).filter((k)=> listFilters[k] && Object.keys(listFilters[k]).length);
+      if (!keys.length) { host.hidden = true; return; }
+      keys.forEach((k) => {
+        const val = listFilters[k];
+        const label = describeFilter(k, val);
+        const chip = document.createElement('span');
+        chip.className = 'filter-chip';
+        chip.textContent = label || k;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.setAttribute('aria-label', 'Clear filter ' + k);
+        btn.textContent = '×';
+        btn.addEventListener('click', async () => {
+          delete listFilters[k]; saveListFilters(listFilters); page = 1; await loadPage(); });
+        chip.appendChild(btn);
+        host.appendChild(chip);
+      });
+      // Clear all chip
+      const clearAll = document.createElement('span');
+      clearAll.className = 'filter-chip filter-chip--indicator';
+      clearAll.textContent = 'Clear All';
+      const btnAll = document.createElement('button'); btnAll.textContent='×'; btnAll.type='button'; btnAll.setAttribute('aria-label','Clear all filters');
+      btnAll.addEventListener('click', async () => { listFilters = {}; saveListFilters(listFilters); page=1; await loadPage(); });
+      clearAll.appendChild(btnAll); host.appendChild(clearAll);
+      host.hidden = false;
     }
     function renderColumnsPanel() {
       colsBody.innerHTML = '';
@@ -5997,6 +6250,8 @@ function setupListTab() {
       catch(_){ }
       try { if (spinner) hide(spinner); }
       catch(_) { }
+      try { updateListSelectionUI(); } catch(_) {}
+      try { renderFilterChips(); } catch(_) {}
     }
     async function loadPage() {
       try { if (spinner) show(spinner); }
@@ -6039,8 +6294,21 @@ function setupListTab() {
       pageInfo.textContent = `Page ${Math.min(page, totalPages)} of ${totalPages}, ${shown} files shown of ${total} total`;
       pagerPrev.disabled = page <= 1;
       pagerNext.disabled = page >= totalPages;
+      // Bottom pager sync + hide logic
+      const pageInfoBottom = panel.querySelector('#listPageInfoBottom');
+      if (pageInfoBottom) pageInfoBottom.textContent = pageInfo.textContent;
+      const pagerPrevBottom = panel.querySelector('#listPrevBtnBottom');
+      const pagerNextBottom = panel.querySelector('#listNextBtnBottom');
+      if (pagerPrevBottom) pagerPrevBottom.disabled = pagerPrev.disabled;
+      if (pagerNextBottom) pagerNextBottom.disabled = pagerNext.disabled;
+      const topPager = panel.querySelector('#listPagerTop');
+      const bottomPager = panel.querySelector('#listPagerBottom');
+      if (totalPages <= 1) { if (topPager) topPager.style.display='none'; if (bottomPager) bottomPager.style.display='none'; }
+      else { if (topPager) topPager.style.display='flex'; if (bottomPager) bottomPager.style.display='flex'; }
       try { if (spinner) hide(spinner); }
       catch(_) { }
+      try { updateListSelectionUI(); } catch(_) {}
+      try { renderFilterChips(); } catch(_) {}
     }
     // Wire controls
     pagerPrev.addEventListener('click', () => {
@@ -6055,11 +6323,27 @@ function setupListTab() {
         loadPage();
       }
     });
+    // Bottom pager wiring
+    const pagerPrevBottom = panel.querySelector('#listPrevBtnBottom');
+    const pagerNextBottom = panel.querySelector('#listNextBtnBottom');
+    if (pagerPrevBottom) pagerPrevBottom.addEventListener('click', () => { if (!listClientAllMode && page > 1) { page--; loadPage(); } });
+    if (pagerNextBottom) pagerNextBottom.addEventListener('click', () => { if (!listClientAllMode) { page++; loadPage(); } });
     colsBtn.addEventListener('click', () => {
       const open = isHidden(colsPanel);
       if (open) {
         renderColumnsPanel();
         showAs(colsPanel, 'block');
+        // Dynamic positioning near trigger
+        try {
+          const btnRect = colsBtn.getBoundingClientRect();
+          const panelRect = panel.getBoundingClientRect();
+          let left = btnRect.left - panelRect.left;
+          let top = btnRect.bottom - panelRect.top + 6;
+          if (left + colsPanel.offsetWidth > panelRect.width - 8) left = Math.max(8, panelRect.width - colsPanel.offsetWidth - 8);
+          colsPanel.style.left = left + 'px';
+          colsPanel.style.top = top + 'px';
+          colsPanel.style.right = 'auto';
+        } catch(_) {}
         colsBtn.setAttribute('aria-expanded', 'true');
       }
       else {
@@ -6106,7 +6390,7 @@ function setupListTab() {
   // If List is already active (first-time activation), load immediately
   try {
     if (window.tabSystem && typeof window.tabSystem.getActiveTab === 'function' && window.tabSystem.getActiveTab() === 'list') {
-      setTimeout(() => { try { loadPage(); } catch (_) {} }, 0);
+      setTimeout(() => { try { loadPage(); } catch (_) {} try { updateListSelectionUI(); } catch(_) {} }, 0);
     }
   } catch (_) {}
 }
@@ -12253,7 +12537,23 @@ const Player = (() => {
       spriteTooltipEl.style.width = twS + 'px';
       spriteTooltipEl.style.height = thS + 'px';
       // Cache-bust sheet URL lightly in case a new sheet was generated while hovering
-      const sheetUrl = `${sprites.sheet}${sprites.sheet.includes('?') ? '&' : '?'}t=${Date.now()}`;
+      // Cache and prefetch sprite sheet once per video to avoid cache-busting latency
+      if (!window.__spriteSheetUrlCache || window.__spriteSheetUrlCacheBase !== sprites.sheet) {
+        window.__spriteSheetUrlCacheBase = sprites.sheet;
+        window.__spriteSheetUrlCache = sprites.sheet; // no timestamp; allow browser caching
+        try {
+          const preImg = new Image();
+          preImg.decoding = 'async';
+          preImg.loading = 'eager';
+          preImg.src = window.__spriteSheetUrlCache;
+        } catch(_) {}
+      }
+      const sheetUrl = window.__spriteSheetUrlCache;
+      if (!sheetUrl) { hideSprite(); return; }
+      if (!spriteTooltipEl.style.backgroundImage) {
+        // Show neutral placeholder immediately while sheet loads
+        spriteTooltipEl.style.backgroundColor = 'rgba(0,0,0,0.55)';
+      }
       spriteTooltipEl.style.backgroundImage = `url('${sheetUrl}')`;
       spriteTooltipEl.style.backgroundPosition = `${xOff}px ${yOff}px`;
       // Set both shorthand and axis-specific positions for robustness across browsers

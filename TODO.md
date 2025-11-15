@@ -2,11 +2,7 @@
 
 
 ### Known issues:
-<!-- the 405 was coming from clicking on the artifact chip in the player tab, not batch.  -->
-+ Orphans detects same-name orphans
 + No percentage progress for orphans
-+ get a weird transparent 405 modal when trying to regenerate a thumbnail
-+ when selecting files for tasks tab, no way to specify which artifacts to generate
 + thumbnail doesn't update in the UI without a refresh
 + add a way to filter by duration: input and lt/gt/eq
 + in performers metadata, stores both image and images array: this is redundant
@@ -14,7 +10,6 @@
 + batch jobs for metadata and thumbnail generation should be split into individual jobs
 + metadata job shows hyphen for time instead of current duration
 + add forward and backward buttons in player: forward hits random, backward will require history
-+ heatmap still not visible
 + still no shift click in the library grid
 + background idling would be nice
 + use tensorflowjs/blazeface to detect faces for centering

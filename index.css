@@ -133,7 +133,7 @@ body::-webkit-scrollbar,
 
 
 header {
-  position: sticky;
+  position: fixed;
   top: 0;
   left: 0;
   right: 0;
@@ -141,6 +141,7 @@ header {
   background: rgba(15, 17, 21, 0.75);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid #242938;
+  height: var(--header-h);
 }
 
 main {
@@ -148,8 +149,8 @@ main {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  /* With sticky header we no longer need artificial top padding; allow panels to scroll under gracefully */
-  padding-top: 0;
+  /* Offset for fixed header so content isn’t hidden behind it */
+  padding-top: var(--header-h);
 }
 
 /* 3. Utilities */
@@ -763,7 +764,11 @@ see top of file) */
 .list-table thead th.col-duration,
 .list-table thead th.col-size,
 .list-table thead th.col-width,
-.list-table thead th.col-height {
+.list-table thead th.col-height,
+.list-table tbody td.col-duration,
+.list-table tbody td.col-size,
+.list-table tbody td.col-width,
+.list-table tbody td.col-height {
   text-align: right;
 }
 .list-table thead th.col-duration .list-head-cell,
@@ -771,12 +776,6 @@ see top of file) */
 .list-table thead th.col-width .list-head-cell,
 .list-table thead th.col-height .list-head-cell {
   justify-content: flex-end;
-}
-.list-table tbody td.col-duration,
-.list-table tbody td.col-size,
-.list-table tbody td.col-width,
-.list-table tbody td.col-height {
-  text-align: right;
 }
 
 .list-table tbody td {
@@ -807,11 +806,40 @@ see top of file) */
 }
 
 .list-head-cell {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
-  white-space: nowrap; /* keep title + sort arrow on one line */
+  /* allow inner title to shrink properly for ellipsis */
+  min-width: 0;
 }
+.list-head-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Selection column checkboxes */
+#listTable td.col-select, #listTable th.col-select {
+  text-align: center;
+  width: 34px;
+  min-width: 34px;
+  max-width: 34px;
+  padding: 4px 6px;
+}
+.list-row-checkbox, #listSelectAll {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+/* Pager containers */
+.list-pager { display: flex; align-items: center; gap: 8px; }
+.list-controls .list-pager { margin-left: auto; }
+.list-pager-bottom { display: flex; justify-content: flex-end; margin-top: 8px; }
+
+/* Columns panel dynamic positioning override */
 
 /* Header drag handle (optional; used when enabling direct header dragging) */
 th .col-drag-handle {
@@ -847,6 +875,17 @@ th .col-drag-handle:active {
   border-radius: 2px;
   opacity: 0.6;
 }
+
+/* Filter chips (List tab) */
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.filter-chip { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14); padding: 2px 8px; border-radius: 14px; font-size: 11px; display: inline-flex; align-items: center; gap: 6px; }
+.filter-chip button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; }
+.filter-chip button:hover { color: #fff; }
+.filter-chip--indicator { background: rgba(79,140,255,0.18); border-color: rgba(79,140,255,0.45); }
+/* Artifact filter chips (Library grid) */
+.artifact-filter-chips { display:inline-flex; gap:6px; flex-wrap:wrap; margin-left:6px; }
+.artifact-filter-chips .chip { font-size:11px; padding:2px 6px; border-radius:12px; background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14); display:inline-flex; align-items:center; gap:4px; }
+.artifact-filter-chips .chip--clear { background: rgba(79,140,255,0.18); border-color: rgba(79,140,255,0.45); }
 
 /* Compact, centered utility columns (open/action + artifact presence) */
 .list-table thead th.col-open,
@@ -2305,7 +2344,7 @@ keep only z-index here */
 /* Grid controls — streamlined sticky panel */
 .controls-panel {
   /* Tunable custom properties scoped to this component */
-  --cp-top: calc(var(--sticky-header-height, 48px) + 8px);
+  --cp-top: var(--sticky-header-height, 48px);
   --cp-z: 9; /* just under header (10) */
   --cp-bg: rgba(20, 24, 32, 0.85);
   --cp-gap: 8px;
@@ -2848,6 +2887,7 @@ keep only z-index here */
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0; /* allow nested sticky + scroll to work within flex parent */
 }
 
 .tab-panel[hidden] {
@@ -2857,6 +2897,9 @@ keep only z-index here */
 .tab-panel:not(.active) {
   display: none;
 }
+
+/* Library scrolls with the page; keep sticky bars relative to viewport */
+/* (Reverted per-panel scrolling to restore header+controls stickiness) */
 
 .tab-content {
   padding: 24px;
@@ -5411,7 +5454,7 @@ enforce single-line flex bar */
 
 .scrubber-track {
   position: relative;
-  height: 16px;
+  height: 22px; /* thicker to accommodate heatmap */
   border-radius: 6px;
   background: linear-gradient(90deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.1));
   overflow: hidden;
@@ -5448,18 +5491,22 @@ enforce single-line flex bar */
 }
 
 /* Detached heatmap band above scrubber */
+/* Heatmap now overlays directly atop scrubber track (no vertical offset) */
+.player-scrubber-bar { position: relative; }
+.scrubber-track { position: relative; }
 .scrubber-heatmap-band {
-  position: relative;
-  height: 26px;
-  /* taller for visibility */
-  margin-bottom: 6px;
-  border-radius: 6px;
-  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  height: 100%;
+  border-radius: 0;
+  background: none;
   overflow: hidden;
-  /* Accept pointer events so preview on hover works over the band */
-  pointer-events: auto;
-  display: flex;
-  align-items: stretch;
+  pointer-events: none; /* allow direct scrubbing without interference */
+  display: block;
 }
 
 .scrubber-heatmap-band.hidden {
@@ -5467,19 +5514,11 @@ enforce single-line flex bar */
 }
 
 .scrubber-heatmap-band .timeline-heatmap,
-.scrubber-heatmap-band .timeline-heatmap-canvas {
-  position: absolute;
-  inset: 0;
-}
+.scrubber-heatmap-band .timeline-heatmap-canvas { position: absolute; inset: 0; }
 
-.scrubber-heatmap-band .timeline-heatmap {
-  mix-blend-mode: soft-light;
-  opacity: .9;
-}
+.scrubber-heatmap-band .timeline-heatmap { mix-blend-mode: soft-light; opacity: .65; }
 
-.scrubber-heatmap-band .timeline-heatmap-canvas {
-  opacity: .95;
-}
+.scrubber-heatmap-band .timeline-heatmap-canvas { opacity: .75; }
 
 /* Markers list */
 .markers-list {

@@ -538,12 +538,14 @@
                     <option value="500">500</option>
                   </select>
                 </label>
-                <div class="list-pager">
-                  <button id="listPrevBtn" class="btn-sm" aria-label="Previous page">Prev</button>
-                  <span id="listPageInfo" class="hint-sm">Page 1</span>
-                  <button id="listNextBtn" class="btn-sm" aria-label="Next page">Next</button>
-                </div>
+                  <div id="listFilterChips" class="filter-chips" aria-label="Active list filters" hidden></div>
+                  <div class="list-pager" id="listPagerTop">
+                    <button id="listPrevBtn" class="btn-sm" aria-label="Previous page">Prev</button>
+                    <span id="listPageInfo" class="hint-sm">Page 1</span>
+                    <button id="listNextBtn" class="btn-sm" aria-label="Next page">Next</button>
+                  </div>
               </div>
+
             </div>
             <div id="listColumnsPanel" class="list-columns-panel hidden" role="region" aria-label="Column settings">
               <div class="panel-header--spaced">
@@ -560,6 +562,13 @@
                 </thead>
                 <tbody id="listTbody"></tbody>
               </table>
+            </div>
+            <div class="list-pager-bottom" id="listPagerBottom">
+              <div class="list-pager">
+                <button id="listPrevBtnBottom" class="btn-sm" aria-label="Previous page">Prev</button>
+                <span id="listPageInfoBottom" class="hint-sm">Page 1</span>
+                <button id="listNextBtnBottom" class="btn-sm" aria-label="Next page">Next</button>
+              </div>
             </div>
           </div>
         </template>
@@ -1033,12 +1042,10 @@
             <div id="subtitleOverlay" class="subtitle-line bottom" aria-live="polite" hidden></div>
             <!-- Floating scrubber (timeline) overlay at bottom -->
             <div id="playerScrubber" class="player-scrubber-bar" aria-hidden="true">
-              <!-- Heatmap band now sits above the scrubber track -->
-              <div class="scrubber-heatmap-band" id="scrubberHeatmapBand">
+              <div class="scrubber-track" id="playerScrubberTrack">
+                <!-- Heatmap layers moved inside track so width/position match exactly -->
                 <div id="timelineHeatmap" class="timeline-heatmap" aria-hidden="true"></div>
                 <canvas id="timelineHeatmapCanvas" class="timeline-heatmap-canvas" aria-hidden="true"></canvas>
-              </div>
-              <div class="scrubber-track" id="playerScrubberTrack">
                 <!-- Legacy timeline markers layer expected by JS (renderMarkers) -->
                 <div id="timelineMarkers" class="timeline-markers-layer" aria-hidden="true"></div>
                 <div class="scrubber-buffer" id="playerScrubberBuffer"></div>
@@ -1129,6 +1136,7 @@
               </div>
               <button id="orderToggle" class="btn-sm order-btn" data-order="desc" title="Toggle sort order" aria-label="Toggle sort order">▼</button>
               <input id="densitySlider" type="range" min="1" max="15" value="12" step="1" class="control-slider" title="Adjust grid density (columns)" aria-label="Grid density" />
+              <!-- Artifact boolean filters are available per-column on the List tab -->
               <div class="pagination">
                 <button id="prevBtn" class="btn-sm" title="Previous page">‹</button>
                 <span id="pageInfo" class="page-info">Page 1 of 1</span>
@@ -1143,6 +1151,7 @@
             </div>
           </div>
         </div>
+
         <div id="selectionBar" class="selection-bar" hidden>
           <span id="selectionCount" class="selection-count">0 selected</span>
           <button id="selectAllBtn" class="btn-sm">Select All</button>
@@ -1231,9 +1240,12 @@
                   <option value="512">512</option>
                 </select>
               </label>
-              <button id="listPrevBtn" class="btn-sm" aria-label="Previous page">Prev</button>
-              <button id="listNextBtn" class="btn-sm" aria-label="Next page">Next</button>
-              <span id="listPageInfo" class="hint-sm"></span>
+              <div id="listFilterChips" class="filter-chips" aria-label="Active list filters" hidden></div>
+              <div class="list-pager" id="listPagerTop">
+                <button id="listPrevBtn" class="btn-sm" aria-label="Previous page">Prev</button>
+                <span id="listPageInfo" class="hint-sm">Page 1</span>
+                <button id="listNextBtn" class="btn-sm" aria-label="Next page">Next</button>
+              </div>
               <div id="listSpinner" class="spinner" hidden></div>
             </div>
           </div>
@@ -1252,6 +1264,13 @@
               </thead>
               <tbody id="listTbody"></tbody>
             </table>
+          </div>
+          <div class="list-pager-bottom" id="listPagerBottom">
+            <div class="list-pager">
+              <button id="listPrevBtnBottom" class="btn-sm" aria-label="Previous page">Prev</button>
+              <span id="listPageInfoBottom" class="hint-sm">Page 1</span>
+              <button id="listNextBtnBottom" class="btn-sm" aria-label="Next page">Next</button>
+            </div>
           </div>
         </div>
       </div>
