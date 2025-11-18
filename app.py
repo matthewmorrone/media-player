@@ -7973,8 +7973,14 @@ def _list_performers(search: str | None = None) -> list[dict]:
         rec = _PERFORMERS_CACHE.get(norm, {"name": norm, "tags": []})
         if search and search.lower() not in rec["name"].lower():
             continue
-        # Resolve image via validated registry primary or slug-based fallback
-        img_rel = _resolve_performer_image_rel(rec.get("name") or norm, rec)
+        # Determine primary image URL if available (registry stores paths relative to root)
+        img_rel = None
+        try:
+            primary = rec.get("image") or (rec.get("images") or [None])[0]
+            if isinstance(primary, str) and primary.strip():
+                img_rel = primary.strip()
+        except Exception:
+            img_rel = None
         item = {
             "name": rec["name"],
             "slug": _slugify(rec["name"]),
@@ -8328,15 +8334,7 @@ def performers_images_import(
             if mode.lower() == "copy":
                 dest_dir = _performer_images_store() / slug
                 dest_dir.mkdir(parents=True, exist_ok=True)
-                # Save as slug-based filename to ensure stable references
-                ext_lower = (f.suffix or "").lower() or ".jpg"
-                dest = dest_dir / f"{slug}{ext_lower}"
-                # Ensure uniqueness if file exists
-                if dest.exists():
-                    i = 2
-                    while dest.exists() and i < 100:
-                        dest = dest_dir / f"{slug}-{i}{ext_lower}"
-                        i += 1
+                dest = dest_dir / f.name
                 try:
                     shutil.copy2(str(f), str(dest))
                 except Exception:
@@ -8451,17 +8449,10 @@ def performers_images_upload(
                 _PERFORMERS_CACHE[norm] = {"name": perf_disp, "tags": []}
                 _PERFORMERS_INDEX.setdefault(norm, set())
                 created += 1
-            # Persist file into registry store, saved as slug-based filename
+            # Persist file into registry store
             dest_dir = _performer_images_store() / slug
             dest_dir.mkdir(parents=True, exist_ok=True)
-            ext_lower = (Path(basename).suffix or "").lower() or ".jpg"
-            dest = dest_dir / f"{slug}{ext_lower}"
-            # Ensure uniqueness if a prior image exists; append -2, -3, ...
-            if dest.exists():
-                i = 2
-                while dest.exists() and i < 100:
-                    dest = dest_dir / f"{slug}-{i}{ext_lower}"
-                    i += 1
+            dest = dest_dir / basename
             # Save content
             try:
                 with dest.open("wb") as out:
@@ -8721,11 +8712,11 @@ def performer_image_upload(
         _PERFORMERS_CACHE[norm] = {"name": disp, "tags": []}
         _PERFORMERS_INDEX.setdefault(norm, set())
         created = True
-    # Persist file (saved under slug-based filename for consistency)
+    # Persist file
     dest_dir = _performer_images_store() / slug
     dest_dir.mkdir(parents=True, exist_ok=True)
-    # Use slug.ext as base name
-    dest = dest_dir / f"{slug}{ext}"
+    # Ensure unique filename if one exists (avoid silent overwrite confusion)
+    dest = dest_dir / raw_fn
     if dest.exists():
         stem = dest.stem
         suffix = dest.suffix
@@ -9109,7 +9100,6 @@ def api_performers_graph(
     nodes: list[dict] = []
     paths_by_slug: dict[str, set[str]] = {}
     name_by_slug: dict[str, str] = {}
-    image_by_slug: dict[str, str] = {}
     try:
         # Include both indexed and imported performers; filter by count
         all_norms = set((_PERFORMERS_INDEX or {}).keys()) | set((_PERFORMERS_CACHE or {}).keys())
@@ -9122,14 +9112,7 @@ def api_performers_graph(
                 slug = _slugify(name)
                 name_by_slug[slug] = name
                 paths_by_slug[slug] = paths
-                # Resolve primary image (validate) or fallback by slug
-                img_rel: str | None = _resolve_performer_image_rel(name, rec)
-                if img_rel:
-                    img_url = f"/files/{img_rel}"
-                    image_by_slug[slug] = img_url
-                    nodes.append({"id": slug, "name": name, "count": count, "image": img_url})
-                else:
-                    nodes.append({"id": slug, "name": name, "count": count})
+                nodes.append({"id": slug, "name": name, "count": count})
     except Exception:
         nodes = []
     # Compute edges by intersecting path sets for each pair
@@ -9857,61 +9840,15 @@ def thumbnail_head_canonical(path: str = Query(...)):
 
 
 @api.post("/thumbnail")
-def thumbnail_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False), priority: bool = Query(default=False), smart: bool = Query(default=True)):
+def thumbnail_create(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False), priority: bool = Query(default=False)):
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
     _log("thumbnail", f"thumbnail api.create start path={path} t={t} q={quality} ow={int(bool(overwrite))}")
-
-    def _avg_luma(p: Path) -> Optional[float]:
-        try:
-            from PIL import Image  # type: ignore
-            with Image.open(p) as im:
-                g = im.convert("L")
-                # Compute mean luminance (0..255)
-                hist = g.histogram()
-                total = sum(hist)
-                if total <= 0:
-                    return None
-                s = 0
-                for i, c in enumerate(hist):
-                    s += i * c
-                return float(s) / float(total)
-        except Exception:
-            return None
 
     def _do():
         time_spec = str(t) if t is not None else "middle"
         try:
             generate_thumbnail(video, force=bool(overwrite), time_spec=time_spec, quality=int(quality))
-            # Smart fallback: if the frame is too dark, try alternate positions
-            if smart:
-                out = thumbnails_path(video)
-                lum = _avg_luma(out)
-                # Treat very dark frames as black; threshold ~15/255
-                if lum is None or lum < 15.0:
-                    # Probe duration for better alternate timestamps
-                    dur = None
-                    try:
-                        metadata_single(video, force=False)
-                        raw = json.loads(metadata_path(video).read_text())
-                        dur = extract_duration(raw)
-                    except Exception:
-                        dur = None
-                    # Candidate times (seconds); prefer spread across video
-                    candidates: list[float | str] = []
-                    if isinstance(dur, (int, float)) and dur and dur > 8:
-                        frac = [0.15, 0.35, 0.55, 0.75]
-                        candidates = [max(2.0, float(dur) * f) for f in frac]
-                    else:
-                        candidates = [5, 15, 30, 45]
-                    for ct in candidates:
-                        try:
-                            generate_thumbnail(video, force=True, time_spec=ct, quality=int(quality))
-                            lum2 = _avg_luma(out)
-                            if lum2 is not None and lum2 >= 15.0:
-                                break
-                        except Exception:
-                            continue
         except Exception:
             # Fallback: write a stub JPEG so tests/UI can proceed
             out = thumbnails_path(video)
@@ -9948,7 +9885,7 @@ def thumbnail_create(path: str = Query(...), t: Optional[str | float] = Query(de
         raise_api_error(f"thumbnail create failed: {e}", status_code=500)
 
 @api.post("/thumbnail/create/sync")
-def thumbnail_create_sync(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False), smart: bool = Query(default=True)):
+def thumbnail_create_sync(path: str = Query(...), t: Optional[str | float] = Query(default=10), quality: int = Query(default=2), overwrite: bool = Query(default=False)):
     """Synchronously generate a thumbnail and return the JPEG directly."""
     name, directory = _name_and_dir(path)
     video = Path(directory) / name
@@ -9958,45 +9895,6 @@ def thumbnail_create_sync(path: str = Query(...), t: Optional[str | float] = Que
     time_spec = str(t) if t is not None else "middle"
     try:
         generate_thumbnail(video, force=bool(overwrite), time_spec=time_spec, quality=int(quality))
-        if smart:
-            # If dark, try alternates synchronously too
-            outp = thumbnails_path(video)
-            def _avg_luma_local(pth: Path) -> Optional[float]:
-                try:
-                    from PIL import Image  # type: ignore
-                    with Image.open(pth) as im:
-                        g = im.convert("L")
-                        hist = g.histogram(); total = sum(hist)
-                        if total <= 0:
-                            return None
-                        s = 0
-                        for i, c in enumerate(hist):
-                            s += i * c
-                        return float(s) / float(total)
-                except Exception:
-                    return None
-            lum = _avg_luma_local(outp)
-            if lum is None or lum < 15.0:
-                dur = None
-                try:
-                    metadata_single(video, force=False)
-                    raw = json.loads(metadata_path(video).read_text())
-                    dur = extract_duration(raw)
-                except Exception:
-                    dur = None
-                candidates: list[float | str] = []
-                if isinstance(dur, (int, float)) and dur and dur > 8:
-                    candidates = [float(dur) * f for f in (0.2, 0.4, 0.6, 0.8)]
-                else:
-                    candidates = [5, 15, 30, 45]
-                for ct in candidates:
-                    try:
-                        generate_thumbnail(video, force=True, time_spec=ct, quality=int(quality))
-                        lum2 = _avg_luma_local(outp)
-                        if lum2 is not None and lum2 >= 15.0:
-                            break
-                    except Exception:
-                        continue
     except Exception as e:  # noqa: BLE001
         _log("thumbnail", f"thumbnail api.inline fail path={path} err={e}")
         raise_api_error(f"inline thumbnail failed: {e}")
@@ -18619,56 +18517,6 @@ def jobs_status(job_id: str):
         "result": j.get("result"),
     }
     return out
-
-# -----------------
-# Performer image resolution helper
-# -----------------
-def _resolve_performer_image_rel(name: str, rec: Optional[dict]) -> Optional[str]:
-    """Return a relative image path for a performer.
-    Preference order:
-      1) Registry primary image if it exists on disk
-      2) File-system slug fallback: <root>/.artifacts/performer-images/<slug>/<slug>.(jpg|jpeg|png|webp|gif)
-      3) First image file found under the slug directory
-
-    Returns a POSIX relative path from MEDIA_ROOT or None.
-    """
-    try:
-        root_path = Path(STATE.get("root") or Path.cwd()).resolve()
-        slug = _slugify(str(name or rec.get("name") if isinstance(rec, dict) else name) or "")
-        # 1) registry primary (validate exists)
-        img_rel = None
-        try:
-            primary = None
-            if isinstance(rec, dict):
-                primary = rec.get("image") or (rec.get("images") or [None])[0]
-            if isinstance(primary, str) and primary.strip():
-                # Normalize to relative POSIX and existence check
-                p_rel = primary.strip().lstrip("/").replace("\\", "/")
-                p_abs = (root_path / p_rel).resolve()
-                if p_abs.exists() and p_abs.is_file():
-                    img_rel = str(p_abs.relative_to(root_path).as_posix())
-        except Exception:
-            img_rel = None
-        if img_rel:
-            return img_rel
-        # 2) filesystem slug-named file
-        try:
-            perf_dir = _performer_images_store() / slug
-            if perf_dir.exists() and perf_dir.is_dir():
-                exts = [".jpg", ".jpeg", ".png", ".webp", ".gif"]
-                for ext in exts:
-                    cand = perf_dir / f"{slug}{ext}"
-                    if cand.exists() and cand.is_file():
-                        return str(cand.relative_to(root_path).as_posix())
-                # 3) pick first image file in directory
-                for child in sorted(perf_dir.iterdir()):
-                    if child.is_file() and child.suffix.lower() in exts:
-                        return str(child.relative_to(root_path).as_posix())
-        except Exception:
-            pass
-        return None
-    except Exception:
-        return None
 
 
 @app.delete("/jobs/{job_id}")

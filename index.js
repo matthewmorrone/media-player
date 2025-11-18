@@ -54,7 +54,7 @@ function debounce(fn, wait = 120) {
   };
 }
 
-  // DOM visibility helpers
+// DOM visibility helpers
 function hide(el) {
   if (!el) return;
   el.classList.add('hidden');
@@ -176,10 +176,6 @@ function setLocalStorageItem(key, value, opts = null) {
       case 'string':
       default: stored = value == null ? '' : String(value); break;
     }
-    const metaWrap = document.createElement('div'); metaWrap.className = 'similar-meta-inline';
-    const ma = document.createElement('div'); ma.className = 'meta meta-a'; ma.textContent = 'Loading…';
-    const mb = document.createElement('div'); mb.className = 'meta meta-b'; mb.textContent = 'Loading…';
-    metaWrap.appendChild(ma); metaWrap.appendChild(mb); rowEl.appendChild(metaWrap);
     localStorage.setItem(key, stored);
     return true;
   }
@@ -396,7 +392,7 @@ const showToast = (message, type) => {
   }
   catch (_) { }
 };
-let grid = null;
+const grid = document.getElementById('grid');
 try { devLog('info', 'app', 'script loaded build=reset-debug-1', {ts: Date.now()}); }
 catch (_) {}
 
@@ -572,46 +568,18 @@ document.addEventListener('click', (e) => {
 });
 try { window.resetPlayer = resetPlayer; }
 catch (_) {}
-// Library UI element references (initialized after DOM ready to avoid null refs in remote/slow loading scenarios)
-let statusEl = null;
-let spinner = null;
-let refreshBtn = null;
-let folderInput = null;
+const statusEl = document.getElementById('status');
+const spinner = document.getElementById('spinner');
+const refreshBtn = document.getElementById('refresh');
+const folderInput = document.getElementById('folderInput');
 // Grid controls (unified search input: plain text, #tag, @performer)
-let unifiedInput = null;
-let unifiedChipsEl = null;
-let randomPlayBtn = null;
-let randomAutoBtn = null;
-let sortSelect = null;
-let orderToggle = null;
-let clearFiltersTopBtn = null;
-
-// Template cache (initialized with other elements)
-let cardTemplate = null;
-let dirTemplate = null;
-
-// Initialize library UI elements once DOM is ready
-function initLibraryElements() {
-  if (statusEl) return; // Already initialized
-  statusEl = document.getElementById('status');
-  spinner = document.getElementById('spinner');
-  refreshBtn = document.getElementById('refresh');
-  folderInput = document.getElementById('folderInput');
-  unifiedInput = document.getElementById('libraryUnifiedInput');
-  unifiedChipsEl = document.getElementById('libraryUnifiedChips');
-  randomPlayBtn = document.getElementById('randomPlayBtn');
-  randomAutoBtn = document.getElementById('randomAutoBtn');
-  sortSelect = document.getElementById('sortSelect');
-  orderToggle = document.getElementById('orderToggle');
-  clearFiltersTopBtn = document.getElementById('clearFiltersTopBtn');
-  prevBtn = document.getElementById('prevBtn');
-  nextBtn = document.getElementById('nextBtn');
-  pageInfo = document.getElementById('pageInfo');
-  grid = document.getElementById('grid');
-  cardTemplate = document.getElementById('cardTemplate');
-  dirTemplate = document.getElementById('dirTemplate');
-}
-
+const unifiedInput = document.getElementById('libraryUnifiedInput');
+const unifiedChipsEl = document.getElementById('libraryUnifiedChips');
+const randomPlayBtn = document.getElementById('randomPlayBtn');
+const randomAutoBtn = document.getElementById('randomAutoBtn');
+const sortSelect = document.getElementById('sortSelect');
+const orderToggle = document.getElementById('orderToggle');
+const clearFiltersTopBtn = document.getElementById('clearFiltersTopBtn');
 // Sorting order helpers: default to ASC for name, DESC otherwise
 function syncOrderToggleArrow() {
   if (!orderToggle) return;
@@ -635,9 +603,9 @@ if (orderToggle && !orderToggle.dataset.order) {
   applyDefaultOrderForSort(true);
 }
 const densitySlider = document.getElementById('densitySlider');
-let prevBtn = null;
-let nextBtn = null;
-let pageInfo = null;
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const pageInfo = document.getElementById('pageInfo');
 // Image adjustment controls (video filters)
 const adjBrightness = document.getElementById('adjBrightness');
 const adjContrast = document.getElementById('adjContrast');
@@ -1028,8 +996,8 @@ function stopAllTilePreviews(exceptTile) {
   catch (_) { }
 }
 function videoCard(v) {
-  if (!cardTemplate) return document.createElement('div'); // Fallback if template not ready
-  const el = cardTemplate.content.cloneNode(true).querySelector('.card');
+  const template = document.getElementById('cardTemplate');
+  const el = template.content.cloneNode(true).querySelector('.card');
   // Resolve thumbnail URL: prefer payload-provided URL; fall back to canonical endpoint
   const imgSrc = (v && (v.thumbnail || v.thumb || v.thumbnail_url))
     ? (v.thumbnail || v.thumb || v.thumbnail_url)
@@ -1502,8 +1470,8 @@ if (!window.__tileIO) {
   catch (_) { }
 }
 function dirCard(d) {
-  if (!dirTemplate) return document.createElement('div'); // Fallback if template not ready
-  const el = dirTemplate.content.cloneNode(true).querySelector('.card');
+  const template = document.getElementById('dirTemplate');
+  const el = template.content.cloneNode(true).querySelector('.card');
   const name = d.name || String(d);
   const dpath = d.path || name;
   el.querySelector('.dir-name').textContent = name;
@@ -1524,7 +1492,6 @@ function dirCard(d) {
   return el;
 }
 function currentPath() {
-  if (!folderInput) return '';
   const v = (folderInput.value || '').trim();
   // When the input contains an absolute path (root), do not treat it as a relative folder
   if (isAbsolutePath(v)) return '';
@@ -1533,9 +1500,6 @@ function currentPath() {
 let __libLoading = false;
 let __libReloadRequested = false;
 async function loadLibrary() {
-  // Ensure UI elements are initialized (safe to call multiple times)
-  initLibraryElements();
-
   // Run only when Library tab is active; otherwise do nothing
   try {
     if (!window.tabSystem || window.tabSystem.getActiveTab() !== 'library') {
@@ -1654,8 +1618,8 @@ async function loadLibrary() {
       try { return (sortState && sortState.id && SERVER_SORT_MAP[sortState.id]) ? SERVER_SORT_MAP[sortState.id] : null; }
       catch(_) { return null; }
     })();
-    params.set('sort', overrideFromSortState || (sortSelect ? (sortSelect.value || 'date') : 'date'));
-    params.set('order', orderToggle ? (orderToggle.dataset.order || 'desc') : 'desc');
+    params.set('sort', overrideFromSortState || (sortSelect.value || 'date'));
+    params.set('order', orderToggle.dataset.order || 'desc');
     // Resolution filter
     const resSel = document.getElementById('resSelect');
     const resVal = resSel ? String(resSel.value || '') : '';
@@ -1663,7 +1627,7 @@ async function loadLibrary() {
     // Add search and filter parameters
     const searchVal = computeSearchVal();
     if (searchVal) params.set('search', searchVal);
-    const val = folderInput ? ((folderInput.value || '').trim()) : '';
+    const val = (folderInput.value || '').trim();
     const p = currentPath();
     // Only set a relative path; ignore absolute values (those represent the root itself)
     if (val && !isAbsolutePath(val) && p) params.set('path', p);
@@ -1772,26 +1736,24 @@ async function loadLibrary() {
     if (infiniteScrollEnabled) {
       const effectiveSize = stablePageSize || applyColumnsAndComputePageSize();
       const shown = Math.min(totalFiles, currentPage * effectiveSize);
-      if (pageInfo) pageInfo.textContent = `${shown} of ${totalFiles}`;
-      if (prevBtn) prevBtn.disabled = true;
-      if (nextBtn) nextBtn.disabled = true;
+      pageInfo.textContent = `${shown} of ${totalFiles}`;
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
     }
     else {
-      if (pageInfo) pageInfo.textContent = `Page ${currentPage} of ${totalPages} (${totalFiles} files)`;
-      if (prevBtn) prevBtn.disabled = currentPage <= 1;
-      if (nextBtn) nextBtn.disabled = currentPage >= totalPages;
+      pageInfo.textContent = `Page ${currentPage} of ${totalPages} (${totalFiles} files)`;
+      prevBtn.disabled = currentPage <= 1;
+      nextBtn.disabled = currentPage >= totalPages;
     }
     if (!infiniteScrollEnabled || !isAppend) {
-      if (grid) grid.innerHTML = '';
+      grid.innerHTML = '';
     }
   if (files.length === 0) {
       // When searching, do not auto-fill from subfolders;
       // show no results instead
       if (dirs.length > 0 && !searchVal) {
         // Render folders first for navigation
-        if (grid) {
-          for (const d of dirs) grid.appendChild(dirCard(d));
-        }
+        for (const d of dirs) grid.appendChild(dirCard(d));
         // Then fetch videos from up to N subfolders, respecting current sort/order
         const MAX_DIRS = 8;
         const MAX_TILES = 60;
@@ -1849,12 +1811,10 @@ async function loadLibrary() {
         }
         // Render up to MAX_TILES
         let shown = 0;
-        if (grid) {
-          for (const f of combined) {
-            if (shown >= MAX_TILES) break;
-            grid.appendChild(videoCard(f));
-            shown++;
-          }
+        for (const f of combined) {
+          if (shown >= MAX_TILES) break;
+          grid.appendChild(videoCard(f));
+          shown++;
         }
         hide(spinner);
         show(grid);
@@ -1862,9 +1822,7 @@ async function loadLibrary() {
       }
       else {
         hide(spinner);
-        if (statusEl) {
-          statusEl.className = files.length === 0 && searchVal ? 'empty' : 'empty';
-        }
+        statusEl.className = files.length === 0 && searchVal ? 'empty' : 'empty';
   // Try a one-shot relaxed fetch: drop resolution and search filters to populate some content
   // Skip when tag or performer chips are active (user expects exact matches)
   if (!searchVal && (!Array.isArray(libraryTagFilters) || libraryTagFilters.length === 0) && (!Array.isArray(libraryPerformerFilters) || libraryPerformerFilters.length === 0)) {
@@ -1874,9 +1832,9 @@ async function loadLibrary() {
             sp2.set('page_size', String(Math.max(24, applyColumnsAndComputePageSize() || 24)));
             {
               const override2 = (sortState && sortState.id && SERVER_SORT_MAP[sortState.id]) ? SERVER_SORT_MAP[sortState.id] : null;
-              sp2.set('sort', override2 || (sortSelect ? (sortSelect.value || 'date') : 'date'));
+              sp2.set('sort', override2 || (sortSelect.value || 'date'));
             }
-            sp2.set('order', orderToggle ? (orderToggle.dataset.order || 'desc') : 'desc');
+            sp2.set('order', orderToggle.dataset.order || 'desc');
             const u2 = '/api/library?' + sp2.toString();
             const r2 = await fetch(u2, { headers: { Accept: 'application/json' } });
             if (r2.ok) {
@@ -1887,13 +1845,11 @@ async function loadLibrary() {
               else d2 = { files: [] };
               const f2 = Array.isArray(d2.files) ? d2.files : [];
               if (f2.length) {
-                if (grid) {
-                  grid.innerHTML = '';
-                  const nodes2 = f2.slice(0, Math.max(24, applyColumnsAndComputePageSize() || 24)).map(videoCard);
-                  const frag2 = document.createDocumentFragment();
-                  nodes2.forEach((n) => frag2.appendChild(n));
-                  grid.appendChild(frag2);
-                }
+                grid.innerHTML = '';
+                const nodes2 = f2.slice(0, Math.max(24, applyColumnsAndComputePageSize() || 24)).map(videoCard);
+                const frag2 = document.createDocumentFragment();
+                nodes2.forEach((n) => frag2.appendChild(n));
+                grid.appendChild(frag2);
                 hide(statusEl);
                 show(grid);
                 return;
@@ -1937,10 +1893,8 @@ async function loadLibrary() {
           const msg = searchVal ? 'No results match your search.' : 'No videos found.';
           const chips = hasFilters ? `<div class="empty-filters" aria-label="Active filters">${activeFilters.map((f) => `<span class="empty-chip">${f}</span>`).join('')}</div>` : '';
           const btn = hasFilters ? `<div class="mt-12"><button id="clearFiltersBtn" class="btn-sm" type="button" aria-label="Clear filters">Clear filters</button></div>` : '';
-          if (statusEl) {
-            statusEl.innerHTML = `<div class="empty-state">${msg}${chips}${btn}</div>`;
-            showAs(statusEl, 'block');
-          }
+          statusEl.innerHTML = `<div class="empty-state">${msg}${chips}${btn}</div>`;
+          showAs(statusEl, 'block');
           // Wire the button once
           const clearBtn = document.getElementById('clearFiltersBtn');
           if (clearBtn && !clearBtn._wired) {
@@ -1967,10 +1921,8 @@ async function loadLibrary() {
           }
         }
         catch (__) {
-          if (statusEl) {
-            statusEl.textContent = searchVal ? 'No results match your search.' : 'No videos found.';
-            showAs(statusEl, 'block');
-          }
+          statusEl.textContent = searchVal ? 'No results match your search.' : 'No videos found.';
+          showAs(statusEl, 'block');
         }
         hide(grid);
         return;
@@ -2003,16 +1955,16 @@ async function loadLibrary() {
     hide(statusEl);
     if (!isAppend) hide(spinner);
     if (!infiniteScrollEnabled || currentPage === 1) {
-      if (grid) grid.innerHTML = '';
+      grid.innerHTML = '';
     }
     // Mark insertion pending so infinite scroll won't trigger another page mid-insert
     if (!infiniteScrollPendingInsertion) {
       infiniteScrollPendingInsertion = new Promise((resolve) => {
-        if (grid) grid._resolveInsertion = resolve;
+        grid._resolveInsertion = resolve;
       });
     }
     function finishInsertion() {
-      if (grid && grid._resolveInsertion) {
+      if (grid._resolveInsertion) {
         try {
           grid._resolveInsertion();
         }
@@ -2027,10 +1979,10 @@ async function loadLibrary() {
       for (; i < nodes.length && i < start + BATCH; i++) {
         frag.appendChild(nodes[i]);
       }
-      if (grid) grid.appendChild(frag);
+      grid.appendChild(frag);
       // Ensure initially visible cards get their metadata overlays immediately (e.g., 1080p labels)
       try {
-        const cards = grid ? Array.from(grid.querySelectorAll('.card')) : [];
+        const cards = Array.from(grid.querySelectorAll('.card'));
         const vh = (typeof window !== 'undefined') ? window.innerHeight : 0;
         const computeMeta = window.__computeTileMetadata || null;
         if (computeMeta && vh) {
@@ -2052,7 +2004,7 @@ async function loadLibrary() {
       else {
         // Finished
         requestAnimationFrame(() => {
-          const c = grid ? grid.querySelector('.card') : null;
+          const c = grid.querySelector('.card');
           if (c) {
             const h = c.getBoundingClientRect().height;
             if (h && isFinite(h) && h > 50) {
@@ -2079,7 +2031,7 @@ async function loadLibrary() {
           }
         });
       }
-      if (grid && grid.classList.contains('hidden')) show(grid);
+      if (grid.classList.contains('hidden')) show(grid);
       if (infiniteScrollEnabled) setupInfiniteScrollSentinel();
       if (infiniteScrollSentinel) infiniteScrollSentinel.textContent = '';
       // No eager chain trigger here (strict bottom-only mode).
@@ -2087,11 +2039,11 @@ async function loadLibrary() {
     if (nodes.length <= BATCH) {
       const frag = document.createDocumentFragment();
       nodes.forEach((n) => frag.appendChild(n));
-      if (grid) grid.appendChild(frag);
+      grid.appendChild(frag);
       show(grid);
       // One-shot immediate metadata for visible cards
       try {
-        const cards = grid ? Array.from(grid.querySelectorAll('.card')) : [];
+        const cards = Array.from(grid.querySelectorAll('.card'));
         const vh = (typeof window !== 'undefined') ? window.innerHeight : 0;
         const computeMeta = window.__computeTileMetadata || null;
         if (computeMeta && vh) {
@@ -2131,11 +2083,9 @@ async function loadLibrary() {
   catch (e) {
     console.error('Library loading error:', e);
     hide(spinner);
-    if (statusEl) {
-      statusEl.className = 'error';
-      statusEl.textContent = 'Failed to load library.';
-      showAs(statusEl, 'block');
-    }
+    statusEl.className = 'error';
+    statusEl.textContent = 'Failed to load library.';
+    showAs(statusEl, 'block');
     hide(grid);
   }
   finally {
@@ -2262,8 +2212,7 @@ async function loadLibrary() {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, {once: true});
   else init();
 })();
-// Guard in case script executes before body parsed (script is in <head>)
-if (refreshBtn) refreshBtn.addEventListener('click', loadLibrary);
+refreshBtn.addEventListener('click', loadLibrary);
 if (randomPlayBtn) {
   randomPlayBtn.addEventListener('click', async () => {
     try {
@@ -2711,31 +2660,10 @@ function applyLibraryStateFromUrl() {
   catch (_) { }
 }
 // Apply URL state once on load and when navigating history
-function initializeLibrary() {
-  try {
-    initLibraryElements(); // Initialize UI elements first
-    applyLibraryStateFromUrl();
-    currentPage = 1;
-    loadLibrary();
-  }
+window.addEventListener('DOMContentLoaded', () => {
+  try { applyLibraryStateFromUrl(); currentPage = 1; loadLibrary(); }
   catch (_) {}
-}
-
-// Register library initialization with lazy tab system
-// This ensures it runs only when the library tab is active
-if (typeof window.__LazyTabs !== 'undefined') {
-  window.__LazyTabs.register('library', initializeLibrary);
-} else {
-  // Fallback: wait for lazy tabs to be available
-  const registerWhenReady = () => {
-    if (typeof window.__LazyTabs !== 'undefined') {
-      window.__LazyTabs.register('library', initializeLibrary);
-    } else {
-      setTimeout(registerWhenReady, 50);
-    }
-  };
-  registerWhenReady();
-}
+});
 window.addEventListener('popstate', () => {
   try { applyLibraryStateFromUrl(); currentPage = 1; loadLibrary(); }
   catch (_) {}
@@ -2887,17 +2815,15 @@ if (unifiedInput) {
     updateClearFiltersBtnState();
   });
 }
-if (sortSelect) {
-  sortSelect.addEventListener('change', () => {
-    // Reset to sensible default per changed sort (ASC for name, DESC otherwise) regardless of prior user-set order
-    applyDefaultOrderForSort(true);
-    // Clear the sticky userSet so future clicks re-establish intent on the new sort
-    if (orderToggle) delete orderToggle.dataset.userSet;
-    currentPage = 1;
-    loadLibrary();
-    updateClearFiltersBtnState();
-  });
-}
+sortSelect.addEventListener('change', () => {
+  // Reset to sensible default per changed sort (ASC for name, DESC otherwise) regardless of prior user-set order
+  applyDefaultOrderForSort(true);
+  // Clear the sticky userSet so future clicks re-establish intent on the new sort
+  if (orderToggle) delete orderToggle.dataset.userSet;
+  currentPage = 1;
+  loadLibrary();
+  updateClearFiltersBtnState();
+});
 // Wire up sidebar artifact generation buttons
 function getSelectedFilePath() {
   // Prefer the actively playing path from the Player, if available
@@ -2980,36 +2906,25 @@ function resolveArtifactRequest(artifact, filePath) {
   // Normalize common aliases
   const normMap = {
     meta: 'metadata',
-    chapter: 'markers',
     chapters: 'markers',
-    scene: 'markers',
     scenes: 'markers',
-    marker: 'markers',
     markers: 'markers',
-    thumb: 'thumbnails',
-    thumbs: 'thumbnails',
-    thumbnail: 'thumbnails',
-    thumbnails: 'thumbnails',
+    thumb: 'thumbnail',
+    thumbnail: 'thumbnail',
     preview: 'preview',
     previews: 'preview',
     sprite: 'sprites',
     sprites: 'sprites',
-    sub: 'subtitles',
     subs: 'subtitles',
-    subtitle: 'subtitles',
     subtitles: 'subtitles',
     heat: 'heatmaps',
     heatmap: 'heatmaps',
     heatmaps: 'heatmaps',
-    face: 'faces',
     faces: 'faces',
     phash: 'phash',
+    waveform: 'waveform',
     wave: 'waveform',
-    waves: 'waveform',
-    waveform: 'waveforms',
-    waveforms: 'waveforms',
-    motion: 'motions',
-    motions: 'motions',
+    motion: 'motion',
   };
   const k = normMap[a] || a;
   switch (k) {
@@ -3313,17 +3228,15 @@ function pollArtifactStatusAndUpdateChip(path, chipKey, chipEl) {
     }
   }, intervalMs);
 }
-if (orderToggle) {
-  orderToggle.addEventListener('click', () => {
-    // Mark that the user explicitly chose an order; future sort changes won't auto-reset it
-    orderToggle.dataset.userSet = '1';
-    const isDesc = orderToggle.dataset.order === 'desc';
-    orderToggle.dataset.order = isDesc ? 'asc' : 'desc';
-    orderToggle.textContent = isDesc ? '▲' : '▼';
-    currentPage = 1;
-    loadLibrary();
-  });
-}
+orderToggle.addEventListener('click', () => {
+  // Mark that the user explicitly chose an order; future sort changes won't auto-reset it
+  orderToggle.dataset.userSet = '1';
+  const isDesc = orderToggle.dataset.order === 'desc';
+  orderToggle.dataset.order = isDesc ? 'asc' : 'desc';
+  orderToggle.textContent = isDesc ? '▲' : '▼';
+  currentPage = 1;
+  loadLibrary();
+});
 // Resolution filter change
 const resSelect = document.getElementById('resSelect');
 if (resSelect) {
@@ -3339,44 +3252,38 @@ if (resSelect) {
   });
 }
 // Pagination
-if (prevBtn) {
-  prevBtn.addEventListener('click', () => {
-    if (currentPage > 1) {
-      currentPage--;
-      loadLibrary();
-    }
-  });
-}
-if (nextBtn) {
-  nextBtn.addEventListener('click', () => {
-    if (currentPage < totalPages) {
-      currentPage++;
-      loadLibrary();
-    }
-  });
-}
-// Density slider
-if (densitySlider) {
-  densitySlider.addEventListener('input', () => {
-    currentDensity = parseInt(densitySlider.value);
-    updateDensity();
-    // Mark that this reload is due to a density change so we can bypass the
-    // initial small-page cap; do not auto-fill additional pages.
-    densityReloadPending = true;
-    autoFillAfterLayoutChange = false;
-    autoFillAfterLayoutChangeBudget = 2; // allow up to 2 extra pages to create overflow
-    // Reset last trigger state to allow new bottom checks at the new height; keep
-    // userScrolled=false so we only load after actual user interaction.
-    infiniteScrollLastTriggerHeight = 0;
-    infiniteScrollUserScrolled = false;
-    try { window.__INF_LAST_LOAD_AT = Date.now(); }
-    catch (_) {}
-    // Clean up any existing sentinel before reloading.
-    teardownInfiniteScroll();
-    currentPage = 1;
+prevBtn.addEventListener('click', () => {
+  if (currentPage > 1) {
+    currentPage--;
     loadLibrary();
-  });
-}
+  }
+});
+nextBtn.addEventListener('click', () => {
+  if (currentPage < totalPages) {
+    currentPage++;
+    loadLibrary();
+  }
+});
+// Density slider
+densitySlider.addEventListener('input', () => {
+  currentDensity = parseInt(densitySlider.value);
+  updateDensity();
+  // Mark that this reload is due to a density change so we can bypass the
+  // initial small-page cap; do not auto-fill additional pages.
+  densityReloadPending = true;
+  autoFillAfterLayoutChange = false;
+  autoFillAfterLayoutChangeBudget = 2; // allow up to 2 extra pages to create overflow
+  // Reset last trigger state to allow new bottom checks at the new height; keep
+  // userScrolled=false so we only load after actual user interaction.
+  infiniteScrollLastTriggerHeight = 0;
+  infiniteScrollUserScrolled = false;
+  try { window.__INF_LAST_LOAD_AT = Date.now(); }
+  catch (_) {}
+  // Clean up any existing sentinel before reloading.
+  teardownInfiniteScroll();
+  currentPage = 1;
+  loadLibrary();
+});
 // Apply density once on startup so initial load uses correct columns
 updateDensity();
 // Settings wiring for video previews (canonical key 'setting.preview')
@@ -3843,9 +3750,7 @@ function wireSettings() {
 }
 // (Removed: simple Enter handler;
 // replaced below with unified behavior)
-if (folderInput) {
-  folderInput.addEventListener('dblclick', () => openFolderPicker());
-}
+folderInput.addEventListener('dblclick', () => openFolderPicker());
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     loadLibrary();
@@ -3882,7 +3787,7 @@ window.addEventListener('load', () => {
     }
     catch (_) { }
     finally {
-      if (folderInput) folderInput.value = '';
+      folderInput.value = '';
       loadLibrary();
     }
   })();
@@ -4081,7 +3986,6 @@ function enforceGridSideSpacing() {
   // Only operate when library panel is active
   const libPanel = document.getElementById('library-panel');
   if (libPanel && libPanel.hasAttribute('hidden')) return;
-  if (!grid) return;
   // Reset first so we measure true overflow baseline
   grid.style.marginLeft = '0px';
   grid.style.marginRight = '0px';
@@ -4240,25 +4144,21 @@ document.addEventListener('click', (e) => {
   }
 });
 // Selection controls
-if (selectAllBtn) {
-  selectAllBtn.addEventListener('click', () => {
-    document.querySelectorAll('.card[data-path]').forEach((card) => {
-      const path = card.dataset.path;
-      if (path) selectedItems.add(path);
-    });
-    updateSelectionUI();
-    document.querySelectorAll('.card-checkbox')
-    .forEach((cb) => cb.classList.add('checked'));
+selectAllBtn.addEventListener('click', () => {
+  document.querySelectorAll('.card[data-path]').forEach((card) => {
+    const path = card.dataset.path;
+    if (path) selectedItems.add(path);
   });
-}
-if (selectNoneBtn) {
-  selectNoneBtn.addEventListener('click', () => {
-    selectedItems.clear();
-    updateSelectionUI();
-    document.querySelectorAll('.card-checkbox')
-    .forEach((cb) => cb.classList.remove('checked'));
-  });
-}
+  updateSelectionUI();
+  document.querySelectorAll('.card-checkbox')
+  .forEach((cb) => cb.classList.add('checked'));
+});
+selectNoneBtn.addEventListener('click', () => {
+  selectedItems.clear();
+  updateSelectionUI();
+  document.querySelectorAll('.card-checkbox')
+  .forEach((cb) => cb.classList.remove('checked'));
+});
 
 // Bulk edit actions for selected items
 if (bulkEditBtn && bulkEditPanel && bulkValueInput && bulkApplyBtn) {
@@ -4836,24 +4736,22 @@ async function setRoot(val) {
   }
 }
 // Single-input behavior: Enter applies relative browse or sets root if absolute
-if (folderInput) {
-  folderInput.addEventListener('keydown', async (e) => {
-    if (e.key !== 'Enter') return;
-    const val = (folderInput.value || '').trim();
-    currentPage = 1;
-    // Reset to first page when changing folders
-    if (!val) {
-      await loadLibrary();
-      return;
-    }
-    if (isAbsolutePath(val)) {
-      await setRoot(val);
-    }
-    else {
-      await loadLibrary();
-    }
-  });
-}
+folderInput.addEventListener('keydown', async (e) => {
+  if (e.key !== 'Enter') return;
+  const val = (folderInput.value || '').trim();
+  currentPage = 1;
+  // Reset to first page when changing folders
+  if (!val) {
+    await loadLibrary();
+    return;
+  }
+  if (isAbsolutePath(val)) {
+    await setRoot(val);
+  }
+  else {
+    await loadLibrary();
+  }
+});
 // Optional pick root button (present only in Settings panel after header removal)
 const pickRootBtn = document.getElementById('pickRootBtn');
 if (pickRootBtn) {
@@ -6855,9 +6753,9 @@ function setupListTab() {
       filesCache = Array.isArray(data.files) ? data.files : [];
       total = Number(data.total_files || filesCache.length || 0);
       listClientAllMode = false;
-      renderHead();
-      renderBody(filesCache);
-      applyColumnWidths();
+  renderHead();
+  renderBody(filesCache);
+  applyColumnWidths();
       // Auto-size visible columns once (first-render)
       try {
         if (!getLocalStorageItem(AUTOSIZED_ONCE_LS_KEY)) {
@@ -7048,50 +6946,13 @@ function setupSimilarTab() {
       catch (_) {
         directory = '';
       }
-      // Fetch server root for absolute→relative path normalization
-      let serverRoot = null;
-      try {
-        let rc = await fetch('/api/config');
-        if (!rc.ok) rc = await fetch('/config');
-        const cfg = await rc.json();
-        const cdata = (cfg && (cfg.data || cfg)) || {};
-        if (typeof cdata.root === 'string' && cdata.root) serverRoot = cdata.root;
-      } catch(_) { serverRoot = null; }
-      const toRelPath = (p) => {
-        if (!p || typeof p !== 'string') return p;
-        // Normalize separators
-        let s = p;
-        // Prefer stripping serverRoot prefix when present
-        if (serverRoot && s.startsWith(serverRoot)) {
-          s = s.slice(serverRoot.length);
-          if (s.startsWith('/') || s.startsWith('\\')) s = s.slice(1);
-        }
-        // If still absolute, last resort: try to drop drive or leading slash
-        if (s.startsWith('/')) s = s.slice(1);
-        return s;
-      };
-      // Pre-load pHash generation progress (optional enhancement)
-      let phashProgress = null; // { total, have, missing }
-      try {
-        const qp = new URLSearchParams();
-        if (directory) qp.set('path', directory);
-        qp.set('recursive', rec ? 'true' : 'false');
-        const phRes = await fetch('/api/phashes?' + qp.toString(), { headers: { Accept: 'application/json' } });
-        if (phRes.ok) {
-          const pj = await phRes.json();
-          const pdata = (pj && (pj.data || pj)) || {};
-          if (Number.isFinite(pdata.total) && Number.isFinite(pdata.have)) {
-            phashProgress = { total: pdata.total, have: pdata.have, missing: Math.max(0, (pdata.total - pdata.have)) };
-          }
-        }
-      } catch(_) { /* ignore phash progress errors */ }
       const qs = new URLSearchParams();
       qs.set('phash_threshold', String(thr));
       if (directory) qs.set('directory', directory);
       qs.set('recursive', rec ? 'true' : 'false');
       qs.set('page_size', String(limit));
       try {
-        const res = await fetch('/api/duplicates?' + qs.toString(), {headers: {Accept: 'application/json' } });
+  const res = await fetch('/api/duplicates?' + qs.toString(), {headers: {Accept: 'application/json' } });
         if (!res.ok) {
           statusEl.textContent = 'Failed to load';
           statusEl.style.color = 'var(--danger-400, red)';
@@ -7102,19 +6963,11 @@ function setupSimilarTab() {
         const pairs = Array.isArray(data.pairs) ? data.pairs : [];
         const total = Number.isFinite(data.total_pairs) ? data.total_pairs : pairs.length;
         if (!pairs.length) {
-          let msg = 'No similar pairs at this threshold.';
-          if (phashProgress && phashProgress.have < phashProgress.total) {
-            msg += ` (pHash ${phashProgress.have}/${phashProgress.total})`;
-          }
-          statusEl.textContent = msg;
+          statusEl.textContent = 'No similar pairs at this threshold.';
           statusEl.style.color = 'var(--muted-500, #778)';
           return;
         }
-        let baseMsg = `${total} pairs ≥ ${(thr * 100).toFixed(0)}%`;
-        if (phashProgress && phashProgress.have < phashProgress.total) {
-          baseMsg += ` (pHash ${phashProgress.have}/${phashProgress.total})`;
-        }
-        statusEl.textContent = baseMsg;
+        statusEl.textContent = `${total} pairs ≥ ${(thr * 100).toFixed(0)}%`;
         statusEl.style.color = '';
         // Render results
         const frag = document.createDocumentFragment();
@@ -7126,15 +6979,10 @@ function setupSimilarTab() {
             rowEl = document.createElement('div');
             rowEl.className = 'card similar-row';
             const top = document.createElement('div');
-            top.className = 'row jc-between ai-center similar-row__head';
+            top.className = 'row jc-between ai-center';
             const title = document.createElement('strong');
             title.className = 'similar-title';
             top.appendChild(title);
-            // inline thumbs container
-            const tinl = document.createElement('div'); tinl.className = 'thumbs-inline row gap-8';
-            const ta = document.createElement('div'); ta.className = 'thumb-inline'; const ia=document.createElement('img'); ia.loading='lazy'; ia.decoding='async'; ia.className='thumb thumb-a'; ta.appendChild(ia); tinl.appendChild(ta);
-            const tb = document.createElement('div'); tb.className = 'thumb-inline'; const ib=document.createElement('img'); ib.loading='lazy'; ib.decoding='async'; ib.className='thumb thumb-b'; tb.appendChild(ib); tinl.appendChild(tb);
-            top.appendChild(tinl);
             const act = document.createElement('div');
             act.className = 'row gap-10';
             const pa = document.createElement('button'); pa.className = 'btn-sm play-a'; pa.textContent = 'Play A';
@@ -7151,135 +6999,8 @@ function setupSimilarTab() {
           const pathA = rowEl.querySelector('.path-a');
           const pathB = rowEl.querySelector('.path-b');
           if (titleEl) titleEl.textContent = `${Math.round(((p && p.similarity) || 0) * 100)}% similar`;
-          const relA = toRelPath(p && p.a);
-          const relB = toRelPath(p && p.b);
-          if (pathA) pathA.textContent = relA || '';
-          if (pathB) pathB.textContent = relB || '';
-          // Thumb + metadata async load
-          const imgA = rowEl.querySelector('img.thumb-a');
-          const imgB = rowEl.querySelector('img.thumb-b');
-          const metaLineA = rowEl.querySelector('.meta-a');
-          const metaLineB = rowEl.querySelector('.meta-b');
-          // Lightweight hover preview (only if preview artifact already exists)
-          // Does NOT trigger on-demand generation; strictly checks status first.
-          async function fetchPreviewURL(relPath) {
-            if (!relPath) return '';
-            try {
-              const u = new URL('/api/artifacts/status', window.location.origin);
-              u.searchParams.set('path', relPath);
-              const r = await fetch(u.toString());
-              if (!r.ok) return '';
-              const j = await r.json();
-              const data = (j && (j.data || j)) || {};
-              if (!data.preview) return '';
-              // Determine preferred format (reuse logic from ensurePreview without generation)
-              let preferredFmt = 'webm';
-              try {
-                const probe = document.createElement('video');
-                const canWebm = !!probe.canPlayType && probe.canPlayType('video/webm; codecs="vp9,vorbis"');
-                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-                if (isIOS) preferredFmt = 'mp4';
-                else if (!canWebm || canWebm === 'no') preferredFmt = 'mp4';
-              } catch(_) { preferredFmt = 'webm'; }
-              const qp = encodeURIComponent(relPath);
-              const pr = await fetch(`/api/preview?path=${qp}&fmt=${encodeURIComponent(preferredFmt)}`);
-              if (!pr.ok) return '';
-              const blob = await pr.blob();
-              if (!blob || !blob.size) return '';
-              return URL.createObjectURL(blob);
-            } catch(_) { return ''; }
-          }
-          function attachHoverPreview(imgEl, relPath) {
-            if (!imgEl || !relPath) return;
-            const wrap = imgEl.closest('.thumb-inline') || imgEl.parentElement;
-            if (!wrap) return;
-            let vidEl = null;
-            let objURL = '';
-            const enter = async () => {
-              if (wrap.dataset.previewActive === '1') return;
-              wrap.dataset.previewActive = '1';
-              const url = await fetchPreviewURL(relPath);
-              if (!url) { wrap.dataset.previewActive = '0'; return; }
-              objURL = url;
-              vidEl = document.createElement('video');
-              vidEl.src = url;
-              vidEl.muted = true;
-              vidEl.autoplay = true;
-              vidEl.loop = true;
-              vidEl.playsInline = true;
-              vidEl.style.width = '100%';
-              vidEl.style.height = '100%';
-              vidEl.style.objectFit = 'cover';
-              // Hide image while preview active
-              imgEl.style.visibility = 'hidden';
-              wrap.appendChild(vidEl);
-            };
-            const leave = () => {
-              wrap.dataset.previewActive = '0';
-              if (vidEl) {
-                try { vidEl.pause(); } catch(_) {}
-                vidEl.remove();
-              }
-              if (objURL) {
-                try { URL.revokeObjectURL(objURL); } catch(_) {}
-              }
-              imgEl.style.visibility = '';
-              vidEl = null; objURL='';
-            };
-            wrap.addEventListener('mouseenter', enter);
-            wrap.addEventListener('mouseleave', leave);
-          }
-          const makeThumbUrl = (relPath) => {
-            if (!relPath) return '';
-            const qp = new URLSearchParams(); qp.set('path', relPath);
-            return '/api/thumbnail?' + qp.toString();
-          };
-          const fetchMetaCache = window.__similarMetaCache || (window.__similarMetaCache = new Map());
-          async function ensureMeta(relPath) {
-            if (!relPath) return null;
-            if (fetchMetaCache.has(relPath)) return fetchMetaCache.get(relPath);
-            const qp = new URLSearchParams(); qp.set('path', relPath); qp.set('view','1');
-            try {
-              const r = await fetch('/api/metadata?' + qp.toString(), { headers: { Accept: 'application/json' } });
-              if (!r.ok) throw new Error('HTTP '+r.status);
-              const j = await r.json();
-              const data = j && (j.data || j) || {};
-              fetchMetaCache.set(relPath, data);
-              return data;
-            } catch(e) {
-              fetchMetaCache.set(relPath, null);
-              return null;
-            }
-          }
-          function fmtBytes(bytes){
-            if (!Number.isFinite(bytes) || bytes <= 0) return '—';
-            const units=['B','KB','MB','GB','TB']; let i=0; let v=bytes; while (v>=1024 && i<units.length-1){ v/=1024; i++; } return v.toFixed(v>=100||i===0?0:1)+' '+units[i];
-          }
-          function metaSummary(data){
-            if (!data) return 'No metadata';
-            const size = fmtBytes(data.size);
-            const dur = Number.isFinite(data.duration) ? fmtDuration(data.duration) : '—';
-            const w = Number.isFinite(data.width) ? data.width : '—';
-            const h = Number.isFinite(data.height) ? data.height : '—';
-            return `${size} • ${dur} • ${w}×${h}`;
-          }
-          function applyMetaToImg(imgEl, data){
-            if (!imgEl) return;
-            if (!data){ imgEl.title = 'No metadata'; return; }
-            const size = fmtBytes(data.size);
-            const dur = Number.isFinite(data.duration) ? fmtDuration(data.duration) : '—';
-            const w = Number.isFinite(data.width) ? data.width : '—';
-            const h = Number.isFinite(data.height) ? data.height : '—';
-            imgEl.title = `${size} • ${dur} • ${w}×${h}`;
-          }
-          // Kick off loads (non-blocking)
-          if (imgA && relA){ imgA.src = makeThumbUrl(relA); imgA.onerror=()=>{ imgA.style.opacity='.25'; }; }
-          if (imgB && relB){ imgB.src = makeThumbUrl(relB); imgB.onerror=()=>{ imgB.style.opacity='.25'; }; }
-          (async () => { const d = await ensureMeta(relA); applyMetaToImg(imgA, d); if (metaLineA) metaLineA.textContent = metaSummary(d); })();
-          (async () => { const d = await ensureMeta(relB); applyMetaToImg(imgB, d); if (metaLineB) metaLineB.textContent = metaSummary(d); })();
-          // Attach hover previews (non‑generative)
-          attachHoverPreview(imgA, relA);
-          attachHoverPreview(imgB, relB);
+          if (pathA) pathA.textContent = p && p.a ? p.a : '';
+          if (pathB) pathB.textContent = p && p.b ? p.b : '';
           const openPath = (path) => {
             try { ts.switchToTab('player'); }
             catch (_) { }
@@ -7407,45 +7128,24 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
 
   // Slider helpers (Edge length / Node repulsion)
   function getEdgeLen() {
-    const v = parseInt(el('graphEdgeLen')?.value || '160', 10);
-    if (!Number.isFinite(v)) return 160;
-    return Math.max(20, Math.min(800, v));
+    const v = parseInt(el('graphEdgeLen')?.value || '120', 10);
+    if (!Number.isFinite(v)) return 120;
+    return Math.max(20, Math.min(600, v));
   }
   function getNodeRepulsion() {
-    const v = parseInt(el('graphRepulsion')?.value || '150000', 10);
-    if (!Number.isFinite(v)) return 150000;
-    return Math.max(1000, Math.min(300000, v));
+    const v = parseInt(el('graphRepulsion')?.value || '50000', 10);
+    if (!Number.isFinite(v)) return 50000;
+    return Math.max(500, Math.min(200000, v));
   }
 
-  // Wire performers face detection button (batch client-side detection + persistence)
-  function wirePerformersDetectFacesButton() {
-    const btn = document.getElementById('performersDetectFacesBtn');
-    if (!btn || btn._wired) return;
-    btn._wired = true;
-    btn.addEventListener('click', async () => {
-      const origText = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = 'Detecting…';
-      try {
-        if (typeof window.persistMissingFaceBoxesClientSide === 'function') {
-          await window.persistMissingFaceBoxesClientSide();
-          notify('Face boxes updated for performers', 'success');
-        } else {
-          notify('Face detection helper not available', 'error');
-        }
-        // Refresh performers grid to reflect new boxes
-        try { if (typeof fetchPerformers === 'function') await fetchPerformers(); } catch(_) {}
-      }
-      catch (e) {
-        notify('Detect faces failed: ' + (e && e.message ? e.message : 'error'), 'error');
-      }
-      finally {
-        btn.disabled = false;
-        btn.textContent = origText || 'Detect Faces';
-      }
-    });
+  function straightPrefGet() {
+    try { return getLocalStorageBoolean('graph:straightEdges', true); }
+    catch (_) { return true; }
   }
-  try { if (typeof window !== 'undefined') window.wirePerformersDetectFacesButton = wirePerformersDetectFacesButton; } catch(_) {}
+  function straightPrefSet(v) {
+    try { setLocalStorageBoolean('graph:straightEdges', !!v); }
+    catch (_) {}
+  }
 
   function nodeSizeForCount(c) {
     const n = Math.max(1, Number(c) || 1);
@@ -7479,8 +7179,8 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
         id: n.id,
         label: n.name,
         count: Number(n.count || 0),
-        // Image URL supplied by API (if available)
-        image: n.image || '',
+        // Optional image URL from API; fallback tries by name if server supports it
+        image: n.image || (n.name ? `/api/performers/image?name=${encodeURIComponent(n.name)}` : ''),
       },
     }));
     const edges = (data.edges || []).map((e) => ({
@@ -7543,12 +7243,14 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
       container,
       elements: [],
       style: [
-        // Base node styling (no image)
         {
           selector: 'node',
-          style: {
+            style: {
             'shape': 'ellipse',
             'background-color': '#22324c',
+            'background-image': 'data(image)',
+            'background-fit': 'cover',
+            'background-opacity': 1,
             'border-width': 2,
             'border-color': '#93c5fd',
             'label': 'data(label)',
@@ -7565,22 +7267,12 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
             'text-margin-y': 8,
           }
         },
-        // Nodes with an image get background-image applied
-        {
-          selector: 'node[image]',
-          style: {
-            'background-image': 'data(image)',
-            'background-fit': 'cover',
-            'background-opacity': 1,
-          }
-        },
         {
           selector: 'edge',
           style: {
             'line-color': '#64748b',
             'target-arrow-color': '#64748b',
             'width': 'data(width)',
-            // Default to straight edges (user preference restored)
             'curve-style': 'straight',
             'opacity': 0.75,
           }
@@ -7602,6 +7294,7 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
           style: { 'border-width': 3, 'border-color': '#fff' }
         },
       ],
+      wheelSensitivity: 0.2,
       pixelRatio: 1,
     });
     try {
@@ -7609,59 +7302,36 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
      }
     catch (_) {}
 
-  // Set curved edges by default (straight toggle removed)
-  applyEdgeCurve();
+  // Apply preferred edge curvature (straight is default)
+  applyEdgeCurve(straightPrefGet());
 
-    // -------------------------------
-    // Wine & Cheese style highlight
-    // -------------------------------
-    let __highlightNode = null;
-    function highlightNode(n) {
-      if (!n || n === __highlightNode) return;
-      const nhood = n.closedNeighborhood();
-      // Clear previous
-      cy.elements().removeClass('faded').removeClass('highlighted');
-      __highlightNode = n;
-      // Mark original positions once (reuse existing storePositionsOnce for full graph restore)
-      storePositionsOnce();
-      // Apply classes
-      nhood.addClass('highlighted');
-      cy.elements().not(nhood).addClass('faded');
-      // Run a concentric layout scoped to neighborhood (animated)
-      try {
-        const layout = nhood.layout({
-          name: 'concentric',
-          animate: true,
-          animationDuration: 400,
-          avoidOverlap: true,
-          concentric: (ele) => (ele.id() === n.id() ? 2 : 1),
-          levelWidth: () => 1,
-          fit: true,
-          padding: 60,
-        });
-        layout.run();
-      } catch(_) {}
-    }
-    function unhighlightNode() {
-      if (!__highlightNode) return;
-      __highlightNode = null;
-      cy.elements().removeClass('faded').removeClass('highlighted');
-      // Restore stored positions if we were in neighborhood view
-      restorePositions();
-    }
-
-    // Hover highlight (removed size animation) - keep simple neighbor emphasis
+    // Hover magnify + neighbor highlight
     cy.on('mouseover', 'node', (evt) => {
-      // Skip transient hover fade if a persistent highlight is active
-      if (__highlightNode) return;
       const n = evt.target;
+      const bw = Number(n.data('w') || n.data('size') || 48);
+      const bh = Number(n.data('h') || n.data('size') || 28);
+      try { n.stop(true); n.animate({ style: { width: bw * 1.15, height: bh * 1.15 } }, { duration: 120 }); }
+      catch (_) {}
       const neigh = n.closedNeighborhood();
       cy.elements().addClass('faded');
       neigh.removeClass('faded');
     });
-    cy.on('mouseout', 'node', () => {
-      // Only clear hover fade if no persistent highlight
-      if (__highlightNode) return;
+    cy.on('mouseout', 'node', (evt) => {
+      const n = evt.target;
+      const bw = Number(n.data('w') || n.data('size') || 48);
+      const bh = Number(n.data('h') || n.data('size') || 28);
+      try {
+        n.stop(true);
+        n.animate({
+          style: {
+            width: bw,
+            height: bh
+          }
+        }, {
+          duration: 120
+        });
+      }
+      catch (_) {}
       cy.elements().removeClass('faded');
     });
 
@@ -7736,25 +7406,20 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
     }
     catch (_) {}
 
-    // Click background to clear highlight; click node to highlight (Wine & Cheese style)
-    cy.on('tap', (evt) => {
-      if (evt.target === cy) {
-        unhighlightNode();
-        try { cy.nodes(':selected').unselect(); } catch(_) {}
-        return;
-      }
-    });
+    // Click to select a node
     cy.on('tap', 'node', (evt) => {
-      const n = evt.target;
-      highlightNode(n);
-      try { cy.nodes(':selected').unselect(); } catch(_) {}
-      try { n.select(); } catch(_) {}
+      try { cy.nodes(':selected').unselect(); }
+      catch (_) {}
+      try { evt.target.select(); }
+      catch (_) {}
     });
   }
 
-  function applyEdgeCurve() {
-    // Maintain straight edges as default; name retained for minimal intrusive change
-    if (!cy) return; try { cy.style().selector('edge').style('curve-style', 'straight').update(); } catch(_) {}
+  function applyEdgeCurve(straight) {
+    if (!cy) return;
+    const mode = straight ? 'straight' : 'unbundled-bezier';
+    try { cy.style().selector('edge').style('curve-style', mode).update(); }
+    catch (_) {}
   }
 
   function applyLayout(kind) {
@@ -7762,42 +7427,39 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
     const k = (kind || 'fcose').toLowerCase();
     const EDGE_LEN_BASE = getEdgeLen();
     const REPULSION_BASE = getNodeRepulsion();
-    const build = () => {
-      if (k === 'random') return { name: 'random', padding: 20 };
-      if (k === 'circle') return { name: 'circle', padding: 20 };
-      if (k === 'grid') return { name: 'grid', padding: 20 };
-      if (k === 'concentric') return { name: 'concentric', padding: 40, animate: false };
-      if (k === 'dagre') return { name: 'dagre', padding: 40, animate: false };
-      if (k === 'klay') return { name: 'klay', padding: 40, animate: false };
-      // Fallback for optional plugins not loaded: map to safe built-ins
-      if (k === 'avsdf') return { name: 'dagre', padding: 40, animate: false };
-      if (k === 'cise') return { name: 'dagre', padding: 50, animate: false };
-      if (k === 'cola') return { name: 'cola', padding: 50, animate: false, maxSimulationTime: 3000 };
-      if (k === 'euler') return { name: 'euler', padding: 50, animate: false };
-      if (k === 'cose') {
-        return {
-          name: 'cose',
-          animate: false,
-          fit: true,
-          padding: 40,
-          nodeOverlap: 10,
-          nodeRepulsion: REPULSION_BASE,
-          idealEdgeLength: (edge) => {
-            const c = Number(edge.data('count') || 1);
-            return Math.max(30, EDGE_LEN_BASE - Math.log2(1 + c) * 20);
-          },
-          gravity: 80,
-          componentSpacing: 80,
-        };
-      }
-      return {
+    let layout;
+    if (k === 'random') layout = { name: 'random', padding: 20 };
+    else if (k === 'circle') layout = { name: 'circle', padding: 20 };
+    else if (k === 'grid') layout = { name: 'grid', padding: 20 };
+    else if (k === 'cose') {
+      layout = {
+        name: 'cose',
+        animate: 'end',
+        animationDuration: 600,
+        fit: true,
+        padding: 40,
+        nodeOverlap: 10,
+        nodeRepulsion: REPULSION_BASE,
+        idealEdgeLength: (edge) => {
+          const c = Number(edge.data('count') || 1);
+          // Use slider as baseline and compress dense edges slightly
+          return Math.max(30, EDGE_LEN_BASE - Math.log2(1 + c) * 20);
+        },
+        gravity: 80,
+        componentSpacing: 80,
+      };
+    }
+    else {
+      layout = {
         name: 'fcose',
         quality: 'default',
         randomize: false,
-        animate: false,
+        animate: 'end',
+        animationDuration: 700,
+        animationEasing: 'ease-out-cubic',
         fit: true,
         padding: 50,
-        nodeSeparation: 60,
+        nodeSeparation: 30,
         nodeDimensionsIncludeLabels: true,
         packComponents: true,
         idealEdgeLength: (edge) => {
@@ -7810,29 +7472,9 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
         },
         nodeRepulsion: (_node) => REPULSION_BASE,
       };
-    };
-    const startPos = {};
-    cy.nodes().forEach(n => { startPos[n.id()] = { x: n.position('x'), y: n.position('y') }; });
-    let opts = build();
-    let layout;
-    try { layout = cy.layout(opts); layout.run(); }
-    catch (err) {
-      const msg = (err && (err.message || String(err))) || '';
-      try { console.warn('[Graph] layout error, fallback to cose:', msg); } catch(_) {}
-      // Hard fallback: basic cose if selected layout missing
-      try { opts = { name: 'cose', padding: 40, animate: false }; layout = cy.layout(opts); layout.run(); }
-      catch(_) { return; }
     }
-    const DUR = 700;
-    cy.batch(() => {
-      cy.nodes().forEach(n => {
-        const end = n.position();
-        const start = startPos[n.id()];
-        if (start) n.position(start);
-        n.animate({ position: end }, { duration: DUR, easing: 'ease-out-cubic' });
-      });
-    });
-    setTimeout(() => { try { cy.fit(null, 30); } catch(_) {} }, DUR + 20);
+    try { cy.layout(layout).run(); }
+    catch (_) {}
   }
 
   function setStatus(text) {
@@ -7862,23 +7504,6 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
     if (!cy) return;
     cy.elements().remove();
     cy.add(elements);
-    // Apply dynamic sizing and ensure image data is set; let stylesheet bind it
-    try {
-      cy.nodes().forEach((n) => {
-        const cnt = Number(n.data('count') || 0);
-        const size = Math.max(48, Math.min(110, 40 + Math.sqrt(Math.max(1, cnt)) * 6));
-        const img = n.data('image');
-        // Remove empty image data to prevent invalid blank background-image style
-        if (!img) {
-          try { n.removeData('image'); } catch(_) {}
-        }
-        n.style({ width: size, height: size, 'background-opacity': img ? 1 : 0.65 });
-      });
-      // Center images on faces where possible (async, cached)
-      cy.nodes('[image]').forEach((n) => {
-        try { centerGraphNodeFace(n); } catch(_) {}
-      });
-    } catch(_) {}
     applyLayout(el('graphLayoutSelect')?.value || 'fcose');
     const n = (filtered.nodes || []).length;
     const m = (filtered.edges || []).length;
@@ -7892,57 +7517,6 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
     setTimeout(() => {
       try { cy.resize(); cy.fit(null, pad); }
     catch (_) {} }, isFreshLoad ? 80 : 10);
-  }
-
-  // Use detected face box (if any) to center node background image on the face
-  async function centerGraphNodeFace(n) {
-    if (!n) return;
-    const imgUrl = n.data('image');
-    if (!imgUrl) return;
-    try {
-      // Prefer a cached/global detector if exposed by Performers module
-      const detect = (window && window.detectFaceBoxForImage) ? window.detectFaceBoxForImage : null;
-      let box = null;
-      if (typeof detect === 'function') {
-        box = await detect(imgUrl);
-        if (box) box = normalizeSquareBox(box);
-      } else {
-        // Minimal inline fallback: attempt dynamic ESM import and detect on an offscreen image
-        try {
-          const img = await new Promise((res, rej) => { const im = new Image(); im.crossOrigin='anonymous'; im.onload=()=>res(im); im.onerror=rej; im.src=imgUrl; });
-          const W = Math.max(1, img.naturalWidth || img.width || 0);
-          const H = Math.max(1, img.naturalHeight || img.height || 0);
-          const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H; const ctx = canvas.getContext('2d'); if (ctx) ctx.drawImage(img,0,0,W,H);
-          // Try native FaceDetector first when available
-          if (typeof window !== 'undefined' && 'FaceDetector' in window && typeof window.FaceDetector === 'function') {
-            try {
-              const det = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 });
-              const ds = await det.detect(canvas);
-              if (Array.isArray(ds) && ds.length) {
-                let best=null, bestA=-1; for (const d of ds){ const bb=d && d.boundingBox; if(!bb) continue; const x=bb.x|0, y=bb.y|0, w=bb.width|0, h=bb.height|0; if(w>1 && h>1){ const a=w*h; if(a>bestA){bestA=a; best=[x,y,w,h];}}}
-                if (best) box = [best[0]/W, best[1]/H, best[2]/W, best[3]/H].map(v => Math.max(0, Math.min(1, v)));
-                if (box) box = normalizeSquareBox(box);
-              }
-            } catch(_) {}
-          }
-          if (!box) {
-            // TFJS BlazeFace fallback
-            const tfLoaded = window.tf || await import('https://esm.sh/@tensorflow/tfjs@4.14.0');
-            const blz = await import('https://esm.sh/@tensorflow-models/blazeface@0.0.7');
-            const model = await blz.load();
-            const preds = await model.estimateFaces(canvas, false);
-            let best=null, bestA=-1; for (const p of preds||[]){ const tl=p.topLeft||[0,0]; const br=p.bottomRight||[0,0]; const x=Math.floor(tl[0]); const y=Math.floor(tl[1]); const w=Math.floor(br[0]-tl[0]); const h=Math.floor(br[1]-tl[1]); if(w>1 && h>1){ const a=w*h; if(a>bestA){bestA=a; best=[x,y,w,h];}} }
-            if (best) box = [best[0]/W, best[1]/H, best[2]/W, best[3]/H].map(v => Math.max(0, Math.min(1, v)));
-            if (box) box = normalizeSquareBox(box);
-          }
-        } catch(_) { box = null; }
-      }
-      if (!box || box.length !== 4) return;
-      const [fx, fy, fw, fh] = box.map(Number);
-      const cx = fx + fw/2; const cy = fy + fh/2;
-      const px = Math.round(cx * 100); const py = Math.round(cy * 100);
-      try { n.style({ 'background-position-x': px + '%', 'background-position-y': py + '%' }); } catch(_) {}
-    } catch(_) { }
   }
 
   function openInLibrary(perfNames) {
@@ -8110,22 +7684,20 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
   }
 
   function wireControlsOnce() {
+    const refreshBtn = el('graphRefreshBtn');
+    if (refreshBtn && !refreshBtn._wired) { refreshBtn._wired = true; refreshBtn.addEventListener('click', loadGraph); }
     const layoutSel = el('graphLayoutSelect');
     if (layoutSel && !layoutSel._wired) { layoutSel._wired = true; layoutSel.addEventListener('change', () => applyLayout(layoutSel.value)); }
     const fitBtn = el('graphFitBtn');
     if (fitBtn && !fitBtn._wired) { fitBtn._wired = true; fitBtn.addEventListener('click', () => {
       try { cy && cy.fit(null, 30); }
     catch (_) {} }); }
+    const nbBtn = el('graphNeighborhoodBtn');
+    if (nbBtn && !nbBtn._wired) { nbBtn._wired = true; nbBtn.addEventListener('click', () => revealNeighborhood()); }
     const clrBtn = el('graphClearBtn');
     if (clrBtn && !clrBtn._wired) { clrBtn._wired = true; clrBtn.addEventListener('click', clearHighlights); }
     const minInput = el('graphMinCount');
-    if (minInput && !minInput._wired) {
-      minInput._wired = true;
-      const on = debounce(() => loadGraph(), 200);
-      // Refresh graph on any input change (live), not just on blur/change
-      minInput.addEventListener('input', on);
-      minInput.addEventListener('change', on);
-    }
+    if (minInput && !minInput._wired) { minInput._wired = true; minInput.addEventListener('change', loadGraph); }
     const minEdgesInput = el('graphMinEdges');
     if (minEdgesInput && !minEdgesInput._wired) {
       minEdgesInput._wired = true;
@@ -8148,7 +7720,36 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
       repInput.addEventListener('input', on);
       repInput.addEventListener('change', on);
     }
-    // Removed: refresh, neighborhood, search, straight edges controls
+    const searchInput = el('graphSearchInput');
+    if (searchInput && !searchInput._wired) {
+      searchInput._wired = true;
+      const on = debounce(() => {
+        const q = String(searchInput.value || '').trim().toLowerCase();
+        if (!cy) return;
+        cy.elements().removeClass('highlight');
+        if (!q) { cy.elements().removeClass('faded'); return; }
+        const matches = cy.nodes().filter((n) => String(n.data('label') || '').toLowerCase().includes(q));
+        cy.elements().addClass('faded');
+        matches.removeClass('faded');
+        matches.connectedEdges().removeClass('faded');
+        matches.addClass('highlight');
+        try { cy.fit(matches.closedNeighborhood(), 40); }
+        catch (_) {}
+      }, 200);
+      searchInput.addEventListener('input', on);
+    }
+    const straightCb = el('graphStraightEdges');
+    if (straightCb && !straightCb._wired) {
+      straightCb._wired = true;
+      // Initialize from pref
+      try { straightCb.checked = !!straightPrefGet(); }
+      catch (_) {}
+      straightCb.addEventListener('change', () => {
+        const useStraight = !!straightCb.checked;
+        straightPrefSet(useStraight);
+        applyEdgeCurve(useStraight);
+      });
+    }
   }
 
   function show() {
@@ -12210,8 +11811,8 @@ const Player = (() => {
           const samples = Array.isArray(hm?.samples) ? hm.samples : [];
           if (samples.length && heatmapCanvasEl) {
             drawHeatmapCanvas(samples);
-            // Clear any PNG bg under it (guard element may be absent)
-            if (heatmapEl) heatmapEl.style.backgroundImage = '';
+            // Clear any PNG bg under it
+            heatmapEl.style.backgroundImage = '';
             hasHeatmap = true;
             renderedViaJson = true;
           }
@@ -12228,7 +11829,7 @@ const Player = (() => {
         probe.src = url;
       });
         if (ok) {
-          if (heatmapEl) heatmapEl.style.backgroundImage = `url('${url}')`;
+          heatmapEl.style.backgroundImage = `url('${url}')`;
           if (heatmapCanvasEl) clearHeatmapCanvas();
           hasHeatmap = true;
           // Sidebar heatmap preview
@@ -12242,7 +11843,7 @@ const Player = (() => {
           catch (_) { }
         }
         else {
-          if (heatmapEl) heatmapEl.style.backgroundImage = '';
+          heatmapEl.style.backgroundImage = '';
           if (heatmapCanvasEl) clearHeatmapCanvas();
           hasHeatmap = false;
           try {
@@ -12259,7 +11860,7 @@ const Player = (() => {
       applyTimelineDisplayToggles();
     }
     catch (_) {
-      if (heatmapEl) heatmapEl.style.backgroundImage = '';
+      heatmapEl.style.backgroundImage = '';
       if (heatmapCanvasEl) clearHeatmapCanvas();
       hasHeatmap = false;
       if (badgeHeatmapStatus) badgeHeatmapStatus.textContent = '✗';
@@ -13875,38 +13476,6 @@ const Performers = (() => {
   let pageSizeSelB = null;
   // Browser face-detection cache (per image URL) to avoid repeated work
   const faceBoxCache = new Map(); // url -> [x,y,w,h]
-  // Normalize a normalized box [x,y,w,h] into a square while staying within [0,1]
-  function normalizeSquareBox(box) {
-    // Enlarge the smaller dimension symmetrically (keep center) until it matches the larger.
-    if (!Array.isArray(box) || box.length !== 4) return box;
-    let [x, y, w, h] = box.map(Number);
-    w = Math.max(0, Math.min(1, w));
-    h = Math.max(0, Math.min(1, h));
-    x = Math.max(0, Math.min(1, x));
-    y = Math.max(0, Math.min(1, y));
-    if (w <= 0 || h <= 0) return [x, y, 0, 0];
-    const target = Math.max(w, h); // desired square side length before boundary adjustments
-    let size = target;
-    if (size > 1) size = 1; // global clamp
-    // Center of original rectangle
-    let cx = x + w / 2;
-    let cy = y + h / 2;
-    // Initial candidate top-left keeping center
-    let nx = cx - size / 2;
-    let ny = cy - size / 2;
-    // If out of bounds horizontally/vertically, shift inwards first (prefer not shrinking)
-    if (nx < 0) nx = 0; if (ny < 0) ny = 0;
-    if (nx + size > 1) nx = 1 - size;
-    if (ny + size > 1) ny = 1 - size;
-    // After shifting, if still exceeding because size too large for available space, shrink minimally
-    if (nx < 0 || ny < 0) { nx = Math.max(0, nx); ny = Math.max(0, ny); }
-    if (size > 1 - nx) size = 1 - nx;
-    if (size > 1 - ny) size = Math.min(size, 1 - ny);
-    // Recompute to ensure square fully within bounds
-    if (nx + size > 1) nx = 1 - size;
-    if (ny + size > 1) ny = 1 - size;
-    return [Math.max(0, nx), Math.max(0, ny), Math.max(0, Math.min(1, size)), Math.max(0, Math.min(1, size))];
-  }
   const FaceDetectSupported = (typeof window !== 'undefined' && 'FaceDetector' in window && typeof window.FaceDetector === 'function');
 
   // Lazy loader for TensorFlow.js + BlazeFace (only if FaceDetector is unavailable or returns no faces).
@@ -13982,8 +13551,7 @@ const Performers = (() => {
         return null;
       }
       const [x, y, w, h] = best;
-      let box = [x / W, y / H, w / W, h / H].map(v => Math.max(0, Math.min(1, v)));
-      box = normalizeSquareBox(box);
+  const box = [x / W, y / H, w / W, h / H].map(v => Math.max(0, Math.min(1, v)));
       if (faceDebugEnabled()) {
         try {
           console.info('[FaceBox][TFJS] raw px=['+x+','+y+','+w+','+h+'] final norm=['+box.map(v=>v.toFixed(3)).join(',')+']');
@@ -14094,7 +13662,6 @@ const Performers = (() => {
           if (best) {
             const [x, y, w, h] = best;
             box = [x / W, y / H, w / W, h / H].map(v => Math.max(0, Math.min(1, v)));
-            box = normalizeSquareBox(box);
             if (faceDebugEnabled()) {
               try { console.info('[FaceBox][Native] chosen px=['+x+','+y+','+w+','+h+'] norm=['+box.map(v=>v.toFixed(3)).join(',')+']'); }
               catch(_) { }
@@ -14130,9 +13697,6 @@ const Performers = (() => {
       if (!box) {
         box = await detectFaceBoxWithTF(canvas, W, H);
       }
-      if (box) {
-        box = normalizeSquareBox(box);
-      }
       if (!box) {
         faceBoxCache.set(url, null);
         if (faceDebugEnabled()) {
@@ -14162,13 +13726,6 @@ const Performers = (() => {
       return null;
     }
   }
-  // Expose detector globally for reuse (Graph module, etc.)
-  try {
-    if (typeof window !== 'undefined') {
-      window.detectFaceBoxForImage = detectFaceBoxForImage;
-      window.detectFaceBoxWithTF = detectFaceBoxWithTF;
-    }
-  } catch(_) {}
   // Debounced search trigger (shared helper)
   let searchTimer = null; // retained only if we decide to cancel externally (not used now)
   // Face Box Modal elements (lazy lookup)
@@ -14347,12 +13904,8 @@ const Performers = (() => {
         const maxH = dragState.imgH - (dragState.sy - dragState.imgY);
         newW = Math.min(newW, maxW);
         newH = Math.min(newH, maxH);
-        // Enforce square by enlarging the smaller side (not shrinking the larger unless boundaries force)
-        let target = Math.max(newW, newH);
-        target = Math.min(target, maxW, maxH); // boundary limit
-        // If boundary prevents enlarging smaller side to full target, reduce both to allowed max maintaining square
-        overlayEl.style.width = target + 'px';
-        overlayEl.style.height = target + 'px';
+        overlayEl.style.width = newW + 'px';
+        overlayEl.style.height = newH + 'px';
         changed = true;
       }
       if (changed) {
@@ -14386,15 +13939,14 @@ const Performers = (() => {
       if (!saveBtn._wired) {
         saveBtn.addEventListener('click', async () => {
           const [nx, ny, nw, nh] = currentNormBox();
-          const [snx, sny, snw, snh] = normalizeSquareBox([nx, ny, nw, nh]);
           try {
-            const payload = { x: snx, y: sny, w: snw, h: snh };
+            const payload = { x: nx, y: ny, w: nw, h: nh };
             const url = new URL('/api/performers/face-box', window.location.origin);
             url.searchParams.set('slug', performer.slug || performer.name || '');
             const r = await fetch(url.toString(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             if (!r.ok) throw new Error('HTTP ' + r.status);
             (window.showToast||notify)('Face box saved', 'success');
-            performer.image_face_box = [snx, sny, snw, snh];
+            performer.image_face_box = [nx, ny, nw, nh];
             // Apply to any existing avatar tiles in-place
             try { updatePerformerAvatars(performer); }
             catch(_) { }
@@ -14412,9 +13964,8 @@ const Performers = (() => {
       if (autoSaveTimer) clearTimeout(autoSaveTimer);
       autoSaveTimer = setTimeout(async () => {
         const [nx, ny, nw, nh] = currentNormBox();
-        const [snx, sny, snw, snh] = normalizeSquareBox([nx, ny, nw, nh]);
         try {
-          const payload = { x: snx, y: sny, w: snw, h: snh };
+          const payload = { x: nx, y: ny, w: nw, h: nh };
           const url = new URL('/api/performers/face-box', window.location.origin);
           url.searchParams.set('slug', performer.slug || performer.name || '');
           const r = await fetch(url.toString(), {
@@ -14423,7 +13974,7 @@ const Performers = (() => {
             body: JSON.stringify(payload)
           });
           if (!r.ok) return;
-          performer.image_face_box = [snx, sny, snw, snh];
+          performer.image_face_box = [nx, ny, nw, nh];
           try { updatePerformerAvatars(performer); }
           catch(_) { }
         }
@@ -15149,8 +14700,6 @@ const Performers = (() => {
       catch(_) { }
     }
   }
-  // Expose helper for manual runs from console or other modules
-  try { if (typeof window !== 'undefined') window.persistMissingFaceBoxesClientSide = persistMissingFaceBoxesClientSide; } catch(_) {}
   async function fetchPerformers() {
     initDom();
     ensureControlsVisible();
@@ -16415,11 +15964,10 @@ window.addEventListener('DOMContentLoaded', () => {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', wire, {once: true});
     document.addEventListener('DOMContentLoaded', wirePerformerAutoMatch, {once: true});
-    document.addEventListener('DOMContentLoaded', () => { try { (window.wirePerformersDetectFacesButton || (()=>{}))(); } catch(_) {} }, {once: true});
-  } else {
+  }
+  else {
     wire();
     wirePerformerAutoMatch();
-    try { (window.wirePerformersDetectFacesButton || (()=>{}))(); } catch(_) {}
   }
 })();
 

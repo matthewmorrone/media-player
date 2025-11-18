@@ -16,13 +16,6 @@
   <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
   <script src="https://unpkg.com/cytoscape-cxtmenu@3.5.0/cytoscape-cxtmenu.js"></script>
   <script src="https://unpkg.com/cytoscape-panzoom@2.5.3/cytoscape-panzoom.js"></script>
-  <!-- Additional layout plugins -->
-  <!-- Optional layouts (avsdf, cise) removed due to CDN MIME issues -->
-  <script src="https://unpkg.com/cytoscape-cola@2.5.1/cytoscape-cola.js"></script>
-  <script src="https://unpkg.com/cytoscape-euler@1.2.1/cytoscape-euler.js"></script>
-  <!-- Removed cytoscape-spread: UMD build throws in browser (Thread undefined) -->
-  <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
-  <script src="https://unpkg.com/cytoscape-klay@3.1.3/cytoscape-klay.js"></script>
   <script>
     // Apply collapsed class ASAP to avoid post-load reflow when sidebar is persisted collapsed
     try {
@@ -445,21 +438,27 @@
 
   <!-- Manual tag result row template -->
   <template id="manualTagRowTemplate">
-        <div class="card similar-row">
-          <div class="similar-pct" aria-label="Similarity">—</div>
-          <div class="similar-file file-a" aria-label="File A">
-            <div class="path path-a" title="Path A">—</div>
-            <div class="thumb-wrap"><div class="thumb-inline"><img loading="lazy" decoding="async" class="thumb thumb-a" alt="A" /></div></div>
-            <div class="meta meta-a">Loading…</div>
-            <div class="actions"><button class="btn-sm play-a">Play</button></div>
+    <div class="manual-result-row flex-row gap-10">
+      <div class="file w-100"></div>
+      <button class="btn-sm apply">Apply</button>
+    </div>
+  </template>
+
+  <!-- Error modal (predeclared to avoid dynamic injection) -->
+  <div id="errorModal" class="modal" hidden>
+    <div class="modal-content modal-content--wide">
+      <div class="modal-header modal-header--spaced">
+        <h3 class="m-0">Job Error</h3>
+
+        <!-- Small directory list item (used by folder picker) -->
+        <template id="dirListItemTemplate">
+          <div class="dir">
+            <div class="icon"></div>
+            <div class="name"></div>
           </div>
-          <div class="similar-file file-b" aria-label="File B">
-            <div class="path path-b" title="Path B">—</div>
-            <div class="thumb-wrap"><div class="thumb-inline"><img loading="lazy" decoding="async" class="thumb thumb-b" alt="B" /></div></div>
-            <div class="meta meta-b">Loading…</div>
-            <div class="actions"><button class="btn-sm play-b">Play</button></div>
-          </div>
-        </div>
+        </template>
+
+        <!-- Autotag preview row template -->
         <template id="autotagRowTemplate">
           <tr>
             <td class="break file"></td>
@@ -473,14 +472,6 @@
             <td class="cell-time-start"></td>
             <td class="cell-time-end"></td>
             <td class="cell-task"></td>
-            <div class="similar-meta-inline hint-sm mt-6" aria-label="Pair metadata">
-              <div class="meta meta-a">—</div>
-              <div class="meta meta-b">—</div>
-            </div>
-            <div class="similar-meta-inline" aria-label="Metadata summary">
-              <div class="meta meta-a">Loading…</div>
-              <div class="meta meta-b">Loading…</div>
-            </div>
             <td class="cell-file" title=""></td>
             <td class="cell-status"><span class="job-status"></span><span class="job-paused-dot" hidden title="Paused"></span></td>
             <td class="cell-progress">
@@ -731,24 +722,17 @@
             <span id="graphStatus" class="hint-sm" style="opacity:.8;"></span>
             <label class="hint-sm">
               Min videos
-              <input id="graphMinCount" type="number" class="control-input" value="2" min="1" step="1" />
+              <input id="graphMinCount" type="number" class="control-input w-120" value="2" min="1" step="1" />
             </label>
             <label class="hint-sm" title="Minimum number of connections (edges) a performer must have to be shown; > 0 hides isolated nodes">
               Min edges
-              <input id="graphMinEdges" type="number" class="control-input" value="0" min="0" step="1" />
+              <input id="graphMinEdges" type="number" class="control-input w-120" value="0" min="0" step="1" />
             </label>
             <label class="hint-sm">
               Layout
-              <select id="graphLayoutSelect" class="control-input">
+              <select id="graphLayoutSelect" class="control-input w-120">
                 <option value="fcose">fCoSE</option>
                 <option value="cose">CoSE</option>
-                <option value="cola">Cola</option>
-                <option value="euler">Euler</option>
-                <!-- Spread removed due to plugin runtime error -->
-                <option value="dagre">Dagre</option>
-                <option value="klay">Klay</option>
-                <!-- AVSDF and CiSE temporarily disabled -->
-                <option value="concentric">Concentric</option>
                 <option value="circle">Circle</option>
                 <option value="grid">Grid</option>
                 <option value="random">Random</option>
@@ -762,7 +746,14 @@
               Node repulsion
               <input id="graphRepulsion" type="range" min="1000" max="120000" step="1000" value="50000" />
             </label>
+            <label class="hint-sm" title="Render edges as straight lines">
+              <input id="graphStraightEdges" type="checkbox" checked />
+              Straight lines
+            </label>
+            <input id="graphSearchInput" class="control-input" placeholder="Search performer…" />
+            <button id="graphRefreshBtn" class="btn-sm">Refresh</button>
             <div class="ml-auto"></div>
+            <button id="graphNeighborhoodBtn" class="btn-sm" title="Reveal neighborhood of matches/selection">Reveal Neighborhood</button>
             <button id="graphClearBtn" class="btn-sm" title="Clear filters and highlights">Clear</button>
             <button id="graphFitBtn" class="btn-sm" title="Fit all">Fit</button>
           </div>
@@ -1304,7 +1295,6 @@
             <button id="performerRenameBtn" class="btn-sm" title="Rename selected" disabled>Rename</button>
             <button id="performerDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
             <button id="performerAutoMatchBtn" class="btn-sm" title="Auto‑match performers from filenames">Auto‑Match</button>
-            <button id="performersDetectFacesBtn" class="btn-sm" title="Detect faces for performer images and persist boxes" aria-label="Detect faces for performer images">Detect Faces</button>
           </div>
           <div id="performerDropZone" role="button" tabindex="0" aria-label="Import performers" class="performer-dropzone">
             <strong class="pdz-title">Unified Import</strong>
@@ -1457,22 +1447,17 @@
       <!-- Template: Similar row (pair) -->
       <template id="similarRowTemplate">
         <div class="card similar-row">
-          <div class="row jc-between ai-center similar-row__head">
+          <div class="row jc-between ai-center">
             <strong class="similar-title">—</strong>
-            <div class="hint-sm mt-6">
-              <div class="path-a"></div>
-              <div class="path-b"></div>
-            </div>
-            <div class="thumbs-inline row gap-8" aria-label="Pair thumbnails">
-              <div class="thumb-inline"><img loading="lazy" decoding="async" class="thumb thumb-a" alt="A" /></div>
-              <div class="thumb-inline"><img loading="lazy" decoding="async" class="thumb thumb-b" alt="B" /></div>
-            </div>
             <div class="row gap-10">
               <button class="btn-sm play-a">Play A</button>
               <button class="btn-sm play-b">Play B</button>
             </div>
           </div>
-
+          <div class="hint-sm mt-6">
+            <div class="path-a"></div>
+            <div class="path-b"></div>
+          </div>
         </div>
       </template>
 
