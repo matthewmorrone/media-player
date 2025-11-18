@@ -663,6 +663,19 @@ button.btn-danger {
 
 /* ORIGINAL CONTENT CONTINUES (unreordered beyond critical fixes) */
 
+/* Similar tab assets */
+.similar-row { position: relative; display:grid; grid-template-columns: 84px 1fr; grid-template-rows: auto auto; gap:0; }
+.similar-pct { grid-row:1 / span 2; grid-column:1; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; background: rgba(255,255,255,0.04); border-right:1px solid rgba(255,255,255,0.08); }
+.similar-file { display:grid; grid-template-columns: minmax(140px, 1fr) 110px 200px 72px; align-items:center; padding:4px 8px; gap:12px; border-bottom:1px solid rgba(255,255,255,0.06); }
+.similar-file:last-of-type { border-bottom:none; }
+.similar-file .path { font-size:12px; color: var(--muted,#a0a3ad); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.similar-file .thumb-wrap { display:flex; }
+.similar-file .thumb-inline { width:96px; height:54px; background: rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.08); border-radius:4px; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+.similar-file img.thumb { width:100%; height:100%; object-fit:cover; display:block; }
+.similar-file .meta { font-size:12px; color: var(--muted,#a0a3ad); }
+.similar-file .actions { display:flex; justify-content:flex-start; }
+.similar-file .actions .btn-sm { font-size:11px; padding:2px 8px; }
+
 #playerControls .btn-sm {
   height: 20px;
   padding: 1px 5px;
@@ -6769,7 +6782,11 @@ a:focus {
   background: var(--panel);
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
-#cyContainer {  position: relative;  flex: 1 1 auto;  min-height: 320px; }
+#graph-panel, #graph-panel .graph-panel { height: 100%; display:flex; flex-direction:column; }
+.graph-controls label .control-input[type=number],
+.graph-controls input[type=number] { width:70px; }
+.graph-controls select.control-input { width:130px; }
+#cyContainer {  position: relative;  flex: 1 1 auto;  min-height: 320px; height:100%; }
 #cyGraph { position: absolute; inset: 0; }
 .graph-controls input[type="range"] { width: 140px; }
 #graphTooltip { position: fixed; z-index: 9999; background: rgba(10,12,18,0.96); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; padding: 8px; box-shadow: 0 8px 22px rgba(0,0,0,.45); max-width: 400px; }
@@ -6778,15 +6795,8 @@ a:focus {
 #graphTooltip .gt-item { display: block; text-decoration: none; color: inherit; font-size: 11px; }
 #graphTooltip .gt-item div { margin-top: 3px; line-height: 1.2; word-break: break-word; }
 #graphTooltip img { width: 100%; height: 60px; object-fit: cover; border-radius: 4px; background: #111a28; }
-#cyContainer {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 320px;
-}
-#cyGraph {
-  position: absolute;
-  inset: 0;
-}
+#cyContainer { position: relative; flex:1 1 auto; min-height:320px; height:100%; }
+#cyGraph { position:absolute; inset:0; }
 #graphTooltip {
   position: fixed;
   z-index: 9999;
