@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import sys
+import time
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType
 
@@ -860,6 +862,392 @@ def test_artifacts_main_runs_all_tasks(monkeypatch, tmp_path, capsys):
         "heatmaps",
         "phash",
     ]
+
+
+def test_metadata_api_endpoints_flow(app_module, client, tmp_path, monkeypatch):
+    video = tmp_path / "api_meta.mp4"
+    video.write_bytes(b"video data")
+
+    payload = {
+        "format": {"duration": "42.5", "bit_rate": "123456"},
+        "streams": [
+            {"codec_type": "video", "width": 1280, "height": 720, "codec_name": "h264", "bit_rate": "100000"},
+            {"codec_type": "audio", "codec_name": "aac", "bit_rate": "23456"},
+        ],
+    }
+
+    def fake_metadata(path: Path, *, force: bool = False):
+        assert path == video
+        meta_path = app_module.metadata_path(path)
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps(payload))
+        return meta_path
+
+    monkeypatch.setattr(app_module, "metadata_single", fake_metadata)
+
+    fetch = client.get("/api/metadata/get", params={"path": "api_meta.mp4", "force": True, "view": True})
+    assert fetch.status_code == 200
+    summary = fetch.json()
+    assert summary["status"] == "success"
+    view_data = summary["data"]
+    assert view_data["duration"] == pytest.approx(42.5)
+    assert view_data["width"] == 1280
+    assert view_data["height"] == 720
+    assert view_data["vcodec"] == "h264"
+    assert view_data["acodec"] == "aac"
+
+    head = client.head("/api/metadata/get", params={"path": "api_meta.mp4"})
+    assert head.status_code == 200
+
+    listing = client.get("/api/metadata/list", params={"recursive": False})
+    assert listing.status_code == 200
+    stats = listing.json()["data"]
+    assert stats == {"total": 1, "have": 1, "missing": 0}
+
+    created = client.post("/api/metadata/create", params={"path": "api_meta.mp4"})
+    assert created.status_code == 200
+    assert created.json()["status"] == "success"
+
+    deleted = client.request("DELETE", "/api/metadata/delete", json={"paths": ["api_meta.mp4"]})
+    assert deleted.status_code == 200
+    delete_stats = deleted.json()["data"]
+    assert delete_stats["deleted"] == 1
+    assert delete_stats["mode"] == "batch"
+
+    missing = client.head("/api/metadata/get", params={"path": "api_meta.mp4"})
+    assert missing.status_code == 404
+
+
+def test_subtitles_and_heatmaps_endpoints(app_module, client, tmp_path):
+    video = tmp_path / "subs.mp4"
+    video.write_bytes(b"sample")
+
+    art_dir = app_module.artifact_dir(video)
+    subtitle = art_dir / f"{video.stem}.subtitles.srt"
+    subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+    heat_json = art_dir / f"{video.stem}.heatmaps.json"
+    heat_png = art_dir / f"{video.stem}.heatmaps.png"
+    heat_json.write_text(json.dumps({"interval": 5, "samples": [{"time": 0, "value": 0.5}]}))
+    heat_png.write_bytes(b"heat")
+
+    sub_list = client.get("/api/subtitles/list", params={"recursive": False})
+    assert sub_list.status_code == 200
+    assert sub_list.json()["data"] == {"total": 1, "have": 1, "missing": 0}
+
+    fetched = client.get("/api/subtitles/get", params={"path": "subs.mp4"})
+    assert fetched.status_code == 200
+    assert b"Hello" in fetched.content
+
+    head = client.head("/api/subtitles/get", params={"path": "subs.mp4"})
+    assert head.status_code == 200
+
+    heat_list = client.get("/api/heatmaps/list", params={"recursive": False})
+    assert heat_list.status_code == 200
+    assert heat_list.json()["data"] == {"total": 1, "have": 1, "missing": 0}
+
+    removed = client.delete("/api/heatmaps/delete", params={"path": "subs.mp4"})
+    assert removed.status_code == 200
+    assert removed.json()["data"] == {"deleted": True}
+    assert not heat_json.exists()
+    assert not heat_png.exists()
+
+
+def test_finish_plan_and_run_with_stubs(app_module, tmp_path, monkeypatch):
+    video = tmp_path / "finish.mp4"
+    video.write_bytes(b"data")
+
+    order = list(app_module.FINISH_ARTIFACT_ORDER)
+    artifact_status = {kind: False for kind in order}
+    artifact_status["thumbnail"] = True
+
+    def fake_iter_videos(base: Path, recursive: bool):
+        assert base == tmp_path
+        return [video]
+
+    def fake_artifact_exists(path: Path, kind: str) -> bool:
+        return artifact_status.get(kind, False)
+
+    monkeypatch.setattr(app_module, "_iter_videos", fake_iter_videos)
+    monkeypatch.setattr(app_module, "_artifact_exists", fake_artifact_exists)
+
+    payload = app_module.api_finish_plan(path="", recursive=True, artifacts=None, include_existing=True)
+    assert payload["count"] == 1
+    entry = payload["items"][0]
+    assert "thumbnail" in entry["existing"]
+    assert "metadata" in entry["missing"]
+
+    for kind in order:
+        artifact_status[kind] = False
+
+    inline_calls: list[tuple[str, object]] = []
+    job_calls: list[dict[str, object]] = []
+
+    def fake_probe(path: Path, force: bool = False):
+        inline_calls.append(("metadata", force))
+        return {}
+
+    def fake_jobs_submit(req):
+        job_calls.append({"task": req.task, "targets": (req.params or {}).get("targets")})
+        return {"id": "job", "status": "queued"}
+
+    monkeypatch.setitem(app_module.__dict__, "_probe_metadata", fake_probe)
+    monkeypatch.setitem(app_module.__dict__, "probe_metadata", fake_probe)
+    monkeypatch.setattr(app_module, "generate_thumbnail", lambda path, force=False: inline_calls.append(("thumbnail", force)))
+    monkeypatch.setattr(app_module, "generate_hover_preview", lambda path, **kwargs: inline_calls.append(("preview", kwargs.get("fmt"))))
+    monkeypatch.setitem(app_module.__dict__, "_generate_heatmap", lambda path: inline_calls.append(("heatmaps", None)))
+    monkeypatch.setattr(app_module, "phash_create_single", lambda path, **kwargs: inline_calls.append(("phash", kwargs.get("overwrite"))))
+    monkeypatch.setattr(app_module, "_detect_faces", lambda path, **kwargs: inline_calls.append(("faces", kwargs.get("stride"))))
+    monkeypatch.setattr(app_module, "faces_exists_check", lambda path: False)
+    monkeypatch.setattr(app_module, "jobs_submit", fake_jobs_submit)
+
+    summary = app_module.api_finish_run({"force": False})
+    assert summary["summary"]["files"] == 1
+
+    inline_kinds = [name for name, _ in inline_calls]
+    for expected in ["metadata", "thumbnail", "preview", "heatmaps", "phash", "faces"]:
+        assert expected in inline_kinds
+
+    job_tasks = {entry["task"] for entry in job_calls}
+    assert {"sprites", "scenes", "subtitles"}.issubset(job_tasks)
+
+
+def test_job_handlers_execute_with_stubs(app_module, tmp_path, monkeypatch):
+    videos = []
+    for name in ("job_a.mp4", "job_b.mp4"):
+        path = tmp_path / name
+        path.write_bytes(b"payload")
+        videos.append(path)
+
+    rels = [v.name for v in videos]
+
+    records = {"heatmaps": [], "faces": [], "hover": [], "subtitles": [], "scenes": [], "phash": []}
+
+    def fake_heatmaps(video: Path, interval: float, mode: str, png: bool, progress_cb=None, cancel_check=None):
+        records["heatmaps"].append((video, interval, mode, png))
+        app_module.artifact_dir(video)
+        app_module.heatmaps_json_path(video).write_text(json.dumps({"interval": interval, "samples": []}))
+
+    def fake_faces(video: Path, **kwargs):
+        records["faces"].append((video, kwargs))
+        app_module.faces_path(video).write_text(json.dumps({"faces": []}))
+
+    def fake_hover(video: Path, segments: int, seg_dur: float, width: int, fmt: str, out: Path, progress_cb=None, cancel_check=None):
+        records["hover"].append((video, segments, seg_dur, width, fmt))
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_bytes(b"")
+
+    def fake_subtitles(video: Path, out_file: Path, **kwargs):
+        records["subtitles"].append((video, kwargs))
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_text("1\n00:00:00,000 --> 00:00:01,000\nLine\n")
+
+    def fake_scenes(video: Path, **kwargs):
+        records["scenes"].append((video, kwargs))
+        app_module.scenes_json_path(video).write_text(json.dumps({"scenes": []}))
+
+    def fake_phash(video: Path, **kwargs):
+        records["phash"].append((video, kwargs))
+        app_module.phash_path(video).write_text(json.dumps({"phash": "0"}))
+
+    monkeypatch.setattr(app_module, "compute_heatmaps", fake_heatmaps)
+    monkeypatch.setattr(app_module, "compute_face_embeddings", fake_faces)
+    monkeypatch.setattr(app_module, "generate_hover_preview", fake_hover)
+    monkeypatch.setattr(app_module, "generate_subtitles", fake_subtitles)
+    monkeypatch.setattr(app_module, "generate_scene_artifacts", fake_scenes)
+    monkeypatch.setattr(app_module, "phash_create_single", fake_phash)
+    monkeypatch.setattr(app_module, "heatmaps_json_exists", lambda path: False)
+    monkeypatch.setattr(app_module, "faces_exists_check", lambda path: False)
+    monkeypatch.setattr(app_module, "scenes_json_exists", lambda path: False)
+    monkeypatch.setattr(app_module, "_is_stub_subtitles_file", lambda path: False)
+    monkeypatch.setattr(app_module, "_file_nonempty", lambda path, min_size=1: False)
+    monkeypatch.setattr(app_module, "_file_task_lock", lambda path, kind: nullcontext())
+    monkeypatch.setattr(app_module, "_job_check_canceled", lambda jid: False)
+
+    monkeypatch.setattr(app_module, "_set_job_current", lambda jid, current: None)
+    monkeypatch.setattr(app_module, "_set_job_progress", lambda jid, total=None, processed_set=None: None)
+    monkeypatch.setattr(app_module, "_job_set_result", lambda jid, result: None)
+    finished: list[str] = []
+    monkeypatch.setattr(app_module, "_finish_job", lambda jid: finished.append(jid))
+
+    JobRequest = app_module.JobRequest
+
+    app_module._handle_heatmaps_job("heat", JobRequest(task="heatmaps", directory="", params={"targets": rels}), tmp_path)
+    app_module._handle_faces_job("faces", JobRequest(task="faces", directory="", params={"targets": rels}), tmp_path)
+    app_module._handle_hover_job("hover", JobRequest(task="hover", directory="", params={"targets": rels}), tmp_path)
+    app_module._handle_subtitles_job("subs", JobRequest(task="subtitles", directory="", params={"targets": rels}), tmp_path)
+    app_module._handle_scenes_job("scenes", JobRequest(task="scenes", directory="", params={"targets": rels}), tmp_path)
+    app_module._handle_phash_job("phash", JobRequest(task="phash", directory="", params={"targets": rels}), tmp_path)
+
+    assert len(records["heatmaps"]) == 2
+    assert len(records["faces"]) == 2
+    assert len(records["hover"]) == 2
+    assert len(records["subtitles"]) == 2
+    assert len(records["scenes"]) == 2
+    assert len(records["phash"]) == 2
+    assert set(finished) == {"heat", "faces", "hover", "subs", "scenes", "phash"}
+
+
+def test_job_handlers_waveform_motion_and_integrity(app_module, tmp_path, monkeypatch):
+    videos = []
+    for name in ("wave.mp4", "motion.mp4"):
+        path = tmp_path / name
+        path.write_bytes(b"sample data")
+        videos.append(path)
+
+    rels = [v.name for v in videos]
+
+    records = {"waveform": [], "motion": []}
+    progress: dict[str, list[dict]] = {}
+    results: dict[str, dict] = {}
+    finished: list[str] = []
+
+    def fake_progress(jid: str, **kwargs):
+        progress.setdefault(jid, []).append(kwargs)
+
+    def fake_waveform(video: Path, force: bool = False, width: int = 800, height: int = 160, color: str = "#4fa0ff"):
+        records["waveform"].append((video, force, width, height, color))
+        out = app_module.waveform_png_path(video)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"PNG")
+
+    def fake_motion(video: Path, force: bool = False, interval: float = 1.0):
+        records["motion"].append((video, force, interval))
+        out = app_module.motion_json_path(video)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps({"interval": interval, "samples": [{"value": 0.2}, {"value": 0.8}]}))
+
+    monkeypatch.setattr(app_module, "generate_waveform", fake_waveform)
+    monkeypatch.setattr(app_module, "generate_motion_activity", fake_motion)
+    monkeypatch.setattr(app_module, "ffmpeg_available", lambda: False)
+    monkeypatch.setattr(app_module, "_file_task_lock", lambda path, kind: nullcontext())
+    monkeypatch.setattr(app_module, "_job_check_canceled", lambda jid: False)
+    monkeypatch.setattr(app_module, "_set_job_progress", fake_progress)
+    monkeypatch.setattr(app_module, "_set_job_current", lambda jid, current: None)
+    monkeypatch.setattr(app_module, "_job_set_result", lambda jid, result: results.setdefault(jid, result))
+    monkeypatch.setattr(app_module, "_finish_job", lambda jid: finished.append(jid))
+    monkeypatch.setattr(app_module, "_iter_videos", lambda base, recursive: list(videos))
+
+    first = videos[0]
+    meta1 = app_module.metadata_path(first)
+    meta1.parent.mkdir(parents=True, exist_ok=True)
+    meta1.write_text(json.dumps({"format": {"duration": "12.0"}}))
+    thumb1 = app_module.thumbs_path(first)
+    thumb1.parent.mkdir(parents=True, exist_ok=True)
+    thumb1.write_bytes(b"thumb")
+    old = time.time() - 60
+    os.utime(meta1, (old, old))
+    os.utime(thumb1, (old, old))
+    os.utime(first, (time.time(), time.time()))
+    orphan_file = app_module.artifact_dir(first) / "ghost.metadata.json"
+    orphan_file.write_text("{}")
+
+    JobRequest = app_module.JobRequest
+
+    app_module._handle_waveform_job(
+        "wave",
+        JobRequest(task="waveform", directory="", params={"targets": rels, "width": 640, "height": 120}, recursive=False, force=False),
+        tmp_path,
+    )
+    app_module._handle_motion_job(
+        "motion",
+        JobRequest(task="motion", directory="", params={"targets": rels, "interval": 2.0}, recursive=False, force=False),
+        tmp_path,
+    )
+    sample_dir = tmp_path / "generated"
+    app_module._handle_sample_job(
+        "sample",
+        JobRequest(task="sample", directory=str(sample_dir), params={"count": 2, "pattern": "sample_{i}.mp4"}, recursive=False, force=False),
+        sample_dir,
+    )
+    app_module._handle_integrity_scan_job(
+        "integrity",
+        JobRequest(task="integrity-scan", directory="", params={"kinds": ["metadata", "thumbnail"], "include_ok": True}, recursive=False, force=False),
+        tmp_path,
+    )
+
+    assert len(records["waveform"]) == 2
+    assert len(records["motion"]) == 2
+    assert (sample_dir / "sample_1.mp4").exists()
+    integrity_result = results["integrity"]
+    assert integrity_result["summary"]["orphaned_total"] == 1
+    assert any(entry.get("missing") for entry in integrity_result["results"])
+    assert {"wave", "motion", "sample", "integrity"}.issubset(set(finished))
+
+    wf_resp = app_module.get_waveform(file="wave.mp4", force=False, width=640, height=120, color="#123456")
+    assert getattr(wf_resp, "status_code", 200) == 200
+    motion_resp = app_module.get_motion_activity(file="motion.mp4", force=False, interval=1.5, top=3)
+    assert motion_resp.status_code == 200
+    motion_payload = json.loads(motion_resp.body.decode())
+    assert motion_payload["stats"]["count"] == 2
+
+
+def test_api_stats_and_codecs_scan(app_module, tmp_path, monkeypatch):
+    video1 = tmp_path / "stats1.mp4"
+    video2 = tmp_path / "stats2.mp4"
+    _create_video(
+        app_module,
+        video1,
+        metadata={
+            "format": {"duration": "120", "tags": {"title": "Stats One"}},
+            "streams": [
+                {"codec_type": "video", "width": 1920, "height": 1080},
+                {"codec_type": "audio", "codec_name": "aac"},
+            ],
+        },
+        tags=["Feature"],
+        performers=["Lead"],
+    )
+    _create_video(
+        app_module,
+        video2,
+        metadata={
+            "format": {"duration": "35", "tags": {"title": "Stats Two"}},
+            "streams": [
+                {"codec_type": "video", "width": 640, "height": 360},
+            ],
+        },
+        tags=["Short"],
+    )
+
+    videos = [video1, video2]
+
+    monkeypatch.setattr(app_module, "_find_mp4s", lambda base, recursive: list(videos))
+    monkeypatch.setattr(app_module, "_iter_videos", lambda base, recursive: list(videos))
+
+    def fake_ffprobe(path: Path):
+        if path == video1:
+            return {
+                "format": {"duration": "120", "size": "1000000", "bit_rate": "8000000"},
+                "streams": [
+                    {"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "pix_fmt": "yuv420p", "r_frame_rate": "30000/1001"},
+                    {"codec_type": "audio", "codec_name": "aac"},
+                ],
+            }
+        return {
+            "format": {"duration": "35", "size": "500000", "bit_rate": "15000000"},
+            "streams": [
+                {"codec_type": "video", "codec_name": "vp9", "width": 640, "height": 360, "pix_fmt": "yuv420p"},
+            ],
+        }
+
+    monkeypatch.setattr(app_module, "_ffprobe_streams_safe", fake_ffprobe)
+
+    stats_resp = app_module.api_stats(path="", recursive=True)
+    stats_payload = json.loads(stats_resp.body)
+    assert stats_payload["data"]["num_files"] == 2
+    assert stats_payload["data"]["res_buckets"]["1080"] == 1
+    assert stats_payload["data"]["tags"] >= 1
+
+    codecs = app_module.api_codecs_scan(path="", recursive=False, reasons=True)
+    assert codecs["count"] == 2
+    reasoned = [entry for entry in codecs["items"] if entry.get("reasons")]
+    assert reasoned, "expected at least one entry with codec reasons"
+
+    plan = app_module.api_transcode_plan(path="", recursive=False, target_profile="auto", max_items=0)
+    assert plan["target_profile"] == "auto"
+    files = {item["file"]: item for item in plan["items"]}
+    rel2 = str(video2.relative_to(tmp_path))
+    assert files[rel2]["action"] == "transcode"
 
 
 def test_reload_path_matching(tmp_path, monkeypatch):
