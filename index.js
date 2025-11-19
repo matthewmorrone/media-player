@@ -7173,16 +7173,51 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
     return { w: Math.round(w), h: Math.round(h), textW: Math.round(textW) };
   }
 
+  function _slugifyName(name) {
+    try {
+      return String(name || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    } catch(_) { return ''; }
+  }
+
+  function guessPerformerImagePath(name) {
+    const slug = _slugifyName(name);
+    if (!slug) return '';
+    // Correct nested path: one folder per performer slug, file named slug.jpg
+    return `/files/.artifacts/performers/${slug}/${slug}.jpg`;
+  }
+
   function toElements(data) {
-    const nodes = (data.nodes || []).map((n) => ({
-      data: {
-        id: n.id,
-        label: n.name,
-        count: Number(n.count || 0),
-        // Optional image URL from API; fallback tries by name if server supports it
-        image: n.image || (n.name ? `/api/performers/image?name=${encodeURIComponent(n.name)}` : ''),
-      },
-    }));
+    const nodes = (data.nodes || []).map((n) => {
+      const slug = _slugifyName(n && n.name);
+      const guessed = guessPerformerImagePath(n && n.name);
+      const provided = (n && typeof n.image === 'string' && n.image) || '';
+      let img = guessed;
+      if (provided) {
+        const lower = provided.toLowerCase();
+        const isHttp = /^https?:\/\//i.test(provided);
+        const hasSpace = /\s/.test(provided);
+        const okNested = slug && lower === `/files/.artifacts/performers/${slug}/${slug}.jpg`;
+        const badDup = slug && lower.includes(`/${slug}-${slug}.`);
+        if (badDup || hasSpace) img = guessed;
+        else if (isHttp) img = provided;
+        else if (okNested) img = provided;
+        else img = guessed;
+      }
+      try { console.log('[Graph] node image', { id: n && n.id, name: n && n.name, image: img, provided, guessed }); } catch(_) {}
+      return {
+        data: {
+          id: n.id,
+          label: n.name,
+          count: Number(n.count || 0),
+          // Prefer provided image path; else guess a direct artifact path by name
+          image: img,
+        }
+      };
+    });
     const edges = (data.edges || []).map((e) => ({
       data: {
         id: e.id,
@@ -7794,6 +7829,195 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   catch (_) {}
+});
+
+// =============================
+// Connections Graph (Performer nodes with images)
+// =============================
+(function ConnectionsModule(){
+  let cy = null;
+  let initialized = false;
+
+  function ensurePlugins() {
+    try {
+      if (window.cytoscape && window.cytoscapeFcose) {
+        try { window.cytoscape.use(window.cytoscapeFcose); } catch(_) {}
+      }
+    } catch(_) {}
+  }
+
+  // Local helpers (duplicated from Graph module so this IIFE has access)
+  function _slugifyName(name) {
+    try {
+      return String(name || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    } catch(_) { return ''; }
+  }
+
+  function guessPerformerImagePath(name) {
+    const slug = _slugifyName(name);
+    if (!slug) return '';
+    return `/files/.artifacts/performers/${slug}/${slug}.jpg`;
+  }
+
+  async function fetchPerformersForConnections() {
+    // Paginate conservatively to avoid server validation limits
+    const PAGE_SIZE = 200;
+    let page = 1;
+    const out = [];
+    try {
+      while (true) {
+        const url = new URL('/api/performers', window.location.origin);
+        url.searchParams.set('page', String(page));
+        url.searchParams.set('page_size', String(PAGE_SIZE));
+        url.searchParams.set('sort', 'count');
+        const r = await fetch(url);
+        if (!r.ok) break;
+        const j = await r.json();
+        const d = j?.data || j || {};
+        const arr = (d.performers || j.performers || []).filter(Boolean);
+        if (!arr.length) break;
+        out.push(...arr);
+        const total = Number(d.total || 0);
+        if (total && out.length >= total) break;
+        if (arr.length < PAGE_SIZE) break;
+        page += 1;
+        if (page > 1000) break; // safety guard
+      }
+    } catch(_) { /* ignore */ }
+    return out;
+  }
+
+  function toElements(perfs) {
+    return (perfs || []).map((p) => {
+      const slug = _slugifyName(p && p.name);
+      const guessed = guessPerformerImagePath(p && p.name);
+      const provided = (p && typeof p.image === 'string' && p.image) || '';
+      let img = guessed;
+      if (provided) {
+        const lower = provided.toLowerCase();
+        const isHttp = /^https?:\/\//i.test(provided);
+        const hasSpace = /\s/.test(provided);
+        const okNested = slug && lower === `/files/.artifacts/performers/${slug}/${slug}.jpg`;
+        const badDup = slug && lower.includes(`/${slug}-${slug}.`);
+        if (badDup || hasSpace) img = guessed;
+        else if (isHttp) img = provided;
+        else if (okNested) img = provided;
+        else img = guessed;
+      }
+      // try { console.log('[Connections] node image', { id: p && (p.slug || p.name), name: p && p.name, image: img, provided, guessed }); } catch(_) {}
+      // try {
+      //   console.log('[Connections] node image', {
+      //     id: p && (p.slug || p.name),
+      //     name: p && p.name,
+      //     image: img
+      //   });
+      // } catch(_) {}
+      return {
+        data: {
+          id: p.slug || p.name,
+          label: p.name,
+          image: img,
+        }
+      };
+    });
+  }
+
+  function applyDefaultLayout() {
+    if (!cy) return;
+    let layout = { name: 'fcose', fit: true, padding: 50, animate: 'end', animationDuration: 600 };
+    try { cy.layout(layout).run(); }
+    catch(_) {
+      try { cy.layout({ name: 'cose', fit: true, padding: 40 }).run(); }
+      catch(_) { try { cy.layout({ name: 'grid', padding: 20 }).run(); } catch(_) {} }
+    }
+  }
+
+  function initCy() {
+    if (!window.cytoscape) { notify('Graph engine not loaded', 'error'); return; }
+    ensurePlugins();
+    const container = document.getElementById('cyConnections');
+    if (!container) return;
+    cy = window.cytoscape({
+      container,
+      elements: [],
+      style: [
+        { selector: 'node', style: {
+          'shape': 'ellipse',
+          'background-color': '#22324c',
+          'background-image': 'data(image)',
+          'background-fit': 'cover',
+          'background-opacity': 1,
+          'border-width': 2,
+          'border-color': '#93c5fd',
+          'label': 'data(label)',
+          'color': '#eaf0ff',
+          'font-size': 10,
+          'text-wrap': 'wrap',
+          'text-max-width': 80,
+          'text-outline-color': '#0b1220',
+          'text-outline-width': 2,
+          'min-zoomed-font-size': 8,
+          'width': 64,
+          'height': 64,
+          'text-valign': 'bottom',
+          'text-margin-y': 8,
+        }},
+      ],
+      wheelSensitivity: 0.2,
+      pixelRatio: 1,
+    });
+  }
+
+  async function loadConnections() {
+    const perfs = await fetchPerformersForConnections();
+    const elements = toElements(perfs);
+    if (!cy) initCy();
+    if (!cy) return;
+    cy.elements().remove();
+    cy.add(elements);
+    applyDefaultLayout();
+    setTimeout(() => { try { cy.resize(); cy.fit(null, 30); } catch(_) {} }, 40);
+  }
+
+  function show() {
+    if (initialized) return;
+    initialized = true;
+    setTimeout(loadConnections, 30);
+  }
+
+  function resizeFit() { try { if (cy) { cy.resize(); cy.fit(null, 30); } } catch(_) {} }
+
+  window.Connections = { show, resizeFit };
+})();
+
+// Initialize Connections tab lazily on activation
+window.addEventListener('tabchange', (e) => {
+  try {
+    if (e && e.detail && e.detail.activeTab === 'connections' && window.Connections && typeof window.Connections.show === 'function') {
+      setTimeout(() => { window.Connections.show(); window.Connections.resizeFit && window.Connections.resizeFit(); }, 40);
+    }
+  } catch(_) {}
+});
+
+// Fallbacks: initialize on tab button click and if Connections is already active on load
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    const btn = document.getElementById('connections-tab');
+    if (btn && !btn._wiredConnInit) {
+      btn._wiredConnInit = true;
+      btn.addEventListener('click', () => {
+        try { window.Connections && window.Connections.show && window.Connections.show(); } catch(_) {}
+      });
+    }
+    const panel = document.getElementById('connections-panel');
+    if (panel && !panel.hasAttribute('hidden')) {
+      try { window.Connections && window.Connections.show && window.Connections.show(); } catch(_) {}
+    }
+  } catch(_) {}
 });
 
 // --- API Explorer Tab ---
@@ -17280,9 +17504,8 @@ class TasksManager {
           try { this.initJobEvents && this.initJobEvents(); } catch(_) {}
         }
       } else {
-        // Stop polling and detach SSE to avoid background loads
+        // Stop polling (reduce load) but keep SSE for real-time task counts
         try { this._stopPollingNow && this._stopPollingNow(); } catch(_) {}
-        try { this.stopJobEvents && this.stopJobEvents(); } catch(_) {}
       }
     });
     // If Tasks is already active at init time, kick everything off
@@ -17774,6 +17997,8 @@ class TasksManager {
           }
         }
         catch (_) { }
+        // Always refresh active count badge immediately (real-time off-tab)
+        try { this.updateTasksTabCountLight(); } catch(_) {}
         doRefresh();
       }));
       es.onopen = () => {
@@ -18551,12 +18776,26 @@ class TasksManager {
       const genMissingBtn = document.querySelector(`[data-operation="${artifact}-missing"]`);
       const recomputeAllBtn = document.querySelector(`[data-operation="${artifact}-all"]`);
       const clearBtn = document.querySelector(`[data-operation="${artifact}-clear"]`);
-      [genMissingBtn, recomputeAllBtn, clearBtn].forEach((b) => {
+      // Hide generate buttons; keep clear visible independently
+      [genMissingBtn, recomputeAllBtn].forEach((b) => {
         if (!b) return;
         b.classList.add('hidden');
         b.classList.remove('btn-danger');
         b.removeAttribute('data-state');
       });
+      if (clearBtn) {
+        const processedTmp = data.processed || 0;
+        if (processedTmp > 0) {
+          clearBtn.classList.remove('hidden','d-none','disabled');
+          clearBtn.textContent = 'Clear All';
+          clearBtn.title = 'Delete all generated artifacts';
+          clearBtn.dataset.operation = `${artifact}-clear`;
+          clearBtn.classList.add('btn-danger');
+        } else {
+          // Hide when nothing generated yet
+          clearBtn.classList.add('hidden','d-none');
+        }
+      }
       let active = null;
       const processed = data.processed || 0;
       const total = data.total || 0;
@@ -18583,16 +18822,8 @@ class TasksManager {
         }
       }
       else if (processed >= total) {
-        active = clearBtn || recomputeAllBtn || genMissingBtn;
-        if (active) {
-          active.textContent = 'Clear All';
-          active.title = 'Delete all generated artifacts';
-          if (!active.dataset.operation.endsWith('-clear')) {
-            active.dataset.operation = `${artifact}-clear`;
-          }
-          active.classList.add('btn-danger');
-          active.dataset.state = 'clear';
-        }
+        // All generated; no change needed for Clear All (already visible). Keep active null to avoid duplicate text changes.
+        active = null;
       }
       if (active) {
         active.classList.remove('hidden', 'd-none');
@@ -18611,12 +18842,23 @@ class TasksManager {
     const embedGen = document.querySelector('[data-operation="embed-missing"]');
     const embedRe = document.querySelector('[data-operation="embed-all"]');
     const embedClear = document.querySelector('[data-operation="embed-clear"]');
-    [embedGen, embedRe, embedClear].forEach((b) => {
+    [embedGen, embedRe].forEach((b) => {
       if (!b) return;
       b.classList.add('hidden');
       b.classList.remove('btn-danger');
       b && b.removeAttribute('data-state');
     });
+    if (embedClear) {
+      if (embedProcessed > 0) {
+        embedClear.classList.remove('hidden','d-none','disabled');
+        embedClear.textContent = 'Clear All';
+        embedClear.title = 'Delete all generated embeddings';
+        embedClear.dataset.operation = 'embed-clear';
+        embedClear.classList.add('btn-danger');
+      } else {
+        embedClear.classList.add('hidden','d-none');
+      }
+    }
     let embedActive = null;
     if (embedTotal === 0 || embedProcessed === 0) {
       embedActive = embedRe || embedGen || embedClear;
@@ -18639,15 +18881,7 @@ class TasksManager {
       }
     }
     else if (embedProcessed >= embedTotal) {
-      embedActive = embedClear || embedRe || embedGen;
-      if (embedActive) {
-        embedActive.textContent = 'Clear All';
-        if (!embedActive.dataset.operation.endsWith('-clear')) {
-          embedActive.dataset.operation = 'embed-clear';
-        }
-        embedActive.classList.add('btn-danger');
-        embedActive.dataset.state = 'clear';
-      }
+      embedActive = null; // Clear All already visible
     }
     if (embedActive) {
       embedActive.classList.remove('hidden', 'd-none');
@@ -18688,10 +18922,9 @@ class TasksManager {
         }
       }
     }
-    // Remove rows for jobs not present anymore (skip synthetic rows)
+    // Remove rows for jobs not present anymore
     for (const [id, tr] of Array.from(this._jobRows.entries())) {
       if (!ids.has(id)) {
-        if (tr && tr.dataset && tr.dataset.synthetic === '1') continue;
         if (tr && tr.parentElement) tr.parentElement.removeChild(tr);
         this._jobRows.delete(id);
         this.jobs.delete(id);
@@ -18728,12 +18961,7 @@ class TasksManager {
     }
     const failedEl = document.getElementById('failedJobsCount');
     if (failedEl) failedEl.textContent = jobs.filter((j) => j.status === 'failed').length;
-    if (sawActive && !tabIsTasks && window.tabSystem && window.tabSystem.switchToTab) {
-      try {
-        window.tabSystem.switchToTab('tasks');
-      }
-      catch (_) { }
-    }
+    // Passive mode: do not auto-switch to Tasks tab when new active jobs appear; rely on real-time count badge.
     // Artifact spinner reconciliation: keep sidebar badge spinners active while related jobs are queued/running
     try {
       window.__activeArtifactSpinners = window.__activeArtifactSpinners || new Map();
@@ -18811,51 +19039,15 @@ class TasksManager {
   renderJobsTable() {
     const tbody = document.getElementById('jobTableBody');
     if (!tbody) return;
-    const all = Array.from(this.jobs.values());
-    // Aggregate metadata jobs into a single synthetic row with progress based on coverage
-    let forRender = all;
-    try {
-      const metadataJobs = all.filter((j) => (j.artifact || '').toLowerCase() === 'metadata' || /metadata/.test((j.task || '').toLowerCase()));
-      if (metadataJobs && metadataJobs.length) {
-        const anyRunning = metadataJobs.some((j) => this.normalizeStatus(j) === 'running');
-        const anyQueued = metadataJobs.some((j) => this.normalizeStatus(j) === 'queued');
-        const active = anyRunning || anyQueued;
-        if (active) {
-          // Compute progress from coverage if available
-          const cov = (this.coverage && this.coverage.metadata) ? this.coverage.metadata : {processed: 0, total: 0};
-          const processed = Number(cov.processed || 0);
-          const total = Number(cov.total || 0);
-          const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((processed / total) * 100))) : 0;
-          const createdTime = metadataJobs.reduce((acc, j) => Math.min(acc || Infinity, j.createdTime || Infinity), Infinity);
-          const startTime = metadataJobs.reduce((acc, j) => Math.min(acc || Infinity, j.startTime || Infinity), Infinity);
-          const synthetic = {
-            id: '__metadata_aggregate',
-            task: 'Metadata (batch)',
-            file: '',
-            status: anyRunning ? 'running' : 'queued',
-            progress: pct,
-            createdTime: Number.isFinite(createdTime) ? createdTime : 0,
-            startTime: Number.isFinite(startTime) ? startTime : 0,
-            totalRaw: total,
-            processedRaw: processed,
-            artifact: 'metadata',
-            _synthetic: true,
-          };
-          forRender = all.filter((j) => !metadataJobs.includes(j)).concat([synthetic]);
-        }
-        else {
-          // When not active, hide metadata per-file rows (they tend to be noisy)
-          forRender = all.filter((j) => !metadataJobs.includes(j));
-        }
-      }
-    }
-    catch (_) { /* ignore aggregation errors */ }
-    // Filtering policy: when NO toggles are selected, show NO rows.
-    // Selecting any toggle(s) displays only jobs whose normalized status matches a selected toggle.
-    // (Reversed from prior behavior where empty selection meant "show all").
+    // Render all jobs directly; no synthetic aggregation row.
+    const forRender = Array.from(this.jobs.values());
+    // Filtering policy: if no toggles selected, show ALL rows.
+    // When toggles selected, restrict to those statuses.
     let visible = [];
     if (this.activeFilters && this.activeFilters.size > 0) {
       visible = forRender.filter((j) => this.activeFilters.has(this.normalizeStatus(j)));
+    } else {
+      visible = forRender;
     }
     // Sort with explicit priority: running > queued > others, then by time desc
     const prio = (j) => {
@@ -18880,9 +19072,6 @@ class TasksManager {
       let tr = this._jobRows.get(job.id);
       if (!tr) {
         tr = this.createJobRow(job);
-        if (job._synthetic) {
-          tr.dataset.synthetic = '1';
-        }
         this._jobRows.set(job.id, tr);
       }
       else {
@@ -19052,8 +19241,25 @@ class TasksManager {
       }
       else if (status === 'completed' || status === 'failed' || status === 'canceled') {
         const endTs = (job.endedTime || job.endTime || 0) * 1000;
-        endCell.textContent = endTs ? new Date(endTs).toLocaleTimeString() : '—';
-        endCell.title = endTs ? 'End time' : '';
+        const startTs = (job.startTime || job.createdTime || 0) * 1000;
+        if (startTs && endTs && endTs >= startTs) {
+          const sec = Math.max(0, Math.floor((endTs - startTs) / 1000));
+          let text = '';
+          try {
+            if (typeof window.fmtTime === 'function') text = window.fmtTime(sec);
+            else {
+              const m = Math.floor(sec / 60);
+              const s = sec % 60;
+              text = `${m}:${String(s).padStart(2, '0')}`;
+            }
+          }
+          catch (_) { text = sec + 's'; }
+          endCell.textContent = text;
+          endCell.title = 'Total duration';
+        } else {
+          endCell.textContent = endTs ? new Date(endTs).toLocaleTimeString() : '—';
+          endCell.title = endTs ? 'End time' : '';
+        }
       }
       else {
         endCell.textContent = '—';
@@ -19089,8 +19295,8 @@ class TasksManager {
         if (calc > 0) pct = calc;
       }
     }
-    // Queued shows 0% normally; allow synthetic rows to display their computed pct
-    if (status === 'queued' && !job._synthetic) pct = 0;
+    // Queued shows 0% normally
+    if (status === 'queued') pct = 0;
     if (status === 'completed') pct = 100;
     const bar = row.querySelector('.job-progress-fill');
     // Canceled explicitly shows 0% and "Canceled"
@@ -19098,21 +19304,14 @@ class TasksManager {
       bar.style.width = '0%';
     }
     else {
-      // For synthetic rows, always reflect computed pct; otherwise keep queued at 0%
-      bar.style.width = ((status !== 'queued' || job._synthetic) ? pct : 0) + '%';
+      bar.style.width = ((status !== 'queued') ? pct : 0) + '%';
     }
-    // For synthetic rows, prefer percentage text even when queued
     const pctEl = row.querySelector('.pct');
-    if (job._synthetic) {
-      pctEl.textContent = status === 'canceled' ? 'Canceled' : `${pct}%`;
+    if (isPaused && status === 'queued') {
+      pctEl.textContent = 'Paused';
     }
     else {
-      if (isPaused && status === 'queued') {
-        pctEl.textContent = 'Paused';
-      }
-      else {
-        pctEl.textContent = status === 'queued' ? 'Queued' : status === 'completed' ? '100%' : status === 'canceled' ? 'Canceled' : `${pct}%`;
-      }
+      pctEl.textContent = status === 'queued' ? 'Queued' : status === 'completed' ? '100%' : status === 'canceled' ? 'Canceled' : `${pct}%`;
     }
 
     /*
@@ -19308,6 +19507,24 @@ class TasksManager {
     if (queuedEl) queuedEl.textContent = queuedCount;
     if (completedEl) completedEl.textContent = completedCount;
     if (failedEl) failedEl.textContent = failedCount;
+    const tasksTab = document.getElementById('tasks-tab');
+    if (tasksTab) {
+      // Always show active count in parentheses per requirement
+      tasksTab.textContent = `Tasks (${activeCount})`;
+    }
+  }
+  // Lightweight off-tab active count updater (SSE events maintain jobs map)
+  updateTasksTabCountLight() {
+    try {
+      const tasksTab = document.getElementById('tasks-tab');
+      if (!tasksTab) return;
+      let active = 0;
+      for (const job of this.jobs.values()) {
+        const st = (job.state || '').toLowerCase();
+        if (st === 'running') active++;
+      }
+      tasksTab.textContent = `Tasks (${active})`;
+    } catch (_) { /* ignore */ }
   }
   async cancelJob(jobId) {
     try {

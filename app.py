@@ -158,9 +158,15 @@ def _default_scene_clip_crf() -> int:
     return max(10, min(51, _env_int("SCENE_CLIP_CRF", 32)))
 
 def artifact_dir(video: Path) -> Path:
-    d = video.parent / ".artifacts"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+        """
+        Centralized per-video artifact directory under:
+            <root>/.artifacts/scenes/<video.stem>/
+        All per-video artifact files (same filenames/suffixes as before) are stored inside this folder.
+        """
+        root = STATE.get("root") or Path.cwd()
+        d = Path(root) / ".artifacts" / "scenes" / video.stem
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
 def _has_module(name: str) -> bool:
     try:
@@ -4190,9 +4196,10 @@ try:
     app.mount('/static', StaticFiles(directory='static'), name='static')  # type: ignore[arg-type]
     # Expose performer images directory if present (for avatar rendering)
     try:
-        _perf_img_dir = (_registry_dir() / 'performer-images')  # type: ignore[name-defined]
-        if _perf_img_dir.exists():
-            app.mount('/performer-images', StaticFiles(directory=str(_perf_img_dir)), name='performer-images')  # type: ignore[arg-type]
+        # Mount current performers images directory only (no legacy compatibility)
+        _perf_dir = (_registry_dir() / 'performers')  # type: ignore[name-defined]
+        if _perf_dir.exists():
+            app.mount('/performers', StaticFiles(directory=str(_perf_dir)), name='performers')  # type: ignore[arg-type]
     except Exception:
         pass
 except Exception as _e:  # pragma: no cover
@@ -4435,6 +4442,7 @@ JOBS: dict[str, dict] = {}
 JOB_LOCK = threading.Lock()
 JOB_EVENT_SUBS: list[tuple[asyncio.Queue[str], asyncio.AbstractEventLoop]] = []
 JOB_CANCEL_EVENTS: dict[str, threading.Event] = {}
+META_BATCH_EVENTS: dict[str, threading.Event] = {}
 
 # Global concurrency control for running jobs
 # Default to 4 unless overridden by env JOB_MAX_CONCURRENCY
@@ -4819,7 +4827,14 @@ def _set_job_current(jid: str, current_path: Optional[str]) -> None:
     })
 
 
-def _new_job(job_type: str, path: str, *, priority: bool = False) -> str:
+def _new_job(job_type: str, path: str, *, priority: bool = False, meta_batch: Optional[str] = None) -> str:
+    """
+    Create a new job record and publish creation events.
+
+    meta_batch: if supplied, associates the job with a batch before any events
+    are published, eliminating the race where a user cancels the first visible
+    job before its batch tag is attached.
+    """
     jid = uuid.uuid4().hex[:12]
     base_type = _normalize_job_type(job_type)
     with JOB_LOCK:
@@ -4837,6 +4852,7 @@ def _new_job(job_type: str, path: str, *, priority: bool = False) -> str:
             "processed": None,
             "result": None,
             "priority": bool(priority),
+            **({"meta_batch": meta_batch} if meta_batch else {}),
         }
         JOB_CANCEL_EVENTS[jid] = threading.Event()
     _persist_job(jid)
@@ -8285,7 +8301,8 @@ def api_performers_delete(name: str = Query(...)):
     return api_success({"deleted": name})
 
 def _performer_images_store() -> Path:
-    d = _registry_dir() / "performer-images"
+    # Centralized performer images under <root>/.artifacts/performers/<slug>/
+    d = _registry_dir() / "performers"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -8409,7 +8426,7 @@ def performers_images_upload(
     Mapping rules:
       - If a file has a relative path like "Performer Name/img.jpg", the first directory is used as the performer name.
       - Otherwise, the file stem (without extension) is used as the performer name.
-    Files are copied into the registry store under /performer-images/<slug>/.
+    Files are copied into the registry store under /performers/<slug>/.
     """
     exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
     updated = 0
@@ -8686,7 +8703,7 @@ def performer_image_upload(
 ):
     """Upload a single image for a specific performer.
     If performer does not exist and create_missing is true, the performer is created.
-    Accepts common image extensions. Stores under /performer-images/<slug>/.
+    Accepts common image extensions. Stores under /performers/<slug>/.
     Returns updated performer summary (id, name, slug, image, images count)."""
     exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
     disp = (name or "").strip()
@@ -9166,9 +9183,15 @@ _MEDIA_ATTR: dict[str, dict] = {}  # relative path -> {"performers": [...], "tag
 _MEDIA_ATTR_PATH: Optional[Path] = None
 
 def _init_media_attr_path() -> Path:
+    """
+    Centralized media attribute store path.
+    Was previously <root>/.media_player_media_attr.json.
+    Now stored as <root>/.artifacts/scenes.json.
+    """
     root = STATE.get("root") or Path.cwd()
-    p = Path(root) / ".media_player_media_attr.json"
-    return p
+    d = Path(root) / ".artifacts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "scenes.json"
 
 def _load_media_attr() -> None:
     global _MEDIA_ATTR_PATH, _MEDIA_ATTR
@@ -11632,42 +11655,50 @@ def metadata_create(path: str = Query(...), priority: bool = Query(default=False
 
 @api.post("/metadata/create/batch")
 def metadata_create_batch(path: str = Query(default=""), recursive: bool = Query(default=True), only_missing: bool = Query(default=True)):
+    # Batch controller via shared cancel event; still creates independent per-file jobs sequentially.
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
-    sup_jid = _new_job("metadata-batch", str(base))
-    _start_job(sup_jid)
+    vids: list[Path] = []
+    it = base.rglob("*") if recursive else base.iterdir()
+    for p in it:
+        if _is_original_media_file(p, base):
+            if only_missing and metadata_path(p).exists():
+                continue
+            vids.append(p)
+    batch_id = f"meta_batch_{int(time.time()*1000)}"
+    cancel_event = threading.Event()
+    META_BATCH_EVENTS[batch_id] = cancel_event
+    created_ids: list[str] = []
     def _worker():
         try:
-            vids: list[Path] = []
-            it = base.rglob("*") if recursive else base.iterdir()
-            for p in it:
-                if _is_original_media_file(p, base):
-                    vids.append(p)
-            _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            threads: list[threading.Thread] = []
-            def _process(p: Path):
+            for p in vids:
+                # Stop spawning new jobs if batch cancel signaled
+                if cancel_event.is_set():
+                    break
+                jid = _new_job("metadata", str(p.relative_to(STATE["root"])), meta_batch=batch_id)
+                created_ids.append(jid)
+                _start_job(jid)
                 try:
-                    if only_missing and metadata_path(p).exists():
-                        return
-                    jid = _new_job("metadata", str(p.relative_to(STATE["root"])) )
-                    _start_job(jid)
-                    try:
-                        lk = _file_task_lock(p, "metadata")
-                        with JOB_RUN_SEM:
-                            with lk:
-                                metadata_single(p, force=True)
-                        _finish_job(jid, None)
-                    except Exception as e:
-                        _finish_job(jid, str(e))
-                finally:
-                    _set_job_progress(sup_jid, processed_inc=1)
-            _run_batch_items(vids, _process)
-            _finish_job(sup_jid, None)
-        except Exception as e:
-            _finish_job(sup_jid, str(e))
-    _start_worker_once(f"batch-metadata-{sup_jid}", _worker)
-    return api_success({"started": True, "job": sup_jid})
+                    lk = _file_task_lock(p, "metadata")
+                    with JOB_RUN_SEM:
+                        with lk:
+                            metadata_single(p, force=True)
+                    _finish_job(jid, None)
+                except Exception as e:
+                    _finish_job(jid, str(e))
+        except Exception:
+            pass
+    _start_worker_once(f"batch-metadata-{batch_id}", _worker)
+    return api_success({"started": True, "batch": batch_id, "scheduled": len(vids)})
+
+@api.post("/metadata/batch/{batch_id}/cancel")
+def metadata_cancel_batch(batch_id: str):
+    ev = META_BATCH_EVENTS.get(batch_id)
+    if not ev:
+        return api_success({"batch": batch_id, "message": "Batch not found or already finished", "idempotent": True})
+    ev.set()
+    return api_success({"batch": batch_id, "canceled": True})
 
 
 @api.delete("/metadata/delete")
@@ -14639,55 +14670,10 @@ def tasks_batch_operation(request: Request):
                 pass
 
         # If multiple files, spawn per-file jobs (default concurrency capped globally).
-        # Special-cases: metadata and thumbnails should enqueue a single aggregated job that iterates
-        # all targets so the user doesn't have to enqueue multiple times to cover a large set.
+        # Special-case retained only for thumbnails (aggregated); metadata now uses per-file jobs
+        # so each file appears as its own row in the queue for clarity.
         created_jobs: list[str] = []
-        if operation == "metadata":
-            # Build a single-job request that covers all targets.
-            agg_params = dict(job_params)
-            if mode == "missing":
-                # Ensure explicit targets list is passed so progress reflects the exact work set.
-                if not agg_params.get("targets"):
-                    tgt_list: list[str] = []
-                    for v in videos_to_process:
-                        try:
-                            tgt_list.append(str(v.relative_to(STATE["root"])))
-                        except Exception:
-                            continue
-                    if tgt_list:
-                        agg_params["targets"] = tgt_list
-            elif fileSelection == "selected":
-                # Honor selected scope for all-mode by passing explicit targets
-                if not agg_params.get("targets"):
-                    tgt_list2: list[str] = []
-                    for v in videos_to_process:
-                        try:
-                            tgt_list2.append(str(v.relative_to(STATE["root"])))
-                        except Exception:
-                            continue
-                    if tgt_list2:
-                        agg_params["targets"] = tgt_list2
-            req = JobRequest(
-                task="metadata",
-                directory=str(base),
-                recursive=(mode == "all" and not bool(agg_params.get("targets"))),
-                force=(mode == "all"),
-                params=agg_params,
-            )
-            jid = _new_job(req.task, req.directory or str(STATE["root"]))
-            try:
-                with JOB_LOCK:
-                    if jid in JOBS:
-                        JOBS[jid]["request"] = req.dict()
-                _persist_job(jid)
-            except Exception:
-                pass
-            def _agg_runner():
-                with JOB_RUN_SEM:
-                    _run_job_worker(jid, req)
-            threading.Thread(target=_agg_runner, daemon=True).start()
-            created_jobs.append(jid)
-        elif operation == "thumbnails":
+        if operation == "thumbnails":
             # Single aggregated thumbnails job (maps to internal 'thumbnail' task)
             agg_params = dict(job_params)
             if mode == "missing":
@@ -15155,9 +15141,21 @@ def tasks_cancel_job(job_id: str):
         ev = JOB_CANCEL_EVENTS.get(job_id)
         if ev is None:
             raise_api_error("Job not found", status_code=404)
-            return  # This line will never execute but helps type checker
-
-        ev.set()
+        # Idempotent behavior: treat missing job/event or terminal states as success
+        with JOB_LOCK:
+            j = JOBS.get(job_id)
+        if j is None:
+            # Already cleared from registry; report idempotent success
+            return api_success({"message": "Job already removed", "job": job_id, "idempotent": True})
+        st = str(j.get("state") or "").lower()
+        if st in ("done", "failed", "canceled", "cancel_requested", "completed"):
+            # Already finished or cancel in progress; nothing more to do
+            return api_success({"message": "Job already in terminal state", "job": job_id, "state": st, "idempotent": True})
+        ev = JOB_CANCEL_EVENTS.get(job_id)
+        if ev is None:
+            # Event missing but job still present (shouldn't happen unless manual mutation); create one and continue
+            ev = threading.Event()
+            JOB_CANCEL_EVENTS[job_id] = ev
         # Immediately terminate any active subprocesses for this job (e.g., ffmpeg)
         try:
             _terminate_job_processes(job_id)  # type: ignore[name-defined]
@@ -15166,13 +15164,23 @@ def tasks_cancel_job(job_id: str):
         with JOB_LOCK:
             j = JOBS.get(job_id)
             if j and j.get("state") in ("queued", "running"):
-                # If still queued, mark as canceled immediately; if running, mark as cancel_requested
-                st = str(j.get("state") or "").lower()
-                if st == "queued":
-                    j["state"] = "canceled"
-                    j["ended_at"] = time.time()
-                else:
-                    j["state"] = "cancel_requested"
+                # Hard cancel queued or running jobs immediately
+                j["state"] = "canceled"
+                j["ended_at"] = time.time()
+                # Signal cancel event so _finish_job preserves canceled state
+                try:
+                    cev = JOB_CANCEL_EVENTS.get(job_id)
+                    if cev:
+                        cev.set()
+                except Exception:
+                    pass
+                # Propagate batch cancel if part of a metadata batch
+                try:
+                    batch_ref = j.get("meta_batch")
+                    if batch_ref and batch_ref in META_BATCH_EVENTS:
+                        META_BATCH_EVENTS[batch_ref].set()
+                except Exception:
+                    pass
         # Persist updated state so restarts do not auto-restore
         try:
             _persist_job(job_id)
@@ -15181,7 +15189,7 @@ def tasks_cancel_job(job_id: str):
 
         _publish_job_event({"event": "cancel", "id": job_id})
 
-        return api_success({"message": "Job cancelled", "job": job_id})
+        return api_success({"message": "Job canceled", "job": job_id})
 
     except Exception as e:
         raise_api_error(f"Failed to cancel job: {str(e)}")
@@ -15247,7 +15255,8 @@ def tasks_cancel_all():
                 with JOB_LOCK:
                     j = JOBS.get(jid)
                     if j and str(j.get("state") or "").lower() == "running":
-                        j["state"] = "cancel_requested"
+                        j["state"] = "canceled"
+                        j["ended_at"] = now_ts
                 _persist_job(jid)
             except Exception:
                 pass
@@ -15449,7 +15458,23 @@ def tasks_clear_completed():
             for p in d.glob("*.json"):
                 try:
                     jid = p.stem
+                    # If file id no longer in JOBS OR its persisted state is terminal, remove
                     if jid not in JOBS:
+                        p.unlink(missing_ok=True)
+                        continue
+                    # If still present but somehow terminal (e.g. race where JOBS mutated after id list capture)
+                    try:
+                        data = json.loads(p.read_text())
+                        st = str(data.get("state") or "").lower()
+                        if st in ("done", "failed", "canceled", "cancel_requested", "completed"):
+                            p.unlink(missing_ok=True)
+                            # Ensure registry reflects purge to avoid ghost re-persist
+                            with JOB_LOCK:
+                                JOBS.pop(jid, None)
+                                JOB_CANCEL_EVENTS.pop(jid, None)
+                            removed += 1
+                    except Exception:
+                        # If unreadable, treat as orphan and remove
                         p.unlink(missing_ok=True)
                 except Exception:
                     pass
@@ -18528,9 +18553,10 @@ def jobs_cancel(job_id: str):
     with JOB_LOCK:
         j = JOBS.get(job_id)
         if j and j.get("state") in ("queued", "running"):
-            j["state"] = "cancel_requested"
+            j["state"] = "canceled"
+            j["ended_at"] = time.time()
     _publish_job_event({"event": "cancel", "id": job_id})
-    return {"id": job_id, "status": "cancel_requested"}
+    return {"id": job_id, "status": "canceled"}
 
 
 

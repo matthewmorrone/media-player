@@ -1,5 +1,6 @@
 # TODO (Structured Roadmap)
 
+options menus for artifact generation don't show up
 
 ### Known issues:
 + No percentage progress for orphans

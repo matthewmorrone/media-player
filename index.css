@@ -137,7 +137,7 @@ header {
   top: 0;
   left: 0;
   right: 0;
-  z-index: 10;
+  z-index: 1000; /* raise above panels/modals so top bar is always visible */
   background: rgba(15, 17, 21, 0.75);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid #242938;
@@ -6824,4 +6824,22 @@ a:focus {
 .cy-panzoom {
   /* Slightly raise panzoom above graph so it's always clickable */
   z-index: 10;
+}
+
+/* =============================
+   Connections (Cytoscape)
+   ============================= */
+#connections-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+#connectionsCyContainer {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 320px;
+}
+#cyConnections {
+  position: absolute;
+  inset: 0;
 }

@@ -696,6 +696,9 @@
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="graph-panel" id="graph-tab" data-tab="graph">
         Graph
       </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="connections-panel" id="connections-tab" data-tab="connections">
+        Connections
+      </button>
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="tags-panel" id="tags-tab" data-tab="tags">
         Tags
       </button>
@@ -714,6 +717,14 @@
   <main>
     <!-- Tab Panels -->
     <div class="tab-panels">
+      <!-- Connections Tab Panel (minimal: image-only nodes) -->
+      <div class="tab-panel" role="tabpanel" aria-labelledby="connections-tab" id="connections-panel" hidden>
+        <section class="graph-panel">
+          <div id="connectionsCyContainer">
+            <div id="cyConnections" aria-label="Connections graph" role="application"></div>
+          </div>
+        </section>
+      </div>
       <!-- Graph Tab Panel (Performers Co‑appearance) -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="graph-tab" id="graph-panel" hidden>
         <section class="graph-panel">
