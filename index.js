@@ -317,15 +317,18 @@ function devLog(level, scope, ...args) {
     try {
       const list = Array.from(document.querySelectorAll('.modal'));
       return list.filter(m => m && !m.hidden && getComputedStyle(m).display !== 'none');
-    } catch(_) { return []; }
+    }
+    catch(_) { return []; }
   }
   function closeModalEl(m) {
     try {
       if (!m) return;
       m.hidden = true;
       // Let specific modal code clean up if needed
-      try { m.dispatchEvent(new CustomEvent('modal:closed', { bubbles: true })); } catch(_) {}
-    } catch(_) {}
+      try { m.dispatchEvent(new CustomEvent('modal:closed', { bubbles: true })); }
+      catch(_) {}
+    }
+    catch(_) {}
   }
   function closeTopModal() {
     const mods = visibleModals();
@@ -338,7 +341,8 @@ function devLog(level, scope, ...args) {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (closeTopModal()) {
-        try { e.stopPropagation(); } catch(_) {}
+        try { e.stopPropagation(); }
+        catch(_) {}
       }
     }
   }, true);
@@ -349,10 +353,12 @@ function devLog(level, scope, ...args) {
     modal.addEventListener('click', (ev) => {
       try {
         if (ev.target === modal) closeModalEl(modal);
-      } catch(_) {}
+      }
+      catch(_) {}
     });
   }
-  try { Array.from(document.querySelectorAll('.modal')).forEach(wireBackdrop); } catch(_) {}
+  try { Array.from(document.querySelectorAll('.modal')).forEach(wireBackdrop); }
+  catch(_) {}
   // Observe future modal insertions
   try {
     const mo = new MutationObserver((mutations) => {
@@ -361,29 +367,307 @@ function devLog(level, scope, ...args) {
           if (n && n.nodeType === 1) {
             const el = n;
             if (el.classList && el.classList.contains('modal')) wireBackdrop(el);
-            try { el.querySelectorAll && el.querySelectorAll('.modal').forEach(wireBackdrop); } catch(_) {}
+            try { el.querySelectorAll && el.querySelectorAll('.modal').forEach(wireBackdrop); }
+            catch(_) {}
           }
         }
       }
     });
     mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
     window.__modalDismissObserver = mo;
-  } catch(_) {}
+  }
+  catch(_) {}
 })();
 // Lightweight no-op placeholders to avoid no-undef when optional helpers are not wired
 const loadArtifactStatuses = (..._args) => {};
 const refreshSidebarThumbnail = (..._args) => {};
 // Default SSE to unavailable until /config explicitly enables it (prevents 404 probes)
-try { if (typeof window !== 'undefined') window.__JOBS_SSE_UNAVAILABLE = true; } catch(_) {}
+try { if (typeof window !== 'undefined') window.__JOBS_SSE_UNAVAILABLE = true; }
+catch(_) {}
+
+// ============================================================
+// Network Request Logging & Tracking
+// ============================================================
+(function initNetworkLogging() {
+  // Track call counts per endpoint
+  window.__networkCallCounts = window.__networkCallCounts || {};
+  window.__networkTotalCalls = window.__networkTotalCalls || 0;
+
+  // Intercept native fetch
+  const nativeFetch = window.fetch;
+  window.fetch = function(...args) {
+    const [resource, options = {}] = args;
+    // Derive URL safely. Only log/track if resource is a string or URL instance.
+    const method = options.method || 'GET';
+    let url = null;
+    if (typeof resource === 'string') {
+      url = resource;
+    }
+    else if (resource instanceof URL) {
+      url = resource.toString();
+    }
+    else if (resource && typeof resource === 'object' && typeof resource.url === 'string') {
+      // Some Request-like objects expose a url property
+      url = resource.url;
+    }
+
+    if (!url) {
+      // Invalid / non-standard fetch target (e.g., Request object without url yet). Don't mutate; just pass through.
+      return nativeFetch.apply(this, args);
+    }
+
+    if (url === 'undefined') {
+      // Explicit undefined string – treat as invalid and pass through without attempting to normalize.
+      console.error('%c[FETCH ERROR] Undefined URL string passed to fetch; skipping logging.', 'color: #ef4444; font-weight: bold;');
+      return nativeFetch.apply(this, args);
+    }
+
+    // Extract endpoint (pathname only, without query params for cleaner grouping)
+    let endpoint = url;
+    try {
+      const urlObj = new URL(url, window.location.origin);
+      endpoint = urlObj.pathname;
+    }
+    catch(_) {
+      // If URL parsing fails, use as-is (best effort)
+      try { endpoint = String(url).split('?')[0]; }
+      catch(__) { endpoint = String(url); }
+    }
+
+    // Track call count
+    const key = `${method} ${endpoint}`;
+    window.__networkCallCounts[key] = (window.__networkCallCounts[key] || 0) + 1;
+    window.__networkTotalCalls++;
+
+    // Extract payload
+    let payload = null;
+    if (options.body) {
+      try {
+        payload = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
+      }
+      catch(_) {
+        payload = options.body;
+      }
+    }
+
+    // Log to console with formatting
+    const style = 'color: #4fa0ff; font-weight: bold;';
+    const countStyle = 'color: #f59e0b; font-weight: bold;';
+    const urlStyle = 'color: #10b981;';
+    const methodStyle = 'color: #8b5cf6; font-weight: bold;';
+    const timeStyle = 'color: #9ca3af; font-weight: bold;';
+    const timestamp = new Date();
+    const isoTimestamp = timestamp.toISOString();
+    const relMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+      ? performance.now().toFixed(1)
+      : null;
+    const callDescriptor = `call #${window.__networkCallCounts[key]}${relMs ? ` • t+${relMs}ms` : ''}`;
+
+    console.log(
+      `%c[${isoTimestamp}]%c [FETCH #${window.__networkTotalCalls}]%c ${method} %c${endpoint}%c (${callDescriptor})`,
+      timeStyle,
+      style,
+      methodStyle,
+      urlStyle,
+      countStyle
+    );
+
+    if (url !== endpoint) {
+      console.log(`  Full URL: ${url}`);
+    }
+
+    if (payload) {
+      console.log('  Payload:', payload);
+    }
+
+    if (options.headers && Object.keys(options.headers).length > 0) {
+      console.log('  Headers:', options.headers);
+    }
+
+    // Call original fetch
+    return nativeFetch.apply(this, args);
+  };
+
+  console.log('%c[Network Logging Enabled]', 'color: #10b981; font-weight: bold; font-size: 12px;');
+})();
+
+// Global lightweight metadata cache used across views (List, chips, etc.)
+// Returns parsed metadata JSON for a file or null. Caches responses and in-flight requests.
+function fetchMetadataCached(path) {
+  try {
+    if (!path) return Promise.resolve(null);
+    window.__metadataByPath = window.__metadataByPath || {};
+    window.__metadataInflight = window.__metadataInflight || {};
+    if (window.__metadataByPath[path]) return Promise.resolve(window.__metadataByPath[path]);
+    if (window.__metadataInflight[path]) return window.__metadataInflight[path];
+    const u = new URL('/api/metadata', window.location.origin);
+    u.searchParams.set('path', path);
+    const p = fetch(u.toString())
+      .then((r) => r.json())
+      .then((j) => j?.data || null)
+      .catch(() => null)
+      .then((d) => {
+        if (d) window.__metadataByPath[path] = d;
+        try { delete window.__metadataInflight[path]; }
+        catch(_) { }
+        return d;
+      });
+    window.__metadataInflight[path] = p;
+    return p;
+  }
+  catch(_) {
+    return Promise.resolve(null);
+  }
+}
+
+// Lightweight /api/media/info cache so repeated lookups for tags/performers avoid duplicate requests
+async function fetchMediaInfoCached(path) {
+  try {
+    if (!path) return null;
+    window.__mediaInfoCache = window.__mediaInfoCache || {};
+    window.__mediaInfoInflight = window.__mediaInfoInflight || {};
+    if (window.__mediaInfoCache[path]) return window.__mediaInfoCache[path];
+    if (window.__mediaInfoInflight[path]) return window.__mediaInfoInflight[path];
+    const u = new URL('/api/media/info', window.location.origin);
+    u.searchParams.set('path', path);
+    const p = fetch(u.toString(), { headers: { Accept: 'application/json' } })
+      .then((resp) => resp.ok ? resp.json() : null)
+      .then((json) => {
+        const data = json?.data || json || null;
+        if (data) window.__mediaInfoCache[path] = data;
+        return data;
+      })
+      .catch(() => null)
+      .then((data) => {
+        try { delete window.__mediaInfoInflight[path]; }
+        catch (_) { }
+        return data;
+      });
+    window.__mediaInfoInflight[path] = p;
+    return p;
+  }
+  catch (_) {
+    return null;
+  }
+}
+
+async function fetchMediaInfoBulk(paths = [], opts = {}) {
+  try {
+    const unique = Array.from(new Set((paths || []).filter(Boolean)));
+    if (!unique.length) return [];
+    window.__mediaInfoCache = window.__mediaInfoCache || {};
+    const cached = [];
+    const missing = [];
+    unique.forEach((path) => {
+      const hit = window.__mediaInfoCache[path];
+      if (hit) cached.push(hit);
+      else missing.push(path);
+    });
+    const results = [...cached];
+    const chunkSize = Math.max(1, Number(opts.chunkSize) || 100);
+    const includeSidecar = opts.includeSidecar !== undefined ? !!opts.includeSidecar : false;
+    for (let i = 0; i < missing.length; i += chunkSize) {
+      const slice = missing.slice(i, i + chunkSize);
+      if (!slice.length) continue;
+      const resp = await fetch('/api/media/info/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: slice, include_sidecar: includeSidecar }),
+      });
+      if (!resp.ok) continue;
+      const json = await resp.json().catch(() => null);
+      const rows = Array.isArray(json?.data?.items)
+        ? json.data.items
+        : (Array.isArray(json?.items) ? json.items : []);
+      rows.forEach((row) => {
+        if (!row || !row.path) return;
+        window.__mediaInfoCache[row.path] = row;
+        results.push(row);
+      });
+    }
+    return results;
+  }
+  catch (_) {
+    return [];
+  }
+}
+
+// Shared registry loader with caching + inflight coalescing for performers/tags
+const REGISTRY_ENDPOINTS = {
+  performers: '/api/registry/performers',
+  tags: '/api/registry/tags',
+};
+
+function getRegistryEntries(kind) {
+  try {
+    window.__REG = window.__REG || {};
+    const data = window.__REG[kind];
+    return Array.isArray(data) ? data : [];
+  }
+  catch (_) {
+    return [];
+  }
+}
+
+async function loadRegistry(kind) {
+  try {
+    window.__REG = window.__REG || {};
+    window.__REG_PROMISES = window.__REG_PROMISES || {};
+    window.__REG_STATE = window.__REG_STATE || {};
+    if (window.__REG_STATE[kind] === 'loaded') {
+      return getRegistryEntries(kind);
+    }
+    if (window.__REG_PROMISES[kind]) {
+      return window.__REG_PROMISES[kind];
+    }
+    const endpoint = REGISTRY_ENDPOINTS[kind];
+    if (!endpoint) return getRegistryEntries(kind);
+    const p = fetch(endpoint)
+      .then((resp) => resp.ok ? resp.json() : null)
+      .then((json) => {
+        const arr = Array.isArray(json?.data?.[kind]) ? json.data[kind] : (Array.isArray(json?.[kind]) ? json[kind] : []);
+        window.__REG[kind] = Array.isArray(arr) ? arr : [];
+        window.__REG_STATE[kind] = 'loaded';
+        return getRegistryEntries(kind);
+      })
+      .catch(() => {
+        window.__REG[kind] = [];
+        window.__REG_STATE[kind] = 'loaded';
+        return getRegistryEntries(kind);
+      })
+      .finally(() => {
+        try { delete window.__REG_PROMISES[kind]; }
+        catch (_) {}
+      });
+    window.__REG_PROMISES[kind] = p;
+    return p;
+  }
+  catch (_) {
+    return [];
+  }
+}
+
+async function loadRegistries(kinds = ['performers', 'tags']) {
+  const uniq = Array.from(new Set((kinds || []).filter(Boolean)));
+  if (!uniq.length) return {};
+  await Promise.all(uniq.map((kind) => loadRegistry(kind)));
+  const out = {};
+  for (const kind of uniq) {
+    out[kind] = getRegistryEntries(kind);
+  }
+  return out;
+}
+
 // Local slugify for tag/name normalization where needed
 const _slugify = (s) => String(s ?? '')
 .toLowerCase()
 .replace(/\s+/g, '-');
-// Local toast helper: prefer legacy window.showToast if present; otherwise use notify()
+// Local toast helper: prefer existing window.showToast if present; otherwise use notify()
+const legacyShowToast = (typeof window !== 'undefined' && typeof window.showToast === 'function') ? window.showToast : null;
 const showToast = (message, type) => {
   try {
-    if (window.showToast) {
-      window.showToast(message, type || 'is-info');
+    if (legacyShowToast) {
+      legacyShowToast(message, type || 'is-info');
     }
     else {
       const map = { 'is-error': 'error', 'is-success': 'success' };
@@ -392,6 +676,9 @@ const showToast = (message, type) => {
   }
   catch (_) { }
 };
+if (typeof window !== 'undefined' && typeof window.showToast !== 'function') {
+  window.showToast = (message, type) => showToast(message, type);
+}
 const grid = document.getElementById('grid');
 try { devLog('info', 'app', 'script loaded build=reset-debug-1', {ts: Date.now()}); }
 catch (_) {}
@@ -418,11 +705,13 @@ catch (_) {}
     const footer=document.createElement('div'); footer.className='footer'; footer.style.display='flex'; footer.style.gap='8px'; footer.style.justifyContent='flex-end'; footer.style.marginTop='10px';
     const clearB=document.createElement('button'); clearB.className='btn-sm'; clearB.textContent='Clear';
     const applyB=document.createElement('button'); applyB.className='btn-sm'; applyB.textContent='Apply';
-    clearB.addEventListener('click', async ()=>{ libraryArtifactFilters={}; saveLibraryArtifactFilters(libraryArtifactFilters); hide(); currentPage=1; await loadLibrary(); try { renderArtifactFilterChips(); } catch(_) {} });
+    clearB.addEventListener('click', async ()=>{ libraryArtifactFilters={}; saveLibraryArtifactFilters(libraryArtifactFilters); hide(); currentPage=1; await loadLibrary(); try { renderArtifactFilterChips(); }
+    catch(_) {} });
     applyB.addEventListener('click', async ()=>{
       const sels=Array.from(menu.querySelectorAll('select.control-select'));
       const obj={}; sels.forEach(sel=>{ const k=sel.dataset.key; if (sel.value==='yes') obj[k]=true; else if (sel.value==='no') obj[k]=false; });
-      libraryArtifactFilters=obj; saveLibraryArtifactFilters(libraryArtifactFilters); hide(); currentPage=1; await loadLibrary(); try { renderArtifactFilterChips(); } catch(_) {}
+      libraryArtifactFilters=obj; saveLibraryArtifactFilters(libraryArtifactFilters); hide(); currentPage=1; await loadLibrary(); try { renderArtifactFilterChips(); }
+      catch(_) {}
     });
     footer.appendChild(clearB); footer.appendChild(applyB); menu.appendChild(footer);
   }
@@ -457,7 +746,8 @@ function renderArtifactFilterChips(){
   clearAll.appendChild(btnAll); host.appendChild(clearAll);
   host.hidden = false;
 }
-try { renderArtifactFilterChips(); } catch(_) {}
+try { renderArtifactFilterChips(); }
+catch(_) {}
 
 // --------------------------------------------------
 // Global Player Reset (moved to top-level so it's definitely defined & wired)
@@ -485,6 +775,34 @@ function resetPlayer(opts = {}) {
       try { v.pause(); }
     catch (_) {}; v.remove(); }); }
     catch (_) {}
+    // Immediately clear player UI state
+    try {
+      const titleEl = document.getElementById('playerTitle');
+      if (titleEl) titleEl.textContent = '';
+      const overlayBar = document.getElementById('playerOverlayBar');
+      if (overlayBar) overlayBar.dataset.empty = '1';
+      const markersHost = document.getElementById('timelineMarkers');
+      if (markersHost) { markersHost.innerHTML = ''; markersHost.setAttribute('aria-hidden', 'true'); }
+      const heatEl = document.getElementById('timelineHeatmap');
+      if (heatEl) { heatEl.innerHTML = ''; heatEl.setAttribute('aria-hidden', 'true'); heatEl.style.backgroundImage = ''; }
+      const heatCanvas = document.getElementById('timelineHeatmapCanvas');
+      if (heatCanvas && typeof heatCanvas.getContext === 'function') {
+        const ctx = heatCanvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, heatCanvas.width || 0, heatCanvas.height || 0);
+        heatCanvas.setAttribute('aria-hidden', 'true');
+      }
+      const scrubberProgress = document.getElementById('playerScrubberProgress');
+      if (scrubberProgress) scrubberProgress.style.width = '0%';
+      const scrubberBuffer = document.getElementById('playerScrubberBuffer');
+      if (scrubberBuffer) scrubberBuffer.style.width = '0%';
+      const scrubberHandle = document.querySelector('.scrubber-handle');
+      if (scrubberHandle) scrubberHandle.style.left = '0%';
+      const subtitleOverlay = document.getElementById('subtitleOverlay');
+      if (subtitleOverlay) { subtitleOverlay.textContent = ''; subtitleOverlay.hidden = true; }
+      const spritePreview = document.getElementById('spritePreview');
+      if (spritePreview) spritePreview.style.display = 'none';
+    }
+    catch (_) { /* non-fatal UI clear */ }
     // Clear active library selection so auto-open logic does not immediately reload same file
     try {
       if (selectedItems && selectedItems.size) selectedItems.clear();
@@ -557,15 +875,7 @@ if (!wireResetButton()) {
     devLog('debug', 'player', 'DOMContentLoaded wiring attempt', {success: ok});
   }, {once: true});
 }
-document.addEventListener('click', (e) => {
-  const t = e.target && e.target.closest && e.target.closest('#btnResetPlayer');
-  if (t && !t._delegatedHandled) {
-    t._delegatedHandled = true;
-    devLog('debug', 'player', 'delegated reset click handler');
-    resetPlayer({ full: true });
-    setTimeout(() => { t._delegatedHandled = false; }, 0);
-  }
-});
+// Removed delegated document-level reset handler to prevent double-fire
 try { window.resetPlayer = resetPlayer; }
 catch (_) {}
 const statusEl = document.getElementById('status');
@@ -772,8 +1082,10 @@ let libraryPerformerFilters = [];
 let librarySearchTerms = [];
 // Artifact presence filters for grid (Yes/No). Keys map to server artifact flags.
 const LIB_ART_FILTERS_LS_KEY = 'library.artifact.filters.v1';
-let libraryArtifactFilters = (() => { try { return getLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, {}) || {}; } catch(_) { return {}; } })();
-function saveLibraryArtifactFilters(obj) { try { setLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, obj || {}); } catch(_) {} }
+let libraryArtifactFilters = (() => { try { return getLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, {}) || {}; }
+catch(_) { return {}; } })();
+function saveLibraryArtifactFilters(obj) { try { setLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, obj || {}); }
+catch(_) {} }
 // plain text search tokens (chips)
 let autoRandomEnabled = false;
 let lastCardHeight = 230; // updated after first render of cards
@@ -832,40 +1144,21 @@ async function ensurePreview(v) {
   const path = (v && (v.path || v.name)) || '';
   if (!path) return '';
   if (v && v.preview_url) return v.preview_url;
+  // Coalesce concurrent preview work for the same path
+  try {
+    window.__previewInflight = window.__previewInflight || {};
+    if (window.__previewInflight[path]) {
+      return await window.__previewInflight[path];
+    }
+  }
+  catch(_) {}
   const qp = encodeURIComponent(path);
-  const getStatusForPath = async () => {
-    try {
-      window.__artifactStatus = window.__artifactStatus || {};
-      if (window.__artifactStatus[path]) return window.__artifactStatus[path];
-      const u = new URL('/api/artifacts/status', window.location.origin);
-      u.searchParams.set('path', path);
-      const r = await fetch(u.toString());
-      if (!r.ok) return null;
-      const j = await r.json();
-      const d = j && (j.data || j);
-      if (d) window.__artifactStatus[path] = d;
-      return d || null;
-    }
-    catch (_) {
-      return null;
-    }
-  };
+  // Use shared cached status function
+  let status = await fetchArtifactStatusForPath(path);
   const refreshStatus = async () => {
-    try {
-      const u = new URL('/api/artifacts/status', window.location.origin);
-      u.searchParams.set('path', path);
-      const r = await fetch(u.toString());
-      if (!r.ok) return null;
-      const j = await r.json();
-      const d = j && (j.data || j);
-      if (d) window.__artifactStatus[path] = d;
-      return d || null;
-    }
-    catch (_) {
-      return null;
-    }
+    // Use the shared fetchArtifactStatusForPath with cache bypass
+    return await fetchArtifactStatusForPath(path, true);
   };
-  let status = await getStatusForPath();
   // Determine best preview format for this device
   let preferredFmt = 'webm';
   try {
@@ -880,12 +1173,12 @@ async function ensurePreview(v) {
   if (status && status.preview) {
     // Fetch the blob directly (GET). If this 404s (race), we just abort silently.
     try {
-  const r = await fetch(`/api/preview?path=${qp}&fmt=${encodeURIComponent(preferredFmt)}`);
+      const r = await fetch(`/api/preview?path=${qp}&fmt=${encodeURIComponent(preferredFmt)}`);
       if (!r.ok) return '';
       const blob = await r.blob();
       if (!blob || !blob.size) return '';
       const obj = URL.createObjectURL(blob);
-  v.preview_url = obj;
+      v.preview_url = obj;
       return obj;
     }
     catch (_) {
@@ -896,15 +1189,17 @@ async function ensurePreview(v) {
   if (!status) {
     // Status unknown (not cached);
     // treat as absent for now.
-  status = {preview: false};
+    status = {preview: false};
   }
   // If preview is missing but on-demand generation is enabled, trigger creation
   try {
     if (previewOnDemandEnabled) {
+      // Wrap the entire generation+poll in a single inflight promise per path
+      const inflightPromise = (async () => {
       // Mark UI state for generation
       try {
-  const card = document.querySelector(`.card[data-path="${path}"]`);
-  if (card) card.classList.add('preview-generating');
+        const card = document.querySelector(`.card[data-path="${path}"]`);
+        if (card) card.classList.add('preview-generating');
       }
       catch (_) { }
       // Trigger creation endpoint if available
@@ -930,8 +1225,23 @@ async function ensurePreview(v) {
         }
         // Poll status for completion (background may take a bit longer)
         const deadline = Date.now() + 12000;
+        const backoffSeq = [600, 900, 1300, 1800, 2200]; // progressive backoff to reduce status spam
+        let attempt = 0;
+        let canceled = false;
         while (Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 600));
+          // Cancellation: card no longer previewing or grid hidden/tab inactive
+          try {
+            const card = document.querySelector(`.card[data-path="${path}"]`);
+            if (!card || !card._previewing || (typeof grid !== 'undefined' && grid && isHidden(grid)) || document.hidden) {
+              canceled = true;
+              break;
+            }
+          }
+          catch (_) { /* ignore */ }
+          const sleepMs = backoffSeq[Math.min(attempt, backoffSeq.length - 1)];
+          attempt++;
+          await new Promise((r) => setTimeout(r, sleepMs));
+          // Use cache-bypassed status (helper internally throttles bypasses)
           const s = await refreshStatus();
           if (s && s.preview) {
             try {
@@ -954,6 +1264,10 @@ async function ensurePreview(v) {
             }
           }
         }
+        if (canceled) {
+          return '';
+        }
+        return '';
       }
       catch (_) { }
       finally {
@@ -963,6 +1277,13 @@ async function ensurePreview(v) {
         }
         catch (_) { }
       }
+      })();
+      try { window.__previewInflight[path] = inflightPromise; }
+      catch(_) {}
+      const result = await inflightPromise;
+      try { delete window.__previewInflight[path]; }
+      catch(_) {}
+      return result;
     }
   }
   catch (_) { }
@@ -975,7 +1296,7 @@ function stopAllTilePreviews(exceptTile) {
     const tiles = document.querySelectorAll('.card');
     tiles.forEach((t) => {
       if (exceptTile && t === exceptTile) return;
-  const video = t.querySelector('video.preview-video');
+      const video = t.querySelector('video.preview-video');
       if (video) {
         try {
           video.pause();
@@ -999,8 +1320,10 @@ function videoCard(v) {
   const template = document.getElementById('cardTemplate');
   const el = template.content.cloneNode(true).querySelector('.card');
   // Resolve thumbnail URL: prefer payload-provided URL; fall back to canonical endpoint
-  const imgSrc = (v && (v.thumbnail || v.thumb || v.thumbnail_url))
-    ? (v.thumbnail || v.thumb || v.thumbnail_url)
+  // Filter out undefined/null values explicitly
+  const thumbUrl = v?.thumbnail ?? v?.thumb ?? v?.thumbnail_url;
+  const imgSrc = (thumbUrl && thumbUrl !== 'undefined')
+    ? thumbUrl
     : (v && v.path ? `/api/thumbnail?path=${encodeURIComponent(v.path)}` : '');
   // Duration/size: accept multiple field shapes for robustness
   const durationSecRaw = (v && (v.duration ?? v.dur ?? v.length ?? (v.metadata && v.metadata.duration) ?? (v.info && v.info.duration))) ?? null;
@@ -1184,42 +1507,44 @@ function videoCard(v) {
   // Resolution / quality badge: prefer height (common convention)
   // Defer quality / resolution overlay population until element intersects viewport (reduces synchronous cost).
   el._needsMetadata = true;
-  // Add video preview functionality
-  el.addEventListener('mouseenter', async () => {
+  // Debounced hover preview functionality
+  const PREVIEW_HOVER_DEBOUNCE_MS = 160;
+  el.addEventListener('mouseenter', () => {
     if (!previewEnabled) return;
-    // Stop any other tile's preview video before starting this one
-    stopAllTilePreviews(el);
-    // Track tokens to avoid late insert after mouse leaves
+    // Increment token and schedule deferred start
     const token = (el._previewToken || 0) + 1;
     el._previewToken = token;
-    el._previewing = true;
-  const url = await ensurePreview(v);
-  if (v && v.preview_url) return v.preview_url;
-    // If no preview exists, don't swap out the thumbnail
-    if (!url) return;
-  if (!el._previewing || el._previewToken !== token) return;
-  // Double-check no other tiles are showing previews
-    stopAllTilePreviews(el);
-  const video = document.createElement('video');
-  // Use updated class naming so sizing rules (thumbnail-img) still apply to the preview element.
-  // Keep a distinct marker class for potential styling (.preview-video) without relying on removed .thumb class.
-  video.className = 'thumbnail-img preview-video';
-    video.src = url;
-  video.muted = true;
-    video.autoplay = true;
-    video.loop = true;
-    video.playsInline = true;
-  try { video.setAttribute('playsinline', ''); }
-  catch (_) {}
-  try { video.disablePictureInPicture = true; }
-  catch (_) {}
-    video.style.pointerEvents = 'none';
-    // Replace the thumbnail with the video
-    if (img) img.replaceWith(video);
-    try {
-      await video.play();
+    el._previewing = true; // mark intent; may be canceled before timer fires
+    if (el._previewTimer) {
+      clearTimeout(el._previewTimer);
+      el._previewTimer = null;
     }
-    catch (_) { }
+    el._previewTimer = setTimeout(async () => {
+      el._previewTimer = null;
+      // Abort if state changed or preview disabled or grid hidden
+      if (!previewEnabled || !el._previewing || el._previewToken !== token || (typeof grid !== 'undefined' && grid && isHidden(grid)) || document.hidden) {
+        return;
+      }
+      // Stop previews in other tiles now that we are committing
+      stopAllTilePreviews(el);
+      const url = await ensurePreview(v);
+      if (!url || !el._previewing || el._previewToken !== token) return;
+      // Final check grid not hidden
+      if ((typeof grid !== 'undefined' && grid && isHidden(grid)) || document.hidden) return;
+      stopAllTilePreviews(el);
+      const video = document.createElement('video');
+      video.className = 'thumbnail-img preview-video';
+      video.src = url;
+      video.muted = true;
+      video.autoplay = true;
+      video.loop = true;
+      video.playsInline = true;
+      try { video.setAttribute('playsinline', ''); } catch (_) {}
+      try { video.disablePictureInPicture = true; } catch (_) {}
+      video.style.pointerEvents = 'none';
+      if (img) img.replaceWith(video);
+      try { await video.play(); } catch (_) {}
+    }, PREVIEW_HOVER_DEBOUNCE_MS);
   });
   function restoreThumbnail() {
     const vid = el.querySelector('video.preview-video');
@@ -1505,7 +1830,8 @@ async function loadLibrary() {
     if (!window.tabSystem || window.tabSystem.getActiveTab() !== 'library') {
       return;
     }
-  } catch(_) {}
+  }
+  catch(_) {}
   if (__libLoading) {
     try { devLog('debug', 'library', 'coalesce'); }
     catch (_) {}
@@ -1536,7 +1862,7 @@ async function loadLibrary() {
       window.__LIB_LAST_METRICS = m;
     }
     catch (_) {}
-  const isAppend = infiniteScrollEnabled && currentPage > 1;
+    const isAppend = infiniteScrollEnabled && currentPage > 1;
     if (!isAppend) {
       hide(statusEl);
       showAs(spinner, 'block');
@@ -1553,7 +1879,7 @@ async function loadLibrary() {
         infiniteScrollSentinel.style.color = '#778';
       }
     }
-  // Build endpoint robustly without depending on window.location.origin (which can be 'null' under file://)
+    // Build endpoint robustly without depending on window.location.origin (which can be 'null' under file://)
     const params = new URLSearchParams();
     // Lock page size after first computation so subsequent pages add a consistent count
     let pageSize;
@@ -1606,9 +1932,9 @@ async function loadLibrary() {
       pageSize = Math.max(1, Math.floor(pageSize));
     }
     catch (_) { pageSize = 12; }
-  params.set('page', String(currentPage));
-  // In infinite scroll mode, still request page-sized chunks (server handles page param)
-  params.set('page_size', String(pageSize));
+    params.set('page', String(currentPage));
+    // In infinite scroll mode, still request page-sized chunks (server handles page param)
+    params.set('page_size', String(pageSize));
     // Honor server-supported sorts chosen via header double-click even if not present in <select>
     const SERVER_SORT_MAP = {
       name: 'name', size: 'size', mtime: 'date', date: 'date', created: 'created',
@@ -1647,7 +1973,8 @@ async function loadLibrary() {
       else if (v === false) artFilterPayload[k] = { bool: false };
     }
     if (Object.keys(artFilterPayload).length) {
-      try { params.set('filters', JSON.stringify(artFilterPayload)); } catch(_) {}
+      try { params.set('filters', JSON.stringify(artFilterPayload)); }
+      catch(_) {}
     }
   const endpoint = '/api/library' + (params.toString() ? ('?' + params.toString()) : '');
   try { devLog('info', 'library', 'request', { page: currentPage, pageSize, path: (currentPath()||''), sort: (overrideFromSortState || sortSelect.value || 'date'), order: (orderToggle.dataset.order||'desc') }); }
@@ -1677,9 +2004,9 @@ async function loadLibrary() {
     else {
       data = { files: [], dirs: [] };
     }
-  let files = Array.isArray(data.files) ? data.files : [];
+    let files = Array.isArray(data.files) ? data.files : [];
     const dirs = Array.isArray(data.dirs) ? data.dirs : [];
-  // Update pagination info (backend may currently return all files due to pagination regression)
+    // Update pagination info (backend may currently return all files due to pagination regression)
     const effectivePageSize = pageSize; // keep consistent with request
     // If backend reported counts, trust them;
     // else derive client-side with heuristics that avoid duplicate/reset issues
@@ -1748,7 +2075,7 @@ async function loadLibrary() {
     if (!infiniteScrollEnabled || !isAppend) {
       grid.innerHTML = '';
     }
-  if (files.length === 0) {
+    if (files.length === 0) {
       // When searching, do not auto-fill from subfolders;
       // show no results instead
       if (dirs.length > 0 && !searchVal) {
@@ -1823,9 +2150,9 @@ async function loadLibrary() {
       else {
         hide(spinner);
         statusEl.className = files.length === 0 && searchVal ? 'empty' : 'empty';
-  // Try a one-shot relaxed fetch: drop resolution and search filters to populate some content
-  // Skip when tag or performer chips are active (user expects exact matches)
-  if (!searchVal && (!Array.isArray(libraryTagFilters) || libraryTagFilters.length === 0) && (!Array.isArray(libraryPerformerFilters) || libraryPerformerFilters.length === 0)) {
+        // Try a one-shot relaxed fetch: drop resolution and search filters to populate some content
+        // Skip when tag or performer chips are active (user expects exact matches)
+        if (!searchVal && (!Array.isArray(libraryTagFilters) || libraryTagFilters.length === 0) && (!Array.isArray(libraryPerformerFilters) || libraryPerformerFilters.length === 0)) {
           try {
             const sp2 = new URLSearchParams();
             sp2.set('page', '1');
@@ -1992,7 +2319,8 @@ async function loadLibrary() {
             if (r.top < vh && r.bottom > 0) computeMeta(c);
           }
         }
-      } catch(_) {}
+      }
+      catch(_) {}
       if (i < nodes.length) {
         if (window.requestIdleCallback) {
           requestIdleCallback(insertBatch, {timeout: 120});
@@ -2053,7 +2381,8 @@ async function loadLibrary() {
             if (r.top < vh && r.bottom > 0) computeMeta(c);
           }
         }
-      } catch(_) {}
+      }
+      catch(_) {}
       requestAnimationFrame(() => enforceGridSideSpacing());
       finishInsertion();
       // Do not auto-trigger; wait for explicit bottom overscroll.
@@ -2906,8 +3235,11 @@ function resolveArtifactRequest(artifact, filePath) {
   // Normalize common aliases
   const normMap = {
     meta: 'metadata',
+    chapter: 'markers',
     chapters: 'markers',
+    scene: 'markers',
     scenes: 'markers',
+    marker: 'markers',
     markers: 'markers',
     thumb: 'thumbnail',
     thumbnail: 'thumbnail',
@@ -2999,25 +3331,31 @@ function setChipLoadingFor(path, chipKey, loading = true) {
     const row = document.querySelector(`[data-path="${selSafe(path || '')}"]`);
     if (row) {
       let c = null;
-      try { c = row.querySelector(`.chips-list [data-key="${domKey}"]`); } catch(_) {}
+      try { c = row.querySelector(`.chips-list [data-key="${domKey}"]`); }
+      catch(_) {}
       if (!c) {
-        try { c = row.querySelector(`.chips-list [data-key="${chipKey}"]`); } catch(_) {}
+        try { c = row.querySelector(`.chips-list [data-key="${chipKey}"]`); }
+        catch(_) {}
       }
       if (c) {
         if (loading) c.dataset.loading = '1'; else c.removeAttribute('data-loading');
       }
     }
-  } catch(_) {}
+  }
+  catch(_) {}
   try {
     const side = (function(){
-      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${domKey}"]`); } catch(_) { return null; }
+      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${domKey}"]`); }
+      catch(_) { return null; }
     })() || (function(){
-      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${chipKey}"]`); } catch(_) { return null; }
+      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${chipKey}"]`); }
+      catch(_) { return null; }
     })();
     if (side) {
       if (loading) side.dataset.loading = '1'; else side.removeAttribute('data-loading');
     }
-  } catch(_) {}
+  }
+  catch(_) {}
 }
 
 function setChipPresentFor(path, chipKey) {
@@ -3027,21 +3365,27 @@ function setChipPresentFor(path, chipKey) {
     const row = document.querySelector(`[data-path="${selSafe(path || '')}"]`);
     if (row) {
       let c = null;
-      try { c = row.querySelector(`.chips-list [data-key="${domKey}"]`); } catch(_) {}
+      try { c = row.querySelector(`.chips-list [data-key="${domKey}"]`); }
+      catch(_) {}
       if (!c) {
-        try { c = row.querySelector(`.chips-list [data-key="${chipKey}"]`); } catch(_) {}
+        try { c = row.querySelector(`.chips-list [data-key="${chipKey}"]`); }
+        catch(_) {}
       }
       if (c) applyChipPresent(c);
     }
-  } catch(_) {}
+  }
+  catch(_) {}
   try {
     const side = (function(){
-      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${domKey}"]`); } catch(_) { return null; }
+      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${domKey}"]`); }
+      catch(_) { return null; }
     })() || (function(){
-      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${chipKey}"]`); } catch(_) { return null; }
+      try { return document.querySelector(`#artifactBadgesSidebar [data-key="${chipKey}"]`); }
+      catch(_) { return null; }
     })();
     if (side) applyChipPresent(side);
-  } catch(_) {}
+  }
+  catch(_) {}
 }
 
 function makeArtifactEl(style, def, present) {
@@ -3071,40 +3415,24 @@ async function renderArtifactChips(container, filePath, opts = {}) {
       ev.preventDefault(); ev.stopPropagation();
       triggerArtifactForPath(filePath, def.key, el);
     });
-    // Metadata verification (list-friendly): prefer unified status first (cheap),
-    // then optionally confirm via metadata in the background. Avoid long spinners.
+    // Metadata verification (list-friendly): we already have status from above,
+    // so just confirm via /api/metadata if status is absent (avoid duplicate status call)
     if (!present && def.key === 'metadata' && filePath) {
-      // While verifying, show neutral loading state (avoid flashing red)
-      try { el.dataset.loading = '1'; } catch(_) {}
-      try { setChipLoadingFor(filePath, 'metadata', true); } catch(_) {}
-      // Failsafe: ensure we never leave the chip spinning indefinitely
-      let cleared = false;
-      const clearLoading = () => {
-        if (cleared) return; cleared = true;
-        try { el.removeAttribute('data-loading'); } catch(_) {}
-        try { setChipLoadingFor(filePath, 'metadata', false); } catch(_) {}
-      };
-      const fsTimer = setTimeout(clearLoading, 8000);
-      // 1) Quick check: unified /artifacts/status
-      fetchArtifactStatusForPath(filePath).then((st) => {
-        if (st && st.metadata) {
-          applyChipPresent(el);
-          try { setChipPresentFor(filePath, 'metadata'); } catch(_) {}
-          try { clearTimeout(fsTimer); } catch(_) {}
-          cleared = true;
-          return;
+      // Status already fetched above, so skip the redundant fetchArtifactStatusForPath call.
+      // Just check /api/metadata endpoint as fallback (cheaper than re-fetching status)
+      fetchMetadataCached(filePath).then((d) => {
+        if (!d) return;
+        applyChipPresent(el);
+        try { setChipPresentFor(filePath, 'metadata'); }
+        catch(_) {}
+        // Update cache so subsequent calls don't repeat this check
+        try {
+          if (window.__artifactStatus && window.__artifactStatus[filePath]) {
+            window.__artifactStatus[filePath].metadata = true;
+          }
         }
-        // 2) Optional confirm via /api/metadata (do not keep spinner if absent)
-        clearLoading();
-        fetchMetadataCached(filePath).then((d) => {
-          if (!d) return;
-          applyChipPresent(el);
-          try { setChipPresentFor(filePath, 'metadata'); } catch(_) {}
-        });
-      }).catch(() => {
-        // network error: just clear loading
-        clearLoading();
-      });
+        catch(_) {}
+      }).catch(() => {/* ignore */});
     }
     frag.appendChild(el);
   }
@@ -3123,7 +3451,8 @@ async function triggerArtifactForPath(filePath, artifact, chipEl = null) {
   }
   try {
     // Set loading on both the clicked chip and its counterpart (list/sidebar)
-    try { setChipLoadingFor(filePath, artifact, true); } catch(_) {}
+    try { setChipLoadingFor(filePath, artifact, true); }
+    catch(_) {}
     if (chipEl) {
       try {
         if (chipEl.classList.contains('artifact-chip')) {
@@ -3131,9 +3460,11 @@ async function triggerArtifactForPath(filePath, artifact, chipEl = null) {
         } else {
           chipEl.classList.add('btn-busy');
         }
-      } catch(_) {}
+      }
+      catch(_) {}
     }
-  } catch (_) {}
+  }
+  catch (_) {}
   try {
     const r = await fetch(req.url, { method: req.method || 'POST' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -3141,7 +3472,8 @@ async function triggerArtifactForPath(filePath, artifact, chipEl = null) {
     try {
       // Lightly poll artifacts/status to flip the chip to ✓ when done
       pollArtifactStatusAndUpdateChip(filePath, artifact, chipEl);
-    } catch(_) {}
+    }
+    catch(_) {}
   }
   catch (e) {
     showMessageModal(`Failed to generate ${artifact}: ${e.message || e}`, { title: 'Generate Artifact' });
@@ -3166,12 +3498,15 @@ function applyChipPresent(chip) {
   // Unified badge style
   if (chip.classList.contains('artifact-chip') || chip.classList.contains('badge-pill')) {
     chip.dataset.present = '1';
-    try { chip.classList.remove('btn-busy'); } catch(_) {}
-    try { chip.removeAttribute('data-loading'); } catch(_) {}
+    try { chip.classList.remove('btn-busy'); }
+    catch(_) {}
+    try { chip.removeAttribute('data-loading'); }
+    catch(_) {}
     try {
       const st = chip.querySelector('.status');
       if (st) st.textContent = '✓';
-    } catch(_) {}
+    }
+    catch(_) {}
     return;
   }
   // Legacy fallback: plain chip element
@@ -3181,23 +3516,81 @@ function applyChipPresent(chip) {
     chip.className = 'chip chip--ok';
     chip.textContent = label;
     chip.title = `${label} present`;
-    try { chip.classList.remove('btn-busy'); } catch(_) {}
+    try { chip.classList.remove('btn-busy'); }
+    catch(_) {}
   }
 }
 
-async function fetchArtifactStatusForPath(path) {
+async function fetchArtifactStatusForPath(path, skipCache = false) {
   try {
+    window.__artifactStatus = window.__artifactStatus || {};
+    window.__artifactStatusInflight = window.__artifactStatusInflight || {};
+    window.__artifactStatusLast = window.__artifactStatusLast || {};
+    window.__artifactStatusLastBypass = window.__artifactStatusLastBypass || {};
+    // Return cached value unless explicitly bypassed
+    if (!skipCache && window.__artifactStatus[path]) {
+      console.log(`%c[CACHE HIT]%c /api/artifacts/status for: ${path}`, 'color: #10b981; font-weight: bold;', 'color: #6b7280;');
+      return window.__artifactStatus[path];
+    }
+
+    if (skipCache && window.__artifactStatus[path]) {
+      console.log(`%c[CACHE BYPASS]%c /api/artifacts/status for: ${path}`, 'color: #f59e0b; font-weight: bold;', 'color: #6b7280;');
+      // Throttle cache-bypassed calls if a recent bypass happened very recently
+      try {
+        const now = Date.now();
+        const lastBy = Number(window.__artifactStatusLastBypass[path] || 0);
+        if (lastBy && (now - lastBy) < 600) {
+          // Return cached snapshot to avoid hammering the endpoint
+          return window.__artifactStatus[path];
+        }
+      }
+      catch(_) {}
+    } else {
+      console.log(`%c[CACHE MISS]%c /api/artifacts/status for: ${path}`, 'color: #ef4444; font-weight: bold;', 'color: #6b7280;');
+    }
+
+    // Reuse in-flight request if one exists (coalesce concurrent callers)
+    if (window.__artifactStatusInflight[path]) {
+      return window.__artifactStatusInflight[path];
+    }
+
     const u = new URL('/api/artifacts/status', window.location.origin);
     u.searchParams.set('path', path);
-    const r = await fetch(u.toString());
-    if (!r.ok) return null;
-    const j = await r.json();
-    return (j && (j.data || j)) || null;
-  } catch(_) { return null; }
+    // Record bypass timestamp for throttling if requested
+    try { if (skipCache) window.__artifactStatusLastBypass[path] = Date.now(); }
+    catch(_) {}
+    const p = (async () => {
+      const r = await fetch(u.toString());
+      if (!r.ok) return null;
+      const j = await r.json();
+      const d = (j && (j.data || j)) || null;
+      if (d) {
+        window.__artifactStatus[path] = d;
+        try { window.__artifactStatusLast[path] = Date.now(); }
+        catch(_) {}
+        console.log(`%c[CACHED]%c Stored status for: ${path}`, 'color: #8b5cf6; font-weight: bold;', 'color: #6b7280;');
+      }
+      return d;
+    })();
+    window.__artifactStatusInflight[path] = p;
+    const d = await p;
+    try { delete window.__artifactStatusInflight[path]; }
+    catch(_) {}
+    return d;
+  }
+  catch(_) { return null; }
 }
 
 // Poll status for up to ~60s, updating the provided chip when ready
 function pollArtifactStatusAndUpdateChip(path, chipKey, chipEl) {
+  // Avoid duplicate pollers for the same path+artifact
+  try {
+    window.__statusPollers = window.__statusPollers || {};
+    const key = `${path}|${chipKey}`;
+    if (window.__statusPollers[key]) return;
+    window.__statusPollers[key] = true;
+  }
+  catch(_) {}
   const statusKey = mapChipKeyToStatusKey(chipKey);
   if (!statusKey) return;
   const rowEl = (() => {
@@ -3217,16 +3610,23 @@ function pollArtifactStatusAndUpdateChip(path, chipKey, chipEl) {
     if (Date.now() - start > maxMs) {
       clearInterval(timer); stop = true; return;
     }
-    const st = await fetchArtifactStatusForPath(path);
+    const st = await fetchArtifactStatusForPath(path, true); // bypass cache when polling
     if (!st) return;
     if (st[statusKey]) {
       // Update both list and sidebar badges for this file/key
-      try { setChipPresentFor(path, chipKey); } catch(_) {}
+      try { setChipPresentFor(path, chipKey); }
+      catch(_) {}
       // Also update a directly supplied element, if any (covers transient DOM)
-      try { if (chipEl) applyChipPresent(chipEl); } catch(_) {}
+      try { if (chipEl) applyChipPresent(chipEl); }
+      catch(_) {}
       clearInterval(timer); stop = true;
+      try { delete window.__statusPollers[`${path}|${chipKey}`]; }
+      catch(_) {}
     }
   }, intervalMs);
+  // Safety stop to clear registry on cap
+  setTimeout(() => { if (!stop) { try { delete window.__statusPollers[`${path}|${chipKey}`]; }
+  catch(_) {} } }, maxMs + 2500);
 }
 orderToggle.addEventListener('click', () => {
   // Mark that the user explicitly chose an order; future sort changes won't auto-reset it
@@ -3397,7 +3797,8 @@ function wireSettings() {
         if (!backRaw) localStorage.setItem('setting.jumpBackSeconds', legacy);
         if (!fwdRaw) localStorage.setItem('setting.jumpFwdSeconds', legacy);
       }
-    } catch(_) {}
+    }
+    catch(_) {}
     const wireJumpInput = (el, key, defVal) => {
       if (!el || el._wired) return;
       el._wired = true;
@@ -3405,11 +3806,13 @@ function wireSettings() {
         const raw = localStorage.getItem(key);
         const v = Number(raw);
         if (Number.isFinite(v) && v >= 1 && v <= 600) el.value = String(v);
-      } catch(_) {}
+      }
+      catch(_) {}
       const onChange = () => {
         const v = Number(el.value);
         const val = (Number.isFinite(v) && v >= 1 && v <= 600) ? Math.round(v) : defVal;
-        try { localStorage.setItem(key, String(val)); } catch(_) {}
+        try { localStorage.setItem(key, String(val)); }
+        catch(_) {}
         el.value = String(val);
       };
       el.addEventListener('input', onChange);
@@ -3436,7 +3839,8 @@ function wireSettings() {
           fwdBtn.title = `Forward ${fwd} seconds`;
           fwdBtn.setAttribute('aria-label', `Forward ${fwd} seconds`);
         }
-      } catch(_) {}
+      }
+      catch(_) {}
     };
     updateJumpButtons();
     // Re-run label update whenever inputs change
@@ -4088,7 +4492,8 @@ function toggleSelection(event, path) {
   }
   updateSelectionUI();
   updateCardSelection(path);
-  try { lastSelectedPath = path; } catch (_) { }
+  try { lastSelectedPath = path; }
+  catch (_) { }
 }
 function updateSelectionUI() {
   const count = selectedItems.size;
@@ -4171,32 +4576,7 @@ if (bulkEditBtn && bulkEditPanel && bulkValueInput && bulkApplyBtn) {
       catch (_) {}
     }
   });
-  // Ensure registries are available for suggestions
-  async function ensureRegistries() {
-    window.__REG = window.__REG || {};
-    if (!window.__REG.performers) {
-      try {
-        const r = await fetch('/api/registry/performers');
-        if (r.ok) {
-          const j = await r.json();
-          window.__REG.performers = Array.isArray(j?.data?.performers) ? j.data.performers : (Array.isArray(j?.performers) ? j.performers : []);
-        }
-        else { window.__REG.performers = []; }
-      }
-      catch (_) { window.__REG.performers = []; }
-    }
-    if (!window.__REG.tags) {
-      try {
-        const r = await fetch('/api/registry/tags');
-        if (r.ok) {
-          const j = await r.json();
-          window.__REG.tags = Array.isArray(j?.data?.tags) ? j.data.tags : (Array.isArray(j?.tags) ? j.tags : []);
-        }
-        else { window.__REG.tags = []; }
-      }
-      catch (_) { window.__REG.tags = []; }
-    }
-  }
+  const ensureBulkRegistries = () => loadRegistries(['performers','tags']);
   function renderBulkSuggestions(kind, query) {
     if (!bulkSuggestions) return;
     const q = String(query || '').trim().toLowerCase();
@@ -4233,7 +4613,7 @@ if (bulkEditBtn && bulkEditPanel && bulkValueInput && bulkApplyBtn) {
     bulkSuggestions.appendChild(frag);
   }
   bulkValueInput.addEventListener('input', async () => {
-    await ensureRegistries();
+    await ensureBulkRegistries();
     const kind = (bulkKindSelect && bulkKindSelect.value) || 'tag';
     renderBulkSuggestions(kind, bulkValueInput.value);
   });
@@ -5060,14 +5440,16 @@ window.tabSystem = tabSystem;
       loaded.add(tabId);
       const fn = inits.get(tabId);
       if (typeof fn === 'function') {
-        try { fn(); } catch (_) {}
+        try { fn(); }
+        catch (_) {}
       }
     };
     const register = (tabId, fn) => { if (tabId && typeof fn === 'function') inits.set(tabId, fn); };
     window.__LazyTabs = { register, ensure };
     // Run init for the active tab once the first switch occurs
     window.addEventListener('tabchange', (e) => {
-      try { ensure(e && e.detail && e.detail.activeTab); } catch (_) {}
+      try { ensure(e && e.detail && e.detail.activeTab); }
+      catch (_) {}
     });
     // In case the initial tab is already visible before any tabchange
     const runInitial = () => {
@@ -5075,12 +5457,14 @@ window.tabSystem = tabSystem;
         const ts = window.tabSystem;
         const id = ts && typeof ts.getActiveTab === 'function' ? ts.getActiveTab() : null;
         if (id) ensure(id);
-      } catch (_) {}
+      }
+      catch (_) {}
     };
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', runInitial, { once: true });
     } else { setTimeout(runInitial, 0); }
-  } catch (_) {}
+  }
+  catch (_) {}
 })();
 // Ensure video + controls fit in viewport without vertical scroll (YouTube-like behavior)
 function setupViewportFitPlayer() {
@@ -5187,7 +5571,8 @@ function setupListTab() {
       // Add padding/gap allowance (~24px) + buffer for resizer grip
       const target = Math.max(60, Math.ceil(max) + 24);
       return target;
-    } catch(_) {
+    }
+    catch(_) {
       return null;
     }
   }
@@ -5225,15 +5610,19 @@ function setupListTab() {
                 rowsAll[i].setAttribute('data-selected', targetChecked ? '1' : '0');
               }
               listLastAnchorIndex = idx;
-              try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); } catch(_) {}
-              try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); } catch(_) {}
+              try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); }
+              catch(_) {}
+              try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); }
+              catch(_) {}
               return; // done handling shift range
             }
           }
         }
         if (cb.checked) selectedItems.add(path); else selectedItems.delete(path);
-        try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); } catch(_) {}
-        try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); } catch(_) {}
+        try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); }
+        catch(_) {}
+        try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); }
+        catch(_) {}
       });
       td.appendChild(cb);
     }},
@@ -5250,8 +5639,10 @@ function setupListTab() {
       a.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        try { if (window.tabSystem) window.tabSystem.switchToTab('player'); } catch(_) {}
-        try { if (window.Player?.open) window.Player.open(f.path); } catch(_) {}
+        try { if (window.tabSystem) window.tabSystem.switchToTab('player'); }
+        catch(_) {}
+        try { if (window.Player?.open) window.Player.open(f.path); }
+        catch(_) {}
       });
       td.appendChild(a);
     } },
@@ -5416,7 +5807,8 @@ function setupListTab() {
         status.motion = pres(['has_motion','motion']);
         const keys = ['metadata','thumbnail','sprites','preview','markers','subtitles','heatmaps','faces','waveform','motion'];
         renderArtifactChips(cont, f.path || '', { style: 'chip', keys, status });
-      } catch(_) { }
+      }
+      catch(_) { }
     }
   });
 
@@ -5448,23 +5840,27 @@ function setupListTab() {
                   const list = j?.data?.performers || j?.performers || [];
                   apply(list);
                 }
-              } catch(_) {}
+              }
+              catch(_) {}
             });
           } else {
             chip.title = `Filter by performer: ${name}`;
             chip.addEventListener('click', async (e) => {
               e.stopPropagation();
               if (!libraryPerformerFilters.includes(name)) libraryPerformerFilters.push(name);
-              try { setLocalStorageJSON('filters.performers', libraryPerformerFilters); } catch(_) {}
-              try { if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips(); } catch(_) {}
-              try { if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState(); } catch(_) {}
+              try { setLocalStorageJSON('filters.performers', libraryPerformerFilters); }
+              catch(_) {}
+              try { if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips(); }
+              catch(_) {}
+              try { if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState(); }
+              catch(_) {}
               currentPage = 1; loadLibrary();
             });
           }
           cont.appendChild(chip);
         });
         // Suggestions (show even if some present, limited, exclude existing)
-        ensureRegistries().then(()=>renderSuggestions('performer', arr));
+        ensurePerformerRegistry().then(() => renderSuggestions('performer', arr));
       };
       // Inline edit using contentEditable chip input (keeps chips visible)
       function startEdit() {
@@ -5489,7 +5885,8 @@ function setupListTab() {
               url.searchParams.set('path', f.path);
               url.searchParams.set('performer', p);
               await fetch(url.toString(), {method:'POST'});
-            } catch(_) {}
+            }
+            catch(_) {}
           }
           // Refresh chips; remain in edit if td still editing
           const d = await fetchMetadataCached(f.path).catch(()=>null);
@@ -5509,7 +5906,8 @@ function setupListTab() {
             const sel = window.getSelection();
             sel.removeAllRanges();
             sel.addRange(range);
-          } catch(_) {}
+          }
+          catch(_) {}
         }
 
         function tokenize(str){
@@ -5548,18 +5946,7 @@ function setupListTab() {
         if (e.target.closest('.chip') || e.target.closest('.chip-suggest')) return; // avoid edit when clicking existing chips
         startEdit();
       });
-      const ensureRegistries = async () => {
-        window.__REG = window.__REG || {};
-        if (!window.__REG.performers) {
-          try {
-            const r = await fetch('/api/registry/performers');
-            if (r.ok) {
-              const j = await r.json();
-              window.__REG.performers = Array.isArray(j?.data?.performers) ? j.data.performers : (Array.isArray(j?.performers) ? j.performers : []);
-            } else { window.__REG.performers = []; }
-          } catch(_) { window.__REG.performers = []; }
-        }
-      };
+      const ensurePerformerRegistry = () => loadRegistry('performers');
       const renderSuggestions = (kind, existing) => {
         try {
           const baseName = (f?.name || (f?.path ? f.path.split('/').pop() : '') || '').replace(/\.[^.]+$/, '');
@@ -5596,21 +5983,28 @@ function setupListTab() {
                   const list = j?.data?.performers || j?.performers || [];
                   apply(list);
                 }
-              } catch(_) { /* ignore */ }
+              }
+              catch(_) { /* ignore */ }
             });
             wrap.appendChild(chip);
           });
           cont.appendChild(wrap);
-        } catch(_) {}
+        }
+        catch(_) {}
       };
       // Prefer direct row data; fallback to metadata fetch
       let initial = f && (f.performers || f.perfs || f.actors);
-      if (Array.isArray(initial) && initial.length) { ensureRegistries().then(()=>apply(initial)); }
+      if (Array.isArray(initial)) {
+        ensurePerformerRegistry().then(() => apply(initial));
+      }
       else if (f && f.path) {
-        ensureRegistries().then(()=>{
+        ensurePerformerRegistry().then(() => {
           fetchMetadataCached(f.path).then((d) => { if (!td.isConnected) return; apply(d && (d.performers || d.perfs || d.actors || [])); });
         });
-      } else { ensureRegistries().then(()=>apply([])); }
+      }
+      else {
+        ensurePerformerRegistry().then(() => apply([]));
+      }
     }
   });
 
@@ -5642,22 +6036,26 @@ function setupListTab() {
                   const list = j?.data?.tags || j?.tags || [];
                   apply(list);
                 }
-              } catch(_) {}
+              }
+              catch(_) {}
             });
           } else {
             chip.title = `Filter by tag: ${tag}`;
             chip.addEventListener('click', async (e) => {
               e.stopPropagation();
               if (!libraryTagFilters.includes(tag)) libraryTagFilters.push(tag);
-              try { setLocalStorageJSON('filters.tags', libraryTagFilters); } catch(_) {}
-              try { if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips(); } catch(_) {}
-              try { if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState(); } catch(_) {}
+              try { setLocalStorageJSON('filters.tags', libraryTagFilters); }
+              catch(_) {}
+              try { if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips(); }
+              catch(_) {}
+              try { if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState(); }
+              catch(_) {}
               currentPage = 1; loadLibrary();
             });
           }
           cont.appendChild(chip);
         });
-        ensureRegistries().then(()=>renderSuggestions('tag', arr));
+        ensureTagRegistry().then(() => renderSuggestions('tag', arr));
       };
       function startEdit() {
         if (!f.path || td._editing) return;
@@ -5681,7 +6079,8 @@ function setupListTab() {
               url.searchParams.set('path', f.path);
               url.searchParams.set('tag', p);
               await fetch(url.toString(), {method:'POST'});
-            } catch(_) {}
+            }
+            catch(_) {}
           }
           const d = await fetchMetadataCached(f.path).catch(()=>null);
           if (!td.isConnected) return;
@@ -5700,7 +6099,8 @@ function setupListTab() {
             const sel = window.getSelection();
             sel.removeAllRanges();
             sel.addRange(range);
-          } catch(_) {}
+          }
+          catch(_) {}
         }
         function tokenize(str){
           return String(str||'').split(/[,\n]+/).map(s=>s.trim()).filter(Boolean);
@@ -5737,18 +6137,7 @@ function setupListTab() {
         if (e.target.closest('.chip') || e.target.closest('.chip-suggest')) return;
         startEdit();
       });
-      const ensureRegistries = async () => {
-        window.__REG = window.__REG || {};
-        if (!window.__REG.tags) {
-          try {
-            const r = await fetch('/api/registry/tags');
-            if (r.ok) {
-              const j = await r.json();
-              window.__REG.tags = Array.isArray(j?.data?.tags) ? j.data.tags : (Array.isArray(j?.tags) ? j.tags : []);
-            } else { window.__REG.tags = []; }
-          } catch(_) { window.__REG.tags = []; }
-        }
-      };
+      const ensureTagRegistry = () => loadRegistry('tags');
       const renderSuggestions = (kind, existing) => {
         try {
           const baseName = (f?.name || (f?.path ? f.path.split('/').pop() : '') || '').replace(/\.[^.]+$/, '');
@@ -5784,20 +6173,27 @@ function setupListTab() {
                   const list = j?.data?.tags || j?.tags || [];
                   apply(list);
                 }
-              } catch(_) { }
+              }
+              catch(_) { }
             });
             wrap.appendChild(chip);
           });
           cont.appendChild(wrap);
-        } catch(_) {}
+        }
+        catch(_) {}
       };
       let initial = f && (f.tags || f.tag_names);
-      if (Array.isArray(initial) && initial.length) { ensureRegistries().then(()=>apply(initial)); }
+      if (Array.isArray(initial)) {
+        ensureTagRegistry().then(() => apply(initial));
+      }
       else if (f && f.path) {
-        ensureRegistries().then(()=>{
+        ensureTagRegistry().then(() => {
           fetchMetadataCached(f.path).then((d) => { if (!td.isConnected) return; apply(d && (d.tags || d.tag_names || [])); });
         });
-      } else { ensureRegistries().then(()=>apply([])); }
+      }
+      else {
+        ensureTagRegistry().then(() => apply([]));
+      }
     }
   });
   function pad2(n) { n = Number(n)||0; return n < 10 ? '0'+n : String(n); }
@@ -6421,8 +6817,10 @@ function setupListTab() {
                 if (p) selectedItems.add(p);
               }
               listLastAnchorIndex = idx;
-              try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); } catch(_) {}
-              try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); } catch(_) {}
+              try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); }
+              catch(_) {}
+              try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); }
+              catch(_) {}
               return;
             }
           }
@@ -6433,8 +6831,10 @@ function setupListTab() {
             selectedItems.add(path);
             if (idx !== -1) listLastAnchorIndex = idx; // update anchor on plain click
           }
-          try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); } catch(_) {}
-          try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); } catch(_) {}
+          try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); }
+          catch(_) {}
+          try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); }
+          catch(_) {}
         });
         visible.forEach((c) => {
           let td;
@@ -6455,7 +6855,8 @@ function setupListTab() {
         frag.appendChild(tr);
       });
       tbody.appendChild(frag);
-      try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); } catch(_) {}
+      try { if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI(); }
+      catch(_) {}
     }
     function applyColumnWidths() {
       // Ensure column widths are applied consistently to header and body cells
@@ -6497,12 +6898,15 @@ function setupListTab() {
               const rowsNow = Array.from(tbody.querySelectorAll('tr[data-path]'));
               if (master.checked) rowsNow.forEach((r)=>{ const p=r.dataset.path; if (p) selectedItems.add(p); });
               else rowsNow.forEach((r)=>{ const p=r.dataset.path; if (p) selectedItems.delete(p); });
-              try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); } catch(_) {}
-              try { updateListSelectionUI(); } catch(_) {}
+              try { if (typeof updateSelectionUI === 'function') updateSelectionUI(); }
+              catch(_) {}
+              try { updateListSelectionUI(); }
+              catch(_) {}
             });
           }
         }
-      } catch(_) {}
+      }
+      catch(_) {}
     }
     window.__updateListSelectionUI = updateListSelectionUI;
     // Filter chips rendering helpers
@@ -6731,8 +7135,10 @@ function setupListTab() {
       catch(_){ }
       try { if (spinner) hide(spinner); }
       catch(_) { }
-      try { updateListSelectionUI(); } catch(_) {}
-      try { renderFilterChips(); } catch(_) {}
+      try { updateListSelectionUI(); }
+      catch(_) {}
+      try { renderFilterChips(); }
+      catch(_) {}
     }
     async function loadPage() {
       try { if (spinner) show(spinner); }
@@ -6788,8 +7194,10 @@ function setupListTab() {
       else { if (topPager) topPager.style.display='flex'; if (bottomPager) bottomPager.style.display='flex'; }
       try { if (spinner) hide(spinner); }
       catch(_) { }
-      try { updateListSelectionUI(); } catch(_) {}
-      try { renderFilterChips(); } catch(_) {}
+      try { updateListSelectionUI(); }
+      catch(_) {}
+      try { renderFilterChips(); }
+      catch(_) {}
     }
     // Wire controls
     pagerPrev.addEventListener('click', () => {
@@ -6824,7 +7232,8 @@ function setupListTab() {
           colsPanel.style.left = left + 'px';
           colsPanel.style.top = top + 'px';
           colsPanel.style.right = 'auto';
-        } catch(_) {}
+        }
+        catch(_) {}
         colsBtn.setAttribute('aria-expanded', 'true');
       }
       else {
@@ -6871,11 +7280,15 @@ function setupListTab() {
   // If List is already active (first-time activation), load immediately
   try {
     if (window.tabSystem && typeof window.tabSystem.getActiveTab === 'function' && window.tabSystem.getActiveTab() === 'list') {
-      setTimeout(() => { try { loadPage(); } catch (_) {} try { updateListSelectionUI(); } catch(_) {} }, 0);
+      setTimeout(() => { try { loadPage(); }
+      catch (_) {} try { updateListSelectionUI(); }
+      catch(_) {} }, 0);
     }
-  } catch (_) {}
+  }
+  catch (_) {}
 }
-try { window.__LazyTabs && window.__LazyTabs.register('list', setupListTab); } catch (_) {}
+try { window.__LazyTabs && window.__LazyTabs.register('list', setupListTab); }
+catch (_) {}
 // --- Similar Tab (pHash duplicates) ---
 // Minimal tab that lists similar pairs from /api/duplicates with quick Play A/B
 // --- Similar Tab (pHash duplicates) ---
@@ -7067,10 +7480,13 @@ function setupSimilarTab() {
         try {
           const cur = (window.tabSystem && typeof window.tabSystem.getActiveTab === 'function') ? window.tabSystem.getActiveTab() : null;
           if (cur !== 'similar') {
-            setTimeout(() => { try { ts.switchToTab('similar'); } catch(_) {} }, 0);
+            setTimeout(() => { try { ts.switchToTab('similar'); }
+            catch(_) {} }, 0);
           }
-        } catch(_) {}
-        setTimeout(() => { try { loadSimilar(); } catch(_) {} }, 0);
+        }
+        catch(_) {}
+        setTimeout(() => { try { loadSimilar(); }
+        catch(_) {} }, 0);
       }
     }
     catch (_) { /* noop */ }
@@ -7086,11 +7502,15 @@ function setupSimilarTab() {
   // If Similar is already active (first-time activation), load immediately
   try {
     if (window.tabSystem && typeof window.tabSystem.getActiveTab === 'function' && window.tabSystem.getActiveTab() === 'similar') {
-      setTimeout(() => { try { restoreSettings(); } catch (_) {} try { loadSimilar(); } catch (_) {} }, 0);
+      setTimeout(() => { try { restoreSettings(); }
+      catch (_) {} try { loadSimilar(); }
+      catch (_) {} }, 0);
     }
-  } catch (_) {}
+  }
+  catch (_) {}
 }
-try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab); } catch (_) {}
+try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab); }
+catch (_) {}
 
 // =============================
 // Performers Graph (Cytoscape)
@@ -7180,7 +7600,8 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '');
-    } catch(_) { return ''; }
+    }
+    catch(_) { return ''; }
   }
 
   function guessPerformerImagePath(name) {
@@ -7194,7 +7615,8 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
     const nodes = (data.nodes || []).map((n) => {
       const slug = _slugifyName(n && n.name);
       const guessed = guessPerformerImagePath(n && n.name);
-      const provided = (n && typeof n.image === 'string' && n.image) || '';
+      // Unified performer image accessor: prefer images[0]; fallback to legacy image
+      const provided = (n && Array.isArray(n.images) && n.images.length ? n.images[0] : (n && typeof n.image === 'string' ? n.image : '')) || '';
       let img = guessed;
       if (provided) {
         const lower = provided.toLowerCase();
@@ -7207,7 +7629,8 @@ try { window.__LazyTabs && window.__LazyTabs.register('similar', setupSimilarTab
         else if (okNested) img = provided;
         else img = guessed;
       }
-      try { console.log('[Graph] node image', { id: n && n.id, name: n && n.name, image: img, provided, guessed }); } catch(_) {}
+      try { console.log('[Graph] node image', { id: n && n.id, name: n && n.name, image: img, provided, guessed }); }
+      catch(_) {}
       return {
         data: {
           id: n.id,
@@ -7841,9 +8264,11 @@ document.addEventListener('DOMContentLoaded', () => {
   function ensurePlugins() {
     try {
       if (window.cytoscape && window.cytoscapeFcose) {
-        try { window.cytoscape.use(window.cytoscapeFcose); } catch(_) {}
+        try { window.cytoscape.use(window.cytoscapeFcose); }
+        catch(_) {}
       }
-    } catch(_) {}
+    }
+    catch(_) {}
   }
 
   // Local helpers (duplicated from Graph module so this IIFE has access)
@@ -7854,7 +8279,8 @@ document.addEventListener('DOMContentLoaded', () => {
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '');
-    } catch(_) { return ''; }
+    }
+    catch(_) { return ''; }
   }
 
   function guessPerformerImagePath(name) {
@@ -7887,7 +8313,8 @@ document.addEventListener('DOMContentLoaded', () => {
         page += 1;
         if (page > 1000) break; // safety guard
       }
-    } catch(_) { /* ignore */ }
+    }
+    catch(_) { /* ignore */ }
     return out;
   }
 
@@ -7895,7 +8322,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return (perfs || []).map((p) => {
       const slug = _slugifyName(p && p.name);
       const guessed = guessPerformerImagePath(p && p.name);
-      const provided = (p && typeof p.image === 'string' && p.image) || '';
+      const provided = (p && Array.isArray(p.images) && p.images.length ? p.images[0] : (p && typeof p.image === 'string' ? p.image : '')) || '';
       let img = guessed;
       if (provided) {
         const lower = provided.toLowerCase();
@@ -7908,14 +8335,16 @@ document.addEventListener('DOMContentLoaded', () => {
         else if (okNested) img = provided;
         else img = guessed;
       }
-      // try { console.log('[Connections] node image', { id: p && (p.slug || p.name), name: p && p.name, image: img, provided, guessed }); } catch(_) {}
+      // try { console.log('[Connections] node image', { id: p && (p.slug || p.name), name: p && p.name, image: img, provided, guessed }); }
+      // catch(_) {}
       // try {
       //   console.log('[Connections] node image', {
       //     id: p && (p.slug || p.name),
       //     name: p && p.name,
       //     image: img
       //   });
-      // } catch(_) {}
+      // }
+      // catch(_) {}
       return {
         data: {
           id: p.slug || p.name,
@@ -7932,7 +8361,8 @@ document.addEventListener('DOMContentLoaded', () => {
     try { cy.layout(layout).run(); }
     catch(_) {
       try { cy.layout({ name: 'cose', fit: true, padding: 40 }).run(); }
-      catch(_) { try { cy.layout({ name: 'grid', padding: 20 }).run(); } catch(_) {} }
+      catch(_) { try { cy.layout({ name: 'grid', padding: 20 }).run(); }
+      catch(_) {} }
     }
   }
 
@@ -7980,7 +8410,8 @@ document.addEventListener('DOMContentLoaded', () => {
     cy.elements().remove();
     cy.add(elements);
     applyDefaultLayout();
-    setTimeout(() => { try { cy.resize(); cy.fit(null, 30); } catch(_) {} }, 40);
+    setTimeout(() => { try { cy.resize(); cy.fit(null, 30); }
+    catch(_) {} }, 40);
   }
 
   function show() {
@@ -7989,7 +8420,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(loadConnections, 30);
   }
 
-  function resizeFit() { try { if (cy) { cy.resize(); cy.fit(null, 30); } } catch(_) {} }
+  function resizeFit() { try { if (cy) { cy.resize(); cy.fit(null, 30); } }
+  catch(_) {} }
 
   window.Connections = { show, resizeFit };
 })();
@@ -8000,7 +8432,8 @@ window.addEventListener('tabchange', (e) => {
     if (e && e.detail && e.detail.activeTab === 'connections' && window.Connections && typeof window.Connections.show === 'function') {
       setTimeout(() => { window.Connections.show(); window.Connections.resizeFit && window.Connections.resizeFit(); }, 40);
     }
-  } catch(_) {}
+  }
+  catch(_) {}
 });
 
 // Fallbacks: initialize on tab button click and if Connections is already active on load
@@ -8010,14 +8443,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btn && !btn._wiredConnInit) {
       btn._wiredConnInit = true;
       btn.addEventListener('click', () => {
-        try { window.Connections && window.Connections.show && window.Connections.show(); } catch(_) {}
+        try { window.Connections && window.Connections.show && window.Connections.show(); }
+        catch(_) {}
       });
     }
     const panel = document.getElementById('connections-panel');
     if (panel && !panel.hasAttribute('hidden')) {
-      try { window.Connections && window.Connections.show && window.Connections.show(); } catch(_) {}
+      try { window.Connections && window.Connections.show && window.Connections.show(); }
+      catch(_) {}
     }
-  } catch(_) {}
+  }
+  catch(_) {}
 });
 
 // --- API Explorer Tab ---
@@ -8721,7 +9157,8 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const isActive = ts && typeof ts.getActiveTab === 'function' && ts.getActiveTab() === 'api';
       if (isActive) loadSpecAndRender();
-    } catch (_) {}
+    }
+    catch (_) {}
     if (ts) {
       window.addEventListener('tabchange', (ev) => {
         if (ev?.detail?.activeTab === 'api') loadSpecAndRender();
@@ -8891,6 +9328,24 @@ const Player = (() => {
   const keyForVideo = (path) => `${LS_PREFIX}:video:${path}`;
   const keyLastVideoObj = () => `${LS_PREFIX}:last`;
   const keyLastVideoPathLegacy = () => `${LS_PREFIX}:lastVideo`;
+  function rememberLastVideo(path, time = 0) {
+    if (!path) return;
+    try {
+      localStorage.setItem(
+        keyLastVideoObj(),
+        JSON.stringify({
+          path,
+          time: Math.max(0, Number(time) || 0),
+          ts: Date.now(),
+        }),
+      );
+    }
+    catch (_) { }
+    try {
+      localStorage.setItem(keyLastVideoPathLegacy(), path);
+    }
+    catch (_) { }
+  }
   function saveProgress(path, data) {
     try {
       if (!path) return;
@@ -8902,23 +9357,7 @@ const Player = (() => {
         ts: Date.now(),
       });
       localStorage.setItem(keyForVideo(path), payload);
-      // Store compact last object {path, time}
-      try {
-        localStorage.setItem(
-          keyLastVideoObj(),
-          JSON.stringify({
-            path: path,
-            time: Math.max(0, Number(data?.t) || 0),
-            ts: Date.now(),
-          }),
-        );
-      }
-      catch (_) { }
-      // Legacy key for backward compatibility
-      try {
-        localStorage.setItem(keyLastVideoPathLegacy(), path);
-      }
-      catch (_) { }
+      rememberLastVideo(path, data?.t);
     }
     catch (_) { }
   }
@@ -9053,6 +9492,10 @@ const Player = (() => {
     videoEl = qs('playerVideo');
     titleEl = qs('playerTitle');
     overlayBarEl = qs('playerOverlayBar');
+    if (overlayBarEl && !overlayBarEl.dataset.overlayReady) {
+      overlayBarEl.dataset.overlayReady = '1';
+      overlayBarEl.classList.add('fading');
+    }
     if (videoEl && !videoEl._dblWired) {
       videoEl._dblWired = true;
       videoEl.addEventListener('dblclick', async (e) => {
@@ -9071,6 +9514,10 @@ const Player = (() => {
     }
     // Scrubber
     scrubberEl = qs('playerScrubber');
+    if (scrubberEl && !scrubberEl.dataset.overlayReady) {
+      scrubberEl.dataset.overlayReady = '1';
+      scrubberEl.classList.add('fading');
+    }
     scrubberTrackEl = qs('playerScrubberTrack');
     scrubberProgressEl = qs('playerScrubberProgress');
     scrubberBufferEl = qs('playerScrubberBuffer');
@@ -9813,7 +10260,8 @@ const Player = (() => {
             const raw = localStorage.getItem(key);
             const v = Number(raw);
             if (Number.isFinite(v) && v >= 1 && v <= 600) return v;
-          } catch(_) {}
+          }
+          catch(_) {}
           return fallback;
         };
         const back = getJump('setting.jumpBackSeconds', 30);
@@ -9869,7 +10317,8 @@ const Player = (() => {
             const raw = localStorage.getItem(key);
             const v = Number(raw);
             if (Number.isFinite(v) && v >= 1 && v <= 600) return v;
-          } catch(_) {}
+          }
+          catch(_) {}
           return fallback;
         };
         const back = getJump('setting.jumpBackSeconds', 30);
@@ -9884,7 +10333,8 @@ const Player = (() => {
             const raw = localStorage.getItem(key);
             const v = Number(raw);
             if (Number.isFinite(v) && v >= 1 && v <= 600) return v;
-          } catch(_) {}
+          }
+          catch(_) {}
           return fallback;
         };
         const fwd = getJump('setting.jumpFwdSeconds', 30);
@@ -10106,6 +10556,17 @@ const Player = (() => {
   // - A valid last entry exists and file still appears in current listing fetch
   async function tryAutoResumeLast() {
     try {
+      // Only attempt auto-resume when Player tab is active
+      try {
+        if (window.tabSystem && typeof window.tabSystem.getActiveTab === 'function') {
+          const active = window.tabSystem.getActiveTab();
+          if (active !== 'player') {
+            devLog('debug', 'autoResume', 'skipped: player tab not active', { active });
+            return;
+          }
+        }
+      }
+      catch(_) { /* ignore */ }
       const now = Date.now();
       if (playerResetSuppressAutoResumeUntil && now < playerResetSuppressAutoResumeUntil) {
         devLog('debug', 'autoResume', 'skipped: suppression active', {now, until: playerResetSuppressAutoResumeUntil});
@@ -10134,24 +10595,10 @@ const Player = (() => {
       let exists = false;
 
       try {
-        // First check artifact status for quick validation
-        window.__artifactStatus = window.__artifactStatus || {};
-        if (window.__artifactStatus[p]) {
+        // Use shared cached artifact status function
+        const status = await fetchArtifactStatusForPath(p);
+        if (status) {
           exists = true;
-        }
-        else {
-          // Check artifact status endpoint
-          const su = new URL('/api/artifacts/status', window.location.origin);
-          su.searchParams.set('path', p);
-          const sr = await fetch(su.toString());
-          if (sr.ok) {
-            const sj = await sr.json();
-            const sd = sj && (sj.data || sj);
-            if (sd) {
-              window.__artifactStatus[p] = sd;
-              exists = true;
-            }
-          }
         }
 
         // Double-check by probing the actual video file
@@ -10197,6 +10644,9 @@ const Player = (() => {
     }
     catch (_) { }
   }
+  // Expose auto-resume helper for lazy init of Player tab
+  try { window.__tryAutoResumeLast = tryAutoResumeLast; }
+  catch(_) {}
   // Wrap existing initial load hook
   const _origInit = window.addEventListener;
   window.addEventListener('load', () => {
@@ -10233,23 +10683,9 @@ const Player = (() => {
       }
     }
     catch (_) { }
-    try {
-      const wasSkippedFlag = (localStorage.getItem('mediaPlayer:skipSaveOnUnload') === '1');
-      // If skip flag present, do NOT auto-resume; defer clearing until after decision
-      if (!wasSkippedFlag) {
-        lsRemove('mediaPlayer:skipSaveOnUnload');
-        setTimeout(tryAutoResumeLast, 800);
-      }
-      else {
-        devLog('info', 'autoResume', 'suppressed due to skip flag after reset');
-        // Clear flag after a short delay so future sessions resume normally
-        setTimeout(() => {
-          try { lsRemove('mediaPlayer:skipSaveOnUnload'); }
-          catch (_) {}
-        }, 1500);
-      }
-    }
-    catch (_) { }
+    // Do not auto-resume here; it will be triggered lazily when Player tab activates
+    try { lsRemove('mediaPlayer:skipSaveOnUnload'); }
+    catch(_) {}
     // slight delay to allow initial directory list
   });
   window.addEventListener('beforeunload', () => {
@@ -10337,8 +10773,20 @@ const Player = (() => {
     window._volKeysBound = true;
     document.addEventListener('keydown', (e) => {
       if (!videoEl) return;
-      const tag = (document.activeElement && document.activeElement.tagName) || '';
-      const inForm = /INPUT|TEXTAREA|SELECT|BUTTON/.test(tag) || (document.activeElement && document.activeElement.isContentEditable === true);
+      let playerTabActive = true;
+      try {
+        const ts = window.tabSystem;
+        if (ts && typeof ts.getActiveTab === 'function') {
+          playerTabActive = ts.getActiveTab() === 'player';
+        }
+      }
+      catch (_) {
+        playerTabActive = true;
+      }
+      if (!playerTabActive) return;
+      const activeEl = document.activeElement;
+      const tag = (activeEl && activeEl.tagName) || '';
+      const inForm = /INPUT|TEXTAREA|SELECT/.test(tag) || (activeEl && activeEl.isContentEditable === true);
       // Prevent page scroll when focused on body and using space/arrow keys for player
       if (e.key === ' ' || e.key === 'Spacebar' || e.code === 'Space' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         if (!inForm) {
@@ -10370,7 +10818,8 @@ const Player = (() => {
               const raw = localStorage.getItem(key);
               const v = Number(raw);
               if (Number.isFinite(v) && v >= 1 && v <= 600) return v;
-            } catch(_) {}
+            }
+            catch(_) {}
             return fallback;
           };
           const back = getJump('setting.jumpBackSeconds', 30);
@@ -10380,7 +10829,8 @@ const Player = (() => {
           const dur = Number(videoEl.duration || 0) || 0;
           const next = Math.max(0, Math.min(dur || 9e9, cur + delta));
           videoEl.currentTime = next;
-        } catch(_) { }
+        }
+        catch(_) { }
         markKeyboardActive();
         showOverlayBar();
         return;
@@ -11059,8 +11509,6 @@ const Player = (() => {
         clearTimeout(overlayHideTimer);
         overlayHideTimer = null;
       }
-      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-      const shouldDefer = (overlayBarEl.matches(':hover') || (scrubberEl && scrubberEl.matches(':hover')) || scrubberDragging || now < overlayKbActiveUntil);
       // Always schedule a fade check, but only apply if conditions allow
       overlayHideTimer = setTimeout(() => {
         try {
@@ -11256,6 +11704,7 @@ const Player = (() => {
     catch (_) {}
     initDom();
     wireOverlayInteractions();
+    showOverlayBar();
     currentPath = path;
     try {
       if (typeof refreshSidebarThumbnail === 'function') refreshSidebarThumbnail(currentPath);
@@ -11363,8 +11812,14 @@ const Player = (() => {
         });
       }
       // Defer autoplay decision to loadedmetadata restore
-      // Attempt to keep lastVideo reference for convenience
-      saveProgress(path, {t: 0, d: 0, paused: true, rate: 1});
+      // Remember last video without wiping existing progress
+      try {
+        const existing = loadProgress(path);
+        rememberLastVideo(path, existing?.t ?? 0);
+      }
+      catch (_) {
+        rememberLastVideo(path, 0);
+      }
       startScrubberLoop();
       videoEl.addEventListener('ended', () => stopScrubberLoop(), {once: true});
       wireScrubberInteractions();
@@ -11512,11 +11967,13 @@ const Player = (() => {
         await loadArtifactStatuses();
       }
       catch (_) { }
-      // Now that cache is warm, only invoke loaders that might need full data
-      loadHeatmaps();
-      loadSprites();
-      loadScenes();
-      loadSubtitles();
+      // Now that cache is warm, only invoke loaders conditionally:
+      // - Heatmap/Scenes: respect user display toggles
+      // - Sprites/Subtitles: defer until first use (hover / captions toggle)
+      try { if (typeof showHeatmap !== 'undefined' && showHeatmap) loadHeatmaps(); }
+      catch(_) {}
+      try { if (typeof showScenes !== 'undefined' && showScenes) loadScenes(); }
+      catch(_) {}
       try {
         loadVideoChips();
       }
@@ -11575,28 +12032,7 @@ const Player = (() => {
     try {
       const base = (currentPath.split('/').pop() || currentPath).replace(/\.[^.]+$/, '');
       const baseLower = base.toLowerCase();
-      // cache registries
-      window.__REG = window.__REG || {};
-      if (!window.__REG.performers) {
-        try {
-          const r = await fetch('/api/registry/performers');
-          if (r.ok) {
-            const j = await r.json();
-            window.__REG.performers = Array.isArray(j?.data?.performers) ? j.data.performers : (Array.isArray(j?.performers) ? j.performers : []);
-          }
-        }
-        catch (_) { window.__REG.performers = []; }
-      }
-      if (!window.__REG.tags) {
-        try {
-          const r = await fetch('/api/registry/tags');
-          if (r.ok) {
-            const j = await r.json();
-            window.__REG.tags = Array.isArray(j?.data?.tags) ? j.data.tags : (Array.isArray(j?.tags) ? j.tags : []);
-          }
-        }
-        catch (_) { window.__REG.tags = []; }
-      }
+      await loadRegistries(['performers','tags']);
       const perfNames = (window.__REG.performers || []).map((p) => p?.name).filter(Boolean);
       const tagNames = (window.__REG.tags || []).map((t) => t?.name).filter(Boolean);
       const havePerf = new Set((performers || []).map((x) => String(x).toLowerCase()));
@@ -11697,36 +12133,7 @@ const Player = (() => {
   function wireChipInputs() {
     const perfInput = document.getElementById('videoPerformerInput');
     const tagInput = document.getElementById('videoTagInput');
-    // Helper to ensure registries are loaded and cached
-    async function ensureRegistries() {
-      window.__REG = window.__REG || {};
-      if (!window.__REG.performers) {
-        try {
-          const r = await fetch('/api/registry/performers');
-          if (r.ok) {
-            const j = await r.json();
-            window.__REG.performers = Array.isArray(j?.data?.performers) ? j.data.performers : (Array.isArray(j?.performers) ? j.performers : []);
-          }
-          else {
-            window.__REG.performers = [];
-          }
-        }
-        catch (_) { window.__REG.performers = []; }
-      }
-      if (!window.__REG.tags) {
-        try {
-          const r = await fetch('/api/registry/tags');
-          if (r.ok) {
-            const j = await r.json();
-            window.__REG.tags = Array.isArray(j?.data?.tags) ? j.data.tags : (Array.isArray(j?.tags) ? j.tags : []);
-          }
-          else {
-            window.__REG.tags = [];
-          }
-        }
-        catch (_) { window.__REG.tags = []; }
-      }
-    }
+    const ensureChipRegistries = () => loadRegistries(['performers','tags']);
     // Render typeahead suggestions for a given input
     async function updateTypeahead(kind, q) {
       const el = document.getElementById(kind === 'performer' ? 'videoPerformerSuggestions' : 'videoTagSuggestions');
@@ -11737,7 +12144,7 @@ const Player = (() => {
         el.innerHTML = '';
         return;
       }
-      await ensureRegistries();
+      await ensureChipRegistries();
       const regNames = (kind === 'performer' ? (window.__REG.performers || []) : (window.__REG.tags || []))
         .map((x) => x?.name)
         .filter(Boolean);
@@ -12291,7 +12698,8 @@ const Player = (() => {
           const img = document.getElementById('sidebarSpriteImage');
           const box = document.getElementById('sidebarSpritePreview');
           const sheetUrl = typeof sheet === 'string' ? sheet : (sheet?.url || sheet?.path || '');
-          if (img && box && sheetUrl) {
+          // Only set img.src if we have a valid non-empty URL
+          if (img && box && sheetUrl && sheetUrl.trim().length > 0) {
             img.src = sheetUrl + (sheetUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
             box.classList.remove('hidden');
           }
@@ -13001,7 +13409,8 @@ const Player = (() => {
     try {
       window.__artifactStatus = window.__artifactStatus || {};
       window.__artifactStatus[currentPath] = d || {};
-    } catch(_) {}
+    }
+    catch(_) {}
     const keys = ['metadata','thumbnail','preview','phash','sprites','heatmaps','subtitles','markers','faces'];
     await renderArtifactChips(cont, currentPath, { style: 'badge', keys, status: d || {} });
   }
@@ -13123,10 +13532,20 @@ const Player = (() => {
     attach(bPhash, 'phash');
   }
   function handleSpriteHover(evt) {
-    if (!sprites || !sprites.index || !sprites.sheet) {
-      hideSprite();
-      return;
+    // Lazy-load sprites on first hover if available per status
+    try {
+      if ((!sprites || !sprites.index || !sprites.sheet) && currentPath) {
+        const st = window.__artifactStatus && window.__artifactStatus[currentPath];
+        if (st && st.sprites && !window.__spritesRequested) {
+          window.__spritesRequested = true;
+          // Kick off in background; UI will pick up once loaded
+          try { loadSprites && loadSprites(); }
+          catch(_) {}
+        }
+      }
     }
+    catch(_) {}
+    if (!sprites || !sprites.index || !sprites.sheet) { hideSprite(); return; }
     if (!spriteHoverEnabled) {
       hideSprite();
       return;
@@ -13251,7 +13670,8 @@ const Player = (() => {
           preImg.decoding = 'async';
           preImg.loading = 'eager';
           preImg.src = window.__spriteSheetUrlCache;
-        } catch(_) {}
+        }
+        catch(_) {}
       }
       const sheetUrl = window.__spriteSheetUrlCache;
       if (!sheetUrl) { hideSprite(); return; }
@@ -13281,23 +13701,6 @@ const Player = (() => {
       hideSprite();
     }
   }
-  // Spacebar toggles play/pause when player tab is active
-  document.addEventListener('keydown', (e) => {
-    try {
-      if (window.tabSystem?.getActiveTab() !== 'player') return;
-      // Ignore if typing into inputs/selects
-      const tag = (document.activeElement?.tagName || '').toLowerCase();
-      const inCE = !!document.activeElement && document.activeElement.isContentEditable === true;
-      if (tag === 'input' || tag === 'textarea' || tag === 'select' || inCE) return;
-      if (e.code === 'Space') {
-        e.preventDefault();
-        if (!videoEl) return;
-        if (videoEl.paused) safePlay(videoEl);
-        else videoEl.pause();
-      }
-    }
-    catch (_) { }
-  });
   // Persist on unload as a final safeguard
   window.addEventListener('beforeunload', () => {
     try {
@@ -14139,7 +14542,8 @@ const Performers = (() => {
           if (Array.isArray(boxNow) && boxNow.length === 4) {
             updatePerformerAvatarsLive(performer, boxNow);
           }
-        } catch(_) {}
+        }
+        catch(_) {}
         scheduleAutoSave();
       }
     }
@@ -14239,7 +14643,8 @@ const Performers = (() => {
         const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFrac) * 100));
         avatarEl.style.backgroundSize = `${scaleW}% auto`;
         // Intentionally do NOT set avatarEl.dataset.faceBox here to avoid implying persistence
-      } catch(_) { }
+      }
+      catch(_) { }
     }
   }
   function updatePerformerAvatars(performer) {
@@ -14454,7 +14859,27 @@ const Performers = (() => {
               const fd = new FormData();
               for (const f of list) {
                 const name = (f && (f.webkitRelativePath || f.name)) || f.name;
-                fd.append('files', f, name);
+                // Use existing _slugifyName utility to avoid duplication
+                let finalName = name;
+                try {
+                  const parts = name.split('/');
+                  const leaf = parts.pop() || name;
+                  const dotIdx = leaf.lastIndexOf('.');
+                  let base = leaf; let ext = '';
+                  if (dotIdx > 0) { base = leaf.slice(0, dotIdx); ext = leaf.slice(dotIdx + 1); }
+                  const slugBase = _slugifyName(base);
+                  if (slugBase) {
+                    const slugFile = ext ? `${slugBase}.${ext.toLowerCase()}` : slugBase;
+                    finalName = (parts.length ? parts.join('/') + '/' : '') + slugFile;
+                    if (finalName !== name) {
+                      const wrapped = new File([f], slugFile, { type: f.type });
+                      fd.append('files', wrapped, finalName);
+                      continue;
+                    }
+                  }
+                }
+                catch(_) { }
+                fd.append('files', f, finalName);
               }
               const res = await fetch('/api/performers/images/upload?replace=false&create_missing=true', { method: 'POST', body: fd });
               const j = await res.json();
@@ -14558,7 +14983,8 @@ const Performers = (() => {
     if (!gridEl) return;
     const r0 = performance.now ? performance.now() : Date.now();
     try {
-      const withImg = performers.filter(p => p && p.image).length;
+      // Count performers that have at least one image in unified images array (fallback legacy field)
+      const withImg = performers.filter(p => p && ((Array.isArray(p.images) && p.images.length) || p.image)).length;
       if (debugEnabled()) console.log('[Performers:render:start]', { performers: performers.length, withImg, selected: selected.size });
     }
     catch(_){ }
@@ -14711,9 +15137,10 @@ const Performers = (() => {
         if (avatarEl) {
           avatarEl.title = p.name;
           try {
-            if (p.image) {
+            const primaryImage = (Array.isArray(p.images) && p.images.length ? p.images[0] : (typeof p.image === 'string' ? p.image : '')) || '';
+            if (primaryImage) {
               // Use encoded URL and quote it to handle spaces and special chars reliably
-              const imgUrl = typeof p.image === 'string' ? encodeURI(p.image) : '';
+              const imgUrl = encodeURI(primaryImage);
               avatarEl.style.backgroundImage = `url("${imgUrl}")`;
               try { avatarEl.dataset.imgUrl = imgUrl; }
               catch(_){}
@@ -14834,13 +15261,19 @@ const Performers = (() => {
   updateSelectionUI();
   const r2 = performance.now ? performance.now() : Date.now();
   if (debugEnabled()) console.log('[Performers:render:done]', { totalMs: Math.round(r2 - r0) });
-    // Ensure performers grid loads on page load (idempotent)
-    if (!window.__perfAutoFetched) {
+  // Ensure performers grid loads on page load (idempotent) ONLY if performers tab is initially active.
+  // (If tab not active, lazy loaders will trigger later via tabchange.)
+  try {
+    const perfPanel = document.getElementById('performers-panel');
+    const initiallyVisible = perfPanel && !perfPanel.hasAttribute('hidden');
+    if (initiallyVisible && !window.__perfAutoFetched) {
       window.__perfAutoFetched = true;
       window.addEventListener('DOMContentLoaded', () => {
         if (window.fetchPerformers) window.fetchPerformers();
-      }, {once: true});
+      }, { once: true });
     }
+  }
+  catch(_) {}
   }
   function updateSelectionUI() {
     document.querySelectorAll('.perf-card').forEach((c) => {
@@ -15492,6 +15925,26 @@ const Performers = (() => {
   let renameConfirmBtn = null;
   let renameInput = null;
   let renameSelectedWrap = null;
+
+  function ensureMergeModalElements() {
+    const doc = document;
+    if (!mergePanel) mergePanel = doc.getElementById('tagMergeModal');
+    if (!mergeCloseBtn) mergeCloseBtn = doc.getElementById('tagMergeClose');
+    if (!mergeCancelBtn) mergeCancelBtn = doc.getElementById('tagMergeCancel');
+    if (!mergeConfirmBtn) mergeConfirmBtn = doc.getElementById('tagMergeConfirm');
+    if (!mergeIntoInput) mergeIntoInput = doc.getElementById('tagMergeInto');
+    if (!mergeSelectedWrap) mergeSelectedWrap = doc.getElementById('tagMergeSelected');
+  }
+
+  function ensureRenameModalElements() {
+    const doc = document;
+    if (!renamePanel) renamePanel = doc.getElementById('tagRenameModal');
+    if (!renameCloseBtn) renameCloseBtn = doc.getElementById('tagRenameClose');
+    if (!renameCancelBtn) renameCancelBtn = doc.getElementById('tagRenameCancel');
+    if (!renameConfirmBtn) renameConfirmBtn = doc.getElementById('tagRenameConfirm');
+    if (!renameInput) renameInput = doc.getElementById('tagRenameInput');
+    if (!renameSelectedWrap) renameSelectedWrap = doc.getElementById('tagRenameSelected');
+  }
 
   function ensureModalDom() {
     if (!mergePanel) {
@@ -16211,16 +16664,10 @@ const Tags = (() => {
   let deleteBtn = null;
   let importFile = null;
   let dropZone = null;
-  let autoTagBtn = null;
-  // Manual Add UI
-  let manualBtn = null;
-  let manualPanel = null;
-  let manualName = null;
-  let manualPatterns = null;
-  let manualPreviewBtn = null;
-  let manualApplyAllBtn = null;
-  let manualStatus = null;
-  let manualResults = null;
+  let addTagBtn = null;
+  // Auto-match button state
+  let autoMatchBtn = null;
+  let autoMatchRunning = false;
   // Merge Modal UI
   let mergePanel = null;
   let mergeCloseBtn = null;
@@ -16280,34 +16727,19 @@ const Tags = (() => {
     pageSizeSelB = document.getElementById('tagPageSizeBottom');
     importBtn = document.getElementById('tagImportBtn');
     mergeBtn = document.getElementById('tagMergeBtn');
-  renameBtn = document.getElementById('tagRenameBtn');
+    renameBtn = document.getElementById('tagRenameBtn');
     deleteBtn = document.getElementById('tagDeleteBtn');
     importFile = document.getElementById('tagImportFile');
     dropZone = document.getElementById('tagDropZone');
-    autoTagBtn = document.getElementById('tagAutoTagBtn');
-    // Manual add controls
-    manualBtn = document.getElementById('tagManualAddBtn');
-    manualPanel = document.getElementById('tagManualModal');
-    manualName = document.getElementById('manualTagName');
-    manualPatterns = document.getElementById('manualTagPatterns');
-    manualPreviewBtn = document.getElementById('manualPreviewBtn');
-    manualApplyAllBtn = document.getElementById('manualApplyAllBtn');
-    manualStatus = document.getElementById('manualStatus');
-    manualResults = document.getElementById('manualResults');
+    addTagBtn = document.getElementById('tagAddBtn');
+    autoMatchBtn = document.getElementById('tagAutoMatchBtn');
+    if (autoMatchBtn && !autoMatchBtn._idleLabel) {
+      const txt = (autoMatchBtn.textContent || '').trim();
+      autoMatchBtn._idleLabel = txt || 'Auto Match';
+    }
     // Merge Modal elements
-    mergePanel = document.getElementById('tagMergeModal');
-    mergeCloseBtn = document.getElementById('tagMergeClose');
-    mergeCancelBtn = document.getElementById('tagMergeCancel');
-    mergeConfirmBtn = document.getElementById('tagMergeConfirm');
-    mergeIntoInput = document.getElementById('tagMergeInto');
-    mergeSelectedWrap = document.getElementById('tagMergeSelected');
-    // Rename Modal elements
-    renamePanel = document.getElementById('tagRenameModal');
-    renameCloseBtn = document.getElementById('tagRenameClose');
-    renameCancelBtn = document.getElementById('tagRenameCancel');
-    renameConfirmBtn = document.getElementById('tagRenameConfirm');
-    renameInput = document.getElementById('tagRenameInput');
-    renameSelectedWrap = document.getElementById('tagRenameSelected');
+    ensureMergeModalElements();
+    ensureRenameModalElements();
     try {
       if (debugEnabled()) console.log('[Tags:initDom]', {
         gridEl: !!gridEl,
@@ -16326,10 +16758,20 @@ const Tags = (() => {
     catch (_) {}
     wireEvents();
   }
-  function openMergeModal(fromName, otherName) {
-    if (!mergePanel) return;
+  function openMergeModal(selectedNames = []) {
+    ensureMergeModalElements();
+    if (!mergePanel) {
+      try { console.warn('[Tags:openMergeModal] merge modal unavailable'); }
+      catch(_) { }
+      toastTags('Merge dialog is still loading. Try again in a moment.', 'is-info');
+      return;
+    }
+    const names = (selectedNames || [])
+      .map((name) => (name || '').trim())
+      .filter(Boolean);
+    if (!names.length) return;
     try {
-      if (debugEnabled()) console.log(`[Tags:openMergeModal] start from="${fromName}" other="${otherName}" hasPanel=${!!mergePanel}`);
+      if (debugEnabled()) console.log('[Tags:openMergeModal] start', { names, hasPanel: !!mergePanel });
       if (mergeSelectedWrap) {
         mergeSelectedWrap.innerHTML = '';
         const makeChip = (name) => {
@@ -16341,12 +16783,15 @@ const Tags = (() => {
           span.appendChild(lab);
           return span;
         };
-        mergeSelectedWrap.appendChild(makeChip(fromName));
-        mergeSelectedWrap.appendChild(document.createTextNode(' + '));
-        mergeSelectedWrap.appendChild(makeChip(otherName));
+        names.forEach((name, idx) => {
+          mergeSelectedWrap.appendChild(makeChip(name));
+          if (idx < names.length - 1) {
+            mergeSelectedWrap.appendChild(document.createTextNode(' + '));
+          }
+        });
       }
       if (mergeIntoInput) {
-        mergeIntoInput.value = fromName || '';
+        mergeIntoInput.value = names[0] || '';
       }
       if (mergeConfirmBtn) {
         mergeConfirmBtn.disabled = !(mergeIntoInput && mergeIntoInput.value.trim());
@@ -16386,7 +16831,13 @@ const Tags = (() => {
     catch(_) { }
   }
   function openRenameModal(currentName) {
-    if (!renamePanel) return;
+    ensureRenameModalElements();
+    if (!renamePanel) {
+      try { console.warn('[Tags:openRenameModal] rename modal unavailable'); }
+      catch(_) { }
+      toastTags('Rename dialog is still loading. Try again in a moment.', 'is-info');
+      return;
+    }
     try {
       if (debugEnabled()) console.log('[Tags:openRenameModal] start');
       if (renameSelectedWrap) {
@@ -16425,7 +16876,7 @@ const Tags = (() => {
   function ensureControlsVisible() {
     try {
       const toolbar = document.querySelector('#tags-panel .perf-toolbar');
-      const elts = [toolbar, importBtn, mergeBtn, deleteBtn, autoTagBtn, dropZone, statusEl, tagsSpinnerEl, pager, pagerB, gridEl, searchEl, countEl, pageSizeSel, pageSizeSelB, prevBtn, nextBtn, prevBtnB, nextBtnB];
+      const elts = [toolbar, importBtn, addTagBtn, autoMatchBtn, mergeBtn, deleteBtn, dropZone, statusEl, tagsSpinnerEl, pager, pagerB, gridEl, searchEl, countEl, pageSizeSel, pageSizeSelB, prevBtn, nextBtn, prevBtnB, nextBtnB];
       elts.forEach((el) => {
         if (!el) return;
         try {
@@ -16446,6 +16897,189 @@ const Tags = (() => {
     if (showFlag) showAs(statusEl, 'block'); else hide(statusEl);
     if (tagsSpinnerEl) tagsSpinnerEl.hidden = !showFlag;
   }
+  function toastTags(message, type = 'is-info') {
+    try {
+      const normalized = (type && typeof type === 'string' && type.startsWith('is-')) ? type.slice(3) : (type || 'info');
+      if (window.showToast) {
+        window.showToast(message, type || 'is-info');
+      }
+      else if (typeof notify === 'function') {
+        notify(message, normalized);
+      }
+    }
+    catch (_) {}
+  }
+  function buildAutoMatchPairs(selectedNames, candidates) {
+    const tagLookup = new Map();
+    selectedNames.forEach((name) => {
+      if (!name) return;
+      tagLookup.set(String(name).toLowerCase(), name);
+    });
+    const dedupe = new Set();
+    const pairs = [];
+    candidates.forEach((row) => {
+      const file = String(row && row.file || '').trim();
+      if (!file) return;
+      const hits = Array.isArray(row && row.tags) ? row.tags : [];
+      hits.forEach((rawTag) => {
+        if (!rawTag) return;
+        const normalized = String(rawTag).toLowerCase();
+        const tagName = tagLookup.get(normalized);
+        if (!tagName) return;
+        const key = `${file}|||${tagName}`;
+        if (dedupe.has(key)) return;
+        dedupe.add(key);
+        pairs.push({ file, tag: tagName });
+      });
+    });
+    return pairs;
+  }
+  function partitionPairsByExistingTags(pairs, infoByPath) {
+    const pending = [];
+    let skipped = 0;
+    const localSets = new Map();
+    const getInfo = (path) => {
+      if (!path) return null;
+      if (localSets.has(path)) return localSets.get(path);
+      let info = null;
+      if (infoByPath) {
+        if (typeof infoByPath.get === 'function') info = infoByPath.get(path);
+        else if (infoByPath[path]) info = infoByPath[path];
+      }
+      const tags = Array.isArray(info?.tags) ? info.tags : [];
+      const set = new Set(tags.map((t) => String(t).toLowerCase()));
+      localSets.set(path, set);
+      return set;
+    };
+    pairs.forEach((pair) => {
+      const file = pair && pair.file;
+      const tagName = pair && pair.tag;
+      if (!file || !tagName) return;
+      const set = getInfo(file) || new Set();
+      if (!localSets.has(file)) localSets.set(file, set);
+      const key = String(tagName).toLowerCase();
+      if (set.has(key)) {
+        skipped++;
+        return;
+      }
+      set.add(key);
+      pending.push(pair);
+    });
+    return { pending, skipped };
+  }
+  async function summarizeAutoMatchTargets(files) {
+    const unique = Array.from(new Set((files || []).filter(Boolean)));
+    if (!unique.length) return { total: 0, untagged: 0, infoByPath: new Map() };
+    const rows = await fetchMediaInfoBulk(unique, { includeSidecar: false });
+    const infoByPath = new Map();
+    rows.forEach((row) => {
+      if (row && row.path) infoByPath.set(row.path, row);
+    });
+    let untagged = 0;
+    unique.forEach((path) => {
+      const info = infoByPath.get(path);
+      const tags = Array.isArray(info?.tags) ? info.tags : [];
+      if (!tags.length) untagged++;
+    });
+    return { total: unique.length, untagged, infoByPath };
+  }
+  async function applyAutoMatchPairs(pairs) {
+    const pending = Array.isArray(pairs) ? pairs.filter((p) => p && p.file && p.tag) : [];
+    if (!pending.length) return 0;
+    let applied = 0;
+    const chunkSize = 200;
+    for (let i = 0; i < pending.length; i += chunkSize) {
+      const batch = pending.slice(i, i + chunkSize);
+      const updates = batch
+        .map((item) => ({ path: item.file, tag: item.tag }))
+        .filter((u) => u.path && u.tag);
+      if (!updates.length) continue;
+      try {
+        const resp = await fetch('/api/media/tags/bulk-add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ updates }),
+        });
+        if (!resp.ok) continue;
+        const json = await resp.json().catch(() => null);
+        const delta = Number(json?.data?.updated ?? json?.updated ?? 0) || 0;
+        if (delta) applied += delta;
+        if (window.__mediaInfoCache) {
+          updates.forEach(({ path, tag }) => {
+            const entry = window.__mediaInfoCache[path];
+            if (!entry) return;
+            entry.tags = Array.isArray(entry.tags) ? entry.tags : [];
+            const exists = entry.tags.some((t) => String(t).toLowerCase() === String(tag).toLowerCase());
+            if (!exists) entry.tags.push(tag);
+          });
+        }
+      }
+      catch (_) {
+        /* ignore batch failures */
+      }
+    }
+    return applied;
+  }
+  async function runAutoMatch() {
+    if (autoMatchRunning) return;
+    const selectedNames = Array.from(selected);
+    if (!selectedNames.length) {
+      toastTags('Select at least one tag to auto match', 'is-info');
+      return;
+    }
+    autoMatchRunning = true;
+    updateButtons();
+    setStatus('Scanning filenames for selected tags…', true);
+    try {
+      const payload = { path: null, recursive: true, tags: selectedNames, use_registry_tags: false, limit: 800 };
+      const resp = await fetch('/api/autotag/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        throw new Error((json && json.message) || 'Preview failed');
+      }
+      const candidates = (json && json.data && Array.isArray(json.data.candidates)) ? json.data.candidates : [];
+      const pairs = buildAutoMatchPairs(selectedNames, candidates);
+      if (!pairs.length) {
+        toastTags('No matches found for those tags', 'is-info');
+        return;
+      }
+      setStatus('Collecting tag stats…', true);
+      const targetStats = await summarizeAutoMatchTargets(pairs.map((p) => p.file));
+      const infoByPath = targetStats.infoByPath || new Map();
+      const { pending, skipped } = partitionPairsByExistingTags(pairs, infoByPath);
+      if (!pending.length) {
+        toastTags('Those files already have the selected tag(s)', 'is-info');
+        return;
+      }
+      const statsLabel = `${targetStats.untagged} untagged, ${targetStats.total} total`;
+      const pendingFileCount = new Set(pending.map((p) => p.file)).size;
+      const skippedLabel = skipped ? `, ${skipped} already tagged` : '';
+      const summaryDetails = `${statsLabel}${skippedLabel}`;
+      setStatus(`Applying matches to ${pendingFileCount} video${pendingFileCount === 1 ? '' : 's'} (${summaryDetails})…`, true);
+      const applied = await applyAutoMatchPairs(pending);
+      if (applied > 0) {
+        needRefresh = true;
+        await fetchTags();
+        toastTags(`Auto-matched ${applied} tag update${applied === 1 ? '' : 's'} (${summaryDetails})`, 'is-success');
+      }
+      else {
+        toastTags(`No files were updated (${summaryDetails})`, 'is-info');
+      }
+    }
+    catch (err) {
+      const msg = (err && err.message) ? err.message : 'Auto-match failed';
+      toastTags(msg, 'is-error');
+    }
+    finally {
+      autoMatchRunning = false;
+      setStatus('', false);
+      updateButtons();
+    }
+  }
   function tpl(id) {
     const t = document.getElementById(id);
     return t ? t.content.cloneNode(true) : null;
@@ -16459,9 +17093,22 @@ const Tags = (() => {
     sortOrderBtn.title = isDesc ? 'Descending' : 'Ascending';
   }
   function updateButtons() {
-    if (mergeBtn) mergeBtn.disabled = selected.size !== 2;
+    if (mergeBtn) mergeBtn.disabled = selected.size < 2;
     if (renameBtn) renameBtn.disabled = selected.size !== 1;
     if (deleteBtn) deleteBtn.disabled = selected.size === 0;
+    if (autoMatchBtn) {
+      if (!autoMatchBtn._idleLabel) {
+        const lbl = (autoMatchBtn.textContent || '').trim();
+        autoMatchBtn._idleLabel = lbl || 'Auto Match';
+      }
+      autoMatchBtn.disabled = autoMatchRunning || selected.size === 0;
+      if (!autoMatchRunning && autoMatchBtn._idleLabel) {
+        autoMatchBtn.textContent = autoMatchBtn._idleLabel;
+      }
+      else if (autoMatchRunning) {
+        autoMatchBtn.textContent = 'Auto Matching…';
+      }
+    }
     try {
       const md = mergeBtn ? mergeBtn.disabled : '?';
       const rd = renameBtn ? renameBtn.disabled : '?';
@@ -16746,11 +17393,15 @@ const Tags = (() => {
     if (renameBtn && !renameBtn._wired) {
       renameBtn._wired = true;
       renameBtn.addEventListener('click', () => {
-        if (selected.size !== 1) return;
+        if (selected.size !== 1) {
+          toastTags('Select exactly one tag to rename', 'is-info');
+          return;
+        }
         const oldName = Array.from(selected)[0];
         openRenameModal(oldName);
       });
     }
+    ensureRenameModalElements();
     if (renamePanel && !renamePanel._wired) {
       renamePanel._wired = true;
       const onInput = () => {
@@ -16820,133 +17471,32 @@ const Tags = (() => {
       nextBtnB._wired = true;
       nextBtnB.addEventListener('click', handleNext);
     }
-    // Manual Add modal open/close
-    function openManualModal() {
-      if (!manualPanel) return;
-      show(manualPanel);
-      manualPanel.setAttribute('data-open', '1');
-      document.addEventListener('keydown', escListener);
+    if (autoMatchBtn && !autoMatchBtn._wired) {
+      autoMatchBtn._wired = true;
+      autoMatchBtn.addEventListener('click', runAutoMatch);
     }
-    function closeManualModal() {
-      if (!manualPanel) return;
-      hide(manualPanel);
-      manualPanel.removeAttribute('data-open');
-      document.removeEventListener('keydown', escListener);
-    }
-    function escListener(e) {
-      if (e.key === 'Escape') closeManualModal();
-    }
-    if (manualBtn && !manualBtn._wired) {
-      manualBtn._wired = true;
-      manualBtn.addEventListener('click', openManualModal);
-    }
-    if (manualPanel && !manualPanel._wired) {
-      manualPanel._wired = true;
-      const closeBtn = document.getElementById('tagManualClose');
-      if (closeBtn) closeBtn.addEventListener('click', closeManualModal);
-      // backdrop click to close
-      manualPanel.addEventListener('click', (e) => {
-        if (e.target === manualPanel) closeManualModal();
-      });
-    }
-    const setManualStatus = (msg) => {
-      if (manualStatus) manualStatus.textContent = msg || '';
-    };
-    const renderManualResults = (candidates, tagName) => {
-      if (!manualResults) return;
-      manualResults.innerHTML = '';
-      if (!Array.isArray(candidates) || !candidates.length) {
-        const div = document.createElement('div');
-        div.className = 'hint-sm';
-        div.textContent = 'No matches.';
-        manualResults.appendChild(div);
-        return;
-      }
-      const list = document.createElement('div');
-      list.className = 'manual-results-list';
-      const tpl = document.getElementById('manualTagRowTemplate');
-      for (const c of candidates) {
-        const node = tpl ? tpl.content.cloneNode(true) : null;
-        if (!node) continue;
-        const row = node.querySelector('.manual-result-row');
-        const fileEl = node.querySelector('.file');
-        const btn = node.querySelector('button.apply');
-        if (fileEl) fileEl.textContent = c.file;
-        if (btn) {
-          btn.addEventListener('click', async () => {
-            try {
-              const url = `/api/media/tags/add?path=${encodeURIComponent(c.file)}&tag=${encodeURIComponent(tagName)}`;
-              const r = await fetch(url, {method: 'POST'});
-              if (!r.ok) throw new Error('Failed');
-              btn.textContent = '✔';
-              btn.disabled = true;
-              needRefresh = true;
-            }
-            catch (_) {
-              if (window.showToast) window.showToast('Apply failed', 'is-error');
-            }
-          });
-        }
-        list.appendChild(node);
-      }
-      manualResults.appendChild(list);
-    };
-    // Manual Preview
-    if (manualPreviewBtn && !manualPreviewBtn._wired) {
-      manualPreviewBtn._wired = true;
-      manualPreviewBtn.addEventListener('click', async () => {
-        const tagName = (manualName && manualName.value || '').trim();
-        const patternsRaw = (manualPatterns && manualPatterns.value || '').trim();
-        if (!tagName || !patternsRaw) {
-          setManualStatus('Enter a tag name and at least one match string.');
-          return;
-        }
-        const pats = patternsRaw
-        .split(/[\r\n,]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-        setManualStatus('Previewing…');
+    if (addTagBtn && !addTagBtn._wired) {
+      addTagBtn._wired = true;
+      addTagBtn.addEventListener('click', async () => {
+        const raw = prompt('New tag name:');
+        const name = raw ? raw.trim() : '';
+        if (!name) return;
         try {
-          const body = { path: null, recursive: true, tags: pats, use_registry_tags: false, limit: 500 };
-          const r = await fetch('/api/autotag/preview', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-          const j = await r.json();
-          const candidates = (j && j.data && j.data.candidates) || [];
-          // Transform: we want to apply tagName to every candidate
-          renderManualResults(candidates.map((c) => ({file: c.file})), tagName);
-          setManualStatus(`${candidates.length} match${candidates.length === 1 ? '' : 'es'} found`);
+          const resp = await fetch('/api/registry/tags/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+          });
+          if (!resp.ok) throw new Error('Failed');
+          if (window.showToast) window.showToast('Tag added', 'is-success');
+          needRefresh = true;
+          await fetchTags();
         }
-        catch (e) {
-          setManualStatus('Preview failed');
+        catch (err) {
+          if (window.showToast) window.showToast(err?.message || 'Failed to add tag', 'is-error');
         }
       });
     }
-    // Manual Apply All
-    if (manualApplyAllBtn && !manualApplyAllBtn._wired) {
-      manualApplyAllBtn._wired = true;
-      manualApplyAllBtn.addEventListener('click', async () => {
-        const tagName = (manualName && manualName.value || '').trim();
-        if (!tagName || !manualResults) return;
-        const rows = manualResults.querySelectorAll('.manual-result-row');
-        let ok = 0;
-        for (const row of rows) {
-          const file = row.querySelector('.file')?.textContent || '';
-          const btn = row.querySelector('button.apply');
-          if (!file || !btn || btn.disabled) continue;
-          try {
-            const url = `/api/media/tags/add?path=${encodeURIComponent(file)}&tag=${encodeURIComponent(tagName)}`;
-            const r = await fetch(url, {method: 'POST'});
-            if (!r.ok) throw new Error('fail');
-            btn.textContent = '✔';
-            btn.disabled = true;
-            ok++;
-            needRefresh = true;
-          }
-          catch (_) { }
-        }
-        if (window.showToast) window.showToast(`Applied to ${ok} file(s)`, 'is-success');
-      });
-    }
-    // Close wiring handled above via tagManualClose and backdrop
     // Drop zone wiring (drag/drop and click-to-open)
     if (dropZone && !dropZone._wired) {
       dropZone._wired = true;
@@ -17064,22 +17614,6 @@ const Tags = (() => {
         }
       }, true);
     }
-    if (autoTagBtn && !autoTagBtn._wired) {
-      autoTagBtn._wired = true;
-      autoTagBtn.addEventListener('click', () => {
-        try {
-          const tasksTab = document.querySelector('[data-tab="tasks"]');
-          if (tasksTab) tasksTab.click();
-          setTimeout(() => {
-            const el = document.getElementById('autotagTagsSection');
-            if (el && el.scrollIntoView) {
-              el.scrollIntoView({behavior: 'smooth', block: 'start'});
-            }
-          }, 60);
-        }
-        catch (_) { }
-      });
-    }
     const handlePageSizeChange = async (sel) => {
       const v = parseInt(sel.value, 10);
       if (Number.isFinite(v) && v > 0) {
@@ -17144,7 +17678,8 @@ const Tags = (() => {
           console.log(`[Tags:mergeBtn:click] size=${selected.size} selected=${Array.from(selected).join(',')}`);
         }
         catch(_) { }
-        if (selected.size !== 2) {
+        if (selected.size < 2) {
+          toastTags('Select at least two tags to merge', 'is-info');
           try {
             if (debugEnabled()) console.log('[Tags:mergeBtn:click] not-enough-selected');
           }
@@ -17152,17 +17687,15 @@ const Tags = (() => {
           return;
         }
         const arr = [...selected];
-        // Show custom merge modal instead of prompt
-        const a = arr[0];
-        const b = arr[1];
         try {
-          if (debugEnabled()) console.log(`[Tags:mergeBtn:click] opening-modal a="${a}" b="${b}"`);
+          if (debugEnabled()) console.log('[Tags:mergeBtn:click] opening-modal', { names: arr });
         }
         catch(_) { }
-        openMergeModal(a, b);
+        openMergeModal(arr);
       });
     }
     // Wire Merge modal interactions once
+    ensureMergeModalElements();
     if (mergePanel && !mergePanel._wired) {
       mergePanel._wired = true;
       const escHandler = (e) => { if (e.key === 'Escape') closeMergeModal(); };
@@ -17190,33 +17723,77 @@ const Tags = (() => {
       }
       if (mergeConfirmBtn) {
         mergeConfirmBtn.addEventListener('click', async () => {
+          const rawSelection = Array.from(selected || []);
           try {
-            try { if (debugEnabled()) console.log(`[Tags:mergeModal:confirm:click] start size=${selected.size} selected=${Array.from(selected).join(',')}`); }
-            catch(_) { }
-            if (selected.size !== 2) {
-            try { if (debugEnabled()) console.log('[Tags:mergeModal:confirm] wrong-selected-size'); }
-            catch(_) { } closeMergeModal(); return; }
-            const arr = [...selected];
-            const intoName = (mergeIntoInput && mergeIntoInput.value.trim()) || '';
-            if (!intoName) return;
-            const fromName = arr.find((s) => s !== intoName) || arr[0];
-            const url = `/api/registry/tags/merge?from_name=${encodeURIComponent(fromName)}&into_name=${encodeURIComponent(intoName)}`;
-            try { if (debugEnabled()) console.log(`[Tags:mergeModal:confirm] request url=${url} from="${fromName}" into="${intoName}"`); }
-            catch(_) { }
-            const r = await fetch(url, {method: 'POST'});
-            try { if (debugEnabled()) console.log(`[Tags:mergeModal:confirm] response ok=${r.ok} status=${r.status}`); }
-            catch(_) { }
-            if (!r.ok) throw new Error('Merge failed');
-            if (window.showToast) window.showToast(`Merged '${fromName}' into '${intoName}'`, 'is-success');
+            if (debugEnabled()) console.log('[Tags:mergeModal:confirm:click] start', { size: rawSelection.length, selected: rawSelection });
+          }
+          catch(_) { }
+          if (rawSelection.length < 2) {
+            toastTags('Select at least two tags to merge', 'is-info');
+            closeMergeModal();
+            return;
+          }
+          const intoName = (mergeIntoInput && mergeIntoInput.value.trim()) || '';
+          if (!intoName) return;
+          const selection = rawSelection
+            .map((name) => (name || '').trim())
+            .filter(Boolean);
+          if (selection.length < 2) {
+            toastTags('Select at least two tags to merge', 'is-info');
+            closeMergeModal();
+            return;
+          }
+          const destKey = intoName.toLowerCase();
+          let sources = selection.filter((name) => name.toLowerCase() !== destKey);
+          if (!sources.length && selection.length >= 2) {
+            sources = [...selection];
+          }
+          const seenLower = new Set();
+          sources = sources.filter((name) => {
+            const key = name.toLowerCase();
+            if (seenLower.has(key)) return false;
+            seenLower.add(key);
+            return true;
+          });
+          if (!sources.length) {
+            toastTags('Nothing to merge. Pick a different destination name.', 'is-info');
+            mergeConfirmBtn.disabled = false;
+            return;
+          }
+          mergeConfirmBtn.disabled = true;
+          try {
+            for (const src of sources) {
+              const params = new URLSearchParams({ from_name: src, into_name: intoName });
+              const url = `/api/registry/tags/merge?${params.toString()}`;
+              try { if (debugEnabled()) console.log('[Tags:mergeModal:confirm] request', { url, src, intoName }); }
+              catch(_) { }
+              const resp = await fetch(url, { method: 'POST' });
+              if (!resp.ok) {
+                let errMsg = 'Merge failed';
+                try {
+                  const payload = await resp.json();
+                  errMsg = payload?.error || errMsg;
+                }
+                catch (_) {}
+                throw new Error(errMsg);
+              }
+            }
+            if (window.showToast) {
+              const count = sources.length;
+              window.showToast(`Merged ${count} tag${count === 1 ? '' : 's'} into '${intoName}'`, 'is-success');
+            }
             closeMergeModal();
             selected.clear();
             needRefresh = true;
             await fetchTags();
           }
           catch (err) {
-            try { console.warn(`[Tags:mergeModal:confirm] error ${err && err.message ? err.message : err}`); }
+            try { console.warn('[Tags:mergeModal:confirm] error', err); }
             catch(_) { }
-            if (window.showToast) window.showToast(err.message || 'Merge failed', 'is-error');
+            if (window.showToast) window.showToast(err?.message || 'Merge failed', 'is-error');
+          }
+          finally {
+            mergeConfirmBtn.disabled = false;
           }
         });
       }
@@ -17235,23 +17812,46 @@ const Tags = (() => {
             const hit = tags.find((t) => (t.slug || _slugify(t.name || '')) === slug);
             return (hit && hit.name) || slug;
           };
+          let deletedCount = 0;
           for (const slug of Array.from(selected)) {
             const name = slugToName(slug);
-            await fetch('/api/registry/tags/delete', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})});
+            const resp = await fetch('/api/registry/tags/delete', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({name}),
+            });
+            if (!resp.ok) {
+              let errMsg = 'Delete failed';
+              try {
+                const payload = await resp.json();
+                errMsg = payload?.error || errMsg;
+              }
+              catch (_) { /* ignore parse errors */ }
+              throw new Error(errMsg);
+            }
+            deletedCount++;
           }
           selected.clear();
           needRefresh = true;
           await fetchTags();
-          if (window.showToast) window.showToast('Deleted', 'is-success');
+          if (window.showToast) {
+            const msg = deletedCount > 1 ? `Deleted ${deletedCount} tags` : 'Deleted';
+            window.showToast(msg, 'is-success');
+          }
         }
-        catch (_) {
-          if (window.showToast) window.showToast('Delete failed', 'is-error');
+        catch (err) {
+          if (window.showToast) window.showToast(err?.message || 'Delete failed', 'is-error');
         }
       });
     }
   }
   async function doRenameConfirm() {
     if (!renameInput) return;
+    if (selected.size !== 1) {
+      toastTags('Select exactly one tag to rename', 'is-info');
+      closeRenameModal();
+      return;
+    }
     const oldName = Array.from(selected)[0] || '';
     const newName = (renameInput.value || '').trim();
     try { if (debugEnabled()) console.log(`[Tags:renameConfirm] old="${oldName}" new="${newName}"`); }
@@ -17333,7 +17933,7 @@ const Tags = (() => {
       if (debugEnabled()) console.log('[Tags:debugMerge] attempting to open modal', { a, b });
       initDom();
       ensureControlsVisible();
-      openMergeModal(a, b);
+      openMergeModal([a, b]);
     }
     catch (e) { console.warn('[Tags:debugMerge] failed', e); }
   }
@@ -17352,7 +17952,7 @@ const Tags = (() => {
     }
     catch (e) { console.warn('[Tags:debugState] failed', e); }
   }
-  return {show: showTags, logAll, debugMerge, debugState};
+  return {show: showTags, autoMatchSelected: runAutoMatch, logAll, debugMerge, debugState};
 })();
 window.Tags = Tags;
 // Hook tab switch to load tags when opened
@@ -17403,37 +18003,6 @@ catch (_) { }
   }
 })();
 
-// Fallback: ensure the Tags "Add…" button opens the manual modal even if module wiring hasn't run yet
-(function ensureTagManualAddButtonClick() {
-  function wire() {
-    const btn = document.getElementById('tagManualAddBtn');
-    const modal = document.getElementById('tagManualModal');
-    const closeBtn = document.getElementById('tagManualClose');
-    if (!btn || !modal || btn._directClick) return;
-    btn._directClick = true;
-    btn.addEventListener('click', () => {
-      try {
-        show(modal);
-      }
-      catch (_) { }
-    });
-    if (closeBtn && !closeBtn._directClick) {
-      closeBtn._directClick = true;
-      closeBtn.addEventListener('click', () => {
-        try {
-          hide(modal);
-        }
-        catch (_) { }
-      });
-    }
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', wire, {once: true});
-  }
-  else {
-    wire();
-  }
-})();
 // Tasks System
 class TasksManager {
   constructor () {
@@ -17442,6 +18011,11 @@ class TasksManager {
     this.orphanFiles = [];
     this._lastRepairPreview = [];
     this._repairStreamController = null;
+    this._lastOrphanFetch = 0;
+    this._orphanFetchPromise = null;
+    this._lastOrphanData = null;
+    this._coverageInflight = null;
+    this._coverageCooldownUntil = 0;
     // Capabilities loaded from /config
     this.capabilities = {
       ffmpeg: true,
@@ -17497,15 +18071,19 @@ class TasksManager {
       const active = e && e.detail && e.detail.activeTab;
       if (active === 'tasks') {
         // Start polling immediately and try first refresh
-        try { this._startPollingNow && this._startPollingNow(); } catch(_) {}
-        try { this.refreshJobs(); this.loadCoverage(); } catch(_) {}
+        try { this._startPollingNow && this._startPollingNow(); }
+        catch(_) {}
+        try { this.refreshJobs(); this.loadCoverage(); }
+        catch(_) {}
         // Attach SSE only when explicitly enabled by config and not marked unavailable
         if (window.__JOBS_SSE_ENABLED && !window.__JOBS_SSE_UNAVAILABLE) {
-          try { this.initJobEvents && this.initJobEvents(); } catch(_) {}
+          try { this.initJobEvents && this.initJobEvents(); }
+          catch(_) {}
         }
       } else {
         // Stop polling (reduce load) but keep SSE for real-time task counts
-        try { this._stopPollingNow && this._stopPollingNow(); } catch(_) {}
+        try { this._stopPollingNow && this._stopPollingNow(); }
+        catch(_) {}
       }
     });
     // If Tasks is already active at init time, kick everything off
@@ -17575,7 +18153,8 @@ class TasksManager {
           deps.ffprobe ?? data.ffprobe ?? true,
         );
         // Detect SSE support from server and update runtime flag
-        try { window.__JOBS_SSE_ENABLED = Boolean(feats.jobs_sse); } catch(_) {}
+        try { window.__JOBS_SSE_ENABLED = Boolean(feats.jobs_sse); }
+        catch(_) {}
         // Now that we know if SSE exists, decide whether to attach
         if (window.__JOBS_SSE_ENABLED && !window.__JOBS_SSE_UNAVAILABLE) {
           this.initJobEvents();
@@ -17998,7 +18577,8 @@ class TasksManager {
         }
         catch (_) { }
         // Always refresh active count badge immediately (real-time off-tab)
-        try { this.updateTasksTabCountLight(); } catch(_) {}
+        try { this.updateTasksTabCountLight(); }
+        catch(_) {}
         doRefresh();
       }));
       es.onopen = () => {
@@ -18066,7 +18646,8 @@ class TasksManager {
     .forEach((radio) => {
       radio.addEventListener('change', () => {
         this.updateSelectedFileCount();
-        try { this.updateCoverageDisplay(); } catch(_) {}
+        try { this.updateCoverageDisplay(); }
+        catch(_) {}
       });
     });
     // Listen for tab changes to update selected file count and load initial data
@@ -18408,37 +18989,37 @@ class TasksManager {
         }
         // Attempt scoped clear if selected-only chosen and supported
         try {
-          // Map frontend artifact keys to backend delete endpoints
           const endpointMap = {
-            thumbnails: '/api/thumbnail', // (if batch not supported this will be per-file later)
+            thumbnails: '/api/thumbnail',
             previews: '/api/preview',
             sprites: '/api/sprites/delete',
             phash: '/api/phash',
             heatmaps: '/api/heatmaps/delete',
             metadata: '/api/metadata/delete',
-            subtitles: '/api/subtitles/delete/batch', // batch variant
+            subtitles: '/api/subtitles/delete/batch',
             scenes: '/api/markers/clear',
+            markers: '/api/markers/clear',
             faces: '/api/faces/delete',
-            // embeddings live in faces.json; reuse faces delete endpoint for clear
             embed: '/api/faces/delete',
           };
           const mapped = endpointMap[base] || `/api/artifacts/${base}`;
           const clearUrl = new URL(mapped, window.location.origin);
           const selPaths = fileSelection === 'selected' ? Array.from(selectedItems || []) : null;
-          let resp;
-          if (selPaths && selPaths.length) {
-            resp = await fetch(clearUrl.toString(), {
-              method: 'DELETE',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({paths: selPaths}),
-            });
+          const requestInit = {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+          };
+          if (fileSelection === 'selected') {
+            if (!selPaths || selPaths.length === 0) {
+              this.showNotification('Select at least one file to clear.', 'error');
+              return;
+            }
+            requestInit.body = JSON.stringify({ paths: selPaths });
           }
-          else {
-            resp = await fetch(clearUrl.toString(), {method: 'DELETE' });
-          }
+          const resp = await fetch(clearUrl.toString(), requestInit);
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           this.showNotification(`${base} cleared`, 'success');
-          await this.loadCoverage();
+          await this.loadCoverage({ force: true });
         }
         catch (e) {
           this.showNotification(`Failed to clear ${base}: ${(e && e.message) || e}`, 'error');
@@ -18505,7 +19086,7 @@ class TasksManager {
           }
           catch (_) { }
           this.refreshJobs();
-          this.loadCoverage();
+          this.loadCoverage({force: true});
         }
         else {
           throw new Error(result.message || 'Operation failed');
@@ -18639,42 +19220,60 @@ class TasksManager {
     }
     return params;
   }
-  async loadCoverage() {
-    try {
-      // Request coverage for the current folder (relative to root)
-      const val = (folderInput.value || '').trim();
-      const rel = isAbsolutePath(val) ? '' : currentPath();
-      const url = new URL('/api/tasks/coverage', window.location.origin);
-      if (rel) url.searchParams.set('path', rel);
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+  async loadCoverage(opts = {}) {
+    const force = Boolean(opts.force);
+    const now = Date.now();
+    if (!force) {
+      if (this._coverageInflight) {
+        return this._coverageInflight;
       }
-      const data = await response.json();
-      if (data.status === 'success') {
-        // Single source of truth for both the tiles and the jobs table
-        this.coverage = data.data.coverage;
-        this._coverageLoaded = true;
-        // Update tiles first, then ensure jobs table re-renders so the synthetic metadata row
-        // reflects the same percentage concurrently.
-        this.updateCoverageDisplay();
-        try {
-          if (typeof this.renderJobsTable === 'function') {
-            this.renderJobsTable();
+      if (this._coverageCooldownUntil && now < this._coverageCooldownUntil && this._coverageLoaded) {
+        return this.coverage;
+      }
+    }
+    const run = (async () => {
+      try {
+        // Request coverage for the current folder (relative to root)
+        const val = (folderInput.value || '').trim();
+        const rel = isAbsolutePath(val) ? '' : currentPath();
+        const url = new URL('/api/tasks/coverage', window.location.origin);
+        if (rel) url.searchParams.set('path', rel);
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        if (data.status === 'success') {
+          // Single source of truth for both the tiles and the jobs table
+          this.coverage = data.data.coverage;
+          this._coverageLoaded = true;
+          // Update tiles first, then ensure jobs table re-renders so the synthetic metadata row
+          // reflects the same percentage concurrently.
+          this.updateCoverageDisplay();
+          try {
+            if (typeof this.renderJobsTable === 'function') {
+              this.renderJobsTable();
+            }
           }
+          catch (_) { }
+          try {
+            if (currentPath) refreshSidebarThumbnail(currentPath);
+          }
+          catch (_) { }
         }
-        catch (_) { }
-        try {
-          if (currentPath) refreshSidebarThumbnail(currentPath);
-        }
-        catch (_) { }
       }
-    }
-    catch (error) {
-      // Quiet failure during polling
-    }
-    // Load orphan data
-    await this.loadOrphanData();
+      catch (error) {
+        // Quiet failure during polling
+      }
+      finally {
+        this._coverageInflight = null;
+        this._coverageCooldownUntil = Date.now() + 1500;
+        // Load orphan data in the background (throttled to avoid repeated heavy scans)
+        this.loadOrphanData().catch(() => {});
+      }
+    })();
+    this._coverageInflight = run;
+    return run;
   }
   updateCoverageDisplay() {
     // If coverage not loaded yet, keep buttons hidden
@@ -18723,7 +19322,8 @@ class TasksManager {
         }
         // Compute missing as remainder (non-negative)
         keys.forEach((k) => { cov[k].missing = Math.max(0, (cov[k].total || 0) - (cov[k].processed || 0)); });
-      } catch(_) {}
+      }
+      catch(_) {}
       return cov;
     };
     const selectedCoverage = useSelected ? computeSelectedCoverage() : null;
@@ -19189,10 +19789,12 @@ class TasksManager {
           }
           else {
             endCell.textContent = '—';
+            endCell.title = 'End time';
           }
         }
         else {
           endCell.textContent = '—';
+          endCell.title = 'End time';
         }
       }
     });
@@ -19524,7 +20126,8 @@ class TasksManager {
         if (st === 'running') active++;
       }
       tasksTab.textContent = `Tasks (${active})`;
-    } catch (_) { /* ignore */ }
+    }
+    catch (_) { /* ignore */ }
   }
   async cancelJob(jobId) {
     try {
@@ -19556,7 +20159,8 @@ class TasksManager {
       countEl.textContent = String(n);
       // If "Selected files" mode is active, re-render coverage tiles to reflect scoped counts
       if (selectedRadio.value === 'selected') {
-        try { this.updateCoverageDisplay(); } catch(_) {}
+        try { this.updateCoverageDisplay(); }
+        catch(_) {}
       }
     }
   }
@@ -19625,23 +20229,52 @@ class TasksManager {
       setTimeout(() => el.remove(), fadeMs + 30);
     }, lifespan - fadeMs);
   }
-  async loadOrphanData() {
-    try {
-      // Use empty path to scan the current root directory
-      const response = await fetch('/api/artifacts/orphans');
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const data = await response.json();
-      if (data.status === 'success') {
-        this.updateOrphanDisplay(data.data);
+  async loadOrphanData(options = {}) {
+    const {force = false, silent = true} = options;
+    const now = Date.now();
+    const TTL = 60 * 1000;
+    if (!force) {
+      if (this._orphanFetchPromise) return this._orphanFetchPromise;
+      if (this._lastOrphanFetch && now - this._lastOrphanFetch < TTL && this._lastOrphanData) {
+        this.updateOrphanDisplay(this._lastOrphanData);
+        return this._lastOrphanData;
       }
     }
-    catch (error) {
-      // Quiet failure during polling
-      // Reset display on error
-      this.updateOrphanDisplay({orphaned: 0, orphaned_files: [] });
-    }
+    const runner = (async () => {
+      try {
+        const response = await fetch('/api/artifacts/orphans');
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        const payload = data && data.status === 'success' ? (data.data || {orphaned: 0, orphaned_files: [] }) : {orphaned: 0, orphaned_files: [] };
+        this._lastOrphanFetch = Date.now();
+        this._lastOrphanData = payload;
+        this.updateOrphanDisplay(payload);
+        return payload;
+      }
+      catch (error) {
+        if (!silent) {
+          console.error('Failed to load orphan data:', error);
+          this.showNotification?.('Failed to load orphan summary', 'error');
+        }
+        throw error;
+      }
+    })();
+    const guarded = runner.catch((err) => {
+      if (silent) {
+        // Quiet failure during passive polling; keep previous display if available
+        if (!this._lastOrphanData) this.updateOrphanDisplay({orphaned: 0, orphaned_files: [] });
+      }
+      return Promise.reject(err);
+    });
+    this._orphanFetchPromise = guarded;
+    guarded.finally(() => {
+      if (this._orphanFetchPromise === guarded) {
+        this._orphanFetchPromise = null;
+      }
+    });
+    return guarded;
   }
   updateOrphanDisplay(orphanData) {
     const orphanCount = orphanData.orphaned || 0;
@@ -19714,6 +20347,26 @@ class TasksManager {
     const btn = document.getElementById('previewOrphansBtn');
     const isHidden = orphanDetails.classList.contains('d-none');
     if (isHidden) {
+      if (btn) {
+        btn.disabled = true;
+        btn.classList.add('btn-busy');
+      }
+      try {
+        await this.loadOrphanData({silent: false});
+      }
+      catch (_) {
+        if (btn) {
+          btn.disabled = false;
+          btn.classList.remove('btn-busy');
+        }
+        return;
+      }
+      finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.classList.remove('btn-busy');
+        }
+      }
       // Show: populate orphanList using DOM nodes
       while (orphanList.firstChild) orphanList.removeChild(orphanList.firstChild);
       if (this.orphanFiles && this.orphanFiles.length) {
@@ -19754,7 +20407,8 @@ class TasksManager {
     }
   }
   async cleanupOrphans() {
-    if (!confirm(`Are you sure you want to delete ${this.orphanFiles.length} orphaned artifact files? This action cannot be undone.`)) {
+    const orphanCount = Array.isArray(this.orphanFiles) ? this.orphanFiles.length : 0;
+    if (!confirm(`Are you sure you want to delete ${orphanCount} orphaned artifact files? This action cannot be undone.`)) {
       return;
     }
     try {
@@ -19767,7 +20421,7 @@ class TasksManager {
       if (data.status === 'success') {
         this.showNotification('Cleanup started successfully', 'success');
         // Refresh orphan data after cleanup starts
-        setTimeout(() => this.loadOrphanData(), 2000);
+        setTimeout(() => this.loadOrphanData({force: true, silent: false}).catch(() => {}), 2000);
       }
       else {
         throw new Error(data.message || 'Cleanup failed');
@@ -19932,7 +20586,7 @@ class TasksManager {
       if (j && j.status === 'success') {
         (this.showNotification || notify)('Repairs started', 'success');
         // Optionally collapse preview; refresh orphan data shortly after
-        setTimeout(() => this.loadOrphanData && this.loadOrphanData(), 2000);
+        setTimeout(() => this.loadOrphanData && this.loadOrphanData({force: true, silent: false}).catch(() => {}), 2000);
       }
       else {
         throw new Error(j && j.message ? j.message : 'Failed to start repairs');
@@ -19979,7 +20633,8 @@ let tasksManager;
 function __initTasksTabOnce() {
   if (tasksManager) return;
   tasksManager = new TasksManager();
-  try { window.tasksManager = tasksManager; } catch(_) {}
+  try { window.tasksManager = tasksManager; }
+  catch(_) {}
   const previewBtn = document.getElementById('previewOrphansBtn');
   const cleanupBtn = document.getElementById('cleanupOrphansBtn');
   const previewRepairsBtn = document.getElementById('previewRepairsBtn');
@@ -20007,7 +20662,12 @@ function __initTasksTabOnce() {
   const initFor = (tab) => {
     if (tab === 'tasks') __initTasksTabOnce();
     if (tab === 'stats') {
-      try { loadStats && loadStats(); } catch(_) {}
+      try { loadStats && loadStats(); }
+      catch(_) {}
+    }
+    if (tab === 'player') {
+      try { setTimeout(() => { window.__tryAutoResumeLast && window.__tryAutoResumeLast(); }, 200); }
+      catch(_) {}
     }
   };
   const initActiveNow = () => {

@@ -125,6 +125,14 @@
       <!-- Circular arrow reset icon -->
       <path d="M12 5a7 7 0 1 1-6.23 4H8a1 1 0 0 0 0-2H4.5A1.5 1.5 0 0 0 3 8.5V13a1 1 0 0 0 2 0V9.97A9 9 0 1 0 12 3v2z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" />
     </symbol>
+    <symbol id="icon-prev" viewBox="0 0 24 24">
+      <path d="M18 5v14l-8-7 8-7z" fill="currentColor" />
+      <path d="M6 5h2v14H6z" fill="currentColor" />
+    </symbol>
+    <symbol id="icon-next" viewBox="0 0 24 24">
+      <path d="M6 5v14l8-7-8-7z" fill="currentColor" />
+      <path d="M16 5h2v14h-2z" fill="currentColor" />
+    </symbol>
     <!-- Shuffle / Random icon (path supplied by user) -->
     <symbol id="icon-shuffle" viewBox="0 0 1792 1792">
       <path fill="currentColor" d="M666 481q-60 92-137 273-22-45-37-72.5t-40.5-63.5-51-56.5-63-35-81.5-14.5h-224q-14 0-23-9t-9-23v-192q0-14 9-23t23-9h224q250 0 410 225zm1126 799q0 14-9 23l-320 320q-9 9-23 9-13 0-22.5-9.5t-9.5-22.5v-192q-32 0-85 .5t-81 1-73-1-71-5-64-10.5-63-18.5-58-28.5-59-40-55-53.5-56-69.5q59-93 136-273 22 45 37 72.5t40.5 63.5 51 56.5 63 35 81.5 14.5h256v-192q0-14 9-23t23-9q12 0 24 10l319 319q9 9 9 23zm0-896q0 14-9 23l-320 320q-9 9-23 9-13 0-22.5-9.5t-9.5-22.5v-192h-256q-48 0-87 15t-69 45-51 61.5-45 77.5q-32 62-78 171-29 66-49.5 111t-54 105-64 100-74 83-90 68.5-106.5 42-128 16.5h-224q-14 0-23-9t-9-23v-192q0-14 9-23t23-9h224q48 0 87-15t69-45 51-61.5 45-77.5q32-62 78-171 29-66 49.5-111t54-105 64-100 74-83 90-68.5 106.5-42 128-16.5h256v-192q0-14 9-23t23-9q12 0 24 10l319 319q9 9 9 23z"/>
@@ -348,42 +356,6 @@
           <div id="faceBoxLinks" class="facebox-links hidden" aria-label="External performer links"></div>
         </div>
       </div>
-    </div>
-  </div>
-
-  <!-- Tag Manual Add Modal -->
-  <div id="tagManualModal" class="modal" hidden>
-    <div class="panel panel--wide panel--manual-add">
-      <header class="panel-header--spaced">
-        <strong>Add Tag Manually</strong>
-        <div class="ml-auto"></div>
-        <button id="tagManualClose" class="btn-sm" title="Close">Close</button>
-      </header>
-      <div class="body panel-body--scroll">
-        <div class="manual-add-layout gap-16">
-          <div class="manual-form-col">
-            <div class="control-group--flex gap-10">
-              <label for="manualTagName" class="hint-sm w-120">Tag name</label>
-              <input id="manualTagName" type="text" placeholder="e.g. 4K" class="control-input w-100" />
-            </div>
-            <div class="control-group--flex gap-10 mt-12">
-              <label for="manualTagPatterns" class="hint-sm w-120">Match strings</label>
-              <textarea id="manualTagPatterns" rows="6" placeholder="Comma or newline separated; any match tags the file" class="control-textarea w-100"></textarea>
-            </div>
-            <div class="flex-row gap-10 mt-12">
-              <button id="manualPreviewBtn" class="btn-sm">Preview</button>
-              <button id="manualApplyAllBtn" class="btn-sm">Apply All</button>
-            </div>
-            <span id="manualStatus" class="hint-sm mt-12" aria-live="polite"></span>
-          </div>
-          <div class="manual-results-col">
-            <div id="manualResults" class="manual-results" role="region" aria-label="Preview matches"></div>
-          </div>
-        </div>
-      </div>
-      <footer class="panel-footer--actions">
-        <span class="hint-sm hint-sm--muted">Esc or Close to dismiss • "Apply" writes tags per file</span>
-      </footer>
     </div>
   </div>
 
@@ -1054,7 +1026,7 @@
             <!-- Subtitle overlay rendered by JS -->
             <div id="subtitleOverlay" class="subtitle-line bottom" aria-live="polite" hidden></div>
             <!-- Floating scrubber (timeline) overlay at bottom -->
-            <div id="playerScrubber" class="player-scrubber-bar" aria-hidden="true">
+            <div id="playerScrubber" class="player-scrubber-bar">
               <div class="scrubber-track" id="playerScrubberTrack">
                 <!-- Heatmap layers moved inside track so width/position match exactly -->
                 <div id="timelineHeatmap" class="timeline-heatmap" aria-hidden="true"></div>
@@ -1102,13 +1074,23 @@
                   <svg class="icon icon-filled" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="#icon-heart-filled"></use></svg>
                 </button>
                 <!-- New: Previous / Next video -->
-                <button id="btnPrevVideo" class="btn btn-xs" type="button" title="Previous video" aria-label="Previous video">Prev</button>
+                <button id="btnPrevVideo" class="btn btn-xs" type="button" title="Previous video" aria-label="Previous video">
+                  <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <use href="#icon-prev"></use>
+                  </svg>
+                  <span class="sr-only">Previous video</span>
+                </button>
                 <button id="btnFullscreen" class="btn btn-xs" type="button" title="Toggle fullscreen" aria-label="Fullscreen">
                   <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <path fill="currentColor" d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM6 14v4h4v2H4v-6h2zm12 0h2v6h-6v-2h4v-4z" />
                   </svg>
                 </button>
-                <button id="btnNextVideo" class="btn btn-xs" type="button" title="Next video" aria-label="Next video">Next</button>
+                <button id="btnNextVideo" class="btn btn-xs" type="button" title="Next video" aria-label="Next video">
+                  <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <use href="#icon-next"></use>
+                  </svg>
+                  <span class="sr-only">Next video</span>
+                </button>
               </div>
             </div>
             <!-- Hover sprite preview (dynamically positioned) -->
@@ -1412,11 +1394,11 @@
             <button id="tagSortOrder" class="btn-sm" title="Toggle sort order" aria-label="Toggle sort order">Desc</button>
             <span id="tagsCount" class="hint-sm ml-8" aria-live="polite"></span>
             <button id="tagImportBtn" class="btn-sm" title="Import tags from JSON">Import</button>
+            <button id="tagAddBtn" class="btn-sm" title="Create a new tag">Add</button>
+            <button id="tagAutoMatchBtn" class="btn-sm" title="Apply a tag by matching filenames">Match</button>
             <button id="tagMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
             <button id="tagRenameBtn" class="btn-sm" title="Rename selected" disabled>Rename</button>
             <button id="tagDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
-            <button id="tagAutoTagBtn" class="btn-sm" title="Auto‑tag videos">Auto‑Tag</button>
-            <button id="tagManualAddBtn" class="btn-sm" title="Manually add a tag by matching filenames">Add…</button>
           </div>
           <div id="tagDropZone" role="button" tabindex="0" aria-label="Import tags" class="performer-dropzone">
             <strong class="pdz-title">Import Tags</strong>

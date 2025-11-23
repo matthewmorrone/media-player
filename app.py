@@ -4241,7 +4241,8 @@ def _humanize_segment(seg: str) -> str:
     return repl.get(s, s)
 
 def _load_route_descriptions() -> dict:
-    """Load static route descriptions from static/routes.json.
+    """
+    Load static route descriptions from static/routes.json.
 
     Keys must be formatted as "METHOD /path". Returns an empty dict on error.
     """
@@ -6290,10 +6291,19 @@ def _enrich_file_basic(entry: dict) -> dict:
             pass
         entry.setdefault("phash", phash_exists)
         entry.setdefault("chapters", scenes_exists)
+        # Alias scenes/chapters to unified 'markers' key used by /artifacts/status
+        entry.setdefault("markers", scenes_exists)
         entry.setdefault("sprites", sprites_exists)
         entry.setdefault("heatmaps", heatmaps_exists)
+        # Unified 'heatmap' boolean (status endpoint uses singular form)
+        entry.setdefault("heatmap", heatmaps_exists)
         entry.setdefault("subtitles", subtitles_exists)
         entry.setdefault("faces", faces_exists)
+        # Explicit metadata presence flag so frontend chips avoid per-row /api/metadata fetch
+        try:
+            entry.setdefault("metadata", metadata_path(fp).exists())
+        except Exception:
+            entry.setdefault("metadata", False)
         # Tags/performers from sidecar (populate for page slice to power list columns)
         try:
             tf = _tags_file(fp)
@@ -8420,6 +8430,7 @@ def performers_images_upload(
     files: List[UploadFile] = File(..., description="Image files; names or relative paths map to performers"),
     replace: bool = Query(default=False, description="Replace existing images instead of appending"),
     create_missing: bool = Query(default=True, description="Create performers that don't exist"),
+    detect_face: bool = Query(default=True, description="If true, detect and store square face box for primary image"),
 ):
     """
     Upload performer images directly (no need to reside under media root).
@@ -8508,8 +8519,10 @@ def performers_images_upload(
                 _save_registry(reg_path, data)
 
             # Face bounding box detection for the current primary image (bulk route parity with /performers/image)
-            # Only attempt if OpenCV is available and the just-written image is (or became) the primary.
+            # Only attempt if enabled and the just-written image is (or became) the primary.
             try:
+                if not detect_face:
+                    raise RuntimeError("face detection disabled")
                 # Re-open registry to get the canonical current primary after update
                 with REGISTRY_LOCK:
                     pdata = _load_registry(reg_path, "performers")
@@ -8542,12 +8555,21 @@ def performers_images_upload(
                                         best = (x, y, ww, hh)
                                 if best is not None:
                                     x, y, ww, hh = best
-                                    # Raw normalized rectangle (no square/padding)
+                                    # Convert to normalized square box centered on detection
                                     nx = max(0.0, min(1.0, x / iw))
                                     ny = max(0.0, min(1.0, y / ih))
                                     nw = max(0.0, min(1.0, ww / iw))
                                     nh = max(0.0, min(1.0, hh / ih))
-                                    face_box_norm = [nx, ny, nw, nh]
+                                    side = max(nw, nh)
+                                    cx = nx + nw/2.0
+                                    cy = ny + nh/2.0
+                                    nx = max(0.0, min(1.0, cx - side/2.0))
+                                    ny = max(0.0, min(1.0, cy - side/2.0))
+                                    if nx + side > 1.0:
+                                        nx = max(0.0, 1.0 - side)
+                                    if ny + side > 1.0:
+                                        ny = max(0.0, 1.0 - side)
+                                    face_box_norm = [nx, ny, side, side]
                     except Exception:
                         face_box_norm = None
                     # Single concise log line
@@ -8605,7 +8627,7 @@ def performer_update_face_box(
 ):
     """
     Update (or set) the manual face bounding box for a performer's primary image.
-    Accepts normalized coordinates. Box is clamped into [0,1] (no forced square).
+    Accepts normalized coordinates. Box is clamped into [0,1] and coerced to a square.
     """
     try:
         slug_in = (slug or "").strip()
@@ -8617,12 +8639,19 @@ def performer_update_face_box(
         ny = max(0.0, min(1.0, float(y)))
         nw = max(0.0, min(1.0, float(w)))
         nh = max(0.0, min(1.0, float(h)))
-        bx = [nx, ny, nw, nh]
-        # Clamp so box fully fits (adjust width/height if needed)
-        if bx[0] + bx[2] > 1.0:
-            bx[2] = max(0.0, 1.0 - bx[0])
-        if bx[1] + bx[3] > 1.0:
-            bx[3] = max(0.0, 1.0 - bx[1])
+        # Coerce to a square box while keeping inside [0,1]
+        side = max(nw, nh)
+        # Center the square on the original box center
+        cx = nx + nw / 2.0
+        cy = ny + nh / 2.0
+        nx = max(0.0, min(1.0, cx - side / 2.0))
+        ny = max(0.0, min(1.0, cy - side / 2.0))
+        # Clamp if overflows
+        if nx + side > 1.0:
+            nx = max(0.0, 1.0 - side)
+        if ny + side > 1.0:
+            ny = max(0.0, 1.0 - side)
+        bx = [nx, ny, side, side]
         reg_path = _performers_registry_path()
         with REGISTRY_LOCK:
             data = _load_registry(reg_path, "performers")
@@ -8648,7 +8677,7 @@ def performer_update_face_box(
 def performer_update_face_boxes(body: dict = Body(..., description="Batch face boxes")):
     """Batch update face boxes.
     Body format: { boxes: [ { slug: str, x: float, y: float, w: float, h: float }, ... ] }
-    Each box is normalized (0..1). Box clamped to image bounds; no forced square.
+    Each box is normalized (0..1). Box clamped to image bounds and coerced to a square.
     Returns list of updated slugs.
     """
     try:
@@ -8679,11 +8708,16 @@ def performer_update_face_boxes(body: dict = Body(..., description="Batch face b
                     ny = max(0.0, min(1.0, float(ent.get("y", 0.0))))
                     nw = max(0.0, min(1.0, float(ent.get("w", 0.0))))
                     nh = max(0.0, min(1.0, float(ent.get("h", 0.0))))
-                    bx = [nx, ny, nw, nh]
-                    if bx[0] + bx[2] > 1.0:
-                        bx[2] = max(0.0, 1.0 - bx[0])
-                    if bx[1] + bx[3] > 1.0:
-                        bx[3] = max(0.0, 1.0 - bx[1])
+                    side = max(nw, nh)
+                    cx = nx + nw/2.0
+                    cy = ny + nh/2.0
+                    nx = max(0.0, min(1.0, cx - side/2.0))
+                    ny = max(0.0, min(1.0, cy - side/2.0))
+                    if nx + side > 1.0:
+                        nx = max(0.0, 1.0 - side)
+                    if ny + side > 1.0:
+                        ny = max(0.0, 1.0 - side)
+                    bx = [nx, ny, side, side]
                     it["image_face_box"] = bx
                     updated.append(slug_in)
                 except Exception:
@@ -8700,6 +8734,7 @@ def performer_image_upload(
     file: UploadFile = File(..., description="Image file for performer"),
     replace: bool = Query(default=False, description="Replace existing images instead of appending"),
     create_missing: bool = Query(default=True, description="Create performer if missing"),
+    detect_face: bool = Query(default=True, description="If true, detect and store square face box for primary image"),
 ):
     """Upload a single image for a specific performer.
     If performer does not exist and create_missing is true, the performer is created.
@@ -8779,10 +8814,12 @@ def performer_image_upload(
         data["performers"] = items
         data["next_id"] = next_id
         _save_registry(reg_path, data)
-    # Optionally compute a face bounding box for the (current) primary image using OpenCV if available
+    # Optionally compute a square face bounding box for the (current) primary image using OpenCV if available
     # We store a normalized [x, y, w, h] in 0..1 as 'image_face_box' on the performer record.
     face_box_norm: list[float] | None = None
     try:
+        if not detect_face:
+            raise RuntimeError("face detection disabled")
         # Determine the latest primary (after registry update)
         with REGISTRY_LOCK:
             data = _load_registry(reg_path, "performers")
@@ -8811,12 +8848,21 @@ def performer_image_upload(
                                 best = (x, y, ww, hh)
                         if best is not None:
                             x, y, ww, hh = best
-                            # Raw normalized rectangle (no square/padding)
+                            # Convert to normalized square box centered on detection
                             nx = max(0.0, min(1.0, x / w))
                             ny = max(0.0, min(1.0, y / h))
                             nw = max(0.0, min(1.0, ww / w))
                             nh = max(0.0, min(1.0, hh / h))
-                            face_box_norm = [nx, ny, nw, nh]
+                            side = max(nw, nh)
+                            cx = nx + nw/2.0
+                            cy = ny + nh/2.0
+                            nx = max(0.0, min(1.0, cx - side/2.0))
+                            ny = max(0.0, min(1.0, cy - side/2.0))
+                            if nx + side > 1.0:
+                                nx = max(0.0, 1.0 - side)
+                            if ny + side > 1.0:
+                                ny = max(0.0, 1.0 - side)
+                            face_box_norm = [nx, ny, side, side]
             except Exception:
                 face_box_norm = None
             # Single concise log line
@@ -8861,6 +8907,133 @@ def performer_image_upload(
     except Exception:
         pass
     return api_success({"performer": summary})
+
+@api.get("/performers/face-box/stats")
+def performers_face_box_stats():
+    """Return counts of performers with/without face boxes."""
+    reg_path = _performers_registry_path()
+    with REGISTRY_LOCK:
+        data = _load_registry(reg_path, "performers")
+        items: list[dict] = list(data.get("performers") or [])
+    total = 0
+    with_box = 0
+    for it in items:
+        total += 1
+        fb = it.get("image_face_box")
+        if isinstance(fb, (list, tuple)) and len(fb) == 4:
+            with_box += 1
+    return api_success({"total": total, "with_box": with_box, "without_box": total - with_box})
+
+@api.post("/performers/face-box/compute-missing")
+def performers_face_box_compute_missing(limit: int = Query(default=100, ge=1, le=500), backend: str = Query(default="opencv")):
+    """Compute square face boxes for performers that have a primary image but no stored box.
+    Returns list of updated slugs. Limit bounds the number processed per call.
+    backend: currently only 'opencv' supported (InsightFace would require heavier deps)."""
+    reg_path = _performers_registry_path()
+    root_path = Path(STATE.get("root") or Path.cwd()).resolve()
+    updated: list[str] = []
+    skipped: list[str] = []
+    try:
+        import cv2  # type: ignore
+        import cv2.data  # type: ignore  # noqa: F401
+    except Exception:
+        return api_error("opencv not available", status_code=503)
+    with REGISTRY_LOCK:
+        data = _load_registry(reg_path, "performers")
+        items: list[dict] = list(data.get("performers") or [])
+    # Select candidates
+    candidates: list[dict] = []
+    for it in items:
+        fb = it.get("image_face_box")
+        if isinstance(fb, (list, tuple)) and len(fb) == 4:
+            continue
+        img_rel = str(it.get("image") or "").strip()
+        if not img_rel:
+            continue
+        abs_path = (root_path / img_rel).resolve()
+        if not abs_path.exists() or not abs_path.is_file():
+            continue
+        candidates.append(it)
+        if len(candidates) >= limit:
+            break
+    cascade = None
+    try:
+        cascade = cv2.CascadeClassifier(f"{cv2.data.haarcascades}haarcascade_frontalface_default.xml")
+        if cascade.empty():
+            cascade = None
+    except Exception:
+        cascade = None
+    if cascade is None:
+        return api_error("haar cascade not available", status_code=500)
+    for it in candidates:
+        try:
+            img_rel = str(it.get("image") or "")
+            abs_path = (root_path / img_rel).resolve()
+            img = cv2.imread(str(abs_path))
+            if img is None:
+                skipped.append(str(it.get("slug") or it.get("name") or ""))
+                continue
+            ih, iw = img.shape[:2]
+            if ih < 2 or iw < 2:
+                skipped.append(str(it.get("slug") or it.get("name") or ""))
+                continue
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            dets = cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=7, minSize=(int(0.10*iw), int(0.10*ih)))
+            best = None
+            bestA = -1.0
+            for (x, y, ww, hh) in list(dets) or []:
+                a = float(ww * hh)
+                if a > bestA:
+                    bestA = a
+                    best = (x, y, ww, hh)
+            if best is None:
+                skipped.append(str(it.get("slug") or it.get("name") or ""))
+                continue
+            x, y, ww, hh = best
+            nx = max(0.0, min(1.0, x / iw))
+            ny = max(0.0, min(1.0, y / ih))
+            nw = max(0.0, min(1.0, ww / iw))
+            nh = max(0.0, min(1.0, hh / ih))
+            side = max(nw, nh)
+            cx = nx + nw/2.0
+            cy = ny + nh/2.0
+            nx = max(0.0, min(1.0, cx - side/2.0))
+            ny = max(0.0, min(1.0, cy - side/2.0))
+            if nx + side > 1.0:
+                nx = max(0.0, 1.0 - side)
+            if ny + side > 1.0:
+                ny = max(0.0, 1.0 - side)
+            box = [nx, ny, side, side]
+            it["image_face_box"] = box
+            updated.append(str(it.get("slug") or _slugify(str(it.get("name") or ""))))
+        except Exception:
+            skipped.append(str(it.get("slug") or it.get("name") or ""))
+            continue
+    # Persist updates
+    if updated:
+        with REGISTRY_LOCK:
+            try:
+                data = _load_registry(reg_path, "performers")
+                items2: list[dict] = list(data.get("performers") or [])
+                by_slug = {str(p.get("slug") or _slugify(str(p.get("name") or ""))): p for p in items2}
+                for u in updated:
+                    rec = by_slug.get(u)
+                    if rec is None:
+                        continue
+                    # rec already updated in-place earlier (same object) if pointer matches; ensure shape
+                    fb = rec.get("image_face_box")
+                    if isinstance(fb, (list, tuple)) and len(fb) == 4:
+                        rec["image_face_box"] = [max(0.0, min(1.0, float(v))) for v in fb]
+                data["performers"] = list(by_slug.values())
+                _save_registry(reg_path, data)
+            except Exception:
+                pass
+    return api_success({
+        "processed": len(candidates),
+        "updated": updated,
+        "skipped": skipped,
+        "remaining": max(0, sum(1 for it in items if not (isinstance(it.get("image_face_box"), (list, tuple)) and len(it.get("image_face_box")) == 4))) - len(updated), # type: ignore
+    })
 
 @api.post("/performers/images/upload-zip")
 def performers_images_upload_zip(
@@ -9256,11 +9429,15 @@ def _media_entry(path: str) -> dict:
         _save_media_attr()
     return ent
 
-@api.get("/media/info")
-def media_info(path: str = Query(...)):
-    rel = path
+def _media_info_payload(rel: str, *, include_sidecar: bool = True) -> dict[str, Any]:
     ent = _MEDIA_ATTR.get(rel, {"performers": [], "tags": []})
-    # Enrich with sidecar-backed fields kept separate from tags API
+    data: dict[str, Any] = {
+        "path": rel,
+        "performers": list(ent.get("performers") or []),
+        "tags": list(ent.get("tags") or []),
+    }
+    if not include_sidecar:
+        return data
     desc = ""
     rating = 0
     favorite = False
@@ -9288,7 +9465,34 @@ def media_info(path: str = Query(...)):
                     pass
     except Exception:
         pass
-    return api_success({"path": rel, **ent, "description": desc, "rating": rating, "favorite": favorite})
+    data.update({"description": desc, "rating": rating, "favorite": favorite})
+    return data
+
+
+@api.get("/media/info")
+def media_info(path: str = Query(...)):
+    return api_success(_media_info_payload(path, include_sidecar=True))
+
+
+class MediaInfoBulkRequest(BaseModel):  # type: ignore
+    paths: List[str] = Field(default_factory=list)
+    include_sidecar: Optional[bool] = True
+
+
+@api.post("/media/info/bulk")
+def media_info_bulk(payload: MediaInfoBulkRequest):
+    paths = [str(p).strip() for p in payload.paths if isinstance(p, str) and str(p).strip()]
+    if not paths:
+        return api_success({"items": [], "total": 0})
+    seen: set[str] = set()
+    items: list[dict[str, Any]] = []
+    include_sidecar = bool(payload.include_sidecar)
+    for rel in paths:
+        if rel in seen:
+            continue
+        seen.add(rel)
+        items.append(_media_info_payload(rel, include_sidecar=include_sidecar))
+    return api_success({"items": items, "total": len(items)})
 
 
 @api.post("/media/rating")
@@ -9410,6 +9614,52 @@ def _norm_list(values: list[str]) -> list[str]:
             seen.add(t.lower())
             out.append(t)
     return out[:500]
+
+
+class MediaTagUpdate(BaseModel):  # type: ignore
+    path: str
+    tag: str
+
+
+class MediaTagsBulkAddPayload(BaseModel):  # type: ignore
+    updates: List[MediaTagUpdate] = Field(default_factory=list)
+
+
+@api.post("/media/tags/bulk-add")
+def media_tags_bulk_add(payload: MediaTagsBulkAddPayload):
+    updates = payload.updates or []
+    if not updates:
+        return api_success({"updated": 0, "skipped": 0, "total": 0})
+    seen_pairs: set[tuple[str, str]] = set()
+    updated = 0
+    skipped = 0
+    dirty = False
+    for item in updates:
+        path = (item.path or "").strip()
+        tag = (item.tag or "").strip()
+        if not path or not tag:
+            continue
+        key = (path.lower(), tag.lower())
+        if key in seen_pairs:
+            skipped += 1
+            continue
+        seen_pairs.add(key)
+        ent = _MEDIA_ATTR.get(path)
+        if ent is None:
+            ent = {"performers": [], "tags": []}
+            _MEDIA_ATTR[path] = ent
+        ent.setdefault("tags", [])
+        existing = {t.lower() for t in ent.get("tags") or [] if isinstance(t, str)}
+        if tag.lower() in existing:
+            skipped += 1
+            continue
+        ent["tags"].append(tag)
+        ent["tags"] = _norm_list(ent["tags"])
+        updated += 1
+        dirty = True
+    if dirty:
+        _save_media_attr()
+    return api_success({"updated": updated, "skipped": skipped, "total": len(updates)})
 
 @api.post("/media/performers/add")
 def media_performers_add(path: str = Query(...), performer: str = Query(...)):
@@ -10599,21 +10849,21 @@ def artifacts_status(path: str = Query(...)):
             return False
     thumbnail_flag = _safe(lambda: thumbnails_path(video).exists() or (video.parent / f"{video.stem}.thumbnail.jpg").exists())
     preview_flag = _safe(lambda: _file_nonempty(_preview_concat_path(video, fmt="webm")) or _file_nonempty(_preview_concat_path(video, fmt="mp4")))
-    sprites = _safe(lambda: all(p.exists() for p in sprite_sheet_paths(video)))
+    sprites_flag = _safe(lambda: all(p.exists() for p in sprite_sheet_paths(video)))
     scenes_flag = _safe(lambda: scenes_json_path(video).exists() or (artifact_dir(video) / f"{video.stem}.markers.json").exists())
-    subtitles = _safe(lambda: bool(find_subtitles(video)))
+    subtitles_flag = _safe(lambda: bool(find_subtitles(video)))
     faces_flag = _safe(lambda: faces_path(video).exists())
     phash_flag = _safe(lambda: phash_path(video).exists())
-    heatmap_json = _safe(lambda: heatmaps_json_path(video).exists())
-    heatmap_png = _safe(lambda: heatmaps_png_path(video).exists())
-    heatmap_flag = heatmap_json or heatmap_png
+    heatmap_json_flag = _safe(lambda: heatmaps_json_path(video).exists())
+    heatmap_png_flag = _safe(lambda: heatmaps_png_path(video).exists())
+    heatmap_flag = heatmap_json_flag or heatmap_png_flag
     metadata_flag = _safe(lambda: metadata_path(video).exists())
     payload = {
         "thumbnail": thumbnail_flag,
         "preview": preview_flag,
-        "sprites": sprites,
+        "sprites": sprites_flag,
         "markers": scenes_flag,
-        "subtitles": subtitles,
+        "subtitles": subtitles_flag,
         "faces": faces_flag,
         "phash": phash_flag,
         "heatmap": heatmap_flag,
@@ -10701,16 +10951,61 @@ def phash_create_batch(
 
 
 @api.delete("/phash")
-def phash_delete(path: str = Query(...)):
-    fp = safe_join(STATE["root"], path)
-    ph = phash_path(fp)
-    if ph.exists():
+async def phash_delete(request: Request, path: str | None = Query(default=None)):
+    """Delete pHash artifacts for a single file, selected files, or globally."""
+
+    body_paths: list[str] = []
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            js = await request.json()
+            if isinstance(js, dict):
+                arr = js.get("paths")
+                if isinstance(arr, list):
+                    body_paths = [str(p) for p in arr if isinstance(p, str)]
+    except Exception:
+        body_paths = []
+
+    root: Path = STATE["root"]
+    targets: list[Path] = []
+    if path:
+        name, directory = _name_and_dir(path)
+        targets.append(Path(directory) / name)
+    elif body_paths:
+        for rel in body_paths:
+            name, directory = _name_and_dir(rel)
+            targets.append(Path(directory) / name)
+    else:
+        # Global delete: gather all pHash artifact files
+        for p in root.rglob(f"*{SUFFIX_PHASH_JSON}"):
+            targets.append(p)
+
+    deleted = 0
+    errors = 0
+    for candidate in targets:
         try:
-            ph.unlink()
-            return api_success({"deleted": True})
-        except Exception as e:
-            raise_api_error(f"Failed to delete phash: {e}", status_code=500)
-    raise_api_error("pHash not found", status_code=404)
+            resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
+            if resolved.name.endswith(SUFFIX_PHASH_JSON):
+                if resolved.exists():
+                    try:
+                        resolved.unlink()
+                        deleted += 1
+                    except Exception:
+                        errors += 1
+                continue
+            ph = phash_path(resolved)
+            if ph.exists():
+                try:
+                    ph.unlink()
+                    deleted += 1
+                except Exception:
+                    errors += 1
+        except Exception:
+            errors += 1
+
+    mode = "single" if path else ("batch" if body_paths else "global")
+    if mode == "single" and deleted == 0 and errors == 0:
+        raise_api_error("pHash not found", status_code=404)
+    return api_success({"deleted": deleted, "errors": errors, "mode": mode})
 
 @api.delete("/phash/delete/batch")
 def phash_delete_batch(path: str = Query(default=""), recursive: bool = Query(default=True)):
@@ -10897,26 +11192,93 @@ def markers_detect(path: str = Query(...), threshold: float = Query(default=0.4)
 
 
 @api.delete("/markers/clear")
-def markers_clear_single(path: str = Query(...)):
-    fp = safe_join(STATE["root"], path)
-    j = scenes_json_path(fp)
-    d = scenes_dir(fp)
-    deleted = False
+async def markers_clear(request: Request, path: str | None = Query(default=None)):
+    """Delete scene marker artifacts (JSON + clip directory) for selected or all files."""
+
+    body_paths: list[str] = []
     try:
-        if j.exists():
-            j.unlink()
-            deleted = True
-        if d.exists() and d.is_dir():
-            for p in d.iterdir():
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
-            d.rmdir()
-            deleted = True
+        if request.headers.get("content-type", "").startswith("application/json"):
+            js = await request.json()
+            if isinstance(js, dict):
+                arr = js.get("paths")
+                if isinstance(arr, list):
+                    body_paths = [str(p) for p in arr if isinstance(p, str)]
     except Exception:
-        pass
-    return api_success({"deleted": deleted}) if deleted else raise_api_error("Markers not found", status_code=404)
+        body_paths = []
+
+    root: Path = STATE["root"]
+    targets: list[Path] = []
+    if path:
+        name, directory = _name_and_dir(path)
+        targets.append(Path(directory) / name)
+    elif body_paths:
+        for rel in body_paths:
+            name, directory = _name_and_dir(rel)
+            targets.append(Path(directory) / name)
+    else:
+        # Global delete: collect known scene artifact files/directories
+        patterns = (f"*{SUFFIX_SCENES_JSON}", "*.markers.json")
+        for patt in patterns:
+            for p in root.rglob(patt):
+                targets.append(p)
+        for d in root.rglob("*.scenes"):
+            targets.append(d)
+
+    deleted = 0
+    errors = 0
+
+    def _remove_dir(dir_path: Path) -> None:
+        nonlocal deleted, errors
+        try:
+            if dir_path.exists() and dir_path.is_dir():
+                for child in dir_path.iterdir():
+                    try:
+                        if child.is_dir():
+                            shutil.rmtree(child, ignore_errors=True)
+                        else:
+                            child.unlink()
+                    except Exception:
+                        errors += 1
+                dir_path.rmdir()
+                deleted += 1
+        except Exception:
+            errors += 1
+
+    for candidate in targets:
+        try:
+            resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
+            # Direct artifact files (already resolved to JSON sidecars)
+            candidate_name = resolved.name
+            if candidate_name.endswith(SUFFIX_SCENES_JSON) or candidate_name.endswith(".markers.json"):
+                if resolved.exists():
+                    try:
+                        resolved.unlink()
+                        deleted += 1
+                    except Exception:
+                        errors += 1
+                continue
+            # Pre-created scene directory collected globally
+            if resolved.is_dir() and resolved.name.endswith(".scenes"):
+                _remove_dir(resolved)
+                continue
+            # Treat as source video path
+            fp = resolved
+            j = scenes_json_path(fp)
+            try:
+                if j.exists():
+                    j.unlink()
+                    deleted += 1
+            except Exception:
+                errors += 1
+            d = artifact_dir(fp) / f"{fp.stem}.scenes"
+            _remove_dir(d)
+        except Exception:
+            errors += 1
+
+    mode = "single" if path else ("batch" if body_paths else "global")
+    if mode == "single" and deleted == 0 and errors == 0:
+        raise_api_error("Markers not found", status_code=404)
+    return api_success({"deleted": deleted, "errors": errors, "mode": mode})
 
 @api.delete("/markers/clear/batch")
 def markers_clear_batch(path: str = Query(default=""), recursive: bool = Query(default=True)):
@@ -11216,20 +11578,70 @@ def sprites_create_batch(path: str = Query(default=""), recursive: bool = Query(
 
 
 @api.delete("/sprites/delete")
-def sprites_delete(path: str = Query(...)):
-    fp = safe_join(STATE["root"], path)
-    sheet, j = sprite_sheet_paths(fp)
-    deleted = False
+async def sprites_delete(request: Request, path: str | None = Query(default=None)):
+    """Delete sprite sheet artifacts (JPG + JSON) for selected files or globally."""
+
+    body_paths: list[str] = []
     try:
-        if j.exists():
-            j.unlink()
-            deleted = True
-        if sheet.exists():
-            sheet.unlink()
-            deleted = True
+        if request.headers.get("content-type", "").startswith("application/json"):
+            js = await request.json()
+            if isinstance(js, dict):
+                arr = js.get("paths")
+                if isinstance(arr, list):
+                    body_paths = [str(p) for p in arr if isinstance(p, str)]
     except Exception:
-        pass
-    return api_success({"deleted": deleted}) if deleted else raise_api_error("Sprites not found", status_code=404)
+        body_paths = []
+
+    root: Path = STATE["root"]
+    targets: list[Path] = []
+    if path:
+        name, directory = _name_and_dir(path)
+        targets.append(Path(directory) / name)
+    elif body_paths:
+        for rel in body_paths:
+            name, directory = _name_and_dir(rel)
+            targets.append(Path(directory) / name)
+    else:
+        # Global delete: collect standalone sprite artifacts
+        patterns = (f"*{SUFFIX_SPRITES_JPG}", f"*{SUFFIX_SPRITES_JSON}")
+        for patt in patterns:
+            for p in root.rglob(patt):
+                targets.append(p)
+
+    deleted = 0
+    errors = 0
+    for candidate in targets:
+        try:
+            resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
+            name = resolved.name
+            if name.endswith(SUFFIX_SPRITES_JPG) or name.endswith(SUFFIX_SPRITES_JSON):
+                if resolved.exists():
+                    try:
+                        resolved.unlink()
+                        deleted += 1
+                    except Exception:
+                        errors += 1
+                continue
+            sheet, meta = sprite_sheet_paths(resolved)
+            if meta.exists():
+                try:
+                    meta.unlink()
+                    deleted += 1
+                except Exception:
+                    errors += 1
+            if sheet.exists():
+                try:
+                    sheet.unlink()
+                    deleted += 1
+                except Exception:
+                    errors += 1
+        except Exception:
+            errors += 1
+
+    mode = "single" if path else ("batch" if body_paths else "global")
+    if mode == "single" and deleted == 0 and errors == 0:
+        raise_api_error("Sprites not found", status_code=404)
+    return api_success({"deleted": deleted, "errors": errors, "mode": mode})
 
 @api.delete("/sprites/delete/batch")
 def sprites_delete_batch(path: str = Query(default=""), recursive: bool = Query(default=True)):
@@ -11396,21 +11808,68 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
 
 
 @api.delete("/heatmaps/delete")
-def heatmaps_delete(path: str = Query(...)):
-    fp = safe_join(STATE["root"], path)
-    j = heatmaps_json_path(fp)
-    p = heatmaps_png_path(fp)
-    deleted = False
+async def heatmaps_delete(request: Request, path: str | None = Query(default=None)):
+    """Delete heatmap artifacts (JSON + optional PNG) for specific files or globally."""
+
+    body_paths: list[str] = []
     try:
-        if j.exists():
-            j.unlink()
-            deleted = True
-        if p.exists():
-            p.unlink()
-            deleted = True
+        if request.headers.get("content-type", "").startswith("application/json"):
+            js = await request.json()
+            if isinstance(js, dict):
+                arr = js.get("paths")
+                if isinstance(arr, list):
+                    body_paths = [str(p) for p in arr if isinstance(p, str)]
     except Exception:
-        pass
-    return api_success({"deleted": deleted}) if deleted else raise_api_error("Heatmaps not found", status_code=404)
+        body_paths = []
+
+    root: Path = STATE["root"]
+    targets: list[Path] = []
+    if path:
+        name, directory = _name_and_dir(path)
+        targets.append(Path(directory) / name)
+    elif body_paths:
+        for rel in body_paths:
+            name, directory = _name_and_dir(rel)
+            targets.append(Path(directory) / name)
+    else:
+        # Global delete: collect all heatmap artifacts
+        patterns = (f"*{SUFFIX_HEATMAPS_JSON}", f"*{SUFFIX_HEATMAPS_PNG}")
+        for patt in patterns:
+            for p in root.rglob(patt):
+                targets.append(p)
+
+    deleted = 0
+    errors = 0
+    for candidate in targets:
+        try:
+            name = str(candidate)
+            if name.endswith(SUFFIX_HEATMAPS_JSON) or name.endswith(SUFFIX_HEATMAPS_PNG):
+                if candidate.exists():
+                    try:
+                        candidate.unlink()
+                        deleted += 1
+                    except Exception:
+                        errors += 1
+                continue
+            j = heatmaps_json_path(candidate)
+            png = heatmaps_png_path(candidate)
+            if j.exists():
+                try:
+                    j.unlink(); deleted += 1
+                except Exception:
+                    errors += 1
+            if png.exists():
+                try:
+                    png.unlink(); deleted += 1
+                except Exception:
+                    errors += 1
+        except Exception:
+            errors += 1
+
+    mode = "single" if path else ("batch" if body_paths else "global")
+    if mode == "single" and deleted == 0 and errors == 0:
+        raise_api_error("Heatmaps not found", status_code=404)
+    return api_success({"deleted": deleted, "errors": errors, "mode": mode})
 
 @api.delete("/heatmaps/delete/batch")
 def heatmaps_delete_batch(path: str = Query(default=""), recursive: bool = Query(default=True)):
@@ -15677,6 +16136,8 @@ def registry_tags_rename(
 @api.post("/registry/tags/delete")
 def registry_tags_delete(payload: TagDelete):
     path = _tags_registry_path()
+    removed: Optional[dict] = None
+    slug: Optional[str] = None
     with REGISTRY_LOCK:
         data = _load_registry(path, "tags")
         items: list[dict] = data.get("tags") or []
@@ -15685,19 +16146,33 @@ def registry_tags_delete(payload: TagDelete):
             for i, t in enumerate(items):
                 if int(t.get("id") or 0) == int(payload.id):
                     idx = i
+                    slug = (t.get("slug") or "")
                     break
         elif payload.name:
-            s = _slugify(payload.name)
+            slug = _slugify(payload.name)
             for i, t in enumerate(items):
-                if (t.get("slug") or "") == s:
+                if (t.get("slug") or "") == slug:
                     idx = i
                     break
-        if idx is None:
-            return api_error("tag not found", status_code=404)
-        removed = items.pop(idx)
-        data["tags"] = items
-        _save_registry(path, data)
-    return api_success({"deleted": True, "tag": removed})
+        if idx is not None:
+            removed = items.pop(idx)
+            slug = slug or (removed.get("slug") or _slugify(str(removed.get("name") or "")))
+            data["tags"] = items
+            _save_registry(path, data)
+        else:
+            # Allow deleting tags that only exist in sidecars/media_attr by falling back to slug derived from name
+            if not slug and payload.name:
+                slug = _slugify(payload.name)
+            if not slug:
+                return api_error("tag not found", status_code=404)
+    cleanup = _delete_tag_everywhere(slug or "")
+    tag_info = removed or {"name": payload.name, "slug": slug}
+    return api_success({
+        "deleted": True,
+        "tag": tag_info,
+        "media_attr_updated": cleanup.get("media_attr_updated", 0),
+        "sidecars_updated": cleanup.get("sidecars_updated", 0),
+    })
 
 
 @api.post("/registry/tags/rewrite-sidecars")
@@ -18794,6 +19269,61 @@ def _rewrite_media_attr_tags_with_registry() -> int:
     global _TAGS_CACHE_TS
     _TAGS_CACHE_TS = None
     return changed
+
+
+def _delete_tag_everywhere(slug: str) -> dict[str, int]:
+    """Remove a tag (by slug) from media attr cache and sidecar files."""
+    slug_norm = (slug or "").strip().lower()
+    if not slug_norm:
+        return {"media_attr_updated": 0, "sidecars_updated": 0}
+
+    media_attr_updated = 0
+    sidecars_updated = 0
+
+    try:
+        changed = False
+        for rel, ent in (_MEDIA_ATTR or {}).items():
+            tags = list((ent or {}).get("tags") or [])
+            if not tags:
+                continue
+            new_tags = [t for t in tags if _slugify(str(t)) != slug_norm]
+            if new_tags != tags:
+                ent["tags"] = new_tags
+                changed = True
+                media_attr_updated += 1
+        if changed:
+            _save_media_attr()
+    except Exception:
+        pass
+
+    root = STATE.get("root")
+    if isinstance(root, Path) and root.exists():
+        try:
+            videos = _find_mp4s(root, True)
+        except Exception:
+            videos = []
+        for vid in videos:
+            tf = _tags_file(vid)
+            if not tf.exists():
+                continue
+            try:
+                data = json.loads(tf.read_text())
+            except Exception:
+                continue
+            tags = data.get("tags") or []
+            new_tags = [t for t in tags if _slugify(str(t)) != slug_norm]
+            if new_tags == tags:
+                continue
+            data["tags"] = new_tags
+            try:
+                tf.write_text(json.dumps(data, indent=2))
+                sidecars_updated += 1
+            except Exception:
+                pass
+
+    global _TAGS_CACHE_TS
+    _TAGS_CACHE_TS = None
+    return {"media_attr_updated": media_attr_updated, "sidecars_updated": sidecars_updated}
 
 def _list_tags(search: str | None = None) -> list[dict]:
     _load_tags_sidecars()

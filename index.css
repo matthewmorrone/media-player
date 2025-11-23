@@ -132,7 +132,7 @@ body::-webkit-scrollbar,
 }
 
 
-header {
+body > header {
   position: fixed;
   top: 0;
   left: 0;
@@ -157,6 +157,18 @@ main {
 .d-none,
 .hidden {
   display: none !important;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* Generic chips container used in list and sidebar */
@@ -2100,11 +2112,6 @@ keep only z-index here */
   width: 90%;
 }
 
-/* Wider variant for Manual Add modal to comfortably show two columns */
-.panel--manual-add {
-  max-width: min(1100px, 96vw);
-}
-
 .panel--image {
   max-width: min(920px, 96vw);
 }
@@ -2338,76 +2345,6 @@ keep only z-index here */
 
 .dir.muted {
   opacity: 0.8;
-}
-
-/* Manual Add Tag modal layout and styling */
-.manual-add-layout {
-  display: grid;
-  /* Use minmax(0, ...) so columns can shrink without forcing horizontal overflow */
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
-  align-items: start;
-  gap: 16px;
-}
-
-.manual-form-col {
-  /* Allow shrinking inside grid to prevent x-overflow */
-  min-width: 0;
-}
-
-.manual-results-col {
-  /* Allow shrinking and hide horizontal overflow; vertical scroll only */
-  min-width: 0;
-  max-height: 60vh;
-  overflow-y: auto;
-  overflow-x: hidden;
-  border-left: 1px solid #2a3144;
-  padding-left: 12px;
-}
-
-.manual-results .manual-result-row {
-  padding: 6px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.manual-results .manual-result-row:last-child {
-  border-bottom: none;
-}
-
-/* Long file paths should wrap instead of causing horizontal scroll */
-.manual-result-row .file {
-  min-width: 0;
-  word-break: break-all;
-  overflow-wrap: anywhere;
-}
-
-/* Inputs inside modal */
-.control-textarea {
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid #2a3144;
-  border-radius: 8px;
-  padding: 10px 14px;
-  font-size: 14px;
-  outline: none;
-  transition: all 0.2s ease;
-  resize: vertical;
-}
-
-.control-textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.2);
-}
-
-@media (max-width: 900px) {
-  .manual-add-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .manual-results-col {
-    border-left: none;
-    padding-left: 0;
-    margin-top: 12px;
-  }
 }
 
 /* Grid controls — streamlined sticky panel */
@@ -3381,13 +3318,14 @@ keep only z-index here */
   gap: 6px; /* reduce vertical gap between video and overlays */
 }
 
-/* Ensure the video fills the main area vertically and does not grow when
-  the sidebar width changes. Using height:100% keeps height stable while
-  object-fit handles letterboxing inside that frame. */
+/* Let the video grow with available width while respecting the vertical cap.
+  Height:auto keeps the aspect ratio responsive when the sidebar collapses. */
 .player-main .player-video {
-  height: 100%;
+  width: 100%;
+  height: auto;
   max-height: 100%;
   flex: 1 1 auto;
+  min-height: 0;
 }
 
 @media (max-width: 900px) {
@@ -3444,6 +3382,7 @@ keep only z-index here */
     display: block !important;
     flex-direction: initial !important;
     min-height: 0 !important;
+    position: relative !important;
   }
 
   /* When the sidebar is collapsed, make the main player panel more compact */
@@ -4299,6 +4238,7 @@ single definition earlier) */
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+  position: relative;
 }
 
 /* Reset previous mixed grid/flex definitions;
@@ -4959,7 +4899,6 @@ enforce single-line flex bar */
   left: 50%;
   transform: translateX(-50%);
   background: linear-gradient(135deg, rgba(22, 30, 44, .72), rgba(15, 22, 32, .58));
-  -webkit-backdrop-filter: blur(8px) saturate(140%);
   backdrop-filter: blur(8px) saturate(140%);
   padding: 8px 18px 9px;
   border-radius: 46px;
@@ -5011,9 +4950,8 @@ enforce single-line flex bar */
   display: flex;
   flex-direction: column;
   gap: 8px;
-  background: linear-gradient(to top, rgba(8, 12, 18, .78), rgba(10, 16, 24, .6) 60%, rgba(10, 16, 24, 0));
-  -webkit-backdrop-filter: blur(10px) saturate(150%);
-  backdrop-filter: blur(10px) saturate(150%);
+  /* background: linear-gradient(to top, rgba(8, 12, 18, .78), rgba(10, 16, 24, .6) 60%, rgba(10, 16, 24, 0)); */
+  backdrop-filter: blur(3px);
   border-radius: 0;
   font-size: 12px;
   color: var(--text-alt, #d7dde5);
@@ -5027,6 +4965,7 @@ enforce single-line flex bar */
 .player-scrubber-bar.fading {
   opacity: 0;
   transform: translateY(8px);
+  pointer-events: none;
 }
 
 /* Scrubber inline action buttons (Add Marker / Set Thumbnail) */
@@ -5184,7 +5123,6 @@ enforce single-line flex bar */
   box-shadow: 0 4px 14px -4px rgba(0, 0, 0, .7), 0 0 0 1px rgba(255, 255, 255, .08) inset;
   border-radius: 6px;
   overflow: hidden;
-  -webkit-backdrop-filter: blur(4px) saturate(140%);
   backdrop-filter: blur(4px) saturate(140%);
 }
 
@@ -5560,8 +5498,9 @@ enforce single-line flex bar */
 }
 
 /* Detached heatmap band above scrubber */
-/* Heatmap now overlays directly atop scrubber track (no vertical offset) */
-.player-scrubber-bar { position: relative; }
+/* Heatmap now overlays directly atop scrubber track (no vertical offset).
+  Keep the track positioned for the absolute children while leaving the
+  scrubber bar free to remain absolutely positioned over the video. */
 .scrubber-track { position: relative; }
 .scrubber-heatmap-band {
   position: absolute;
