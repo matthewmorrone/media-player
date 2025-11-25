@@ -15399,10 +15399,12 @@ const Performers = (() => {
     return false;
   }
 
-  async function detectFaceBoxForImage(url) {
+  async function detectFaceBoxForImage(url, opts = {}) {
     try {
       if (!url) return null;
-      if (faceBoxCache.has(url)) return faceBoxCache.get(url);
+      const force = Boolean(opts && opts.force);
+      if (!force && faceBoxCache.has(url)) return faceBoxCache.get(url);
+      if (force && faceBoxCache.has(url)) faceBoxCache.delete(url);
       if (faceDebugEnabled()) {
         try {
           devLog('info', '[FaceBox] start url=' + url);
@@ -15537,7 +15539,7 @@ const Performers = (() => {
   // Debounced search trigger (shared helper)
   let searchTimer = null; // retained only if we decide to cancel externally (not used now)
   // Face Box Modal elements (lazy lookup)
-  let fbModal = null; let fbImg = null; let fbOverlay = null; let fbTitle = null; let fbClose = null; let fbUpload = null;
+  let fbModal = null; let fbImg = null; let fbOverlay = null; let fbTitle = null; let fbClose = null; let fbUpload = null; let fbDetect = null;
   function ensureFaceBoxModalEls() {
     if (fbModal) return true;
     fbModal = document.getElementById('faceBoxModal');
@@ -15563,6 +15565,7 @@ const Performers = (() => {
     fbTitle = document.getElementById('faceBoxTitle');
     fbClose = document.getElementById('faceBoxClose');
     fbUpload = document.getElementById('faceBoxUploadBtn');
+    fbDetect = document.getElementById('faceBoxDetectBtn');
     if (fbImg) {
       fbImg.setAttribute('draggable', 'false');
       const haltImgDrag = (e) => {
@@ -15804,6 +15807,10 @@ const Performers = (() => {
       }
     }
     catch (_) { }
+    if (fbDetect) {
+      fbDetect.disabled = true;
+      fbDetect.classList.remove('btn-busy');
+    }
     if (fbImg) {
       fbImg.src = imgUrl || '';
       fbImg.onload = async () => {
@@ -15824,17 +15831,32 @@ const Performers = (() => {
         }
         catch (_) { }
         if (!fbOverlay) return;
-        const W = fbImg.clientWidth || fbImg.naturalWidth || 0;
-        const H = fbImg.clientHeight || fbImg.naturalHeight || 0;
-        const saveBtn = document.getElementById('faceBoxSaveBtn');
-        if (Array.isArray(fb) && fb.length === 4 && W > 0 && H > 0) {
-          const metrics = { width: W, height: H };
-          const normalizedFb = coerceSquareBox(fb, metrics) || fb;
+        const hideOverlay = () => {
+          fbOverlay.hidden = true;
+          fbOverlay.style.width = '0px';
+          fbOverlay.style.height = '0px';
+          fbOverlay.style.left = '0px';
+          fbOverlay.style.top = '0px';
+          try {
+            delete fbOverlay.dataset.box;
+          }
+          catch (_) {}
+        };
+
+        const renderBox = async (rawBox, opts = {}) => {
+          const { persistMode = 'diff', toastOnPersist = false } = opts || {};
+          if (!Array.isArray(rawBox) || rawBox.length !== 4) return null;
+          const metrics = {
+            width: fbImg.clientWidth || fbImg.naturalWidth || 0,
+            height: fbImg.clientHeight || fbImg.naturalHeight || 0,
+          };
+          if (!metrics.width || !metrics.height) return null;
+          const normalizedFb = coerceSquareBox(rawBox, metrics) || rawBox;
           const [nx, ny, nw, nh] = normalizedFb;
-          const x = Math.max(0, Math.round(nx * W));
-          const y = Math.max(0, Math.round(ny * H));
-          const w = Math.max(1, Math.round(nw * W));
-          const h = Math.max(1, Math.round(nh * H));
+          const x = Math.max(0, Math.round(nx * metrics.width));
+          const y = Math.max(0, Math.round(ny * metrics.height));
+          const w = Math.max(1, Math.round(nw * metrics.width));
+          const h = Math.max(1, Math.round(nh * metrics.height));
           fbOverlay.style.left = x + 'px';
           fbOverlay.style.top = y + 'px';
           fbOverlay.style.width = w + 'px';
@@ -15848,28 +15870,68 @@ const Performers = (() => {
             devLog('debug', 'FaceBox', 'modal load box', { box: normalizedFb });
           }
           catch (_) { }
-          if (saveBtn) saveBtn.disabled = false;
-          // Auto-persist if server had no box yet or differs significantly from detected
+          let savedBox = null;
           try {
             const had = Array.isArray(performer.image_face_box) && performer.image_face_box.length === 4 ? performer.image_face_box.map(Number) : null;
-            const diff = !had || !boxesAlmostEqual(had, normalizedFb, 0.01);
-            if (diff) {
-              try {
-                await persistFaceBox({ performer, box: normalizedFb, imageMetrics: metrics });
-              }
-              catch (_) { /* autosave best-effort */ }
+            const shouldPersist = persistMode === 'always' || (persistMode === 'diff' && (!had || !boxesAlmostEqual(had, normalizedFb, 0.01)));
+            if (persistMode !== 'never' && shouldPersist) {
+              savedBox = await persistFaceBox({
+                performer,
+                box: normalizedFb,
+                imageMetrics: metrics,
+                toastOnSuccess: toastOnPersist,
+                toastOnError: toastOnPersist,
+              });
             }
           }
           catch (_) { }
+          return savedBox || normalizedFb;
+        };
+
+        const initialApplied = Array.isArray(fb) && fb.length === 4
+          ? await renderBox(fb, { persistMode: 'diff' })
+          : null;
+        if (!initialApplied) {
+          hideOverlay();
         }
-        else {
-          fbOverlay.hidden = true;
-          fbOverlay.style.width = '0px';
-          fbOverlay.style.height = '0px';
-          fbOverlay.style.left = '0px';
-          fbOverlay.style.top = '0px';
-          if (saveBtn) saveBtn.disabled = true;
+
+        if (fbDetect) {
+          if (fbDetect._faceBoxHandler) {
+            fbDetect.removeEventListener('click', fbDetect._faceBoxHandler);
+          }
+          const handler = async () => {
+            if (!imgUrl) {
+              notify('Image not available for detection', 'error');
+              return;
+            }
+            fbDetect.disabled = true;
+            fbDetect.classList.add('btn-busy');
+            try {
+              const detected = await detectFaceBoxForImage(imgUrl, { force: true });
+              if (Array.isArray(detected) && detected.length === 4) {
+                const applied = await renderBox(detected, { persistMode: 'always', toastOnPersist: true });
+                if (!applied) {
+                  notify('Detected face box could not be applied', 'warn');
+                }
+              }
+              else {
+                notify('No face detected in this image', 'warn');
+              }
+            }
+            catch (err) {
+              const msg = err && err.message ? err.message : 'error';
+              notify('Face detection failed: ' + msg, 'error');
+            }
+            finally {
+              fbDetect.classList.remove('btn-busy');
+              fbDetect.disabled = false;
+            }
+          };
+          fbDetect.addEventListener('click', handler);
+          fbDetect._faceBoxHandler = handler;
+          fbDetect.disabled = false;
         }
+
         // Enable manual draw/drag editing after initial positioning
         enableFaceBoxEditing({ performer, imgEl: fbImg, overlayEl: fbOverlay });
       };
@@ -15910,7 +15972,6 @@ const Performers = (() => {
       });
     };
     const handle = overlayEl.querySelector('.handle');
-    const saveBtn = document.getElementById('faceBoxSaveBtn');
     const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
     const getImageMetrics = () => {
       const rect = imgEl.getBoundingClientRect();
@@ -16066,31 +16127,6 @@ const Performers = (() => {
       }
     });
 
-    if (saveBtn) {
-      if (saveBtn._faceBoxHandler) {
-        saveBtn.removeEventListener('click', saveBtn._faceBoxHandler);
-      }
-      const handler = async () => {
-        const box = currentNormBox();
-        const saved = await saveBox(box, { toastOnSuccess: true, toastOnError: true });
-        if (saved) {
-          const joined = saved.join(',');
-          try {
-            overlayEl.dataset.box = joined;
-            overlayEl.dataset.faceBox = joined;
-          }
-          catch (_) { }
-        }
-      };
-      saveBtn.addEventListener('click', handler);
-      saveBtn._faceBoxHandler = handler;
-      cleanupFns.push(() => {
-        if (saveBtn._faceBoxHandler === handler) {
-          saveBtn.removeEventListener('click', handler);
-          saveBtn._faceBoxHandler = null;
-        }
-      });
-    }
 
     function wireManualDrawCreation() {
       const manualMouseDown = (e) => {
@@ -16160,7 +16196,6 @@ const Performers = (() => {
             overlayEl.dataset.faceBox = joined;
           }
           catch (_) { }
-          if (saveBtn) saveBtn.disabled = false;
         };
         document.addEventListener('mousemove', onManualMove);
         document.addEventListener('mouseup', finish);
@@ -16197,16 +16232,7 @@ const Performers = (() => {
       try {
         const avatarEl = c.querySelector('.pc-avatar');
         if (!avatarEl) continue;
-        const [fx, fy, fw, fh] = box;
-        const cx = fx + fw / 2; const cy = fy + fh / 2;
-        const px = Math.round(cx * 100); const py = Math.round(cy * 100);
-        avatarEl.style.backgroundPosition = `${px}% ${py}%`;
-        const TARGET_FRAC = 0.6;
-        const base = Math.max(fw, fh);
-        const safeFrac = Math.max(0.05, Math.min(1, base));
-        const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFrac) * 100));
-        avatarEl.style.backgroundSize = `${scaleW}% auto`;
-        avatarEl.dataset.faceBox = box.join(',');
+        applyFaceBoxToAvatar(avatarEl, box);
       }
       catch (_) { }
     }
@@ -16680,66 +16706,22 @@ const Performers = (() => {
           avatarEl.title = p.name;
           try {
             const primaryImage = (Array.isArray(p.images) && p.images.length ? p.images[0] : (typeof p.image === 'string' ? p.image : '')) || '';
-            if (primaryImage) {
-              // Use encoded URL and quote it to handle spaces and special chars reliably
-              const imgUrl = encodeURI(primaryImage);
-              avatarEl.style.backgroundImage = `url("${imgUrl}")`;
-              try {
-                avatarEl.dataset.imgUrl = imgUrl;
-              }
-              catch (_) {}
-              // Default cover + center, then adjust if we have a face box
-              avatarEl.style.backgroundSize = 'cover';
-              avatarEl.style.backgroundPosition = 'center';
-              try {
-                const fb = p.image_face_box;
-                if (Array.isArray(fb) && fb.length === 4) {
-                  let [fx, fy, fw, fh] = fb.map(Number);
-                  // If server box is not square or appears tight (<0.5 side), attempt pixel-true correction using image dims
-                  // No square upgrade: use raw box directly
-                  // Compute a focus point at face center (for initial paint)
-                  const cx = fx + fw / 2;
-                  const cy = fy + fh / 2;
-                  // Because we're using background-size: cover on a square avatar with an arbitrary image aspect,
-                  // a simple center shift works reasonably: convert cx,cy (0..1) into %.
-                  const px = Math.round(cx * 100);
-                  const py = Math.round(cy * 100);
-                  avatarEl.style.backgroundPosition = `${px}% ${py}%`;
-                  // Zoom so the face box roughly fills a target fraction of the avatar width
-                  const TARGET_FRAC = 0.6; // face spans ~60% of avatar width/height whichever larger
-                  const base = Math.max(fw, fh);
-                  const safeFrac = Math.max(0.05, Math.min(1, base));
-                  const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFrac) * 100));
-                  avatarEl.style.backgroundSize = `${scaleW}% auto`;
-                  // Optionally, if face is small, we could zoom in slightly by switching to contain + scale.
-                  // For now keep 'cover' to avoid letterboxing; future: adjust backgroundSize based on fw,fh.
-                  avatarEl.dataset.faceBox = fb.join(',');
-                }
-                else if (!fb) {
-                  // Attempt client-side detection only if no server box present
-                  (async () => {
-                    const box = await detectFaceBoxForImage(imgUrl);
-                    if (box && avatarEl && !avatarEl.dataset.faceBox) {
-                      const [fx, fy, fw, fh] = box;
-                      const cx = fx + fw / 2; const cy = fy + fh / 2;
-                      const px = Math.round(cx * 100); const py = Math.round(cy * 100);
-                      avatarEl.style.backgroundPosition = `${px}% ${py}%`;
-                      const TARGET_FRAC = 0.6;
-                      const base = Math.max(fw, fh);
-                      const safeFrac = Math.max(0.05, Math.min(1, base));
-                      const scaleW = Math.max(100, Math.round((TARGET_FRAC / safeFrac) * 100));
-                      avatarEl.style.backgroundSize = `${scaleW}% auto`;
-                      avatarEl.dataset.faceBox = box.join(',');
-                    }
-                  })();
-                }
-              }
-              catch (_e) {}
-              avatarEl.classList.add('has-image');
+            const imgUrl = primaryImage ? encodeURI(primaryImage) : '';
+            setAvatarImageOnCard(avatarEl, p, imgUrl);
+            const fb = Array.isArray(p.image_face_box) && p.image_face_box.length === 4 ? p.image_face_box.map(Number) : null;
+            if (fb) {
+              applyFaceBoxToAvatar(avatarEl, fb);
             }
             else {
-              avatarEl.style.removeProperty('background-image');
-              avatarEl.classList.remove('has-image');
+              applyFaceBoxToAvatar(avatarEl, null);
+              if (imgUrl) {
+                (async () => {
+                  const box = await detectFaceBoxForImage(imgUrl);
+                  if (box && avatarEl && !avatarEl.dataset.faceBox) {
+                    applyFaceBoxToAvatar(avatarEl, box);
+                  }
+                })();
+              }
             }
           }
           catch (_) {}

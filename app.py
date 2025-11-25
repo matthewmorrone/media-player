@@ -15,6 +15,7 @@ import mimetypes
 import io
 from difflib import SequenceMatcher
 from contextlib import asynccontextmanager
+import copy
 
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Callable, Iterable, cast
@@ -5545,6 +5546,74 @@ def _performers_registry_path() -> Path:
     return _registry_dir() / "performers.json"
 
 
+def _normalize_face_box_vals(box: Any) -> Optional[list[float]]:
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        return None
+    norm: list[float] = []
+    try:
+        for v in box:
+            f = float(v)
+            if not math.isfinite(f):
+                return None
+            norm.append(max(0.0, min(1.0, f)))
+    except Exception:
+        return None
+    return norm
+
+
+def _serialize_performer_images(entry: dict) -> list[dict]:
+    images_out: list[dict] = []
+    seen: set[str] = set()
+
+    def add_image(path: Any, face: Any = None, extra: Optional[dict] = None) -> None:
+        if path is None:
+            return
+        try:
+            path_str = str(path).strip()
+        except Exception:
+            return
+        if not path_str or path_str in seen:
+            return
+        seen.add(path_str)
+        obj: dict[str, Any] = {"path": path_str}
+        norm_face = _normalize_face_box_vals(face)
+        if norm_face is not None:
+            obj["face"] = norm_face
+        if isinstance(extra, dict):
+            for key, value in extra.items():
+                if key in ("path", "face"):
+                    continue
+                obj[key] = value
+        images_out.append(obj)
+
+    primary = entry.get("image")
+    primary_face = entry.get("image_face_box")
+    if primary:
+        add_image(primary, primary_face)
+
+    for raw in entry.get("images") or []:
+        if isinstance(raw, dict):
+            add_image(raw.get("path"), raw.get("face"), raw)
+        else:
+            add_image(raw)
+
+    return images_out
+
+
+def _serialize_performer_entry(entry: dict) -> dict:
+    if not isinstance(entry, dict):
+        return entry
+    serialized: dict[str, Any] = {}
+    for key, value in entry.items():
+        if key in ("image", "image_face_box", "images"):
+            continue
+        serialized[key] = value
+    images = _serialize_performer_images(entry)
+    if images:
+        serialized["images"] = images
+    return serialized
+
+
 def _slugify(name: str) -> str:
     s = (name or "").strip().lower()
     # replace non-alnum with '-'
@@ -5597,6 +5666,37 @@ def _load_registry(path: Path, kind: str) -> dict:
         data.setdefault("version", 1)
         data.setdefault("next_id", 1)
         data.setdefault(kind, [])
+        if kind == "performers":
+            items = data.get("performers") or []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                imgs = it.get("images") or []
+                flattened: list[str] = []
+                detected_face: Optional[list[float]] = None
+                for raw in imgs:
+                    if isinstance(raw, dict):
+                        path = str(raw.get("path") or "").strip()
+                        if not path:
+                            continue
+                        flattened.append(path)
+                        if detected_face is None:
+                            face = _normalize_face_box_vals(raw.get("face"))
+                            if face is not None:
+                                detected_face = face
+                    elif isinstance(raw, str):
+                        path = raw.strip()
+                        if path:
+                            flattened.append(path)
+                it["images"] = flattened
+                if flattened:
+                    curr = it.get("image")
+                    if not isinstance(curr, str) or not curr.strip():
+                        it["image"] = flattened[0]
+                if detected_face is not None:
+                    boxed = it.get("image_face_box")
+                    if not (isinstance(boxed, (list, tuple)) and len(boxed) == 4):
+                        it["image_face_box"] = detected_face
         return data
     except Exception:
         return skel
@@ -5604,7 +5704,17 @@ def _load_registry(path: Path, kind: str) -> dict:
 
 def _save_registry(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+    to_write = copy.deepcopy(data)
+    performers = to_write.get("performers")
+    if isinstance(performers, list):
+        normalized: list[Any] = []
+        for entry in performers:
+            if isinstance(entry, dict):
+                normalized.append(_serialize_performer_entry(entry))
+            else:
+                normalized.append(entry)
+        to_write["performers"] = normalized
+    path.write_text(json.dumps(to_write, indent=2))
 
 
 class TagCreate(BaseModel): # type: ignore
@@ -8649,19 +8759,7 @@ def performer_update_face_box(
         ny = max(0.0, min(1.0, float(y)))
         nw = max(0.0, min(1.0, float(w)))
         nh = max(0.0, min(1.0, float(h)))
-        # Coerce to a square box while keeping inside [0,1]
-        side = max(nw, nh)
-        # Center the square on the original box center
-        cx = nx + nw / 2.0
-        cy = ny + nh / 2.0
-        nx = max(0.0, min(1.0, cx - side / 2.0))
-        ny = max(0.0, min(1.0, cy - side / 2.0))
-        # Clamp if overflows
-        if nx + side > 1.0:
-            nx = max(0.0, 1.0 - side)
-        if ny + side > 1.0:
-            ny = max(0.0, 1.0 - side)
-        bx = [nx, ny, side, side]
+        bx = [nx, ny, nw, nh]
         reg_path = _performers_registry_path()
         with REGISTRY_LOCK:
             data = _load_registry(reg_path, "performers")
@@ -8729,16 +8827,7 @@ def performer_update_face_boxes(body: dict = Body(..., description="Batch face b
                     ny = max(0.0, min(1.0, float(ent.get("y", 0.0))))
                     nw = max(0.0, min(1.0, float(ent.get("w", 0.0))))
                     nh = max(0.0, min(1.0, float(ent.get("h", 0.0))))
-                    side = max(nw, nh)
-                    cx = nx + nw/2.0
-                    cy = ny + nh/2.0
-                    nx = max(0.0, min(1.0, cx - side/2.0))
-                    ny = max(0.0, min(1.0, cy - side/2.0))
-                    if nx + side > 1.0:
-                        nx = max(0.0, 1.0 - side)
-                    if ny + side > 1.0:
-                        ny = max(0.0, 1.0 - side)
-                    bx = [nx, ny, side, side]
+                    bx = [nx, ny, nw, nh]
                     it["image_face_box"] = bx
                     updated.append(slug_in)
                 except Exception:
