@@ -16,6 +16,8 @@ import io
 from difflib import SequenceMatcher
 from contextlib import asynccontextmanager
 import copy
+from itertools import combinations
+from collections import defaultdict
 
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Callable, Iterable, cast
@@ -5561,6 +5563,96 @@ def _normalize_face_box_vals(box: Any) -> Optional[list[float]]:
     return norm
 
 
+def _image_entry_path(entry: Any) -> str:
+    """Return the normalized relative path from a performer image entry."""
+    candidate = entry
+    if isinstance(entry, dict):
+        candidate = entry.get("path")
+    if candidate is None:
+        return ""
+    if isinstance(candidate, str):
+        return candidate.strip()
+    try:
+        return str(candidate).strip()
+    except Exception:
+        return ""
+
+
+def _ensure_images_list(entry: dict) -> list[Any]:
+    imgs = entry.get("images")
+    if not isinstance(imgs, list):
+        imgs = []
+    entry["images"] = imgs
+    return imgs
+
+
+def _image_list_has_path(images: Iterable[Any], path: str) -> bool:
+    target = (path or "").strip()
+    if not target:
+        return False
+    for raw in images:
+        if _image_entry_path(raw) == target:
+            return True
+    return False
+
+
+def _get_primary_image_path(entry: dict, promote: bool = False) -> str:
+    img_val = entry.get("image")
+    if isinstance(img_val, str) and img_val.strip():
+        return img_val.strip()
+    for raw in entry.get("images") or []:
+        path = _image_entry_path(raw)
+        if path:
+            if promote:
+                entry["image"] = path
+            return path
+    return ""
+
+
+def _set_face_box_for_image(entry: dict, image_path: str, face_box: Any) -> bool:
+    """Attach (or clear) a normalized face box for the specified image path."""
+    path = (image_path or "").strip()
+    if not path:
+        return False
+    normalized = _normalize_face_box_vals(face_box)
+    imgs = _ensure_images_list(entry)
+    changed = False
+    for idx, raw in enumerate(imgs):
+        if _image_entry_path(raw) != path:
+            continue
+        if isinstance(raw, dict):
+            if normalized is not None:
+                if raw.get("face") != normalized:
+                    raw["face"] = normalized
+                    changed = True
+            else:
+                if "face" in raw:
+                    raw.pop("face", None)
+                    changed = True
+        else:
+            if normalized is not None:
+                imgs[idx] = {"path": path, "face": normalized}
+                changed = True
+        if changed:
+            break
+    else:
+        if normalized is not None:
+            imgs.append({"path": path, "face": normalized})
+            changed = True
+    entry["images"] = imgs
+    primary = entry.get("image")
+    if isinstance(primary, str) and primary.strip() == path:
+        if normalized is not None:
+            if entry.get("image_face_box") != normalized:
+                entry["image_face_box"] = normalized
+                changed = True
+        else:
+            if "image_face_box" in entry:
+                entry.pop("image_face_box", None)
+                changed = True
+    return changed
+
+
 def _serialize_performer_images(entry: dict) -> list[dict]:
     images_out: list[dict] = []
     seen: set[str] = set()
@@ -5612,6 +5704,47 @@ def _serialize_performer_entry(entry: dict) -> dict:
     if images:
         serialized["images"] = images
     return serialized
+
+
+def _public_image_url(path: Any) -> Optional[str]:
+    """Convert performer image references into browser-accessible URLs."""
+    if path is None:
+        return None
+    try:
+        raw = str(path).strip()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    normalized = raw.replace("\\", "/")
+    lower = normalized.lower()
+    if lower.startswith("http://") or lower.startswith("https://") or lower.startswith("data:"):
+        return normalized
+    if normalized.startswith("/"):
+        return normalized
+    cleaned = normalized.lstrip("/")
+    if cleaned.startswith("files/"):
+        cleaned = cleaned[len("files/") :]
+    return f"/files/{cleaned}"
+
+
+def _public_image_list(values: Iterable[Any]) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    try:
+        iterator = iter(values)
+    except TypeError:
+        return urls
+    for entry in iterator:
+        candidate = entry
+        if isinstance(entry, dict):
+            candidate = entry.get("path")
+        url = _public_image_url(candidate)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
 
 
 def _slugify(name: str) -> str:
@@ -5671,32 +5804,43 @@ def _load_registry(path: Path, kind: str) -> dict:
             for it in items:
                 if not isinstance(it, dict):
                     continue
-                imgs = it.get("images") or []
-                flattened: list[str] = []
-                detected_face: Optional[list[float]] = None
-                for raw in imgs:
+                raw_images = it.get("images")
+                if not isinstance(raw_images, list):
+                    raw_images = []
+                normalized_images: list[Any] = []
+                face_by_path: dict[str, list[float]] = {}
+                seen: set[str] = set()
+                for raw in raw_images:
+                    path = _image_entry_path(raw) # type: ignore
+                    if not path or path in seen:
+                        continue
+                    seen.add(path) # type: ignore
                     if isinstance(raw, dict):
-                        path = str(raw.get("path") or "").strip() # type: ignore
-                        if not path:
-                            continue
-                        flattened.append(path) # type: ignore
-                        if detected_face is None:
-                            face = _normalize_face_box_vals(raw.get("face"))
-                            if face is not None:
-                                detected_face = face
-                    elif isinstance(raw, str):
-                        path = raw.strip() # type: ignore
-                        if path:
-                            flattened.append(path) # type: ignore
-                it["images"] = flattened
-                if flattened:
-                    curr = it.get("image")
-                    if not isinstance(curr, str) or not curr.strip():
-                        it["image"] = flattened[0]
-                if detected_face is not None:
-                    boxed = it.get("image_face_box")
-                    if not (isinstance(boxed, (list, tuple)) and len(boxed) == 4):
-                        it["image_face_box"] = detected_face
+                        obj = {k: v for k, v in raw.items() if k != "face"}
+                        obj["path"] = path
+                        face_norm = _normalize_face_box_vals(raw.get("face"))
+                        if face_norm is not None:
+                            obj["face"] = face_norm
+                            face_by_path[path] = face_norm # type: ignore
+                        normalized_images.append(obj)
+                    else:
+                        normalized_images.append(path)
+                it["images"] = normalized_images
+                primary_path = it.get("image") if isinstance(it.get("image"), str) else ""
+                primary_path = primary_path.strip() if isinstance(primary_path, str) else ""
+                if not primary_path and normalized_images:
+                    fallback = _image_entry_path(normalized_images[0])
+                    if fallback:
+                        it["image"] = fallback
+                        primary_path = fallback
+                face_box = _normalize_face_box_vals(it.get("image_face_box"))
+                if face_box is not None:
+                    it["image_face_box"] = face_box
+                elif primary_path and primary_path in face_by_path:
+                    it["image_face_box"] = face_by_path[primary_path]
+                else:
+                    if "image_face_box" in it:
+                        it.pop("image_face_box", None)
         return data
     except Exception:
         return skel
@@ -8055,49 +8199,6 @@ def _load_performers_sidecars() -> None:
     except Exception:
         pass
 
-def _merge_performers_registry_once() -> int:
-    """Lightweight merge of performers registry into in-memory cache/index.
-    Avoids any filesystem scanning so it can be used on cold start fast paths.
-    Returns the number of registry entries processed.
-    """
-    count = 0
-    try:
-        reg_path = _performers_registry_path()
-        with REGISTRY_LOCK:
-            pdata = _load_registry(reg_path, "performers")
-            items = list(pdata.get("performers") or [])
-        for item in items:
-            if isinstance(item, str):
-                name = item.strip()
-            else:
-                name = (item.get("name") or "").strip()
-            if not name:
-                continue
-            norm = _normalize_performer(name)
-            rec = _PERFORMERS_CACHE.setdefault(norm, {"name": name, "tags": []})
-            try:
-                if isinstance(item, dict):
-                    imgs = list(item.get("images") or [])
-                    if imgs:
-                        rec["images"] = imgs
-                    primary = item.get("image")
-                    if isinstance(primary, str) and primary.strip():
-                        rec["image"] = primary.strip()
-                    fb = item.get("image_face_box")
-                    if isinstance(fb, (list, tuple)) and len(fb) == 4:
-                        try:
-                            rec["image_face_box"] = [max(0.0, min(1.0, float(v))) for v in fb]
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            _PERFORMERS_INDEX.setdefault(norm, set())
-            count += 1
-    except Exception:
-        # best-effort only
-        pass
-    return count
-
 def _list_performers(search: str | None = None) -> list[dict]:
     # Caller (api_performers) is responsible for ensuring sidecars/cache are loaded.
     # Avoid duplicate scans here to keep listing lightweight.
@@ -8112,21 +8213,28 @@ def _list_performers(search: str | None = None) -> list[dict]:
         # Determine primary image URL if available (registry stores paths relative to root)
         img_rel = None
         try:
-            primary = rec.get("image") or (rec.get("images") or [None])[0]
-            if isinstance(primary, str) and primary.strip():
-                img_rel = primary.strip()
+            primary = _get_primary_image_path(rec, promote=False)
+            if primary:
+                img_rel = primary
         except Exception:
             img_rel = None
-        has_img = bool(img_rel)
+        img_url = _public_image_url(img_rel)
+        has_img = bool(img_url)
         item = {
             "name": rec["name"],
             "slug": _slugify(rec["name"]),
             "count": len(paths),
             "has_image": has_img,
         }
-        if has_img:
+        if img_url:
             # Expose as files URL; client can fetch /files/<relative>
-            item["image"] = f"/files/{img_rel}"
+            item["image"] = img_url
+        try:
+            img_list = _public_image_list(rec.get("images") or [])
+            if img_list:
+                item["images"] = img_list
+        except Exception:
+            pass
         # Bubble through optional face-focus box if present in registry/cache
         try:
             box = rec.get("image_face_box")
@@ -8436,6 +8544,18 @@ def _performer_images_store() -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
+_APOSTROPHE_CHARS = ("'", "’", "‘", "`")
+
+def _sanitize_performer_image_filename(name: str) -> str:
+    """Replace apostrophes in uploaded image filenames with hyphens."""
+    if not isinstance(name, str) or not name:
+        return ""
+    sanitized = ''.join('-' if ch in _APOSTROPHE_CHARS else ch for ch in name)
+    # Collapse any accidental double hyphens introduced by replacements
+    while '--' in sanitized:
+        sanitized = sanitized.replace('--', '-')
+    return sanitized
+
 @api.post("/performers/images/import")
 def performers_images_import(
     directory: str = Query(..., description="Directory containing images; filenames map to performer names"),
@@ -8514,7 +8634,7 @@ def performers_images_import(
                 if replace:
                     imgs = [rel]
                 else:
-                    if rel not in imgs:
+                    if not _image_list_has_path(imgs, rel):
                         imgs.append(rel)
                 it["images"] = imgs
                 # Set primary if not set
@@ -8590,6 +8710,14 @@ def performers_images_upload(
                 continue
             norm = _normalize_performer(perf_disp)
             slug = _slugify(perf_disp)
+            sanitized_basename = _sanitize_performer_image_filename(basename)
+            if sanitized_basename:
+                basename = sanitized_basename
+            else:
+                fallback_ext = ext if ext else ".jpg"
+                if not fallback_ext.startswith('.'):
+                    fallback_ext = f".{fallback_ext}"
+                basename = f"{slug}{fallback_ext}"
             if norm not in _PERFORMERS_CACHE:
                 if not create_missing:
                     skipped += 1
@@ -8629,7 +8757,7 @@ def performers_images_upload(
                 if replace:
                     imgs = [rel]
                 else:
-                    if rel not in imgs:
+                    if not _image_list_has_path(imgs, rel):
                         imgs.append(rel)
                 it["images"] = imgs
                 if not (isinstance(it.get("image"), str) and (it.get("image") or "").strip()):
@@ -8701,14 +8829,14 @@ def performers_images_upload(
                         logging.info("[performers:face] image=%s box=%s", primary_rel, box_str)
                     except Exception:
                         pass
-                    if face_box_norm is not None:
+                    if face_box_norm is not None and primary_rel:
                         try:
                             with REGISTRY_LOCK:
                                 pdata = _load_registry(reg_path, "performers")
                                 pitems = list(pdata.get("performers") or [])
                                 for pit in pitems:
-                                    if str(pit.get("slug") or "") == slug and str(pit.get("image") or "") == primary_rel:
-                                        pit["image_face_box"] = face_box_norm
+                                    if str(pit.get("slug") or "") == slug:
+                                        _set_face_box_for_image(pit, primary_rel, face_box_norm)
                                         break
                                 pdata["performers"] = pitems
                                 _save_registry(reg_path, pdata)
@@ -8767,20 +8895,9 @@ def performer_update_face_box(
             found = False
             for it in items:
                 if _slugify(str(it.get("slug") or it.get("name") or "")) == norm_slug:
-                    img_ref = ""
-                    img_val = it.get("image")
-                    if isinstance(img_val, str) and img_val.strip():
-                        img_ref = img_val.strip()
-                    else:
-                        imgs = it.get("images") or []
-                        if isinstance(imgs, list):
-                            for cand in imgs:
-                                if isinstance(cand, str) and cand.strip():
-                                    img_ref = cand.strip()
-                                    it["image"] = img_ref  # promote first stored image to primary
-                                    break
+                    img_ref = _get_primary_image_path(it, promote=True)
                     if img_ref:
-                        it["image_face_box"] = bx
+                        _set_face_box_for_image(it, img_ref, bx)
                         found = True
                     break
             if not found:
@@ -8820,15 +8937,15 @@ def performer_update_face_boxes(body: dict = Body(..., description="Batch face b
                     if not slug_in or slug_in not in by_slug:
                         continue
                     it = by_slug[slug_in]
-                    # Only set if performer has a primary image
-                    if not (isinstance(it.get("image"), str) and (it.get("image") or "").strip()):
+                    img_ref = _get_primary_image_path(it, promote=True)
+                    if not img_ref:
                         continue
                     nx = max(0.0, min(1.0, float(ent.get("x", 0.0))))
                     ny = max(0.0, min(1.0, float(ent.get("y", 0.0))))
                     nw = max(0.0, min(1.0, float(ent.get("w", 0.0))))
                     nh = max(0.0, min(1.0, float(ent.get("h", 0.0))))
                     bx = [nx, ny, nw, nh]
-                    it["image_face_box"] = bx
+                    _set_face_box_for_image(it, img_ref, bx)
                     updated.append(slug_in)
                 except Exception:
                     continue
@@ -8864,6 +8981,14 @@ def performer_image_upload(
     ext = Path(raw_fn).suffix.lower()
     if ext not in exts:
         raise_api_error("unsupported image extension", status_code=415)
+    sanitized_raw_fn = _sanitize_performer_image_filename(raw_fn)
+    if sanitized_raw_fn:
+        raw_fn = sanitized_raw_fn
+    else:
+        fallback_ext = ext if ext else ".jpg"
+        if not fallback_ext.startswith('.'):
+            fallback_ext = f".{fallback_ext}"
+        raw_fn = f"{slug}{fallback_ext}"
     root_path = Path(STATE.get("root") or Path.cwd()).resolve()
     reg_path = _performers_registry_path()
     created = False
@@ -8914,7 +9039,7 @@ def performer_image_upload(
         if replace:
             imgs = [rel]
         else:
-            if rel not in imgs:
+            if not _image_list_has_path(imgs, rel):
                 imgs.append(rel)
         it["images"] = imgs
         # Always set primary to the newest if replace OR no primary yet
@@ -8985,13 +9110,13 @@ def performer_image_upload(
             except Exception:
                 pass
         # Persist face box on the performer entry only if it corresponds to the current primary image
-        if face_box_norm is not None:
+        if face_box_norm is not None and primary_rel:
             with REGISTRY_LOCK:
                 data = _load_registry(reg_path, "performers")
                 items = list(data.get("performers") or [])
                 for it3 in items:
                     if str(it3.get("slug") or "") == slug:
-                        it3["image_face_box"] = face_box_norm
+                        _set_face_box_for_image(it3, primary_rel, face_box_norm)
                         break
                 data["performers"] = items
                 _save_registry(reg_path, data)
@@ -9114,7 +9239,7 @@ def performers_face_box_compute_missing(limit: int = Query(default=100, ge=1, le
             if ny + side > 1.0:
                 ny = max(0.0, 1.0 - side)
             box = [nx, ny, side, side]
-            it["image_face_box"] = box
+            _set_face_box_for_image(it, img_rel, box)
             updated.append(str(it.get("slug") or _slugify(str(it.get("name") or ""))))
         except Exception:
             skipped.append(str(it.get("slug") or it.get("name") or ""))
@@ -9400,6 +9525,7 @@ def api_performers_graph(
     nodes: list[dict] = []
     paths_by_slug: dict[str, set[str]] = {}
     name_by_slug: dict[str, str] = {}
+    paths_to_slugs: dict[str, list[str]] = defaultdict(list)
     try:
         # Include both indexed and imported performers; filter by count
         all_norms = set((_PERFORMERS_INDEX or {}).keys()) | set((_PERFORMERS_CACHE or {}).keys())
@@ -9412,40 +9538,57 @@ def api_performers_graph(
                 slug = _slugify(name)
                 name_by_slug[slug] = name
                 paths_by_slug[slug] = paths
-                nodes.append({"id": slug, "slug": slug, "name": name, "count": count})
+                image_list: list[str] = []
+                try:
+                    image_list = _public_image_list(rec.get("images") or [])
+                except Exception:
+                    image_list = []
+                img_primary = _public_image_url(rec.get("image"))
+                img_url = img_primary or (image_list[0] if image_list else None)
+                face_box = _normalize_face_box_vals(rec.get("image_face_box"))
+                node_payload: dict[str, Any] = {"id": slug, "slug": slug, "name": name, "count": count}
+                if img_url:
+                    node_payload["image"] = img_url
+                if image_list:
+                    node_payload["images"] = image_list
+                if face_box:
+                    node_payload["image_face_box"] = face_box
+                if img_url or image_list:
+                    node_payload["has_image"] = True
+                nodes.append(node_payload)
+                for rel in paths:
+                    rel_path = rel if isinstance(rel, str) else str(rel)
+                    if rel_path:
+                        paths_to_slugs[rel_path].append(slug)
     except Exception:
         nodes = []
-    # Compute edges by intersecting path sets for each pair
+    # Compute edges by aggregating co-appearances per video (avoids O(n^2) performer scans)
     edges: list[dict] = []
     try:
-        slugs = list(paths_by_slug.keys())
-        n = len(slugs)
-        for i in range(n):
-            s1 = slugs[i]
-            p1 = paths_by_slug.get(s1, set())
-            if not p1:
+        edge_map: dict[tuple[str, str], dict[str, Any]] = {}
+        per_edge_limit = int(limit_videos_per_edge)
+        for rel_path, slug_list in paths_to_slugs.items():
+            unique_slugs = sorted({slug for slug in slug_list if slug})
+            if len(unique_slugs) < 2:
                 continue
-            for j in range(i + 1, n):
-                s2 = slugs[j]
-                p2 = paths_by_slug.get(s2, set())
-                if not p2:
-                    continue
-                inter = p1.intersection(p2)
-                if not inter:
-                    continue
-                vids = list(inter)
-                if limit_videos_per_edge and limit_videos_per_edge > 0:
-                    vids = vids[: int(limit_videos_per_edge)]
-                eid = f"{s1}|{s2}"
-                edges.append({
-                    "id": eid,
-                    "source": s1,
-                    "target": s2,
-                    "count": len(inter),
-                    "videos": vids,
-                    "a": name_by_slug.get(s1, s1),
-                    "b": name_by_slug.get(s2, s2),
-                })
+            for s1, s2 in combinations(unique_slugs, 2):
+                key = (s1, s2)
+                entry = edge_map.get(key)
+                if not entry:
+                    entry = {
+                        "id": f"{s1}|{s2}",
+                        "source": s1,
+                        "target": s2,
+                        "count": 0,
+                        "videos": [],
+                        "a": name_by_slug.get(s1, s1),
+                        "b": name_by_slug.get(s2, s2),
+                    }
+                    edge_map[key] = entry
+                entry["count"] += 1
+                if per_edge_limit > 0 and len(entry["videos"]) < per_edge_limit:
+                    entry["videos"].append(rel_path)
+        edges = list(edge_map.values())
     except Exception:
         edges = []
     # Sort nodes by count desc then name; edges by count desc
@@ -16402,16 +16545,27 @@ def registry_performers_update(payload: PerformerUpdate):
             target["name"] = payload.new_name
             target["slug"] = new_slug
         # Images updates
-        imgs: list[str] = list(target.get("images") or [])
+        imgs: list[Any] = list(target.get("images") or [])
         changed = False
         for u in (payload.add_images or []):
-            if u and u not in imgs:
-                imgs.append(str(u))
+            candidate = ""
+            if isinstance(u, str):
+                candidate = u.strip()
+            elif u is not None:
+                try:
+                    candidate = str(u).strip()
+                except Exception:
+                    candidate = ""
+            if candidate and not _image_list_has_path(imgs, candidate):
+                imgs.append(candidate)
                 changed = True
         if payload.remove_images:
-            before = set(imgs)
-            imgs = [x for x in imgs if x not in set(payload.remove_images or [])]
-            changed = changed or (set(imgs) != before)
+            to_remove = {str(x).strip() for x in (payload.remove_images or []) if str(x).strip()}
+            if to_remove:
+                before_len = len(imgs)
+                imgs = [raw for raw in imgs if _image_entry_path(raw) not in to_remove]
+                if len(imgs) != before_len:
+                    changed = True
         if changed:
             target["images"] = imgs
         _save_registry(path, data)

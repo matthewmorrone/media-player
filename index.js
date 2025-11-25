@@ -737,6 +737,25 @@ async function loadRegistries(kinds = ['performers', 'tags']) {
 const _slugify = (s) => String(s ?? '')
   .toLowerCase()
   .replace(/\s+/g, '-');
+
+function _slugifyName(name) {
+  try {
+    return String(name || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+  catch (_) {
+    return '';
+  }
+}
+
+function guessPerformerImagePath(name) {
+  const slug = _slugifyName(name);
+  if (!slug) return '';
+  return `/files/.artifacts/performers/${slug}/${slug}.jpg`;
+}
 // Local toast helper: prefer existing window.showToast if present; otherwise use notify()
 const legacyShowToast = (typeof window !== 'undefined' && typeof window.showToast === 'function') ? window.showToast : null;
 const showToast = (message, type) => {
@@ -8191,26 +8210,6 @@ catch (_) {}
     return { w: Math.round(w), h: Math.round(h), textW: Math.round(textW) };
   }
 
-  function _slugifyName(name) {
-    try {
-      return String(name || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '');
-    }
-    catch (_) {
-      return '';
-    }
-  }
-
-  function guessPerformerImagePath(name) {
-    const slug = _slugifyName(name);
-    if (!slug) return '';
-    // Correct nested path: one folder per performer slug, file named slug.jpg
-    return `/files/.artifacts/performers/${slug}/${slug}.jpg`;
-  }
-
   function toElements(data) {
     const nodes = (data.nodes || []).map((n) => {
       const slug = _slugifyName(n && n.name);
@@ -8934,12 +8933,283 @@ document.addEventListener('DOMContentLoaded', () => {
   let showImageless = readTogglePref();
   let loadSeq = 0;
   const DEFAULT_GRAPH_PARAMS = Object.freeze({ minCount: 1, maxVideosPerEdge: 6 });
+  const CONSOLE_PREFIX = '[Connections]';
   const log = (level, ...args) => {
     try {
       devLog(level, 'connections', ...args);
     }
     catch (_) {}
   };
+  const consoleLog = (level, msg, payload) => {
+    try {
+      const fn = console?.[level] || console?.log;
+      if (typeof fn === 'function') fn(CONSOLE_PREFIX, msg, payload || '');
+    }
+    catch (_) {}
+  };
+
+  const FACE_CROP_CACHE = new Map();
+  const FACE_CROP_INFLIGHT = new Map();
+  const FACE_CROP_OUTPUT_SIZE = 256;
+  const FACE_CROP_CONCURRENCY = 3;
+
+  const clampUnit01 = (val) => {
+    const n = Number(val);
+    if (!Number.isFinite(n)) return 0;
+    if (n <= 0) return 0;
+    if (n >= 1) return 1;
+    return n;
+  };
+
+  const clampRange = (val, min, max) => {
+    if (!Number.isFinite(val)) return min;
+    if (val < min) return min;
+    if (val > max) return max;
+    return val;
+  };
+
+  function parseFaceBoxInput(raw) {
+    if (!raw) return null;
+    if (Array.isArray(raw) && raw.length === 4) {
+      const arr = raw.map((n) => Number(n));
+      if (arr.every((n) => Number.isFinite(n))) return arr;
+      return null;
+    }
+    if (typeof raw === 'string') {
+      const parts = raw.split(/[;,\s]+/).map((n) => Number(n)).filter((n) => Number.isFinite(n));
+      if (parts.length === 4) return parts;
+      return null;
+    }
+    if (typeof raw === 'object') {
+      const keys = ['x', 'y', 'w', 'h'];
+      const arr = keys.map((k) => Number(raw[k]));
+      if (arr.every((n) => Number.isFinite(n))) return arr;
+    }
+    return null;
+  }
+
+  function normalizeFaceBox(raw) {
+    const parsed = parseFaceBoxInput(raw);
+    if (!parsed) return null;
+    const normalized = parsed.map((n) => clampUnit01(n));
+    if (typeof coerceSquareBox === 'function') {
+      try {
+        return coerceSquareBox(normalized);
+      }
+      catch (err) {
+        log('debug', 'coerceSquareBox failed for Connections face box', err);
+      }
+    }
+    return normalized;
+  }
+
+  function sanitizeImageCandidate(candidate, slug) {
+    if (!candidate) return '';
+    const trimmed = String(candidate).trim();
+    if (!trimmed) return '';
+    if (/^data:/i.test(trimmed) || /^blob:/i.test(trimmed)) return trimmed;
+    const lower = trimmed.toLowerCase();
+    const hasSpace = /\s/.test(trimmed);
+    const badDup = slug && lower.includes(`/${slug}-${slug}.`);
+    if (badDup || hasSpace) return '';
+    const isHttp = /^https?:\/\//i.test(trimmed);
+    const okNested = slug && lower === `/files/.artifacts/performers/${slug}/${slug}.jpg`;
+    if (isHttp || okNested || trimmed.startsWith('/')) return trimmed;
+    return '';
+  }
+
+  function buildNodeViewModel(node) {
+    if (!node) return null;
+    const rawName = typeof node.name === 'string' ? node.name : '';
+    const safeName = rawName.trim() || node.slug || node.id || 'Performer';
+    const prefId = typeof node.id === 'string' && node.id.trim() ? node.id.trim() : '';
+    const prefSlug = typeof node.slug === 'string' && node.slug.trim() ? node.slug.trim() : '';
+    const normalizedId = prefId || prefSlug || _slugifyName(safeName) || safeName;
+    const slug = prefSlug || normalizedId;
+    const guessedImage = guessPerformerImagePath(safeName);
+    const primaryCandidate = (Array.isArray(node.images) && node.images.length ? node.images[0] : (typeof node.image === 'string' ? node.image : '')) || '';
+    const providedImage = sanitizeImageCandidate(primaryCandidate, slug);
+    const faceBox = normalizeFaceBox(node.image_face_box || node.face_box || node.faceBox);
+    return {
+      safeName,
+      normalizedId,
+      slug,
+      guessedImage,
+      providedImage,
+      hasProvided: Boolean(primaryCandidate),
+      rawImageCandidate: primaryCandidate,
+      initials: initialsFromName(safeName),
+      count: Number(node.count || 0),
+      faceBox,
+    };
+  }
+
+  function faceCropCacheKey(url, box) {
+    return `${url}::${box.map((n) => Number(n).toFixed(5)).join(',')}`;
+  }
+
+  function canCropImageUrl(url) {
+    if (!url) return false;
+    if (/^data:/i.test(url) || /^blob:/i.test(url)) return false;
+    if (url.startsWith('/')) return true;
+    try {
+      const target = new URL(url, window.location.origin);
+      return target.origin === window.location.origin;
+    }
+    catch (_) {
+      return false;
+    }
+  }
+
+  function loadImageElementForCrop(url) {
+    return new Promise((resolve, reject) => {
+      if (typeof Image === 'undefined') {
+        reject(new Error('Image constructor unavailable'));
+        return;
+      }
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.decoding = 'async';
+      img.referrerPolicy = 'same-origin';
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Image load failed'));
+      img.src = url;
+    });
+  }
+
+  async function generateFaceCropDataUrl(url, faceBox) {
+    try {
+      const img = await loadImageElementForCrop(url);
+      const width = img.naturalWidth || img.width || 0;
+      const height = img.naturalHeight || img.height || 0;
+      if (!width || !height) return null;
+      const normalizedBox = (typeof coerceSquareBox === 'function') ? coerceSquareBox(faceBox, { width, height }) : faceBox;
+      const nx = clampUnit01(normalizedBox[0]);
+      const ny = clampUnit01(normalizedBox[1]);
+      const nw = clampUnit01(normalizedBox[2]);
+      const nh = clampUnit01(normalizedBox[3]);
+      const pxWidth = Math.max(1, Math.round(nw * width));
+      const pxHeight = Math.max(1, Math.round(nh * height));
+      const sidePx = Math.max(1, Math.min(Math.min(width, height), Math.max(pxWidth, pxHeight)));
+      const maxX = Math.max(0, width - sidePx);
+      const maxY = Math.max(0, height - sidePx);
+      const startX = clampRange(Math.round(nx * width), 0, maxX);
+      const startY = clampRange(Math.round(ny * height), 0, maxY);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      canvas.width = FACE_CROP_OUTPUT_SIZE;
+      canvas.height = FACE_CROP_OUTPUT_SIZE;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, startX, startY, sidePx, sidePx, 0, 0, FACE_CROP_OUTPUT_SIZE, FACE_CROP_OUTPUT_SIZE);
+      return canvas.toDataURL('image/jpeg', 0.92);
+    }
+    catch (err) {
+      log('debug', 'generateFaceCropDataUrl failed', { url, err });
+      return null;
+    }
+  }
+
+  async function getOrCreateFaceCrop(url, faceBox) {
+    const key = faceCropCacheKey(url, faceBox);
+    if (FACE_CROP_CACHE.has(key)) {
+      const cached = FACE_CROP_CACHE.get(key);
+      return cached || null;
+    }
+    if (FACE_CROP_INFLIGHT.has(key)) {
+      try {
+        return await FACE_CROP_INFLIGHT.get(key);
+      }
+      catch (_) {
+        return null;
+      }
+    }
+    const inflight = generateFaceCropDataUrl(url, faceBox)
+      .then((result) => {
+        FACE_CROP_CACHE.set(key, result || '');
+        FACE_CROP_INFLIGHT.delete(key);
+        return result || null;
+      })
+      .catch((err) => {
+        FACE_CROP_CACHE.set(key, '');
+        FACE_CROP_INFLIGHT.delete(key);
+        log('debug', 'face crop generation error', err);
+        return null;
+      });
+    FACE_CROP_INFLIGHT.set(key, inflight);
+    return inflight;
+  }
+
+  function scheduleConnectionsFaceCrops(rawNodes) {
+    if (!Array.isArray(rawNodes) || !rawNodes.length) return;
+    const jobs = rawNodes.map((node) => {
+      const meta = buildNodeViewModel(node);
+      if (!meta || !meta.faceBox || !meta.providedImage) return null;
+      if (!canCropImageUrl(meta.providedImage)) return null;
+      return { meta, faceBox: meta.faceBox.slice() };
+    }).filter(Boolean);
+    if (!jobs.length) return;
+    setTimeout(() => {
+      processFaceCropQueue(jobs).catch((err) => log('warn', 'face crop queue error', err));
+    }, 0);
+  }
+
+  async function processFaceCropQueue(jobs, concurrency = FACE_CROP_CONCURRENCY) {
+    if (!Array.isArray(jobs) || !jobs.length) return;
+    const queue = jobs.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const job = queue.shift();
+        if (!job) break;
+        try {
+          await cropNodePortrait(job);
+        }
+        catch (err) {
+          log('debug', 'face crop job failed', err);
+        }
+      }
+    };
+    const workers = [];
+    const slots = Math.max(1, Math.min(concurrency, queue.length));
+    for (let i = 0; i < slots; i += 1) {
+      workers.push(worker());
+    }
+    await Promise.all(workers);
+  }
+
+  async function cropNodePortrait(job) {
+    if (!job || !job.meta || !job.faceBox) return;
+    const { meta, faceBox } = job;
+    if (!meta.providedImage) return;
+    const cropped = await getOrCreateFaceCrop(meta.providedImage, faceBox);
+    if (!cropped) return;
+    applyFaceCropToGraphNode(meta.normalizedId, cropped);
+  }
+
+  function applyFaceCropToGraphNode(nodeId, dataUrl) {
+    if (!cy || !nodeId || !dataUrl) return;
+    let node = null;
+    try {
+      node = cy.getElementById(nodeId);
+    }
+    catch (err) {
+      log('debug', 'getElementById failed', err);
+      return;
+    }
+    if (!node || node.empty()) return;
+    try {
+      const current = node.data('image');
+      if (current === dataUrl) return;
+      node.data('image', dataUrl);
+      node.data('hasImage', 1);
+      if (node.hasClass('conn-node--initials')) node.removeClass('conn-node--initials');
+    }
+    catch (err) {
+      log('debug', 'applyFaceCropToGraphNode error', err);
+    }
+  }
+
   log('debug', 'module init');
 
   function ensurePlugins() {
@@ -8991,26 +9261,6 @@ document.addEventListener('DOMContentLoaded', () => {
     log('debug', 'persist toggle', { showImageless });
     syncToggleUI();
     applyImagelessVisibility({ animate: true });
-  }
-
-  // Local helpers (duplicated from Graph module so this IIFE has access)
-  function _slugifyName(name) {
-    try {
-      return String(name || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '');
-    }
-    catch (_) {
-      return '';
-    }
-  }
-
-  function guessPerformerImagePath(name) {
-    const slug = _slugifyName(name);
-    if (!slug) return '';
-    return `/files/.artifacts/performers/${slug}/${slug}.jpg`;
   }
 
   function initialsFromName(name) {
@@ -9083,6 +9333,7 @@ document.addEventListener('DOMContentLoaded', () => {
       url.searchParams.set('min_count', String(DEFAULT_GRAPH_PARAMS.minCount));
       url.searchParams.set('limit_videos_per_edge', String(DEFAULT_GRAPH_PARAMS.maxVideosPerEdge));
       log('info', 'fetchConnectionsGraphData start', { url: url.toString() });
+      consoleLog('info', 'fetch start', { url: url.toString() });
       const resp = await fetch(url.toString());
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const json = await resp.json();
@@ -9090,10 +9341,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const nodes = Array.isArray(payload.nodes) ? payload.nodes : [];
       const edges = Array.isArray(payload.edges) ? payload.edges : [];
       log('info', 'fetchConnectionsGraphData success', { nodeCount: nodes.length, edgeCount: edges.length });
+      consoleLog('info', 'fetch success', { nodeCount: nodes.length, edgeCount: edges.length });
       return { nodes, edges };
     }
     catch (err) {
       log('error', 'graph fetch failed', err);
+      consoleLog('error', 'fetch failed', err);
       return { nodes: [], edges: [] };
     }
   }
@@ -9101,47 +9354,43 @@ document.addEventListener('DOMContentLoaded', () => {
   function toElements(graphData) {
     const rawNodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
     const rawEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+    const nodeIdSet = new Set();
     const nodes = rawNodes
-      .filter((p) => p && p.name)
       .map((p) => {
-        const slug = p.slug || p.id || _slugifyName(p.name);
-        const nodeId = slug || p.name;
-        const guessed = guessPerformerImagePath(p.name);
-        const provided = (Array.isArray(p.images) && p.images.length ? p.images[0] : (typeof p.image === 'string' ? p.image : '')) || '';
-        let hasRealImage = Boolean(provided);
-        let img = guessed;
-        const initials = initialsFromName(p.name);
-        if (provided) {
-          const lower = provided.toLowerCase();
-          const isHttp = /^https?:\/\//i.test(provided);
-          const hasSpace = /\s/.test(provided);
-          const okNested = slug && lower === `/files/.artifacts/performers/${slug}/${slug}.jpg`;
-          const badDup = slug && lower.includes(`/${slug}-${slug}.`);
-          if (badDup || hasSpace) img = guessed;
-          else if (isHttp) img = provided;
-          else if (okNested) img = provided;
-          else img = guessed;
-        }
-        if (!hasRealImage) {
-          img = initialsDataUri(initials, p.name);
+        const meta = buildNodeViewModel(p);
+        if (!meta) return null;
+        nodeIdSet.add(meta.normalizedId);
+        const faceCrop = (p && typeof p._faceCroppedImage === 'string') ? p._faceCroppedImage : '';
+        const activeFaceBox = (p && Array.isArray(p._faceCropBox) && p._faceCropBox.length === 4)
+          ? p._faceCropBox.slice()
+          : (meta.faceBox ? meta.faceBox.slice() : null);
+        const hasPortrait = Boolean(meta.hasProvided || faceCrop);
+        let img = faceCrop || meta.providedImage || meta.guessedImage;
+        if (!hasPortrait) {
+          img = initialsDataUri(meta.initials, meta.safeName);
         }
         const node = {
           data: {
-            id: nodeId,
-            slug: nodeId,
-            label: p.name,
+            id: meta.normalizedId,
+            slug: meta.slug,
+            label: meta.safeName,
             image: img,
-            hasImage: hasRealImage,
-            initials,
-            count: Number(p.count || 0),
+            hasImage: hasPortrait ? 1 : 0,
+            initials: meta.initials,
+            count: meta.count,
           },
         };
-        if (!hasRealImage) node.classes = 'conn-node--initials';
+        if (activeFaceBox) {
+          node.data.faceBox = activeFaceBox.join(',');
+        }
+        if (!hasPortrait) node.classes = 'conn-node--initials';
         return node;
-      });
+      })
+      .filter(Boolean);
 
     const edges = rawEdges
       .filter((edge) => edge && edge.source && edge.target)
+      .filter((edge) => nodeIdSet.has(edge.source) && nodeIdSet.has(edge.target))
       .map((edge) => ({
         data: {
           id: edge.id || `${edge.source}->${edge.target}`,
@@ -9154,6 +9403,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }));
     const elementCount = nodes.length + edges.length;
     log('debug', 'toElements complete', { rawNodes: rawNodes.length, nodes: nodes.length, rawEdges: rawEdges.length, edges: edges.length, elementCount });
+    consoleLog('debug', 'elements prepared', { nodes: nodes.length, edges: edges.length });
     return [...nodes, ...edges];
   }
 
@@ -9213,24 +9463,9 @@ document.addEventListener('DOMContentLoaded', () => {
           'background-opacity': 1,
           'border-width': 2,
           'border-color': '#93c5fd',
-          label: 'data(label)',
-          color: '#eaf0ff',
-          'font-size': 11,
-          'font-weight': 600,
-          'text-wrap': 'wrap',
-          'text-max-width': 90,
-          'text-outline-color': '#05060a',
-          'text-outline-width': 2,
-          'text-background-color': 'rgba(5,9,15,0.9)',
-          'text-background-opacity': 1,
-          'text-background-shape': 'roundrectangle',
-          'text-background-padding': 3,
-          'text-events': 'yes',
-          'min-zoomed-font-size': 8,
+          label: '',
           width: NODE_BASE_SIZE,
           height: NODE_BASE_SIZE,
-          'text-valign': 'bottom',
-          'text-margin-y': 10,
           'transition-property': 'background-color, border-color, opacity, width, height',
           'transition-duration': '200ms',
         }},
@@ -9256,23 +9491,30 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadConnections() {
     const token = ++loadSeq;
     log('info', 'loadConnections start', { token });
+    consoleLog('info', 'load start', { token });
     setConnectionsLoading(true);
     try {
       const graphData = await fetchConnectionsGraphData();
       log('debug', 'loadConnections data received', { token, nodeCount: graphData.nodes.length, edgeCount: graphData.edges.length });
+       consoleLog('info', 'data received', { token, nodeCount: graphData.nodes.length, edgeCount: graphData.edges.length });
       if (token !== loadSeq) return;
       const elements = toElements(graphData);
       if (!cy) initCy();
       if (!cy) {
         log('error', 'loadConnections abort (cy missing)');
+        consoleLog('error', 'cy missing during load');
         return;
       }
       cy.elements().remove();
       log('debug', 'loadConnections cleared elements');
+      consoleLog('debug', 'cleared elements');
       cy.add(elements);
       log('debug', 'loadConnections added elements', { elementCount: elements.length });
+      consoleLog('info', 'elements added', { nodes: cy.nodes().length, edges: cy.edges().length });
+      scheduleConnectionsFaceCrops(graphData.nodes);
+      const autoToggle = autoEnableImagelessIfNeeded();
       applyDefaultLayout();
-      applyImagelessVisibility({ animate: false });
+      applyImagelessVisibility({ animate: !autoToggle });
       setTimeout(() => {
         try {
           cy.resize();
@@ -9287,16 +9529,40 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     catch (err) {
       log('error', 'loadConnections failed', err);
+      consoleLog('error', 'load failed', err);
     }
     finally {
       if (token === loadSeq) setConnectionsLoading(false);
     }
   }
 
+  function autoEnableImagelessIfNeeded() {
+    if (!cy || showImageless) return false;
+    const nodes = cy.nodes();
+    if (!nodes || !nodes.length) return false;
+    const imagelessNodes = cy.nodes('[hasImage = 0], [!hasImage], .conn-node--initials');
+    if (imagelessNodes.length === nodes.length) {
+      log('info', 'auto enabling imageless performers (no portraits found)');
+      consoleLog('info', 'auto enabling imageless performers');
+      try {
+        notify('Connections: showing imageless performers (no portraits detected).', 'info');
+      }
+      catch (_) {}
+      showImageless = true;
+      try {
+        localStorage.setItem(PREF_KEY, 'true');
+      }
+      catch (_) {}
+      syncToggleUI();
+      return true;
+    }
+    return false;
+  }
+
   function applyImagelessVisibility(options = {}) {
     if (!cy) return;
     const { animate = false } = options;
-    const imagelessNodes = cy.nodes('[!hasImage]');
+    const imagelessNodes = cy.nodes('[hasImage = 0], [!hasImage]');
     if (!imagelessNodes || !imagelessNodes.length) {
       log('debug', 'applyImagelessVisibility skipped (no imageless nodes)');
       return;
@@ -15258,6 +15524,7 @@ const Performers = (() => {
   let renameBtn;
   let deleteBtn;
   let autoMatchBtn;
+  let detectAllBtn;
   let autoMatchRunning = false;
   let dropZone;
   let statusEl;
@@ -15294,6 +15561,7 @@ const Performers = (() => {
   let pageInfo = null;
   let pageSizeSel = null;
   let imageFilterSel = null;
+  let detectAllRunning = false;
   // Bottom pager mirrors
   let pagerB = null;
   let prevBtnB = null;
@@ -15340,6 +15608,7 @@ const Performers = (() => {
   }
   // Browser face-detection cache (per image URL) to avoid repeated work
   const faceBoxCache = new Map(); // url -> [x,y,w,h]
+  const imageMetricsCache = new Map(); // url -> {width,height}
   const FaceDetectSupported = (typeof window !== 'undefined' && 'FaceDetector' in window && typeof window.FaceDetector === 'function');
 
   function setPagerVisibility(show) {
@@ -15479,6 +15748,38 @@ const Performers = (() => {
     return false;
   }
 
+  function rememberImageMetrics(url, metrics) {
+    if (!url || !metrics) return;
+    const width = Math.max(1, Number(metrics.width) || 0);
+    const height = Math.max(1, Number(metrics.height) || 0);
+    imageMetricsCache.set(url, { width, height });
+  }
+
+  function getCachedImageMetrics(url) {
+    return url ? imageMetricsCache.get(url) || null : null;
+  }
+
+  async function measureImageDimensions(url) {
+    if (!url) return null;
+    if (imageMetricsCache.has(url)) return imageMetricsCache.get(url);
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const im = new Image();
+        im.crossOrigin = 'anonymous';
+        im.onload = () => resolve(im);
+        im.onerror = reject;
+        im.src = url;
+      });
+      const width = Math.max(1, img.naturalWidth || img.width || 0);
+      const height = Math.max(1, img.naturalHeight || img.height || 0);
+      rememberImageMetrics(url, { width, height });
+      return { width, height };
+    }
+    catch (_) {
+      return null;
+    }
+  }
+
   async function detectFaceBoxForImage(url, opts = {}) {
     try {
       if (!url) return null;
@@ -15501,6 +15802,7 @@ const Performers = (() => {
       });
       const W = Math.max(1, img.naturalWidth || img.width || 0);
       const H = Math.max(1, img.naturalHeight || img.height || 0);
+      rememberImageMetrics(url, { width: W, height: H });
       if (faceDebugEnabled()) {
         try {
           devLog('info', '[FaceBox] loaded image dims', W, H);
@@ -16420,6 +16722,7 @@ const Performers = (() => {
     renameBtn = document.getElementById('performerRenameBtn');
     deleteBtn = document.getElementById('performerDeleteBtn');
     autoMatchBtn = document.getElementById('performerAutoMatchBtn');
+    detectAllBtn = document.getElementById('performerDetectAllBtn');
     dropZone = document.getElementById('performerDropZone');
     statusEl = document.getElementById('performersStatus');
     spinnerEl = document.getElementById('performersSpinner');
@@ -16581,7 +16884,7 @@ const Performers = (() => {
             // Prefer streaming progress if supported
             const j = await streamZipImport(fd);
             summarizeAndToast(j, 'images');
-            await fetchPerformers();
+            await fetchPerformers({ forceRefresh: true });
             // Optional client-side face box persistence if backend lacks OpenCV
             try {
               await persistMissingFaceBoxesClientSide();
@@ -16623,7 +16926,7 @@ const Performers = (() => {
               const j = await res.json();
               if (!res.ok) throw new Error(j?.message || `HTTP ${res.status}`);
               summarizeAndToast(j, 'images');
-              await fetchPerformers();
+              await fetchPerformers({ forceRefresh: true });
               try {
                 await persistMissingFaceBoxesClientSide();
               }
@@ -16649,7 +16952,7 @@ const Performers = (() => {
           const j = await r.json();
           if (!r.ok) throw new Error(j?.message || `HTTP ${r.status}`);
           summarizeAndToast(j, 'names');
-          await fetchPerformers();
+          await fetchPerformers({ forceRefresh: true });
         }
         catch (err) {
           devLog('error', 'Unified import failed:', err);
@@ -16721,6 +17024,22 @@ const Performers = (() => {
     if (showFlag) showAs(statusEl, 'block');
     else hide(statusEl);
     if (spinnerEl) spinnerEl.hidden = !showFlag;
+  }
+  function withButtonBusy(btn, label = '') {
+    if (!btn) return () => {};
+    const prev = {
+      text: btn.textContent,
+      disabled: btn.disabled,
+      hadBusy: btn.classList.contains('btn-busy'),
+    };
+    btn.disabled = true;
+    btn.classList.add('btn-busy');
+    if (label) btn.textContent = label;
+    return () => {
+      btn.disabled = prev.disabled;
+      if (!prev.hadBusy) btn.classList.remove('btn-busy');
+      btn.textContent = typeof prev.text === 'string' ? prev.text : '';
+    };
   }
   function tpl(id) {
     const t = document.getElementById(id);
@@ -16876,11 +17195,37 @@ const Performers = (() => {
             }
             else {
               applyFaceBoxToAvatar(avatarEl, null);
-              if (imgUrl) {
+              if (imgUrl && !avatarEl.dataset.faceDetectPending) {
+                avatarEl.dataset.faceDetectPending = '1';
                 (async () => {
-                  const box = await detectFaceBoxForImage(imgUrl);
-                  if (box && avatarEl && !avatarEl.dataset.faceBox) {
-                    applyFaceBoxToAvatar(avatarEl, box);
+                  try {
+                    const box = await detectFaceBoxForImage(imgUrl);
+                    if (box && avatarEl && !avatarEl.dataset.faceBox) {
+                      applyFaceBoxToAvatar(avatarEl, box);
+                      const hasServerBox = Array.isArray(p.image_face_box) && p.image_face_box.length === 4;
+                      if (!hasServerBox && !p._autoFacePersistPending) {
+                        p._autoFacePersistPending = true;
+                        try {
+                          const metrics = getCachedImageMetrics(imgUrl) || null;
+                          await persistFaceBox({ performer: p, box, toastOnSuccess: false, toastOnError: false, imageMetrics: metrics });
+                        }
+                        catch (err) {
+                          devLog('warn', '[Performers] auto face persist failed', err);
+                        }
+                        finally {
+                          p._autoFacePersistPending = false;
+                        }
+                      }
+                    }
+                  }
+                  catch (err) {
+                    devLog('warn', '[Performers] auto face detect failed', err);
+                  }
+                  finally {
+                    try {
+                      delete avatarEl.dataset.faceDetectPending;
+                    }
+                    catch (_) {}
                   }
                 })();
               }
@@ -17066,23 +17411,112 @@ const Performers = (() => {
       catch (_) { }
     }
   }
-  async function fetchPerformers() {
+  async function detectFacesForVisiblePerformers() {
+    if (detectAllRunning) {
+      const toast = window.showToast || notify;
+      toast('Face detection already running…', 'info');
+      return;
+    }
+    const toast = window.showToast || notify;
+    const list = Array.isArray(performers) ? performers.slice() : [];
+    const targets = list.map((perf) => {
+      const raw = getPerformerPrimaryImage(perf);
+      if (!raw) return null;
+      let imgUrl = raw;
+      try {
+        imgUrl = encodeURI(raw);
+      }
+      catch (_) { }
+      return { performer: perf, imgUrl };
+    }).filter(Boolean);
+    if (!targets.length) {
+      toast('No visible performers have images to detect.', 'info');
+      return;
+    }
+    detectAllRunning = true;
+    const restoreBtn = withButtonBusy(detectAllBtn, 'Detecting…');
+    let detected = 0;
+    let missing = 0;
+    let failed = 0;
+    try {
+      setStatus(`Detecting faces… 0/${targets.length}`, true);
+      for (let i = 0; i < targets.length; i += 1) {
+        const { performer, imgUrl } = targets[i];
+        try {
+          const box = await detectFaceBoxForImage(imgUrl, { force: true });
+          if (!Array.isArray(box) || box.length !== 4) {
+            missing += 1;
+          }
+          else {
+            const metrics = getCachedImageMetrics(imgUrl) || await measureImageDimensions(imgUrl);
+            const saved = await persistFaceBox({ performer, box, imageMetrics: metrics || undefined });
+            if (Array.isArray(saved) && saved.length === 4) {
+              performer.image_face_box = saved.slice();
+              try {
+                updatePerformerAvatars(performer);
+              }
+              catch (_) { }
+              detected += 1;
+            }
+            else {
+              failed += 1;
+            }
+          }
+        }
+        catch (err) {
+          failed += 1;
+          try {
+            devLog('warn', '[Performers] detect-all failed', { slug: performer && performer.slug, err });
+          }
+          catch (_) { }
+        }
+        setStatus(`Detecting faces… ${i + 1}/${targets.length}`, true);
+      }
+      const parts = [`${detected}/${targets.length} updated`];
+      if (missing) parts.push(`${missing} no-face`);
+      if (failed) parts.push(`${failed} failed`);
+      toast(`Performer detection complete (${parts.join(', ')})`, detected ? 'success' : 'warn');
+    }
+    finally {
+      detectAllRunning = false;
+      if (typeof restoreBtn === 'function') restoreBtn();
+      setStatus('', false);
+    }
+  }
+  async function fetchPerformers(opts = {}) {
     initDom();
     ensureControlsVisible();
+    let forceRefresh = false;
     try {
-      // Guard: if a fetch is already in-flight (and not aborted), skip to avoid cascading loops
-      if (Performers._inFlight) {
+      if (opts && typeof opts === 'object') {
+        const maybeEvent = /** @type {any} */ (opts);
+        if (typeof maybeEvent?.preventDefault === 'function' && typeof maybeEvent?.isTrusted === 'boolean') {
+          try {
+            maybeEvent.preventDefault();
+            if (typeof maybeEvent.stopPropagation === 'function') maybeEvent.stopPropagation();
+          }
+          catch (_) { }
+          opts = {};
+        }
+      }
+      if (opts && typeof opts === 'object' && !Array.isArray(opts)) {
+        forceRefresh = Boolean(opts.forceRefresh);
+      }
+    }
+    catch (_) {
+      forceRefresh = false;
+    }
+    try {
+      const t0 = performance.now ? performance.now() : Date.now();
+      if (Performers._inFlight && Performers._abort) {
         try {
-          devLog('log', '[Performers:fetch] skip (in-flight)');
+          Performers._abort.abort();
         }
         catch (_) { }
-        return;
       }
-      const t0 = performance.now ? performance.now() : Date.now();
-      // Cancel any in-flight fetch to avoid race conditions and extra work
-      Performers._abort && Performers._abort.abort();
-      Performers._abort = new AbortController();
-      const signal = Performers._abort.signal;
+      const controller = new AbortController();
+      Performers._abort = controller;
+      const signal = controller.signal;
       Performers._inFlight = true;
       // fetchPerformers called
       if (!Performers._background) {
@@ -17090,6 +17524,12 @@ const Performers = (() => {
         if (gridEl) gridEl.classList.add('loading');
       }
       const url = new URL('/api/performers', window.location.origin);
+      if (forceRefresh) {
+        url.searchParams.set('refresh', '1');
+      }
+      if (forceRefresh) {
+        url.searchParams.set('refresh', '1');
+      }
       if (searchTerm) url.searchParams.set('search', searchTerm);
       // Server-side pagination & sorting
       url.searchParams.set('page', String(page || 1));
@@ -17566,6 +18006,12 @@ const Performers = (() => {
         if (typeof window.__openPerfAutoMatch === 'function') {
           window.__openPerfAutoMatch();
         }
+      });
+    }
+    if (detectAllBtn && !detectAllBtn._wired) {
+      detectAllBtn._wired = true;
+      detectAllBtn.addEventListener('click', () => {
+        detectFacesForVisiblePerformers();
       });
     }
     if (dropZone && !dropZone._wired) {
