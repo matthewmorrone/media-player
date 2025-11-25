@@ -105,7 +105,7 @@
   "POST /api/metadata/create/batch": "Extract metadata for multiple videos under a path",
   "DELETE /api/metadata/delete": "Delete metadata JSON sidecar for a video",
 
-  "GET /api/performers": "List performer entries in the registry (name, aliases, tags)",
+  "GET /api/performers": "List performer entries in the registry with search/sort/pagination and optional image filter",
   "POST /api/performers/add": "Create or update a performer entry",
   "POST /api/performers/import": "Bulk import performer entries (JSON payload)",
   "POST /api/performers/merge": "Merge multiple performers into a single canonical entry",

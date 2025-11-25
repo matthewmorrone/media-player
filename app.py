@@ -8007,12 +8007,14 @@ def _list_performers(search: str | None = None) -> list[dict]:
                 img_rel = primary.strip()
         except Exception:
             img_rel = None
+        has_img = bool(img_rel)
         item = {
             "name": rec["name"],
             "slug": _slugify(rec["name"]),
             "count": len(paths),
+            "has_image": has_img,
         }
-        if img_rel:
+        if has_img:
             # Expose as files URL; client can fetch /files/<relative>
             item["image"] = f"/files/{img_rel}"
         # Bubble through optional face-focus box if present in registry/cache
@@ -8032,6 +8034,7 @@ def _list_performers(search: str | None = None) -> list[dict]:
 @api.get("/performers")
 def api_performers(
     search: Optional[str] = Query(None),
+    image: str = Query(default="any", description="Filter by image availability: any|with|without"),
     debug: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=32, ge=1, le=200),
@@ -8075,6 +8078,12 @@ def api_performers(
     t_l0 = _time.perf_counter() if _time else None
     # Deprecated: no retro-normalization; keep whatever box shape was stored
     items = _list_performers(search)
+    image_filter = (image or "any").strip().lower()
+    if image_filter not in ("any", "with", "without"):
+        image_filter = "any"
+    if image_filter != "any":
+        want_image = image_filter == "with"
+        items = [item for item in items if bool(item.get("has_image")) is want_image]
     if _time and t_l0 is not None:
         timings["list_build_ms"] = round((_time.perf_counter() - t_l0) * 1000, 2)
     # (Removed fast-mode zero-count fallback; incremental scan already ensured counts.)
@@ -8157,6 +8166,7 @@ def api_performers(
         "sort": (sort or "count"),
         "order": eff_order,
         "search": search or None,
+        "image_filter": image_filter,
     }
     if debug:
         try:
@@ -8659,8 +8669,19 @@ def performer_update_face_box(
             found = False
             for it in items:
                 if _slugify(str(it.get("slug") or it.get("name") or "")) == norm_slug:
-                    # Only set if primary image exists
-                    if isinstance(it.get("image"), str) and (it.get("image") or "").strip():
+                    img_ref = ""
+                    img_val = it.get("image")
+                    if isinstance(img_val, str) and img_val.strip():
+                        img_ref = img_val.strip()
+                    else:
+                        imgs = it.get("images") or []
+                        if isinstance(imgs, list):
+                            for cand in imgs:
+                                if isinstance(cand, str) and cand.strip():
+                                    img_ref = cand.strip()
+                                    it["image"] = img_ref  # promote first stored image to primary
+                                    break
+                    if img_ref:
                         it["image_face_box"] = bx
                         found = True
                     break
@@ -9302,7 +9323,7 @@ def api_performers_graph(
                 slug = _slugify(name)
                 name_by_slug[slug] = name
                 paths_by_slug[slug] = paths
-                nodes.append({"id": slug, "name": name, "count": count})
+                nodes.append({"id": slug, "slug": slug, "name": name, "count": count})
     except Exception:
         nodes = []
     # Compute edges by intersecting path sets for each pair

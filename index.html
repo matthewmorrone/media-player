@@ -229,6 +229,7 @@
       <div class="card-checkbox" role="checkbox" aria-checked="false" aria-label="Select performer"></div>
       <div class="pc-top">
         <div class="pc-avatar" role="button" tabindex="0" aria-label="Upload image">
+          <img class="pc-avatar-img" alt="" loading="lazy" hidden />
           <svg class="pc-avatar-icon" width="18" height="18" aria-hidden="true"><use href="#icon-camera"></use></svg>
         </div>
         <div class="pc-titlebox">
@@ -247,6 +248,7 @@
         <div class="pc-avatar" aria-hidden="true"></div>
         <div class="pc-titlebox">
           <h3 class="pc-name"></h3>
+          <button class="tag-open-library-btn" type="button">Show in Library</button>
         </div>
         <span class="pc-count" title=""></span>
       </div>
@@ -367,14 +369,14 @@
         <button id="tagMergeClose" class="btn btn-text" aria-label="Close">✕</button>
       </header>
       <div class="body">
-        <div class="hint-sm mb-8">Choose the tag name to keep. The other selected tag will be merged into it.</div>
+        <div class="hint-sm mb-8">Choose the tag name to keep. The other selected tags will be merged into it.</div>
         <div class="row gap-8 mb-10">
           <label class="hint-sm w-120">Selected</label>
           <div id="tagMergeSelected" class="flex-row gap-6"></div>
         </div>
         <div class="row gap-8">
-          <label for="tagMergeInto" class="hint-sm w-120">Tag that remains</label>
-          <input id="tagMergeInto" type="text" class="control-input w-100" placeholder="e.g. Vintage" />
+          <label class="hint-sm w-120">Keep name</label>
+          <div id="tagMergeChoiceList" class="merge-choice-list" role="radiogroup" aria-live="polite"></div>
         </div>
       </div>
       <footer class="panel-footer--actions">
@@ -692,6 +694,15 @@
       <!-- Connections Tab Panel (minimal: image-only nodes) -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="connections-tab" id="connections-panel" hidden>
         <section class="graph-panel">
+          <div class="graph-controls graph-controls--connections">
+            <strong>Connections Graph</strong>
+            <label class="hint-sm connections-toggle" title="Show performers even if no portrait is available">
+              <input id="connectionsShowImageless" type="checkbox" checked />
+              <span>Show imageless performers</span>
+            </label>
+            <div class="ml-auto"></div>
+            <button id="connectionsRefreshBtn" class="btn-sm" type="button">Refresh</button>
+          </div>
           <div id="connectionsCyContainer">
             <div id="cyConnections" aria-label="Connections graph" role="application"></div>
           </div>
@@ -1275,6 +1286,12 @@
         <div class="catalog-container">
           <div class="perf-toolbar">
             <input id="performerSearch" type="text" placeholder="Search performers…" class="perf-search" />
+            <label for="performerImageFilter" class="hint-sm" aria-live="off">Images</label>
+            <select id="performerImageFilter" class="control-select" aria-label="Filter performers by image availability">
+              <option value="all" selected>Show all</option>
+              <option value="with">Has image</option>
+              <option value="without">No image</option>
+            </select>
             <!-- Sort controls: default to Scenes (desc) -->
             <label for="performerSort" class="hint-sm ml-8" style="opacity:.8">Sort</label>
             <select id="performerSort" class="control-select" aria-label="Sort performers">
@@ -1284,10 +1301,11 @@
             <button id="performerSortOrder" class="btn-sm" title="Toggle sort order" aria-label="Toggle sort order">Desc</button>
             <span id="performersCount" class="hint-sm ml-8" aria-live="polite"></span>
             <button id="performerUnifiedImportBtn" class="btn-sm" title="Import performers: names list, images folder, loose images, or ZIP">Import</button>
+            <button id="performerAddBtn" class="btn-sm" title="Create a new performer">Add</button>
+            <button id="performerAutoMatchBtn" class="btn-sm" title="Match performers from filenames">Match</button>
             <button id="performerMergeBtn" class="btn-sm" title="Merge selected" disabled>Merge</button>
             <button id="performerRenameBtn" class="btn-sm" title="Rename selected" disabled>Rename</button>
             <button id="performerDeleteBtn" class="btn-sm" title="Delete selected" disabled>Delete</button>
-            <button id="performerAutoMatchBtn" class="btn-sm" title="Auto‑match performers from filenames">Auto‑Match</button>
           </div>
           <div id="performerDropZone" role="button" tabindex="0" aria-label="Import performers" class="performer-dropzone">
             <strong class="pdz-title">Unified Import</strong>
