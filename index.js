@@ -15674,6 +15674,7 @@ const Performers = (() => {
       fbModal.hidden = true;
     }
     catch (_) {}
+    resetFaceBoxOverlayState();
     try {
       devLog('debug', 'FaceBox', 'close modal', {
         overlayBox: fbOverlay && fbOverlay.dataset ? fbOverlay.dataset.box : null,
@@ -15681,6 +15682,26 @@ const Performers = (() => {
     }
     catch (_) { }
     setDropInterceptSuspended(false);
+  }
+
+  function resetFaceBoxOverlayState() {
+    if (!fbOverlay) return;
+    fbOverlay.hidden = true;
+    fbOverlay.style.width = '0px';
+    fbOverlay.style.height = '0px';
+    fbOverlay.style.left = '0px';
+    fbOverlay.style.top = '0px';
+    try {
+      delete fbOverlay.dataset.box;
+      delete fbOverlay.dataset.faceBox;
+    }
+    catch (_) {}
+    if (typeof fbOverlay._faceBoxCleanup === 'function') {
+      try {
+        fbOverlay._faceBoxCleanup();
+      }
+      catch (_) {}
+    }
   }
 
 
@@ -15745,17 +15766,19 @@ const Performers = (() => {
       return;
     }
     const normalized = box.map((n) => (Number.isFinite(Number(n)) ? Number(n) : 0));
-    try {
-      avatarEl.dataset.faceBox = normalized.join(',');
-    }
-    catch (_) {}
     const applyCrop = () => {
       const naturalWidth = imgEl.naturalWidth;
       const naturalHeight = imgEl.naturalHeight;
       if (!naturalWidth || !naturalHeight) return false;
+      const squareBox = coerceSquareBox(normalized, { width: naturalWidth, height: naturalHeight }) || normalized;
+      const [nx, ny, nw, nh] = squareBox;
+      try {
+        avatarEl.dataset.faceBox = squareBox.join(',');
+      }
+      catch (_) {}
       const avatarSize = Math.max(1, Math.min(avatarEl.clientWidth || 0, avatarEl.clientHeight || 0) || 56);
-      const boxWidthPx = normalized[2] * naturalWidth;
-      const boxHeightPx = normalized[3] * naturalHeight;
+      const boxWidthPx = nw * naturalWidth;
+      const boxHeightPx = nh * naturalHeight;
       if (boxWidthPx <= 0 || boxHeightPx <= 0) {
         return false;
       }
@@ -15765,8 +15788,8 @@ const Performers = (() => {
         : (avatarSize / Math.max(boxWidthPx, boxHeightPx));
       const displayWidth = naturalWidth * scale;
       const displayHeight = naturalHeight * scale;
-      const offsetX = -(normalized[0] * naturalWidth * scale);
-      const offsetY = -(normalized[1] * naturalHeight * scale);
+      const offsetX = -(nx * naturalWidth * scale);
+      const offsetY = -(ny * naturalHeight * scale);
       imgEl.style.width = `${displayWidth}px`;
       imgEl.style.height = `${displayHeight}px`;
       imgEl.style.left = `${offsetX}px`;
@@ -15929,6 +15952,7 @@ const Performers = (() => {
     }
     catch (_) {}
     setDropInterceptSuspended(true);
+    resetFaceBoxOverlayState();
     if (fbTitle) fbTitle.textContent = performer && performer.name ? `${performer.name} — Image (Drag box to adjust)` : 'Image Preview';
     // Render external links
     try {
