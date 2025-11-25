@@ -84,6 +84,50 @@ function isHidden(el) {
   return !el || el.classList.contains('hidden') || el.hasAttribute('hidden');
 }
 
+function getOpenModals() {
+  try {
+    return Array.from(document.querySelectorAll('.modal'))
+      .filter((modal) => !isHidden(modal));
+  }
+  catch (_) {
+    return [];
+  }
+}
+
+function requestModalClose(modal, reason = 'manual') {
+  if (!modal) return false;
+  let evt = null;
+  try {
+    evt = new CustomEvent('modal:requestClose', {
+      cancelable: true,
+      detail: { reason },
+    });
+    modal.dispatchEvent(evt);
+  }
+  catch (_) {}
+  if (!evt || !evt.defaultPrevented) {
+    hide(modal);
+  }
+  return true;
+}
+
+function closeTopmostModal(reason = 'manual') {
+  const open = getOpenModals().filter((modal) => String(modal?.dataset?.escDisabled) !== '1');
+  if (!open.length) return false;
+  const modal = open[open.length - 1];
+  requestModalClose(modal, reason);
+  return true;
+}
+
+document.addEventListener('keydown', (event) => {
+  const key = event.key || event.code;
+  if (key !== 'Escape' && key !== 'Esc') return;
+  if (closeTopmostModal('escape')) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+}, { capture: true });
+
 function showMessageModal(message, opts = {}) {
   const modal = document.getElementById('messageModal');
   if (!modal) throw new Error('messageModal element missing');
@@ -108,8 +152,34 @@ function showMessageModal(message, opts = {}) {
       if (e.target === modal) close();
     });
   }
+  if (!modal._escWire) {
+    modal._escWire = true;
+    modal.addEventListener('modal:requestClose', (ev) => {
+      ev.preventDefault();
+      close();
+    });
+  }
   show(modal);
 }
+
+(function wireErrorModal() {
+  const modal = document.getElementById('errorModal');
+  if (!modal || modal._escWire) return;
+  const closeBtn = document.getElementById('errorModalClose');
+  const close = () => hide(modal);
+  if (closeBtn && !closeBtn._wired) {
+    closeBtn._wired = true;
+    closeBtn.addEventListener('click', close);
+  }
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) close();
+  });
+  modal.addEventListener('modal:requestClose', (ev) => {
+    ev.preventDefault();
+    close();
+  });
+  modal._escWire = true;
+})();
 
 function isAbsolutePath(p) {
   if (!p) return false;
@@ -1199,6 +1269,12 @@ if (imgModal) {
 }
 if (imgModalClose) {
   imgModalClose.addEventListener('click', () => hide(imgModal));
+}
+if (imgModal) {
+  imgModal.addEventListener('modal:requestClose', (ev) => {
+    ev.preventDefault();
+    hide(imgModal);
+  });
 }
 // (fmtSize moved to utils.js)
 // Ensure a preview artifact exists for a video record;
@@ -5299,6 +5375,10 @@ chooseBtn.addEventListener('click', () => choose(pickerPath));
 cancelBtn.addEventListener('click', () => closeFolderPicker());
 modal.addEventListener('click', (e) => {
   if (e.target === modal) closeFolderPicker();
+});
+modal.addEventListener('modal:requestClose', (ev) => {
+  ev.preventDefault();
+  closeFolderPicker();
 });
 async function setRoot(val) {
   const rootVal = (val || '').trim();
@@ -15576,28 +15656,53 @@ const Performers = (() => {
       fbImg.addEventListener('drop', haltImgDrag);
     }
     if (fbClose) {
-      fbClose.addEventListener('click', () => {
-        try {
-          fbModal.hidden = true;
-        }
-        catch (_) {}
-        try {
-          devLog('debug', 'FaceBox', 'close modal', {
-            overlayBox: fbOverlay && fbOverlay.dataset ? fbOverlay.dataset.box : null,
-          });
-        }
-        catch (_) { }
-        setDropInterceptSuspended(false);
+      fbClose.addEventListener('click', () => closeFaceBoxModal());
+    }
+    if (!fbModal._escWire) {
+      fbModal._escWire = true;
+      fbModal.addEventListener('modal:requestClose', (ev) => {
+        ev.preventDefault();
+        closeFaceBoxModal();
       });
     }
     return true;
   }
 
-  const FACEBOX_TARGET_AVATAR_FRACTION = 0.65;
+  function closeFaceBoxModal() {
+    if (!fbModal) return;
+    try {
+      fbModal.hidden = true;
+    }
+    catch (_) {}
+    try {
+      devLog('debug', 'FaceBox', 'close modal', {
+        overlayBox: fbOverlay && fbOverlay.dataset ? fbOverlay.dataset.box : null,
+      });
+    }
+    catch (_) { }
+    setDropInterceptSuspended(false);
+  }
+
 
   function getAvatarImgEl(avatarEl) {
     if (!avatarEl) return null;
     return avatarEl.querySelector('.pc-avatar-img');
+  }
+
+  function resetAvatarImageCrop(avatarEl) {
+    const imgEl = getAvatarImgEl(avatarEl);
+    if (!imgEl) return;
+    imgEl.style.width = '100%';
+    imgEl.style.height = '100%';
+    imgEl.style.top = '0';
+    imgEl.style.left = '0';
+    imgEl.style.right = 'auto';
+    imgEl.style.bottom = 'auto';
+    imgEl.style.objectFit = 'cover';
+    imgEl.style.transform = 'none';
+    imgEl.style.maxWidth = 'none';
+    imgEl.style.maxHeight = 'none';
+    imgEl._pendingFaceBox = null;
   }
 
   function setAvatarImageOnCard(avatarEl, performer, imgUrl) {
@@ -15605,11 +15710,10 @@ const Performers = (() => {
     const imgEl = getAvatarImgEl(avatarEl);
     if (!imgEl) return;
     if (imgUrl) {
+      resetAvatarImageCrop(avatarEl);
       imgEl.src = imgUrl;
       imgEl.alt = performer && performer.name ? performer.name : 'Performer image';
       imgEl.hidden = false;
-      imgEl.style.objectPosition = '50% 50%';
-      imgEl.style.transform = 'scale(1)';
       avatarEl.classList.add('has-image');
       try {
         avatarEl.dataset.imgUrl = imgUrl;
@@ -15617,10 +15721,9 @@ const Performers = (() => {
       catch (_) {}
     }
     else {
+      resetAvatarImageCrop(avatarEl);
       imgEl.hidden = true;
       imgEl.removeAttribute('src');
-      imgEl.style.objectPosition = '50% 50%';
-      imgEl.style.transform = 'scale(1)';
       avatarEl.classList.remove('has-image');
       try {
         delete avatarEl.dataset.imgUrl;
@@ -15633,27 +15736,62 @@ const Performers = (() => {
     if (!avatarEl) return;
     const imgEl = getAvatarImgEl(avatarEl);
     if (!imgEl) return;
-    if (Array.isArray(box) && box.length === 4) {
-      const [fx, fy, fw, fh] = box.map(Number);
-      const cx = Math.min(1, Math.max(0, fx + fw / 2));
-      const cy = Math.min(1, Math.max(0, fy + fh / 2));
-      const base = Math.max(fw, fh);
-      const safeFrac = Math.max(0.05, Math.min(1, base));
-      const scale = Math.max(1, FACEBOX_TARGET_AVATAR_FRACTION / safeFrac);
-      imgEl.style.objectPosition = `${(cx * 100).toFixed(2)}% ${(cy * 100).toFixed(2)}%`;
-      imgEl.style.transform = `scale(${scale.toFixed(3)})`;
-      try {
-        avatarEl.dataset.faceBox = box.join(',');
-      }
-      catch (_) {}
-    }
-    else {
-      imgEl.style.objectPosition = '50% 50%';
-      imgEl.style.transform = 'scale(1)';
+    if (!Array.isArray(box) || box.length !== 4) {
+      resetAvatarImageCrop(avatarEl);
       try {
         delete avatarEl.dataset.faceBox;
       }
       catch (_) {}
+      return;
+    }
+    const normalized = box.map((n) => (Number.isFinite(Number(n)) ? Number(n) : 0));
+    try {
+      avatarEl.dataset.faceBox = normalized.join(',');
+    }
+    catch (_) {}
+    const applyCrop = () => {
+      const naturalWidth = imgEl.naturalWidth;
+      const naturalHeight = imgEl.naturalHeight;
+      if (!naturalWidth || !naturalHeight) return false;
+      const avatarSize = Math.max(1, Math.min(avatarEl.clientWidth || 0, avatarEl.clientHeight || 0) || 56);
+      const boxWidthPx = normalized[2] * naturalWidth;
+      const boxHeightPx = normalized[3] * naturalHeight;
+      if (boxWidthPx <= 0 || boxHeightPx <= 0) {
+        return false;
+      }
+      const dimsSimilar = Math.abs(boxWidthPx - boxHeightPx) <= Math.max(boxWidthPx, boxHeightPx) * 0.05;
+      const scale = dimsSimilar
+        ? (avatarSize / boxWidthPx)
+        : (avatarSize / Math.max(boxWidthPx, boxHeightPx));
+      const displayWidth = naturalWidth * scale;
+      const displayHeight = naturalHeight * scale;
+      const offsetX = -(normalized[0] * naturalWidth * scale);
+      const offsetY = -(normalized[1] * naturalHeight * scale);
+      imgEl.style.width = `${displayWidth}px`;
+      imgEl.style.height = `${displayHeight}px`;
+      imgEl.style.left = `${offsetX}px`;
+      imgEl.style.top = `${offsetY}px`;
+      imgEl.style.right = 'auto';
+      imgEl.style.bottom = 'auto';
+      imgEl.style.objectFit = 'contain';
+      imgEl.style.transform = 'none';
+      imgEl.style.maxWidth = 'none';
+      imgEl.style.maxHeight = 'none';
+      imgEl._pendingFaceBox = null;
+      return true;
+    };
+    if (!applyCrop()) {
+      imgEl._pendingFaceBox = normalized;
+      if (!imgEl._avatarLoadListener) {
+        const handler = () => {
+          imgEl._avatarLoadListener = null;
+          const pending = imgEl._pendingFaceBox || normalized;
+          imgEl._pendingFaceBox = null;
+          applyFaceBoxToAvatar(avatarEl, pending);
+        };
+        imgEl._avatarLoadListener = handler;
+        imgEl.addEventListener('load', handler, { once: true });
+      }
     }
   }
 
@@ -17577,6 +17715,13 @@ const Performers = (() => {
       const close = () => {
         hide(mergePanel); mergePanel.removeAttribute('data-open');
       };
+      if (!mergePanel._escWire) {
+        mergePanel._escWire = true;
+        mergePanel.addEventListener('modal:requestClose', (ev) => {
+          ev.preventDefault();
+          close();
+        });
+      }
       if (mergeCloseBtn) mergeCloseBtn.addEventListener('click', close);
       if (mergeCancelBtn) mergeCancelBtn.addEventListener('click', close);
       mergePanel.addEventListener('click', (e) => {
@@ -17639,6 +17784,13 @@ const Performers = (() => {
       const close = () => {
         hide(renamePanel); renamePanel.removeAttribute('data-open');
       };
+      if (!renamePanel._escWire) {
+        renamePanel._escWire = true;
+        renamePanel.addEventListener('modal:requestClose', (ev) => {
+          ev.preventDefault();
+          close();
+        });
+      }
       if (renameCloseBtn) renameCloseBtn.addEventListener('click', close);
       if (renameCancelBtn) renameCancelBtn.addEventListener('click', close);
       renamePanel.addEventListener('click', (e) => {
@@ -17738,6 +17890,13 @@ const Performers = (() => {
       function closeModal() {
         hide(modal);
         fileInput.value = '';
+      }
+      if (!modal._escWire) {
+        modal._escWire = true;
+        modal.addEventListener('modal:requestClose', (ev) => {
+          ev.preventDefault();
+          closeModal();
+        });
       }
       if (!closeBtn._wired) {
         closeBtn._wired = true;
@@ -18178,16 +18337,11 @@ window.addEventListener('DOMContentLoaded', () => {
       scopedPerformers = normalizePerformers(list);
       show(modal);
       modal.setAttribute('data-open', '1');
-      document.addEventListener('keydown', escListener);
     }
     function close() {
       hide(modal);
       modal.removeAttribute('data-open');
-      document.removeEventListener('keydown', escListener);
       markBusy(false);
-    }
-    function escListener(e) {
-      if (e.key === 'Escape') close();
     }
     function setApplying(dis) {
       if (applyBtnFooter) applyBtnFooter.disabled = dis;
@@ -18275,6 +18429,13 @@ window.addEventListener('DOMContentLoaded', () => {
       open(Array.isArray(list) ? list : []);
       doPreview();
     };
+    if (!modal._escWire) {
+      modal._escWire = true;
+      modal.addEventListener('modal:requestClose', (ev) => {
+        ev.preventDefault();
+        close();
+      });
+    }
     if (closeBtn) closeBtn.addEventListener('click', close);
     if (cancelBtn) cancelBtn.addEventListener('click', close);
     if (applyBtnFooter) applyBtnFooter.addEventListener('click', doApply);
@@ -18415,6 +18576,13 @@ const Tags = (() => {
     if (!mergeConfirmBtn) mergeConfirmBtn = doc.getElementById('tagMergeConfirm');
     if (!mergeChoiceList) mergeChoiceList = doc.getElementById('tagMergeChoiceList');
     if (!mergeSelectedWrap) mergeSelectedWrap = doc.getElementById('tagMergeSelected');
+    if (mergePanel && !mergePanel._escWire) {
+      mergePanel._escWire = true;
+      mergePanel.addEventListener('modal:requestClose', (ev) => {
+        ev.preventDefault();
+        closeMergeModal();
+      });
+    }
   }
 
   function ensureRenameModalElements() {
@@ -18425,6 +18593,13 @@ const Tags = (() => {
     if (!renameConfirmBtn) renameConfirmBtn = doc.getElementById('tagRenameConfirm');
     if (!renameInput) renameInput = doc.getElementById('tagRenameInput');
     if (!renameSelectedWrap) renameSelectedWrap = doc.getElementById('tagRenameSelected');
+    if (renamePanel && !renamePanel._escWire) {
+      renamePanel._escWire = true;
+      renamePanel.addEventListener('modal:requestClose', (ev) => {
+        ev.preventDefault();
+        closeRenameModal();
+      });
+    }
   }
 
   function initDom() {

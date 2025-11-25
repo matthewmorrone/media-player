@@ -5676,18 +5676,18 @@ def _load_registry(path: Path, kind: str) -> dict:
                 detected_face: Optional[list[float]] = None
                 for raw in imgs:
                     if isinstance(raw, dict):
-                        path = str(raw.get("path") or "").strip()
+                        path = str(raw.get("path") or "").strip() # type: ignore
                         if not path:
                             continue
-                        flattened.append(path)
+                        flattened.append(path) # type: ignore
                         if detected_face is None:
                             face = _normalize_face_box_vals(raw.get("face"))
                             if face is not None:
                                 detected_face = face
                     elif isinstance(raw, str):
-                        path = raw.strip()
+                        path = raw.strip() # type: ignore
                         if path:
-                            flattened.append(path)
+                            flattened.append(path) # type: ignore
                 it["images"] = flattened
                 if flattened:
                     curr = it.get("image")
