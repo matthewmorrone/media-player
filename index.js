@@ -5517,11 +5517,19 @@ function setupListTab() {
       }
     }
   }
-  // Default column definitions (id, label, width px, visible, accessor)
+  // Default column definitions (id, label, width px, default visibility, accessor)
   let listLastAnchorIndex = null; // anchor for shift-click range selection in list
-  // todo @copilot redundant
-  const DEFAULT_COLS = [
-    {id: 'select', label: '', width: 34, visible: true, render: (td, f) => {
+  const LIST_COLUMN_DEFS = buildListColumnDefs();
+  const DEFAULT_COLS = LIST_COLUMN_DEFS.map((col) => ({ ...col, visible: col.defaultVisible }));
+
+  function buildListColumnDefs() {
+    const columns = [
+      {
+        id: 'select',
+        label: '',
+        width: 34,
+        defaultVisible: true,
+        render: (td, f) => {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.className = 'list-row-checkbox';
@@ -5567,94 +5575,163 @@ function setupListTab() {
         if (typeof updateSelectionUI === 'function') updateSelectionUI();
         if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI();
       });
-      td.appendChild(cb);
-    }},
-    {id: 'name', label: 'Name', width: 260, visible: true, render: (td, f) => {
-      let s = f.title || f.name || f.path || '';
-      const slash = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
-      if (slash >= 0) s = s.slice(slash + 1);
-      const dot = s.lastIndexOf('.');
-      if (dot > 0) s = s.slice(0, dot);
-      const a = document.createElement('a');
-      a.href = '#player/v/' + encodeURIComponent(f.path || '');
-      a.textContent = s;
-      a.setAttribute('aria-label', 'Open "' + s + '" in player');
-      a.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (window.tabSystem) window.tabSystem.switchToTab('player');
-        if (window.Player?.open) window.Player.open(f.path);
-      });
-      td.appendChild(a);
-    } },
-    {id: 'path', label: 'Path', width: 320, visible: true, get: (f) => f.path || '' },
-    {id: 'duration', label: 'Duration', width: 90, visible: true, render: (td, f) => {
-      const v = Number(f.duration);
-      td.textContent = Number.isFinite(v) && v > 0 ? fmtDuration(v) : '';
-      if ((!Number.isFinite(v) || v <= 0) && f.path) {
-        fetchMetadataCached(f.path).then((d) => {
-          if (!d || !td.isConnected) return;
-          const sec = Number(d.duration);
-          if (Number.isFinite(sec) && sec > 0) td.textContent = fmtDuration(sec);
-        });
-      }
-    } },
-    {id: 'size', label: 'Size', width: 90, visible: true, get: (f) => fmtSize(Number(f.size)) },
-    {id: 'width', label: 'Width', width: 90, visible: true, render: (td, f) => {
-      const w = Number(f.width);
-      td.textContent = Number.isFinite(w) && w > 0 ? `${w} px` : '';
-      if ((!Number.isFinite(w) || w <= 0) && f.path) {
-        fetchMetadataCached(f.path).then((d) => {
-          if (!d || !td.isConnected) return;
-          const val = Number(d.width);
-          if (Number.isFinite(val) && val > 0) td.textContent = `${val} px`;
-        });
-      }
-    } },
-    {id: 'height', label: 'Height', width: 90, visible: true, render: (td, f) => {
-      const h = Number(f.height);
-      td.textContent = Number.isFinite(h) && h > 0 ? `${h} px` : '';
-      if ((!Number.isFinite(h) || h <= 0) && f.path) {
-        fetchMetadataCached(f.path).then((d) => {
-          if (!d || !td.isConnected) return;
-          const val = Number(d.height);
-          if (Number.isFinite(val) && val > 0) td.textContent = `${val} px`;
-        });
-      }
-    } },
-    {id: 'created', label: 'Created', width: 160, visible: false, get: (f) => {
-      const t = Number(f.ctime) || Number(f.birthtime) || Number(f.mtime) || 0;
-      return formatDateTime(t);
-    }},
-    {id: 'mtime', label: 'Modified', width: 160, visible: true, get: (f) => formatDateTime(f.mtime) },
-    {id: 'codec', label: 'Video Codec', width: 130, visible: false, render: (td, f) => {
-      const initial = (f.video_codec || f.vcodec || f.vcodec_name || f.codec || f.codec_name || '').toString();
-      td.textContent = initial || '—';
-      if (!initial && f.path) {
-        fetchMetadataCached(f.path).then((d) => {
-          if (!d || !td.isConnected) return;
-          const v = (d.vcodec || d.video_codec || '').toString();
-          if (v) td.textContent = v;
-        });
-      }
-    } },
-    {id: 'acodec', label: 'Audio Codec', width: 130, visible: false, render: (td, f) => {
-      const initial = (f.audio_codec || f.acodec || f.acodec_name || f.audio_codec_name || '').toString();
-      td.textContent = initial || '—';
-      if (!initial && f.path) {
-        fetchMetadataCached(f.path).then((d) => {
-          if (!d || !td.isConnected) return;
-          const v = (d.acodec || d.audio_codec || '').toString();
-          if (v) td.textContent = v;
-        });
-      }
-    } },
-    {id: 'format', label: 'Format', width: 90, visible: true, get: (f) => {
+        td.appendChild(cb);
+      }},
+      {
+        id: 'name',
+        label: 'Name',
+        width: 260,
+        defaultVisible: true,
+        render: (td, f) => {
+          let s = f.title || f.name || f.path || '';
+          const slash = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+          if (slash >= 0) s = s.slice(slash + 1);
+          const dot = s.lastIndexOf('.');
+          if (dot > 0) s = s.slice(0, dot);
+          const a = document.createElement('a');
+          a.href = '#player/v/' + encodeURIComponent(f.path || '');
+          a.textContent = s;
+          a.setAttribute('aria-label', 'Open "' + s + '" in player');
+          a.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (window.tabSystem) window.tabSystem.switchToTab('player');
+            if (window.Player?.open) window.Player.open(f.path);
+          });
+          td.appendChild(a);
+        }
+      },
+      {
+        id: 'path',
+        label: 'Path',
+        width: 320,
+        defaultVisible: true,
+        get: (f) => f.path || ''
+      },
+      {
+        id: 'duration',
+        label: 'Duration',
+        width: 90,
+        defaultVisible: true,
+        render: (td, f) => {
+          const v = Number(f.duration);
+          td.textContent = Number.isFinite(v) && v > 0 ? fmtDuration(v) : '';
+          if ((!Number.isFinite(v) || v <= 0) && f.path) {
+            fetchMetadataCached(f.path).then((d) => {
+              if (!d || !td.isConnected) return;
+              const sec = Number(d.duration);
+              if (Number.isFinite(sec) && sec > 0) td.textContent = fmtDuration(sec);
+            });
+          }
+        }
+      },
+      {
+        id: 'size',
+        label: 'Size',
+         width: 90,
+         defaultVisible: true,
+         get: (f) => fmtSize(Number(f.size))
+      },
+      {
+        id: 'width',
+        label: 'Width',
+        width: 90,
+        defaultVisible: true,
+        render: (td, f) => {
+          const w = Number(f.width);
+          td.textContent = Number.isFinite(w) && w > 0 ? `${w} px` : '';
+          if ((!Number.isFinite(w) || w <= 0) && f.path) {
+            fetchMetadataCached(f.path).then((d) => {
+              if (!d || !td.isConnected) return;
+              const val = Number(d.width);
+              if (Number.isFinite(val) && val > 0) td.textContent = `${val} px`;
+            });
+          }
+        }
+      },
+      {
+        id: 'height',
+        label: 'Height',
+        width: 90,
+        defaultVisible: true,
+        render: (td, f) => {
+          const h = Number(f.height);
+          td.textContent = Number.isFinite(h) && h > 0 ? `${h} px` : '';
+          if ((!Number.isFinite(h) || h <= 0) && f.path) {
+            fetchMetadataCached(f.path).then((d) => {
+              if (!d || !td.isConnected) return;
+              const val = Number(d.height);
+              if (Number.isFinite(val) && val > 0) td.textContent = `${val} px`;
+            });
+          }
+        }
+      },
+      {
+        id: 'created',
+        label: 'Created',
+        width: 160,
+        defaultVisible: false,
+        get: (f) => {
+          const t = Number(f.ctime) || Number(f.birthtime) || Number(f.mtime) || 0;
+          return formatDateTime(t);
+        }},
+      {
+        id: 'mtime',
+        label: 'Modified',
+        width: 160,
+        defaultVisible: true,
+        get: (f) => formatDateTime(f.mtime)
+      },
+      {
+        id: 'codec',
+        label: 'Video Codec',
+        width: 130,
+        defaultVisible: false,
+        render: (td, f) => {
+          const initial = (f.video_codec || f.vcodec || f.vcodec_name || f.codec || f.codec_name || '').toString();
+          td.textContent = initial || '—';
+          if (!initial && f.path) {
+            fetchMetadataCached(f.path).then((d) => {
+              if (!d || !td.isConnected) return;
+              const v = (d.vcodec || d.video_codec || '').toString();
+              if (v) td.textContent = v;
+            });
+          }
+        }
+      },
+      {
+        id: 'acodec',
+        label: 'Audio Codec',
+        width: 130,
+        defaultVisible: false,
+        render: (td, f) => {
+          const initial = (f.audio_codec || f.acodec || f.acodec_name || f.audio_codec_name || '').toString();
+          td.textContent = initial || '—';
+          if (!initial && f.path) {
+            fetchMetadataCached(f.path).then((d) => {
+              if (!d || !td.isConnected) return;
+              const v = (d.acodec || d.audio_codec || '').toString();
+              if (v) td.textContent = v;
+            });
+          }
+        }
+      },
+      {
+        id: 'format',
+        label: 'Format',
+        width: 90,
+        defaultVisible: true,
+        get: (f) => {
       const p = f.path || f.name || '';
       const m = /\.([^.\/]+)$/.exec(p);
       return m ? m[1].toLowerCase() : '';
-    }},
-    {id: 'bitrate', label: 'Bitrate', width: 110, visible: false, render: (td, f) => {
+      }},
+      {
+        id: 'bitrate',
+        label: 'Bitrate',
+        width: 110,
+        defaultVisible: false,
+        render: (td, f) => {
       const renderBps = (bps) => {
         const mbps = bps / 1_000_000;
         return mbps >= 0.1 ? `${mbps.toFixed(2)} Mbps` : `${Math.round(bps / 1000)} kbps`;
@@ -5681,8 +5758,445 @@ function setupListTab() {
         }
       }
     }},
-  ];
-  // Artifact/sidecar presence helpers and columns (hidden by default; enable as needed)
+    ];
+
+    const artifactStatusColumns = [
+      {id: 'art-metadata', label: 'Metadata', keys: ['has_metadata', 'metadata'], width: 54},
+      {id: 'art-thumbnail', label: 'Thumbnail', keys: ['has_thumbnail', 'thumbnail', 'thumbnails'], width: 78},
+      {id: 'art-sprites', label: 'Sprites', keys: ['has_sprites', 'sprites'], width: 64},
+      {id: 'art-preview', label: 'Preview', keys: ['has_preview', 'preview', 'previewUrl'], width: 60},
+      {id: 'art-scenes', label: 'Scenes', keys: ['has_scenes', 'scenes', 'markers'], width: 60},
+      {id: 'art-phash', label: 'pHash', keys: ['has_phash', 'phash'], width: 60},
+      {id: 'art-heatmaps', label: 'Heatmaps', keys: ['has_heatmaps', 'heatmaps'], width: 74},
+    ].map((ac) => ({
+      id: ac.id,
+      label: ac.label,
+      width: ac.width,
+      defaultVisible: false,
+      render: (td, f) => {
+        let present = hasArtifact(f, ac.keys);
+        const span = document.createElement('span');
+        const apply = (ok) => {
+          span.className = ok ? 'status status--present' : 'status status--missing';
+          span.title = ok ? `${ac.label} present` : `${ac.label} missing`;
+          span.textContent = ok ? '✓' : '✕';
+        };
+        apply(present);
+        if (!present && ac.id === 'art-metadata' && f && f.path) {
+          fetchMetadataCached(f.path).then((d) => {
+            if (!td.isConnected) return;
+            apply(Boolean(d));
+          });
+        }
+        td.appendChild(span);
+      },
+    }));
+
+    columns.push(...artifactStatusColumns);
+
+    columns.push({
+      id: 'artifacts',
+      label: 'Artifacts',
+      width: 520,
+      defaultVisible: true,
+      render: (td, f) => {
+        const cont = document.createElement('div');
+        cont.className = 'chips-list';
+        td.appendChild(cont);
+        const status = {};
+        const pres = (keys) => hasArtifact(f, keys);
+        status.metadata = pres(['has_metadata', 'metadata']);
+        status.thumbnail = pres(['has_thumbnail', 'thumbnail', 'thumbnails']);
+        status.sprites = pres(['has_sprites', 'sprites']);
+        status.preview = pres(['has_preview', 'preview', 'previewUrl']);
+        status.markers = pres(['has_scenes', 'scenes', 'markers']);
+        status.heatmaps = pres(['has_heatmaps', 'heatmaps']);
+        status.phash = pres(['has_phash', 'phash']);
+        const keys = ['metadata', 'thumbnail', 'sprites', 'preview', 'markers', 'heatmaps', 'phash'];
+        renderArtifactChips(cont, f.path || '', { style: 'chip', keys, status });
+      }});
+
+    columns.push({
+      id: 'performers',
+      label: 'Performers',
+      width: 340,
+      defaultVisible: true,
+      render: (td, f) => {
+        const cont = document.createElement('div');
+        cont.className = 'chips-list performers-chips';
+        td.appendChild(cont);
+        let currentPerformerNames = [];
+        const apply = (names) => {
+          cont.innerHTML = '';
+          const arr = Array.isArray(names) ? names.filter(Boolean) : [];
+          currentPerformerNames = arr.map((n) => typeof n === 'object' && n ? (n.name || n.label || String(n)) : String(n));
+          arr.forEach((entry) => {
+            const isObj = entry && typeof entry === 'object';
+            const name = isObj ? (entry.name || entry.label || String(entry)) : String(entry);
+            const isUnconfirmed = Boolean(isObj && (entry.suggested || entry.unconfirmed || entry.confirmed === false));
+            const chip = document.createElement('span');
+            chip.className = 'chip chip--performer' + (isUnconfirmed ? ' chip--pending' : '');
+            chip.textContent = name;
+            if (isUnconfirmed) {
+              chip.title = `Confirm performer: ${name}`;
+              chip.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const url = new URL('/api/media/performers/add', window.location.origin);
+                url.searchParams.set('path', f.path || '');
+                url.searchParams.set('performer', name);
+                const resp = await fetch(url.toString(), {method: 'POST'});
+                if (resp.ok) {
+                  const j = await resp.json();
+                  const list = j?.data?.performers || j?.performers || [];
+                  apply(list);
+                }
+              });
+            }
+            else {
+              chip.title = `Filter by performer: ${name}`;
+              chip.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (!libraryPerformerFilters.includes(name)) libraryPerformerFilters.push(name);
+                setLocalStorageJSON('filters.performers', libraryPerformerFilters);
+                if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips();
+                if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
+                currentPage = 1;
+                loadLibrary();
+              });
+            }
+            cont.appendChild(chip);
+          });
+          ensurePerformerRegistry().then(() => renderSuggestions('performer', arr));
+        };
+        function startEdit() {
+          if (!f.path || td._editing) return;
+          td._editing = true;
+          apply(f.performers || currentPerformerNames);
+          const input = document.createElement('span');
+          input.className = 'chip-input';
+          input.contentEditable = 'true';
+          input.setAttribute('role', 'textbox');
+          input.setAttribute('aria-label', 'Add performers');
+          input.dataset.placeholder = 'Add performer…';
+          cont.appendChild(input);
+
+          async function commitTokens(tokens) {
+            const parts = (tokens || []).map((s) => String(s || '').trim()).filter(Boolean);
+            if (!parts.length) return;
+            for (const p of parts) {
+              const url = new URL('/api/media/performers/add', window.location.origin);
+              url.searchParams.set('path', f.path);
+              url.searchParams.set('performer', p);
+              await fetch(url.toString(), {method: 'POST'});
+            }
+            const d = await fetchMetadataCached(f.path).catch(() => null);
+            if (!td.isConnected) return;
+            apply(d?.performers || d?.perfs || d?.actors || []);
+            if (td._editing) {
+              cont.appendChild(input);
+              placeCaretAtEnd(input);
+            }
+          }
+          // @todo copilot move to utils
+          function placeCaretAtEnd(el) {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            range.collapse(false);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+          // @todo copilot move to utils
+          function tokenize(str) {
+            return String(str || '').split(/[\,\n]+/) .map((s) => s.trim()) .filter(Boolean);
+          }
+
+          input.addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              const raw = input.textContent || '';
+              input.textContent = '';
+              commitTokens(tokenize(raw));
+            }
+            else if (e.key === ',') {
+              e.preventDefault();
+              const raw = input.textContent || '';
+              input.textContent = '';
+              commitTokens(tokenize(raw));
+            }
+            else if (e.key === 'Escape') {
+              e.preventDefault();
+              td._editing = false;
+              apply(f.performers || currentPerformerNames);
+            }
+          });
+          input.addEventListener('blur', () => {
+            if (!td._editing) return;
+            const raw = (input.textContent || '').trim();
+            td._editing = false;
+            if (raw) commitTokens(tokenize(raw));
+            else apply(f.performers || currentPerformerNames);
+          });
+          input.focus();
+        }
+        td.addEventListener('dblclick', (e) => {
+          if (e.target.closest('.chip') || e.target.closest('.chip-suggest')) return;
+          startEdit();
+        });
+        const ensurePerformerRegistry = () => loadRegistry('performers');
+        const renderSuggestions = (kind, existing) => {
+          const baseName = (f?.name || (f?.path ? f.path.split('/').pop() : '') || '').replace(/\.[^.]+$/, '');
+          const baseLower = baseName.toLowerCase();
+          const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+          const baseNorm = ' ' + norm(baseLower) + ' ';
+          const containsWord = (needle) => {
+            const n = ' ' + norm(needle) + ' ';
+            return n.trim().split(/\s+/).every((tok) => baseNorm.includes(' ' + tok + ' '));
+          };
+          const names = (window.__REG.performers || []).map((p) => p?.name).filter(Boolean);
+          const have = new Set((existing || []).map((x) => String(x).toLowerCase()));
+          const sug = [];
+          for (const nm of names) {
+            const low = String(nm).toLowerCase();
+            if (have.has(low)) continue;
+            if (containsWord(low)) sug.push(nm);
+            if (sug.length >= 6) break;
+          }
+          if (!sug.length) return;
+          const wrap = document.createElement('div');
+          wrap.className = 'chips-suggestions-inline';
+          sug.forEach((nm) => {
+            const chip = document.createElement('span');
+            chip.className = 'chip chip-suggest';
+            chip.textContent = nm;
+            chip.title = 'Add performer';
+            chip.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              const url = new URL('/api/media/performers/add', window.location.origin);
+              url.searchParams.set('path', f.path || '');
+              url.searchParams.set('performer', nm);
+              const resp = await fetch(url.toString(), {method: 'POST'});
+              if (resp.ok) {
+                const j = await resp.json();
+                const list = j?.data?.performers || j?.performers || [];
+                apply(list);
+              }
+            });
+            wrap.appendChild(chip);
+          });
+          cont.appendChild(wrap);
+        };
+        let initial = f && (f.performers || f.perfs || f.actors);
+        if (Array.isArray(initial)) {
+          ensurePerformerRegistry().then(() => apply(initial));
+        }
+        else if (f && f.path) {
+          ensurePerformerRegistry().then(() => {
+            fetchMetadataCached(f.path).then((d) => {
+              if (!td.isConnected) return;
+              apply(d && (d.performers || d.perfs || d.actors || []));
+            });
+          });
+        }
+        else {
+          ensurePerformerRegistry().then(() => apply([]));
+        }
+      }});
+
+    columns.push({
+      id: 'tags',
+      label: 'Tags',
+      width: 340,
+      defaultVisible: true,
+      render: (td, f) => {
+        const cont = document.createElement('div');
+        cont.className = 'chips-list tags-chips';
+        td.appendChild(cont);
+        let currentTagNames = [];
+        const apply = (tags) => {
+          cont.innerHTML = '';
+          const arr = Array.isArray(tags) ? tags.filter(Boolean) : [];
+          currentTagNames = arr.map((t) => typeof t === 'object' && t ? (t.name || t.label || String(t)) : String(t));
+          arr.forEach((entry) => {
+            const isObj = entry && typeof entry === 'object';
+            const tag = isObj ? (entry.name || entry.label || String(entry)) : String(entry);
+            const isUnconfirmed = Boolean(isObj && (entry.suggested || entry.unconfirmed || entry.confirmed === false));
+            const chip = document.createElement('span');
+            chip.className = 'chip chip--tag' + (isUnconfirmed ? ' chip--pending' : '');
+            chip.textContent = tag;
+            if (isUnconfirmed) {
+              chip.title = `Confirm tag: ${tag}`;
+              chip.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const url = new URL('/api/media/tags/add', window.location.origin);
+                url.searchParams.set('path', f.path || '');
+                url.searchParams.set('tag', tag);
+                const resp = await fetch(url.toString(), {method: 'POST'});
+                if (resp.ok) {
+                  const j = await resp.json();
+                  const list = j?.data?.tags || j?.tags || [];
+                  apply(list);
+                }
+              });
+            }
+            else {
+              chip.title = `Filter by tag: ${tag}`;
+              chip.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (!libraryTagFilters.includes(tag)) libraryTagFilters.push(tag);
+                setLocalStorageJSON('filters.tags', libraryTagFilters);
+                if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips();
+                if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
+                currentPage = 1;
+                loadLibrary();
+              });
+            }
+            cont.appendChild(chip);
+          });
+          ensureTagRegistry().then(() => renderSuggestions('tag', arr));
+        };
+        function startEdit() {
+          if (!f.path || td._editing) return;
+          td._editing = true;
+          apply(f.tags || currentTagNames);
+          const input = document.createElement('span');
+          input.className = 'chip-input';
+          input.contentEditable = 'true';
+          input.setAttribute('role', 'textbox');
+          input.setAttribute('aria-label', 'Add tags');
+          input.dataset.placeholder = 'Add tag…';
+          cont.appendChild(input);
+
+          async function commitTokens(tokens) {
+            const parts = (tokens || []).map((s) => String(s || '').trim()).filter(Boolean);
+            if (!parts.length) return;
+            for (const p of parts) {
+              const url = new URL('/api/media/tags/add', window.location.origin);
+              url.searchParams.set('path', f.path);
+              url.searchParams.set('tag', p);
+              await fetch(url.toString(), {method: 'POST'});
+            }
+            const d = await fetchMetadataCached(f.path).catch(() => null);
+            if (!td.isConnected) return;
+            apply(d?.tags || d?.tag_names || []);
+            if (td._editing) {
+              cont.appendChild(input);
+              placeCaretAtEnd(input);
+            }
+          }
+
+          function placeCaretAtEnd(el) {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            range.collapse(false);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+          function tokenize(str) {
+            return String(str || '').split(/[\,\n]+/)
+              .map((s) => s.trim())
+              .filter(Boolean);
+          }
+          input.addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              const raw = input.textContent || '';
+              input.textContent = '';
+              commitTokens(tokenize(raw));
+            }
+            else if (e.key === ',') {
+              e.preventDefault();
+              const raw = input.textContent || '';
+              input.textContent = '';
+              commitTokens(tokenize(raw));
+            }
+            else if (e.key === 'Escape') {
+              e.preventDefault();
+              td._editing = false;
+              apply(f.tags || currentTagNames);
+            }
+          });
+          input.addEventListener('blur', () => {
+            if (!td._editing) return;
+            const raw = (input.textContent || '').trim();
+            td._editing = false;
+            if (raw) commitTokens(tokenize(raw));
+            else apply(f.tags || currentTagNames);
+          });
+          input.focus();
+        }
+        td.addEventListener('dblclick', (e) => {
+          if (e.target.closest('.chip') || e.target.closest('.chip-suggest')) return;
+          startEdit();
+        });
+        const ensureTagRegistry = () => loadRegistry('tags');
+        const renderSuggestions = (kind, existing) => {
+          const baseName = (f?.name || (f?.path ? f.path.split('/').pop() : '') || '').replace(/\.[^.]+$/, '');
+          const baseLower = baseName.toLowerCase();
+          const norm = (s) => String(s || '').toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+          const baseNorm = ' ' + norm(baseLower) + ' ';
+          const containsWord = (needle) => {
+            const n = ' ' + norm(needle) + ' ';
+            return n.trim().split(/\s+/) .every((tok) => baseNorm.includes(' ' + tok + ' '));
+          };
+          const names = (window.__REG.tags || []).map((t) => t?.name).filter(Boolean);
+          const have = new Set((existing || []).map((x) => String(x).toLowerCase()));
+          const sug = [];
+          for (const nm of names) {
+            const low = String(nm).toLowerCase();
+            if (have.has(low)) continue;
+            if (containsWord(low)) sug.push(nm);
+            if (sug.length >= 6) break;
+          }
+          if (!sug.length) return;
+          const wrap = document.createElement('div');
+          wrap.className = 'chips-suggestions-inline';
+          sug.forEach((nm) => {
+            const chip = document.createElement('span');
+            chip.className = 'chip chip-suggest';
+            chip.textContent = nm;
+            chip.title = 'Add tag';
+            chip.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              const url = new URL('/api/media/tags/add', window.location.origin);
+              url.searchParams.set('path', f.path || '');
+              url.searchParams.set('tag', nm);
+              const resp = await fetch(url.toString(), {method: 'POST'});
+              if (resp.ok) {
+                const j = await resp.json();
+                const list = j?.data?.tags || j?.tags || [];
+                apply(list);
+              }
+            });
+            wrap.appendChild(chip);
+          });
+          cont.appendChild(wrap);
+        };
+        let initial = f && (f.tags || f.tag_names);
+        if (Array.isArray(initial)) {
+          ensureTagRegistry().then(() => apply(initial));
+        }
+        else if (f && f.path) {
+          ensureTagRegistry().then(() => {
+            fetchMetadataCached(f.path).then((d) => {
+              if (!td.isConnected) return;
+              apply(d && (d.tags || d.tag_names || []));
+            });
+          });
+        }
+        else {
+          ensureTagRegistry().then(() => apply([]));
+        }
+      }});
+
+    return columns;
+  }
+  // Artifact/sidecar presence helpers
   function hasArtifact(f, keys) {
     for (const k of keys) {
       if (f && f[k]) {
