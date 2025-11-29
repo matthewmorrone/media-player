@@ -1,4 +1,3 @@
-// Inlined utilities (merged from utils.js)
 // Keep this section free of app-specific state; pure or narrowly scoped helpers only.
 
 function fmtSize(bytes) {
@@ -25,9 +24,7 @@ function fmtDuration(sec) {
 
 function parseTimeString(str) {
   if (!str) return 0;
-  const parts = str.trim().split(':')
-    .map((p) => p.trim())
-    .filter(Boolean);
+  const parts = str.trim().split(':').map((p) => p.trim()).filter(Boolean);
 
   if (parts.some((p) => !/^[0-9]{1,2}$/.test(p))) return NaN;
   let h = 0;
@@ -83,7 +80,41 @@ function showAs(el, display) {
 function isHidden(el) {
   return !el || el.classList.contains('hidden') || el.classList.contains('d-none') || el.hasAttribute('hidden');
 }
-
+function placeCaretAtEnd(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+function pad2(n) {
+  n = Number(n) || 0;
+  return n < 10 ? '0' + n : String(n);
+}
+function formatDateTime(sec) {
+  const t = Number(sec) || 0;
+  if (!t) return '';
+  const d = new Date(t * 1000);
+  const Y = d.getFullYear();
+  const M = pad2(d.getMonth() + 1);
+  const D = pad2(d.getDate());
+  const h = pad2(d.getHours());
+  const m = pad2(d.getMinutes());
+  const s = pad2(d.getSeconds());
+  return `${Y}/${M}/${D} ${h}:${m}:${s}`;
+}
+function placeCaretAtEnd(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+function tokenize(str) {
+  return String(str || '').split(/[\,\n]+/).map((s) => s.trim()).filter(Boolean);
+}
 function enhanceSegmentedSelect(select, opts = {}) {
   if (!select || select._segmentedInit) return null;
   const options = Array.from(select.options || []);
@@ -3333,7 +3364,6 @@ const CANONICAL_ARTIFACT_KEYS = new Set([
   'sprites',
   'markers',
   'subtitles',
-  'faces',
   'phash',
   'heatmaps',
 ]);
@@ -5897,19 +5927,6 @@ function setupListTab() {
               placeCaretAtEnd(input);
             }
           }
-          // @todo copilot move to utils
-          function placeCaretAtEnd(el) {
-            const range = document.createRange();
-            range.selectNodeContents(el);
-            range.collapse(false);
-            const sel = window.getSelection();
-            sel.removeAllRanges();
-            sel.addRange(range);
-          }
-          // @todo copilot move to utils
-          function tokenize(str) {
-            return String(str || '').split(/[\,\n]+/) .map((s) => s.trim()) .filter(Boolean);
-          }
 
           input.addEventListener('keydown', (e) => {
             e.stopPropagation();
@@ -6084,20 +6101,6 @@ function setupListTab() {
               cont.appendChild(input);
               placeCaretAtEnd(input);
             }
-          }
-
-          function placeCaretAtEnd(el) {
-            const range = document.createRange();
-            range.selectNodeContents(el);
-            range.collapse(false);
-            const sel = window.getSelection();
-            sel.removeAllRanges();
-            sel.addRange(range);
-          }
-          function tokenize(str) {
-            return String(str || '').split(/[\,\n]+/)
-              .map((s) => s.trim())
-              .filter(Boolean);
           }
           input.addEventListener('keydown', (e) => {
             e.stopPropagation();
@@ -6540,20 +6543,6 @@ function setupListTab() {
             placeCaretAtEnd(input);
           }
         }
-
-        function placeCaretAtEnd(el) {
-          const range = document.createRange();
-          range.selectNodeContents(el);
-          range.collapse(false);
-          const sel = window.getSelection();
-          sel.removeAllRanges();
-          sel.addRange(range);
-        }
-        function tokenize(str) {
-          return String(str || '').split(/[,\n]+/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-        }
         input.addEventListener('keydown', (e) => {
           // Keep typing isolated from global shortcuts
           e.stopPropagation();
@@ -6650,23 +6639,6 @@ function setupListTab() {
         ensureTagRegistry().then(() => apply([]));
       }
     }});
-  // @todo copilot: these functions should be with utils
-  function pad2(n) {
-    n = Number(n) || 0;
-    return n < 10 ? '0' + n : String(n);
-  }
-  function formatDateTime(sec) {
-    const t = Number(sec) || 0;
-    if (!t) return '';
-    const d = new Date(t * 1000);
-    const Y = d.getFullYear();
-    const M = pad2(d.getMonth() + 1);
-    const D = pad2(d.getDate());
-    const h = pad2(d.getHours());
-    const m = pad2(d.getMinutes());
-    const s = pad2(d.getSeconds());
-    return `${Y}/${M}/${D} ${h}:${m}:${s}`;
-  }
   function loadCols() {
     try {
       const raw = getLocalStorageItem(COL_LS_KEY, {type: 'json', fallback: null});
@@ -6747,6 +6719,7 @@ function setupListTab() {
       }
     })();
     // List filters state and helpers (persisted per tab)
+    // @todo remove
     const LIST_FILTERS_LS_KEY = 'list.filters.v1';
     function loadListFilters() {
       try {
@@ -20426,10 +20399,7 @@ class TasksManager {
           await window.Player.detectAndUploadFacesBrowser();
         }
         else {
-          this.showNotification(
-            'Player not ready for browser detection.',
-            'error',
-          );
+          this.showNotification('Player not ready for browser detection.', 'error');
         }
       }
       catch (e) {
@@ -20463,9 +20433,7 @@ class TasksManager {
       const headUrl = new URL('/api/heatmaps', window.location.origin);
       headUrl.searchParams.set('path', path);
       let ok = false;
-      for (let i = 0;
-        i < 10;
-        i++) {
+      for (let i = 0; i < 10; i++) {
         // ~10 quick tries
         const h = await fetch(headUrl.toString(), {method: 'HEAD' });
         if (h.status === 200) {

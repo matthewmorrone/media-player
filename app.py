@@ -10972,6 +10972,84 @@ def _db_fetch_artifact_flags(rel_path: str) -> Optional[dict[str, bool]]:
         return None
 
 
+_REPORT_ARTIFACT_KEY_MAP = {
+    "metadata": "metadata",
+    "thumbnail": "thumbnails",
+    "preview": "previews",
+    "subtitles": "subtitles",
+    "faces": "faces",
+    "sprites": "sprites",
+    "heatmaps": "heatmaps",
+    "phash": "phash",
+    "markers": "markers",
+}
+
+
+def _db_artifact_counts(base: Path, root: Path, *, recursive: bool) -> tuple[dict[str, int], int]:
+    counts = {k: 0 for k in _REPORT_ARTIFACT_KEY_MAP.values()}
+    total = 0
+    clause_sql, clause_params = _video_scope_clause(base, root, recursive=recursive)
+    where_clause = f"WHERE {clause_sql}" if clause_sql else ""
+    try:
+        with db.session(read_only=True) as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM video AS v {where_clause}",
+                clause_params,
+            ).fetchone()
+            if row:
+                total = int(row["cnt"] or 0)
+            art_sql = (
+                "SELECT a.type AS type, COUNT(*) AS cnt "
+                "FROM artifact AS a "
+                "JOIN video AS v ON v.id = a.media_id "
+                "WHERE a.status = 'present'"
+            )
+            art_params: list[Any] = []
+            if clause_sql:
+                art_sql += f" AND {clause_sql}"
+                art_params.extend(clause_params)
+            art_sql += " GROUP BY a.type"
+            rows = conn.execute(art_sql, art_params).fetchall()
+            for row in rows:
+                key = _REPORT_ARTIFACT_KEY_MAP.get(str(row["type"] or ""))
+                if not key:
+                    continue
+                counts[key] = int(row["cnt"] or 0)
+    except Exception:
+        counts = {k: 0 for k in _REPORT_ARTIFACT_KEY_MAP.values()}
+        total = 0
+    return counts, total
+
+
+def _filesystem_artifact_counts(base: Path, recursive: bool) -> tuple[dict[str, int], int]:
+    vids = _find_mp4s(base, recursive)
+    counts = {k: 0 for k in _REPORT_ARTIFACT_KEY_MAP.values()}
+    for v in vids:
+        try:
+            if metadata_path(v).exists():
+                counts["metadata"] += 1
+            if thumbnails_path(v).exists():
+                counts["thumbnails"] += 1
+            if _file_nonempty(_preview_concat_path(v)):
+                counts["previews"] += 1
+            if scenes_json_exists(v):
+                counts["markers"] += 1
+            s_sheet, s_json = sprite_sheet_paths(v)
+            if s_sheet.exists() and s_json.exists():
+                counts["sprites"] += 1
+            if heatmaps_json_exists(v):
+                counts["heatmaps"] += 1
+            if phash_path(v).exists():
+                counts["phash"] += 1
+            if faces_exists_check(v):
+                counts["faces"] += 1
+            if find_subtitles(v):
+                counts["subtitles"] += 1
+        except Exception:
+            continue
+    return counts, len(vids)
+
+
 def _db_fetch_media_tags_performers(rel_path: str) -> Optional[dict[str, list[str]]]:
     rel = str(rel_path).strip()
     if not rel:
@@ -11028,6 +11106,167 @@ def _current_media_lists(rel_path: str) -> tuple[list[str], list[str]]:
         tags = [str(t).strip() for t in (ent.get("tags") or []) if str(t).strip()]
         performers = [str(p).strip() for p in (ent.get("performers") or []) if str(p).strip()]
     return tags, performers
+
+
+def _db_scope_stats(base: Path, root: Path, *, recursive: bool) -> dict[str, Any]:
+    stats = {
+        "num_files": 0,
+        "total_size": 0,
+        "total_duration": 0.0,
+        "tags": 0,
+        "performers": 0,
+        "res_buckets": {"2160": 0, "1440": 0, "1080": 0, "720": 0, "480": 0, "360": 0, "other": 0},
+        "duration_buckets": {"<1m": 0, "1-5m": 0, "5-20m": 0, "20-60m": 0, ">60m": 0},
+    }
+    clause_sql, clause_params = _video_scope_clause(base, root, recursive=recursive)
+    where_clause = f"WHERE {clause_sql}" if clause_sql else ""
+    try:
+        with db.session(read_only=True) as conn:
+            agg_row = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS num_files,
+                    COALESCE(SUM(size_bytes), 0) AS total_size,
+                    COALESCE(SUM(duration), 0) AS total_duration,
+                    SUM(CASE WHEN height IS NOT NULL AND height >= 2160 THEN 1 ELSE 0 END) AS bucket_2160,
+                    SUM(CASE WHEN height IS NOT NULL AND height >= 1440 AND height < 2160 THEN 1 ELSE 0 END) AS bucket_1440,
+                    SUM(CASE WHEN height IS NOT NULL AND height >= 1080 AND height < 1440 THEN 1 ELSE 0 END) AS bucket_1080,
+                    SUM(CASE WHEN height IS NOT NULL AND height >= 720 AND height < 1080 THEN 1 ELSE 0 END) AS bucket_720,
+                    SUM(CASE WHEN height IS NOT NULL AND height >= 480 AND height < 720 THEN 1 ELSE 0 END) AS bucket_480,
+                    SUM(CASE WHEN height IS NOT NULL AND height >= 360 AND height < 480 THEN 1 ELSE 0 END) AS bucket_360,
+                    SUM(CASE WHEN height IS NULL OR height < 360 THEN 1 ELSE 0 END) AS bucket_other,
+                    SUM(CASE WHEN duration IS NULL OR duration < 60 THEN 1 ELSE 0 END) AS bucket_lt_1m,
+                    SUM(CASE WHEN duration >= 60 AND duration < 300 THEN 1 ELSE 0 END) AS bucket_1_5m,
+                    SUM(CASE WHEN duration >= 300 AND duration < 1200 THEN 1 ELSE 0 END) AS bucket_5_20m,
+                    SUM(CASE WHEN duration >= 1200 AND duration < 3600 THEN 1 ELSE 0 END) AS bucket_20_60m,
+                    SUM(CASE WHEN duration >= 3600 THEN 1 ELSE 0 END) AS bucket_gt_60m
+                FROM video AS v
+                {where_clause}
+                """,
+                clause_params,
+            ).fetchone()
+            if agg_row:
+                stats["num_files"] = int(agg_row["num_files"] or 0)
+                stats["total_size"] = int(agg_row["total_size"] or 0)
+                stats["total_duration"] = float(agg_row["total_duration"] or 0.0)
+                stats["res_buckets"] = {
+                    "2160": int(agg_row["bucket_2160"] or 0),
+                    "1440": int(agg_row["bucket_1440"] or 0),
+                    "1080": int(agg_row["bucket_1080"] or 0),
+                    "720": int(agg_row["bucket_720"] or 0),
+                    "480": int(agg_row["bucket_480"] or 0),
+                    "360": int(agg_row["bucket_360"] or 0),
+                    "other": int(agg_row["bucket_other"] or 0),
+                }
+                stats["duration_buckets"] = {
+                    "<1m": int(agg_row["bucket_lt_1m"] or 0),
+                    "1-5m": int(agg_row["bucket_1_5m"] or 0),
+                    "5-20m": int(agg_row["bucket_5_20m"] or 0),
+                    "20-60m": int(agg_row["bucket_20_60m"] or 0),
+                    ">60m": int(agg_row["bucket_gt_60m"] or 0),
+                }
+            tag_row = conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT t.id) AS cnt
+                  FROM media_tags mt
+                  JOIN video v ON v.id = mt.media_id
+                  JOIN tag t ON t.id = mt.tag_id
+                  {where_clause}
+                """,
+                clause_params,
+            ).fetchone()
+            if tag_row:
+                stats["tags"] = int(tag_row["cnt"] or 0)
+            perf_row = conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT p.id) AS cnt
+                  FROM media_performers mp
+                  JOIN video v ON v.id = mp.media_id
+                  JOIN performer p ON p.id = mp.performer_id
+                  {where_clause}
+                """,
+                clause_params,
+            ).fetchone()
+            if perf_row:
+                stats["performers"] = int(perf_row["cnt"] or 0)
+    except Exception:
+        return stats
+    return stats
+
+
+def _filesystem_scope_stats(base: Path, recursive: bool) -> dict[str, Any]:
+    vids = _find_mp4s(base, recursive)
+    res_buckets = {"2160": 0, "1440": 0, "1080": 0, "720": 0, "480": 0, "360": 0, "other": 0}
+    duration_buckets = {"<1m": 0, "1-5m": 0, "5-20m": 0, "20-60m": 0, ">60m": 0}
+    total_size = 0
+    total_duration = 0.0
+    tag_set: set[str] = set()
+    perf_set: set[str] = set()
+    for p in vids:
+        try:
+            st = p.stat()
+            total_size += int(getattr(st, "st_size", 0) or 0)
+        except Exception:
+            pass
+        dur, _title, _width, height = _metadata_summary_cached(p)
+        if dur:
+            try:
+                total_duration += float(dur)
+            except Exception:
+                pass
+        h = int(height) if height else None
+        if h is None:
+            res_buckets["other"] += 1
+        elif h >= 2160:
+            res_buckets["2160"] += 1
+        elif h >= 1440:
+            res_buckets["1440"] += 1
+        elif h >= 1080:
+            res_buckets["1080"] += 1
+        elif h >= 720:
+            res_buckets["720"] += 1
+        elif h >= 480:
+            res_buckets["480"] += 1
+        elif h >= 360:
+            res_buckets["360"] += 1
+        else:
+            res_buckets["other"] += 1
+        if dur is None:
+            duration_buckets["<1m"] += 1
+        else:
+            try:
+                dsec = float(dur)
+                if dsec < 60:
+                    duration_buckets["<1m"] += 1
+                elif dsec < 300:
+                    duration_buckets["1-5m"] += 1
+                elif dsec < 1200:
+                    duration_buckets["5-20m"] += 1
+                elif dsec < 3600:
+                    duration_buckets["20-60m"] += 1
+                else:
+                    duration_buckets[">60m"] += 1
+            except Exception:
+                duration_buckets["<1m"] += 1
+        tf = _tags_file(p)
+        if tf.exists():
+            try:
+                tdata = json.loads(tf.read_text())
+                for t in (tdata.get("tags") or []):
+                    tag_set.add(str(t))
+                for perf in (tdata.get("performers") or []):
+                    perf_set.add(str(perf))
+            except Exception:
+                pass
+    return {
+        "num_files": len(vids),
+        "total_size": total_size,
+        "total_duration": total_duration,
+        "tags": len(tag_set),
+        "performers": len(perf_set),
+        "res_buckets": res_buckets,
+        "duration_buckets": duration_buckets,
+    }
 
 
 def _db_upsert_artifact(conn, video_id: int, art_type: str, entry: dict[str, Any]) -> None:
@@ -11648,54 +11887,28 @@ def media_tags_remove(path: str = Query(...), tag: str = Query(...)):
 # -----------------
 @app.get("/report")
 def report(directory: str = Query("."), recursive: bool = Query(False)):
+    library_root = STATE.get("root")
+    if not isinstance(library_root, Path):
+        raise HTTPException(500, "library root not configured")
     if directory in (".", ""):
-        root = STATE.get("root")
+        base = library_root
     else:
         p = Path(directory).expanduser()
         if p.is_absolute():
             try:
-                p.resolve().relative_to(STATE["root"])  # type: ignore[arg-type]
+                p.resolve().relative_to(library_root)
             except Exception:
                 raise HTTPException(400, "invalid directory")
-            root = p
+            base = p
         else:
-            root = safe_join(STATE["root"], directory)
-    root = Path(str(root)).resolve()
-    if not root.is_dir():
+            base = safe_join(library_root, directory)
+    base = Path(str(base)).resolve()
+    if not base.exists() or not base.is_dir():
         raise HTTPException(404, "directory not found")
-    vids = _find_mp4s(root, recursive)
-
-    def _artifact_flags(v: Path) -> dict[str, bool]:
-        s_sheet, s_json = sprite_sheet_paths(v)
-        return {
-            "metadata": metadata_path(v).exists(),
-            "thumbnails": thumbnails_path(v).exists(),
-            "previews": _file_nonempty(_preview_concat_path(v)),
-            "subtitles": bool(find_subtitles(v)),
-            "faces": faces_exists_check(v),
-            "sprites": s_sheet.exists() and s_json.exists(),
-            "heatmaps": heatmaps_json_exists(v),
-            "phash": phash_path(v).exists(),
-            "markers": scenes_json_exists(v),
-        }
-
-    counts = {
-        "metadata": 0,
-        "thumbnails": 0,
-        "previews": 0,
-        "subtitles": 0,
-        "faces": 0,
-        "sprites": 0,
-        "heatmaps": 0,
-        "phash": 0,
-        "markers": 0,
-    }
-    for v in vids:
-        flags = _artifact_flags(v)
-        for k, present in flags.items():
-            if present:
-                counts[k] += 1
-    return {"counts": counts, "total": len(vids)}
+    counts, total = _db_artifact_counts(base, library_root, recursive=recursive)
+    if total == 0:
+        counts, total = _filesystem_artifact_counts(base, recursive)
+    return {"counts": counts, "total": total}
 
 
 # -----------------
@@ -16747,7 +16960,7 @@ def _sql_like_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
-def _video_scope_clause(base: Path, root: Path) -> tuple[str, list[str]]:
+def _video_scope_clause(base: Path, root: Path, *, recursive: bool = True) -> tuple[str, list[str]]:
     try:
         base_resolved = base.resolve()
     except Exception:
@@ -16757,23 +16970,33 @@ def _video_scope_clause(base: Path, root: Path) -> tuple[str, list[str]]:
     except Exception:
         root_resolved = root
     if base_resolved == root_resolved:
-        return "", []
+        if recursive:
+            return "", []
+        return "instr(v.rel_path, '/') = 0", []
     try:
         rel = str(base_resolved.relative_to(root_resolved))
     except Exception:
         return "", []
     rel = rel.replace("\\", "/").strip("/")
     if not rel:
-        return "", []
+        if recursive:
+            return "", []
+        return "instr(v.rel_path, '/') = 0", []
     escaped = _sql_like_escape(rel)
-    return "v.rel_path LIKE ? ESCAPE '\\'", [f"{escaped}/%"]
+    if recursive:
+        return "v.rel_path LIKE ? ESCAPE '\\'", [f"{escaped}/%"]
+    start_idx = len(rel) + 2  # Skip the trailing slash plus 1-indexing
+    return (
+        "(v.rel_path LIKE ? ESCAPE '\\' AND instr(substr(v.rel_path, ?), '/') = 0)",
+        [f"{escaped}/%", start_idx], # type: ignore
+    )
 
 
 def _compute_db_coverage(base: Path, root: Path) -> tuple[dict[str, dict[str, int]], int]:
     coverage = _coverage_template(0)
     total = 0
     try:
-        clause_sql, clause_params = _video_scope_clause(base, root)
+        clause_sql, clause_params = _video_scope_clause(base, root, recursive=True)
         where_clause = f"WHERE {clause_sql}" if clause_sql else ""
         with db.session(read_only=True) as conn:
             total_row = conn.execute(
@@ -21568,99 +21791,20 @@ def api_stats(path: str = Query(default=""), recursive: bool = Query(default=Tru
 
     Returns: { num_files, total_size, total_duration, tags_count, performers_count, res_buckets, duration_buckets }
     """
+    library_root = STATE.get("root")
+    if not isinstance(library_root, Path):
+        return api_success({"num_files": 0, "total_size": 0, "total_duration": 0.0, "tags": 0, "performers": 0, "res_buckets": {}, "duration_buckets": {}})
     try:
-        base = safe_join(STATE["root"], path) if path else STATE["root"]
+        base = safe_join(library_root, path) if path else library_root
     except Exception:
         return api_success({"num_files": 0, "total_size": 0, "total_duration": 0.0, "tags": 0, "performers": 0, "res_buckets": {}, "duration_buckets": {}})
     if not base.exists() or not base.is_dir():
         return api_success({"num_files": 0, "total_size": 0, "total_duration": 0.0, "tags": 0, "performers": 0, "res_buckets": {}, "duration_buckets": {}})
 
-    vids = _find_mp4s(base, bool(recursive))
-    num_files = len(vids)
-    total_size = 0
-    total_duration = 0.0
-
-    # Resolution buckets (by height)
-    res_buckets: dict[str, int] = {"2160": 0, "1440": 0, "1080": 0, "720": 0, "480": 0, "360": 0, "other": 0}
-
-    # Duration buckets (seconds)
-    duration_buckets: dict[str, int] = {"<1m": 0, "1-5m": 0, "5-20m": 0, "20-60m": 0, ">60m": 0}
-
-    tag_set: set[str] = set()
-    perf_set: set[str] = set()
-
-    for p in vids:
-        try:
-            st = p.stat()
-            total_size += int(getattr(st, "st_size", 0) or 0)
-        except Exception:
-            pass
-        dur, _title, width, height = _metadata_summary_cached(p)
-        if dur:
-            try:
-                total_duration += float(dur)
-            except Exception:
-                pass
-        # resolution grouping by height
-        h = int(height) if height else None
-        if h is None:
-            res_buckets["other"] += 1
-        elif h >= 2160:
-            res_buckets["2160"] += 1
-        elif h >= 1440:
-            res_buckets["1440"] += 1
-        elif h >= 1080:
-            res_buckets["1080"] += 1
-        elif h >= 720:
-            res_buckets["720"] += 1
-        elif h >= 480:
-            res_buckets["480"] += 1
-        elif h >= 360:
-            res_buckets["360"] += 1
-        else:
-            res_buckets["other"] += 1
-
-        # duration bucket
-        if dur is None:
-            duration_buckets["<1m"] += 1
-        else:
-            try:
-                dsec = float(dur)
-                if dsec < 60:
-                    duration_buckets["<1m"] += 1
-                elif dsec < 300:
-                    duration_buckets["1-5m"] += 1
-                elif dsec < 1200:
-                    duration_buckets["5-20m"] += 1
-                elif dsec < 3600:
-                    duration_buckets["20-60m"] += 1
-                else:
-                    duration_buckets[">60m"] += 1
-            except Exception:
-                duration_buckets["<1m"] += 1
-
-        # collect tags/performers from sidecar if present
-        tf = _tags_file(p)
-        if tf.exists():
-            try:
-                tdata = json.loads(tf.read_text())
-                for t in (tdata.get("tags") or []):
-                    tag_set.add(t)
-                for pf in (tdata.get("performers") or []):
-                    perf_set.add(pf)
-            except Exception:
-                pass
-
-    out = {
-        "num_files": num_files,
-        "total_size": total_size,
-        "total_duration": total_duration,
-        "tags": len(tag_set),
-        "performers": len(perf_set),
-        "res_buckets": res_buckets,
-        "duration_buckets": duration_buckets,
-    }
-    return api_success(out)
+    data = _db_scope_stats(base, library_root, recursive=bool(recursive))
+    if data.get("num_files") == 0:
+        data = _filesystem_scope_stats(base, bool(recursive))
+    return api_success(data)
 
 
 # -----------------------------
