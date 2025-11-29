@@ -1,103 +1,80 @@
-/* Hide player title if empty */
-.player-title:empty {
-  display: none !important;
-}
-
 /* =============================================================
-   Media Player Stylesheet (refactored ordering)
-   -------------------------------------------------------------
-   Table of Contents
-   1. Root Variables
-   2. Base / Resets
-   3. Utilities
-   4. Layout Primitives (grid, cards, generic components)
-   5. Buttons & Controls
-   6. Performers Panel
-   7. Modals / Overlays
-   8. Tabs & Sections (Tasks, Artifacts, Jobs)
-   9. Selection & Badges
-   10. Artifact Cards & Options Tooltip
-   11. Job Monitor (stats, tables)
-   12. Orphaned Artifacts
-   13. Accordion
-   14. Player (Simplified + Full Tab)
-   15. Viewport Fit Player Adjustments
-   16. Toast / Notifications
-   17. Animations & Keyframes
-   -------------------------------------------------------------
-   Notes:
-   * Nested selectors previously inside #folderInput were flattened.
-   * Duplicate .btn-sm size variant inside controls panel is now scoped.
-   * Duplicate @keyframes spin removed (single canonical definition).
-   * Second slideIn variant renamed slideInRight for clarity.
-   ============================================================= */
+  Media Player Stylesheet (refactored ordering)
+  -------------------------------------------------------------
+  Table of Contents
+  1. Root Variables
+  2. Base / Resets
+  3. Utilities
+  4. Layout Primitives (grid, cards, generic components)
+  5. Buttons & Controls
+  6. Performers Panel
+  7. Modals / Overlays
+  8. Tabs & Sections (Tasks, Artifacts, Jobs)
+  9. Selection & Badges
+  10. Artifact Cards & Options Tooltip
+  11. Job Monitor (stats, tables)
+  12. Orphaned Artifacts
+  13. Accordion
+  14. Player (Simplified + Full Tab)
+  15. Viewport Fit Player Adjustments
+  16. Toast / Notifications
+  17. Animations & Keyframes
+  -------------------------------------------------------------
+  Notes:
+  * Nested selectors previously inside #folderInput were flattened.
+  * Duplicate .btn-sm size variant inside controls panel is now scoped.
+  * Duplicate @keyframes spin removed (single canonical definition).
+  * Second slideIn variant renamed slideInRight for clarity.
+  ============================================================= */
 
-/* 1. Root Variables */
-/* Restored canonical design token set (was accidentally removed during cleanup) */
 :root {
-  /* Core palette */
-  --bg: #0d1117;
-  --panel: #152030;
-  --card: #1d2737;
-  --card-bg: #1d2737;
-  --card-hover: #243247;
-  --text: #dbe2f1;
-  --muted: #94a2c7;
+  --font-stack: 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  --bg: #0f1115;
+  --panel: #151b25;
+  --panel-bg: #1a2133;
+  --card: #161c2c;
+  --card-bg: #141b28;
+  --card-hover: #1d2436;
+  --text: #f7f9ff;
+  --text-muted: rgba(247, 249, 255, 0.65);
+  --text-alt: #c9d7ff;
+  --muted: rgba(255, 255, 255, 0.55);
+  --fg-500: #b5bccb;
+  --fg-600: #94a3b8;
+  --border-color: rgba(255, 255, 255, 0.12);
+  --border-subtle: rgba(255, 255, 255, 0.06);
   --accent: #4f8cff;
-  --success: #22c55e;
-  --danger: #ef4444;
-  --warn: #f59e0b;
-
-  /* Layout / shape */
+  --success: #34d399;
+  --danger: #f87171;
+  --warn: #facc15;
+  --header-h: 54px;
+  --sticky-header-height: var(--header-h);
+  --player-sidebar-w: 300px;
+  --columns: 4;
+  --grid-gap: 12px;
+  --grid-side-padding: 64px;
+  --grid-wide-padding: 64px;
   --radius-sm: 4px;
   --radius: 8px;
   --radius-lg: 14px;
-  --header-h: 54px;
-
-  .marker-label-strong {
-    font-weight: 700;
-  }
-
-  .flex-1 {
-    flex: 1 1 auto;
-  }
-
-  --sticky-header-height: var(--header-h);
-  /* unified with later viewport-fit section */
-  /* --player-split-h removed: using flex-based natural height now */
-
-  /* Motion & effects */
   --transition: .2s cubic-bezier(.4, .2, .2, 1);
   --focus-ring: 0 0 0 2px rgba(79, 140, 255, .5);
-  /* Removed fixed player height variable;
-  full flex-based height now */
-  --player-sidebar-w: 300px;
-  /* fixed sidebar width so right panel handles horizontal resize */
-  /* PAGINATION_LAYOUT: added tighter layout variables for 12-tile viewport goal */
-  --grid-gap: 12px;
-  /* restore a moderate gap */
-  --grid-side-padding: 64px;
-  /* base (will override for grid itself below) */
-  --grid-wide-padding: 64px;
-  /* revert to earlier side spacing;
-  tiles were fine */
+  --vol-pct: 100%;
 }
 
 /* 2. Base / Resets */
 * {
   box-sizing: border-box;
-
 }
 
 html,
 body {
   height: 100%;
-
 }
 
 body {
   margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  font-family: var(--font-stack);
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
@@ -169,6 +146,131 @@ main {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+.marker-label-strong {
+  font-weight: 700;
+}
+
+.flex-1 {
+  flex: 1 1 auto;
+}
+
+.compact-filter {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  flex: 0 1 200px;
+  min-width: 140px;
+  max-width: 240px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.compact-filter__label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.compact-filter__label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.segmented-control {
+  display: inline-flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 2px;
+}
+
+.compact-filter .segmented-control {
+  width: 100%;
+  justify-content: flex-start;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.segmented-control__btn,
+.segmented-control button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), box-shadow var(--transition);
+}
+
+.segmented-control button:hover,
+.segmented-control__btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.segmented-control button.is-active,
+.segmented-control__btn.is-active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(79, 140, 255, 0.35);
+}
+
+.segmented-control button:focus-visible,
+.segmented-control__btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.segmented-control.is-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.compact-filter__order {
+  border: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition), color var(--transition), box-shadow var(--transition);
+  flex: 0 0 auto;
+}
+
+.compact-filter__order:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.compact-filter__order:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+@media (max-width: 768px) {
+  .compact-filter {
+    flex: 1 1 160px;
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 /* Generic chips container used in list and sidebar */
@@ -249,19 +351,6 @@ main {
 }
 
 .card {
-
-  /* Visually hidden utility for accessible labels */
-  .sr-only {
-    position: absolute !important;
-    width: 1px !important;
-    height: 1px !important;
-    padding: 0 !important;
-    margin: -1px !important;
-    overflow: hidden !important;
-    clip: rect(0, 0, 0, 0) !important;
-    white-space: nowrap !important;
-    border: 0 !important;
-  }
   background: var(--card);
   border: 1px solid #2a3144;
   border-radius: 10px;
@@ -670,9 +759,6 @@ button.btn-danger {
   height: 3px;
 }
 
-/* (Duplicate :root and utility class definitions removed;
-see top of file) */
-
 /* Extracted from former inline styles */
 .embed-extra {
   margin-top: 8px;
@@ -882,7 +968,15 @@ th .col-drag-handle:active {
 /* Artifact filter chips (Library grid) */
 .artifact-filter-chips { display:inline-flex; gap:6px; flex-wrap:wrap; margin-left:6px; }
 .artifact-filter-chips .chip { font-size:11px; padding:2px 6px; border-radius:12px; background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14); display:inline-flex; align-items:center; gap:4px; }
+.artifact-filter-chip-remove { background:none; border:0; color:inherit; cursor:pointer; padding:0; line-height:1; display:inline-flex; align-items:center; justify-content:center; font-size:12px; }
+.artifact-filter-chip-remove:hover { color:#fff; }
 .artifact-filter-chips .chip--clear { background: rgba(79,140,255,0.18); border-color: rgba(79,140,255,0.45); }
+.artifact-filter-menu { position:absolute; z-index:1200; background: var(--panel-bg,#111827); color: inherit; border:1px solid rgba(255,255,255,0.14); border-radius:8px; padding:12px; box-shadow:0 12px 24px rgba(0,0,0,0.45); min-width:240px; }
+.artifact-filter-menu[hidden] { display:none; }
+.artifact-filter-menu__body { display:flex; flex-direction:column; gap:6px; }
+.artifact-filter-row { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:12px; }
+.artifact-filter-row .control-select { flex:0 0 120px; }
+.artifact-filter-menu__footer { display:flex; justify-content:flex-end; gap:8px; margin-top:10px; }
 
 /* Merged Artifacts column: ensure wide enough initially (matches widened JS default 520px) */
 .list-table thead th.col-artifacts,
@@ -1079,6 +1173,14 @@ th .col-drag-handle:active {
 
 .list-col-item .list-col-label {
   margin-left: 6px;
+}
+
+.list-columns-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 /* Drag indicators in the Columns panel */
@@ -1578,10 +1680,15 @@ th .col-drag-handle:active {
 /* Performers toolbar & dropzone */
 .perf-toolbar {
   display: flex;
-  gap: 10px;
-  align-items: center;
+  gap: 8px;
+  align-items: flex-start;
   flex-wrap: wrap;
   margin: 0 0 12px;
+}
+
+.perf-toolbar .compact-filter {
+  flex: 0 1 180px;
+  min-width: 120px;
 }
 
 .perf-search {
@@ -1772,6 +1879,35 @@ th .col-drag-handle:active {
 .perf-card.perf-card--pretty .pc-avatar.has-image:hover::after,
 .perf-card.perf-card--pretty .pc-avatar.has-image:focus::after {
   opacity: 1;
+}
+
+.perf-card.perf-card--pretty .pc-countwrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pc-face-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  background: var(--muted);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  display: inline-flex;
+  transition: transform .15s ease, opacity .15s ease;
+}
+
+.pc-face-indicator[hidden] {
+  display: none;
+}
+
+.pc-face-indicator[data-state="present"] {
+  background: var(--success);
+}
+
+.pc-face-indicator[data-state="missing"] {
+  background: var(--warn);
 }
 
 .perf-card.perf-card--pretty .pc-titlebox {
@@ -2427,6 +2563,10 @@ keep only z-index here */
 
 /* Desktop/base: allow the search group to own the row width */
 .controls-panel .control-group--flex {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--cp-gap);
   flex: 1 1 420px; /* wider default growth */
   min-width: 0; /* allow input to shrink without overflow */
   max-width: none; /* override earlier utility cap (240px) */
@@ -2658,28 +2798,6 @@ keep only z-index here */
 
 .control-slider:hover {
   border-color: var(--accent);
-}
-
-.order-btn {
-  min-width: 40px;
-  height: 40px;
-  font-size: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: 4px;
-  border-radius: 8px;
-  border: 1px solid #2a3144;
-  background: var(--bg);
-  color: var(--text);
-  transition: all 0.2s ease;
-  cursor: pointer;
-}
-
-.order-btn:hover {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: white;
 }
 
 .btn-sm {
@@ -4775,6 +4893,18 @@ enforce single-line flex bar */
   box-sizing: border-box;
 }
 
+.artifact-chip .status {
+  width: 1.4em;
+  height: 1.4em;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
 .effects-panel-slim {
   display: flex;
   flex-direction: column;
@@ -4899,6 +5029,11 @@ enforce single-line flex bar */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Hide player title if empty */
+.player-title:empty {
+  display: none !important;
 }
 
 .player-video {

@@ -9360,6 +9360,7 @@ def _list_performers(search: str | None = None) -> list[dict]:
 def api_performers(
     search: Optional[str] = Query(None),
     image: str = Query(default="any", description="Filter by image availability: any|with|without"),
+    face: str = Query(default="any", description="Filter by face-box presence: any|with|without"),
     debug: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=32, ge=1, le=200),
@@ -9409,6 +9410,15 @@ def api_performers(
     if image_filter != "any":
         want_image = image_filter == "with"
         items = [item for item in items if bool(item.get("has_image")) is want_image]
+    face_filter = (face or "any").strip().lower()
+    if face_filter not in ("any", "with", "without"):
+        face_filter = "any"
+    if face_filter != "any":
+        want_face = face_filter == "with"
+        def _has_face_box(entry: dict) -> bool:
+            box = entry.get("image_face_box")
+            return isinstance(box, (list, tuple)) and len(box) == 4
+        items = [item for item in items if _has_face_box(item) is want_face]
     if _time and t_l0 is not None:
         timings["list_build_ms"] = round((_time.perf_counter() - t_l0) * 1000, 2)
     # (Removed fast-mode zero-count fallback; incremental scan already ensured counts.)
@@ -9492,6 +9502,7 @@ def api_performers(
         "order": eff_order,
         "search": search or None,
         "image_filter": image_filter,
+        "face_filter": face_filter,
     }
     if debug:
         try:

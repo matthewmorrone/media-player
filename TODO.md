@@ -1,5 +1,11 @@
 # TODO (Structured Roadmap)
 
+remove legacy and backwards compatibility
+refactor against html and css generation in js
+finish implementing db
+deduplicate redundancies
+separate out multiple statements on a single line
+
 ## Database Migration Plan
 - [x] **Dual-write safety (current requirement):** ensure every metadata/tags/performers/artifact/job mutation continues to update the legacy flat files _and_ the SQLite tables in lockstep (failures must be reported and retried) until a later cutoff is agreed.
 - [x] **Metadata authority flip:** Update `/media/description`, `/media/rating`, `/media/favorite`, `/media/info*` endpoints so writes/reads go straight to the `video` table; gate sidecar writes behind a compatibility flag (`METADATA_SIDECAR_WRITE`) and delete when parity confirmed.

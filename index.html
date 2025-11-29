@@ -215,7 +215,10 @@
           <h3 class="pc-name"></h3>
           <div class="pc-metadata hint-sm"></div>
         </div>
-        <div class="pc-count" title="Files">0</div>
+        <div class="pc-countwrap">
+          <div class="pc-count" title="Files">0</div>
+          <span class="pc-face-indicator" aria-hidden="true"></span>
+        </div>
       </div>
     </div>
   </template>
@@ -453,6 +456,24 @@
         <template id="filterChipTemplate">
           <span class="chip" title=""></span>
         </template>
+        <!-- Artifact filter popover row template -->
+        <template id="artifactFilterRowTemplate">
+          <label class="artifact-filter-row">
+            <span class="artifact-filter-name"></span>
+            <select class="control-select artifact-filter-select">
+              <option value="">Any</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+        </template>
+        <!-- Artifact filter chip template -->
+        <template id="artifactFilterChipTemplate">
+          <span class="chip chip--artifact">
+            <span class="artifact-filter-chip-label"></span>
+            <button type="button" class="artifact-filter-chip-remove" aria-label="">×</button>
+          </span>
+        </template>
         <!-- Tags registry list item template -->
         <template id="registryItemTemplate">
           <div class="registry-item" data-selected="0"></div>
@@ -484,8 +505,8 @@
 
         <!-- List tab: column settings item template -->
         <template id="listColumnItemTemplate">
-          <div class="list-col-item" draggable="true">
-            <span class="drag-handle" title="Drag to reorder" aria-hidden="true">⋮⋮</span>
+          <div class="list-col-item">
+            <span class="drag-handle" title="Drag to reorder" aria-hidden="true" draggable="true">⋮⋮</span>
             <label>
               <input type="checkbox" class="list-col-visible" checked />
               <span class="list-col-label">Column</span>
@@ -1043,28 +1064,34 @@
               </button>
               <input type="text" id="libraryUnifiedInput" class="chips-input" placeholder="Search files, #tag, @performer…" aria-label="Search library" />
               <div class="chips-list" id="libraryUnifiedChips"></div>
-              <div class="select">
-                <select id="resSelect" class="control-select" title="Filter by resolution" aria-label="Filter by resolution">
-                  <option value="" selected>All resolutions</option>
-                  <option value="2160">2160p+</option>
-                  <option value="1440">1440p+</option>
-                  <option value="1080">1080p+</option>
-                  <option value="720">720p+</option>
-                  <option value="480">480p+</option>
+              <div class="compact-filter" data-filter="resolution">
+                <div class="compact-filter__label-row">
+                  <span class="compact-filter__label">Resolution</span>
+                </div>
+                <select id="resSelect" class="control-select sr-only" title="Filter by resolution" aria-label="Filter by resolution" data-segmented="1" data-segmented-label="Resolution">
+                  <option value="" selected data-chip="All">All resolutions</option>
+                  <option value="2160" data-chip="2160p+">2160p+</option>
+                  <option value="1440" data-chip="1440p+">1440p+</option>
+                  <option value="1080" data-chip="1080p+">1080p+</option>
+                  <option value="720" data-chip="720p+">720p+</option>
+                  <option value="480" data-chip="480p+">480p+</option>
                 </select>
-                <span class="chevron">▾</span>
               </div>
-              <div class="select">
-                <select id="sortSelect" class="control-select" aria-label="Sort by">
-                  <option value="date">Date</option>
-                  <option value="name">Name</option>
-                  <option value="size">Size</option>
-                  <option value="random">Random</option>
+              <div class="compact-filter" data-filter="sort">
+                <div class="compact-filter__label-row">
+                  <span class="compact-filter__label">Sort</span>
+                  <button id="orderToggle" class="compact-filter__order" data-order="desc" type="button" title="Toggle sort order" aria-label="Toggle sort order">▼</button>
+                </div>
+                <select id="sortSelect" class="control-select sr-only" aria-label="Sort by" data-segmented="1" data-segmented-label="Sort">
+                  <option value="date" data-chip="Date">Date</option>
+                  <option value="name" data-chip="Name">Name</option>
+                  <option value="size" data-chip="Size">Size</option>
+                  <option value="random" data-chip="Random">Random</option>
                 </select>
-                <span class="chevron">▾</span>
               </div>
-              <button id="orderToggle" class="btn-sm order-btn" data-order="desc" title="Toggle sort order" aria-label="Toggle sort order">▼</button>
               <input id="densitySlider" type="range" min="1" max="15" value="12" step="1" class="control-slider" title="Adjust grid density (columns)" aria-label="Grid density" />
+              <button id="artifactFiltersBtn" class="btn-sm" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="artifactFiltersMenu">Artifacts</button>
+              <div id="artifactFilterChips" class="artifact-filter-chips" aria-live="polite" hidden></div>
               <!-- Artifact boolean filters are available per-column on the List tab -->
               <div class="pagination">
                 <button id="prevBtn" class="btn-sm" title="Previous page">‹</button>
@@ -1078,6 +1105,14 @@
                 <svg width="16" height="16" aria-hidden="true" focusable="false"><use href="#icon-auto-shuffle" /></svg>
               </button>
             </div>
+          </div>
+        </div>
+
+        <div id="artifactFiltersMenu" class="artifact-filter-menu" role="dialog" aria-label="Artifact filters" hidden>
+          <div class="artifact-filter-menu__body" id="artifactFilterMenuBody"></div>
+          <div class="artifact-filter-menu__footer">
+            <button id="artifactFiltersClearBtn" class="btn-sm" type="button">Clear</button>
+            <button id="artifactFiltersApplyBtn" class="btn-sm btn-primary" type="button">Apply</button>
           </div>
         </div>
 
@@ -1166,7 +1201,7 @@
                   <option value="64">64</option>
                   <option value="128">128</option>
                   <option value="256">256</option>
-                  <option value="512">512</option>
+                  <option value="500">500</option>
                 </select>
               </label>
               <div id="listFilterChips" class="filter-chips" aria-label="Active list filters" hidden></div>
@@ -1184,7 +1219,10 @@
               <button id="listColumnsClose" class="btn-sm" aria-label="Close">Close</button>
             </div>
             <div id="listColumnsBody" class="list-columns-body"></div>
-            <div class="hint-sm hint-sm--muted mt-12">Drag to reorder • Toggle to show/hide • Resize using header grips in the table</div>
+            <div class="list-columns-footer mt-12">
+              <div class="hint-sm hint-sm--muted">Drag to reorder • Toggle to show/hide • Resize using header grips in the table</div>
+              <button id="listColumnsReset" class="btn-sm" type="button">Reset to default</button>
+            </div>
           </div>
           <div class="list-wrap">
             <table id="listTable" class="list-table" role="table" aria-label="Files list">
@@ -1209,19 +1247,37 @@
         <div class="catalog-container">
           <div class="perf-toolbar">
             <input id="performerSearch" type="text" placeholder="Search performers…" class="perf-search" />
-            <label for="performerImageFilter" class="hint-sm" aria-live="off">Images</label>
-            <select id="performerImageFilter" class="control-select" aria-label="Filter performers by image availability">
-              <option value="all" selected>Show all</option>
-              <option value="with">Has image</option>
-              <option value="without">No image</option>
-            </select>
+            <div class="compact-filter" data-filter="perf-images">
+              <div class="compact-filter__label-row">
+                <span class="compact-filter__label">Images</span>
+              </div>
+              <select id="performerImageFilter" class="control-select sr-only" aria-label="Filter performers by image availability" data-segmented="1" data-segmented-label="Performer image filter">
+                <option value="all" selected data-chip="All">All</option>
+                <option value="with" data-chip="With">Has image</option>
+                <option value="without" data-chip="Missing">No image</option>
+              </select>
+            </div>
+            <div class="compact-filter" data-filter="perf-face">
+              <div class="compact-filter__label-row">
+                <span class="compact-filter__label">Face box</span>
+              </div>
+              <select id="performerFaceFilter" class="control-select sr-only" aria-label="Filter performers by face box status" data-segmented="1" data-segmented-label="Performer face box filter">
+                <option value="all" selected data-chip="All">All</option>
+                <option value="with" data-chip="With">Has face box</option>
+                <option value="without" data-chip="Missing">No face box</option>
+              </select>
+            </div>
             <!-- Sort controls: default to Scenes (desc) -->
-            <label for="performerSort" class="hint-sm ml-8" style="opacity:.8">Sort</label>
-            <select id="performerSort" class="control-select" aria-label="Sort performers">
-              <option value="count" selected>Files</option>
-              <option value="name">Name</option>
-            </select>
-            <button id="performerSortOrder" class="btn-sm" title="Toggle sort order" aria-label="Toggle sort order">Desc</button>
+            <div class="compact-filter ml-8" data-filter="perf-sort">
+              <div class="compact-filter__label-row">
+                <span class="compact-filter__label">Sort</span>
+                <button id="performerSortOrder" class="compact-filter__order" type="button" title="Toggle sort order" aria-label="Toggle sort order">▼</button>
+              </div>
+              <select id="performerSort" class="control-select sr-only" aria-label="Sort performers" data-segmented="1" data-segmented-label="Performer sort">
+                <option value="count" selected data-chip="Files">Files</option>
+                <option value="name" data-chip="Name">Name</option>
+              </select>
+            </div>
             <span id="performersCount" class="hint-sm ml-8" aria-live="polite"></span>
             <button id="performerUnifiedImportBtn" class="btn-sm" title="Import performers: names list, images folder, loose images, or ZIP">Import</button>
             <button id="performerAddBtn" class="btn-sm" title="Create a new performer">Add</button>
