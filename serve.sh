@@ -31,6 +31,8 @@ if [ -z "${MEDIA_ROOT:-}" ]; then
   else export MEDIA_ROOT="$PWD"; fi
 fi
 
+REPO_ROOT="$PWD"
+
 # Print friendly access URLs (LAN + localhost) before exec
 LAN_IP=""
 if command -v ipconfig >/dev/null 2>&1; then
@@ -45,14 +47,18 @@ echo "[serve.sh] MEDIA_ROOT=$MEDIA_ROOT"
 
 # Auto-enable whisper.cpp subtitles backend if discovered and not explicitly configured
 if [ -z "${WHISPER_CPP_BIN:-}" ]; then
-  if [ -x "$HOME/whisper.cpp/main" ]; then
+  if [ -x "$REPO_ROOT/deps/bin/whisper-cli" ]; then
+    export WHISPER_CPP_BIN="$REPO_ROOT/deps/bin/whisper-cli"
+  elif [ -x "$HOME/whisper.cpp/main" ]; then
     export WHISPER_CPP_BIN="$HOME/whisper.cpp/main"
   elif [ -x "$HOME/whisper.cpp/build/bin/main" ]; then
     export WHISPER_CPP_BIN="$HOME/whisper.cpp/build/bin/main"
   fi
 fi
 if [ -z "${WHISPER_CPP_MODEL:-}" ]; then
-  if [ -f "$HOME/whisper.cpp/models/ggml-tiny.bin" ]; then
+  if [ -f "$REPO_ROOT/deps/models/ggml-small.en.bin" ]; then
+    export WHISPER_CPP_MODEL="$REPO_ROOT/deps/models/ggml-small.en.bin"
+  elif [ -f "$HOME/whisper.cpp/models/ggml-tiny.bin" ]; then
     export WHISPER_CPP_MODEL="$HOME/whisper.cpp/models/ggml-tiny.bin"
   elif [ -f "$HOME/whisper.cpp/models/ggml-base.bin" ]; then
     export WHISPER_CPP_MODEL="$HOME/whisper.cpp/models/ggml-base.bin"

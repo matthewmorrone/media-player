@@ -180,27 +180,6 @@
     </filter>
   </svg>
 
-  <!-- Templates: Image (FaceLab) Tab -->
-  <template id="imageTabTemplate">
-    <section class="facelab-panel">
-      <div class="facelab-controls">
-        <strong>FaceLab</strong>
-        <div class="ml-auto"></div>
-        <button id="imageRefreshBtn" class="btn-sm" title="Refresh faces for current file">Refresh</button>
-        <button id="imageComputeBtn" class="btn-sm" title="Compute faces for current file">Compute faces</button>
-        <span id="imageStatus" class="hint-sm"></span>
-      </div>
-      <div id="imageFacesList" class="facelab-grid" aria-live="polite"></div>
-    </section>
-  </template>
-  <template id="faceTileTemplate">
-    <div class="facelab-tile" role="group">
-      <img class="facelab-img" alt="face" />
-      <input class="facelab-name" type="text" placeholder="Name" />
-      <div class="facelab-metadata hint-sm"></div>
-    </div>
-  </template>
-
   <!-- Templates: Settings JSON panels (Health, Config) -->
   <template id="settingsHealthTemplate">
     <section class="settings-block">
@@ -410,14 +389,6 @@
     </div>
   </div>
 
-  <!-- Manual tag result row template -->
-  <template id="manualTagRowTemplate">
-    <div class="manual-result-row flex-row gap-10">
-      <div class="file w-100"></div>
-      <button class="btn-sm apply">Apply</button>
-    </div>
-  </template>
-
   <!-- Error modal (predeclared to avoid dynamic injection) -->
   <div id="errorModal" class="modal" hidden>
     <div class="modal-content modal-content--wide">
@@ -447,7 +418,9 @@
             <td class="cell-time-end"></td>
             <td class="cell-task"></td>
             <td class="cell-file" title=""></td>
-            <td class="cell-status"><span class="job-status"></span><span class="job-paused-dot" hidden title="Paused"></span></td>
+            <td class="cell-status">
+              <span class="job-status"></span>
+            </td>
             <td class="cell-progress">
               <div class="job-progress">
                 <div class="job-progress-fill"></div>
@@ -488,66 +461,7 @@
         <template id="crumbSegmentTemplate">
           <span class="seg"></span>
         </template>
-        <!-- Loading spinner template (replaces inline SVG innerHTML) -->
-        <template id="loadingSpinnerTemplate">
-          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <circle cx="12" cy="12" r="10" stroke="#22c55e" stroke-width="3" fill="none" stroke-dasharray="60" stroke-dashoffset="0">
-              <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite" />
-            </circle>
-          </svg>
-        </template>
 
-        <!-- List tab: panel skeleton template -->
-        <template id="listTabTemplate">
-          <div class="list-panel">
-            <div class="list-controls">
-              <div class="flex-row gap-8">
-                <button id="listColumnsBtn" class="btn-sm" aria-controls="listColumnsPanel" aria-expanded="false">Columns</button>
-                <button id="listWrapToggle" class="btn-sm" aria-pressed="false" title="Toggle text wrapping in the table">Wrap: On</button>
-                <label for="listPageSize" class="hint-sm" style="display:inline-flex; align-items:center; gap:6px;">
-                  Per page:
-                  <select id="listPageSize" class="control-select" aria-label="Page size">
-                    <option value="25">25</option>
-                    <option value="50">50</option>
-                    <option value="100" selected>100</option>
-                    <option value="200">200</option>
-                    <option value="500">500</option>
-                  </select>
-                </label>
-                  <div id="listFilterChips" class="filter-chips" aria-label="Active list filters" hidden></div>
-                  <div class="list-pager" id="listPagerTop">
-                    <button id="listPrevBtn" class="btn-sm" aria-label="Previous page">Prev</button>
-                    <span id="listPageInfo" class="hint-sm">Page 1</span>
-                    <button id="listNextBtn" class="btn-sm" aria-label="Next page">Next</button>
-                  </div>
-              </div>
-
-            </div>
-            <div id="listColumnsPanel" class="list-columns-panel hidden" role="region" aria-label="Column settings">
-              <div class="panel-header--spaced">
-                <strong>Columns</strong>
-                <button id="listColumnsClose" class="btn-sm" aria-label="Close">Close</button>
-              </div>
-              <div id="listColumnsBody" class="list-columns-body"></div>
-              <div class="hint-sm hint-sm--muted mt-12">Drag to reorder • Toggle to show/hide • Resize using header grips in the table</div>
-            </div>
-            <div class="list-wrap">
-              <table id="listTable" class="list-table" role="table" aria-label="Files list">
-                <thead>
-                  <tr id="listHeadRow"></tr>
-                </thead>
-                <tbody id="listTbody"></tbody>
-              </table>
-            </div>
-            <div class="list-pager-bottom" id="listPagerBottom">
-              <div class="list-pager">
-                <button id="listPrevBtnBottom" class="btn-sm" aria-label="Previous page">Prev</button>
-                <span id="listPageInfoBottom" class="hint-sm">Page 1</span>
-                <button id="listNextBtnBottom" class="btn-sm" aria-label="Next page">Next</button>
-              </div>
-            </div>
-          </div>
-        </template>
 
         <!-- List tab: table cell template -->
         <template id="listCellTemplate">
@@ -638,14 +552,7 @@
       </div>
     </div>
   </template>
-  <template id="apiParamTemplate">
-    <div class="api-param-row">
-      <label class="hint-sm w-120 api-param-label">name
-        <input class="control-input api-param-input w-100" />
-      </label>
-      <span class="hint-sm api-param-metadata"></span>
-    </div>
-  </template>
+
   <header>
     <!-- Tab Navigation only (top bar removed) -->
     <nav class="tab-nav" role="tablist" aria-label="Main navigation">
@@ -699,6 +606,22 @@
             <label class="hint-sm connections-toggle" title="Show performers even if no portrait is available">
               <input id="connectionsShowImageless" type="checkbox" checked />
               <span>Show imageless performers</span>
+            </label>
+            <label class="hint-sm" title="Minimum number of videos a performer must appear in to be included">
+              Min performer videos
+              <input id="connectionsMinVideos" type="number" class="control-input w-120" value="1" min="1" step="1" />
+            </label>
+            <label class="hint-sm" title="Minimum shared videos required for an edge to be drawn">
+              Min shared videos
+              <input id="connectionsMinEdgeVideos" type="number" class="control-input w-120" value="1" min="1" step="1" />
+            </label>
+            <label class="hint-sm connections-toggle" title="Show performers that have no qualifying connections">
+              <input id="connectionsShowOrphans" type="checkbox" checked />
+              <span>Show orphans</span>
+            </label>
+            <label class="hint-sm connections-toggle" title="Scale edge thickness based on shared video counts">
+              <input id="connectionsVariableThickness" type="checkbox" checked />
+              <span>Variable edge width</span>
             </label>
             <div class="ml-auto"></div>
             <button id="connectionsRefreshBtn" class="btn-sm" type="button">Refresh</button>
@@ -871,10 +794,10 @@
                     <div id="badge-heatmaps" class="badge-pill artifact-gen-btn" data-artifact="heatmaps" title="Heatmap timeline overlay">
                       <span>Heatmap</span><span id="badge-heatmaps-status" aria-hidden="true">?</span>
                     </div>
-                    <div id="badge-subtitles" class="badge-pill artifact-gen-btn" data-artifact="subtitles" title="Subtitles / captions">
+                    <div id="badge-subtitles" class="badge-pill artifact-gen-btn hidden" data-artifact="subtitles" title="Subtitles / captions">
                       <span>Subtitles</span><span id="badge-subtitles-status" aria-hidden="true">?</span>
                     </div>
-                    <div id="badge-scenes" class="badge-pill artifact-gen-btn" data-artifact="scenes" title="Scene / chapter markers">
+                    <div id="badge-scenes" class="badge-pill artifact-gen-btn" data-artifact="markers" title="Scene / chapter markers">
                       <span>Scenes</span><span id="badge-scenes-status" aria-hidden="true">?</span>
                     </div>
                     <div id="badge-faces" class="badge-pill artifact-gen-btn" data-artifact="faces" title="Face detections">
@@ -1651,7 +1574,7 @@
                 </div>
               </div>
 
-              <div class="artifact-card artifact-card-uniform" data-artifact="thumbnails">
+              <div class="artifact-card artifact-card-uniform" data-artifact="thumbnail">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Thumbnails</h3>
@@ -1666,19 +1589,19 @@
                     <button class="btn-generate hidden" data-operation="thumbnails-missing" title="Generate missing thumbnails">Generate Missing</button>
                     <button class="btn-generate d-none hidden" data-operation="thumbnails-all" title="Recompute all thumbnails">Recompute All</button>
                     <button class="btn-generate d-none hidden" data-operation="thumbnails-clear" title="Delete all generated thumbnails without regenerating">Clear</button>
-                    <button class="btn-options" data-artifact="thumbnails" title="Options" aria-label="Thumbnail options">
+                    <button class="btn-options" data-artifact="thumbnail" title="Options" aria-label="Thumbnail options">
                       <svg width="16" height="16" aria-hidden="true">
                         <use href="#icon-options" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip d-none" id="thumbnailsOptions">
+                <div class="options-tooltip d-none" id="thumbnailOptions">
                   <label>Offset (seconds): <input type="number" id="thumbnailOffset" value="10" min="1" max="3600"></label>
                 </div>
               </div>
 
-              <div class="artifact-card artifact-card-uniform" data-artifact="previews">
+              <div class="artifact-card artifact-card-uniform" data-artifact="preview">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Previews</h3>
@@ -1693,14 +1616,14 @@
                     <button class="btn-generate hidden" data-operation="previews-missing">Generate Missing</button>
                     <button class="btn-generate d-none hidden" data-operation="previews-all">Recompute All</button>
                     <button class="btn-generate d-none hidden" data-operation="previews-clear" title="Delete all preview videos">Clear</button>
-                    <button class="btn-options" data-artifact="previews" aria-label="Preview options">
+                    <button class="btn-options" data-artifact="preview" aria-label="Preview options">
                       <svg width="16" height="16" aria-hidden="true">
                         <use href="#icon-options" />
                       </svg>
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip d-none" id="previewsOptions">
+                <div class="options-tooltip d-none" id="previewOptions">
                   <label>Segments: <input type="number" id="previewSegments" value="9" min="5" max="20"></label>
                   <label>Duration (sec): <input type="number" id="previewDuration" value="1.0" min="0.5" max="3.0" step="0.1"></label>
                   <label>Width (px): <input type="number" id="previewWidth" value="320" min="120" max="1280"></label>
@@ -1844,7 +1767,7 @@
                 </div>
               </div>
 
-              <div class="artifact-card artifact-card-uniform" data-artifact="subtitles">
+              <div class="artifact-card artifact-card-uniform hidden" data-artifact="subtitles">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Subtitles</h3>
@@ -1866,7 +1789,7 @@
                     </button>
                   </div>
                 </div>
-                <div class="options-tooltip d-none" id="subtitlesOptions">
+                <div class="options-tooltip d-none hidden" id="subtitlesOptions">
                   <label>Model:
                     <div class="select">
                       <select id="subtitleModel" class="control-select">
@@ -1883,7 +1806,7 @@
                 </div>
               </div>
 
-              <div class="artifact-card artifact-card-uniform" data-artifact="faces">
+              <div class="artifact-card artifact-card-uniform hidden" data-artifact="faces" hidden>
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Face Detection</h3>
@@ -1933,7 +1856,7 @@
               </div>
 
               <!-- Embeddings (recompute embeddings without re-detecting boxes) -->
-              <div class="artifact-card artifact-card-uniform" data-artifact="embed">
+              <div class="artifact-card artifact-card-uniform hidden" data-artifact="embed" hidden style="display: none;">
                 <div class="artifact-header">
                   <div class="artifact-info">
                     <h3>Embeddings</h3>

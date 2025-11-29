@@ -72,6 +72,11 @@ See `COPILOT_GUIDE.md` for extended semantics (endpoints, adaptive artifact butt
 
 If you change core UI semantics or API endpoints, update those docs to keep them authoritative.
 
+### Database scaffold
+- Schema lives in `db/schema.sql` and is applied automatically on startup.
+- The SQLite file defaults to `<MEDIA_PLAYER_STATE_DIR>/.state/media-player.db` (or `<MEDIA_ROOT>/.state/...` when the env var is unset).
+- Override the location by setting `MEDIA_PLAYER_DB_PATH=/absolute/path/to/media-player.db` if you need the database elsewhere.
+
 ## Troubleshooting
 ffmpeg missing: install via your package manager (e.g., `brew install ffmpeg`, `apt-get install ffmpeg`).
 Port already in use: set `PORT=9999 ./serve.sh`.

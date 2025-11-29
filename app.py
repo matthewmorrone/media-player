@@ -13,6 +13,10 @@ import shutil
 import concurrent.futures
 import mimetypes
 import io
+import shlex
+import hashlib
+import traceback
+from functools import wraps
 from difflib import SequenceMatcher
 from contextlib import asynccontextmanager
 import copy
@@ -20,11 +24,11 @@ from itertools import combinations
 from collections import defaultdict
 
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Callable, Iterable, cast
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple, cast
+import hashlib
 import asyncio
 import uuid
 import sys
-import copy
 from email.utils import formatdate
 from pydantic import BaseModel, Field
 from PIL import Image
@@ -34,6 +38,7 @@ from fastapi.responses import JSONResponse, HTMLResponse, FileResponse, Redirect
 from starlette.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+import db
 
 def _ffmpeg_hwaccel_flags() -> list[str]:
     """
@@ -50,7 +55,54 @@ STATE: Dict[str, Any] = {}
 STATE["root"] = Path(os.environ.get("MEDIA_ROOT", ".")).expanduser().resolve()
 STATE.setdefault("config", {})
 STATE.setdefault("config_path", None)
+STATE.setdefault("state_dir", None)
+STATE.setdefault("db_path", None)
 _CONFIG_LOCK = threading.Lock()
+
+
+def _state_dir() -> Path:
+    cached = STATE.get("state_dir")
+    if isinstance(cached, (str, Path)):
+        return Path(cached)
+    env_base = os.environ.get("MEDIA_PLAYER_STATE_DIR")
+    try:
+        base_path = Path(env_base).expanduser().resolve() if env_base else STATE["root"].resolve()
+    except Exception:
+        base_path = STATE["root"].resolve()
+    d = base_path / ".state"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    STATE["state_dir"] = d
+    return d
+
+
+def _db_file_path() -> Path:
+    override = os.environ.get("MEDIA_PLAYER_DB_PATH")
+    try:
+        path = Path(override).expanduser().resolve() if override else (_state_dir() / "media-player.db")
+    except Exception:
+        path = _state_dir() / "media-player.db"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    STATE["db_path"] = path
+    return path
+
+
+STATE["state_dir"] = _state_dir()
+STATE["db_path"] = _db_file_path()
+db.configure(STATE["db_path"])
+db.ensure_schema()
+
+
+def _registry_dir() -> Path:
+    root = STATE.get("root") or Path.cwd()
+    d = Path(root) / ".artifacts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 def _sprite_defaults() -> Dict[str, Any]:
     """
@@ -688,6 +740,257 @@ class _PerFileLock:
             except Exception:
                 pass
 
+
+def _rel_from_root(p: Path) -> str:
+    """Return a path string relative to STATE["root"] when possible."""
+    try:
+        root = STATE.get("root")
+        if isinstance(root, Path):
+            return str(p.resolve().relative_to(root.resolve()))
+    except Exception:
+        pass
+    return str(p)
+
+
+def _sync_video_meta_to_db(p: Path, **fields: Any) -> None:
+    try:
+        rel = _rel_from_root(p)
+    except Exception:
+        rel = str(p)
+    _db_update_video_meta_fields(rel, **fields)
+
+
+class DualWriteError(RuntimeError):
+    """Raised when a flat-file and database update fall out of sync."""
+
+    def __init__(self, message: str, *, context: Optional[str] = None):
+        super().__init__(message)
+        self.context = context
+
+
+ARTIFACT_KEYS: tuple[str, ...] = (
+    "metadata",
+    "thumbnail",
+    "preview",
+    "sprites",
+    "markers",
+    "subtitles",
+    "faces",
+    "phash",
+    "heatmaps",
+)
+_ARTIFACT_KEY_SET = set(ARTIFACT_KEYS)
+
+
+def _canonical_artifact_key(name: Optional[str]) -> Optional[str]:
+    if name is None:
+        return None
+    key = str(name).strip().lower()
+    if key == "previews":
+        key = "preview"
+    elif key == "heatmap":
+        key = "heatmaps"
+    if not key or key not in _ARTIFACT_KEY_SET:
+        return None
+    return key
+
+
+def _coerce_path(value: Any) -> Optional[Path]:
+    if isinstance(value, Path):
+        return value
+    if value is None:
+        return None
+    try:
+        return Path(str(value))
+    except Exception:
+        return None
+
+
+def _normalize_artifact_keys(keys: Optional[Iterable[str]]) -> tuple[str, ...]:
+    if not keys:
+        return ARTIFACT_KEYS
+    normalized: list[str] = []
+    for name in keys:
+        canon = _canonical_artifact_key(name)
+        if canon and canon not in normalized:
+            normalized.append(canon)
+    return tuple(normalized)
+
+
+def _refresh_artifact_records_for_video(video: Path, keys: Optional[Iterable[str]] = None) -> None:
+    vpath = _coerce_path(video)
+    if vpath is None:
+        return
+    target_keys = _normalize_artifact_keys(keys)
+    if not target_keys:
+        return
+    try:
+        rel = _rel_from_root(vpath)
+    except Exception:
+        rel = str(vpath)
+    try:
+        info = _detect_artifacts_for_video(vpath)
+    except Exception:
+        return
+    subset = {key: info.get(key) or {"present": False} for key in target_keys}
+    try:
+        with db.session() as conn:
+            _sync_artifacts_to_db(conn, rel, subset, keys=target_keys)
+    except Exception:
+        pass
+
+
+def _artifact_db_clear_type(art_type: str) -> None:
+    canon = _canonical_artifact_key(art_type)
+    if not canon:
+        return
+    try:
+        with db.session() as conn:
+            conn.execute("DELETE FROM artifact WHERE type = ?", (canon,))
+    except Exception:
+        pass
+
+
+def _artifact_db_refresh_for_videos(art_type: str, videos: Iterable[Path]) -> None:
+    canon = _canonical_artifact_key(art_type)
+    if not canon:
+        return
+    seen: set[str] = set()
+    for video in videos:
+        vpath = _coerce_path(video)
+        if vpath is None:
+            continue
+        try:
+            rel = _rel_from_root(vpath)
+        except Exception:
+            rel = str(vpath)
+        if rel in seen:
+            continue
+        seen.add(rel)
+        try:
+            _refresh_artifact_records_for_video(vpath, (canon,))
+        except Exception:
+            pass
+
+
+def _artifact_db_handle_deletions(art_type: str, videos: Iterable[Path], *, global_delete: bool) -> None:
+    if global_delete:
+        _artifact_db_clear_type(art_type)
+    else:
+        _artifact_db_refresh_for_videos(art_type, videos)
+
+
+def _artifact_db_sync(keys: Iterable[str]):
+    target_keys = _normalize_artifact_keys(keys)
+
+    def _decorator(func):
+        @wraps(func)
+        def _wrapper(*args, **kwargs):
+            video_arg = kwargs.get("video")
+            if video_arg is None and args:
+                video_arg = args[0]
+            err: Optional[BaseException] = None
+            try:
+                return func(*args, **kwargs)
+            except BaseException as exc:  # noqa: BLE001
+                err = exc
+                raise
+            finally:
+                if err is None and video_arg is not None and target_keys:
+                    vpath = _coerce_path(video_arg)
+                    if vpath is not None:
+                        try:
+                            _refresh_artifact_records_for_video(vpath, target_keys)
+                        except Exception:
+                            pass
+
+        return _wrapper
+
+    return _decorator
+
+
+def _artifact_rel_path(p: Optional[Path]) -> Optional[str]:
+    if not p:
+        return None
+    try:
+        return _rel_from_root(p)
+    except Exception:
+        return str(p)
+
+
+def _detect_artifacts_for_video(video: Path) -> dict[str, dict[str, Any]]:
+    info: dict[str, dict[str, Any]] = {}
+
+    def _entry(path: Optional[Path], payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        return {
+            "present": bool(path and path.exists()),
+            "path": _artifact_rel_path(path) if path and path.exists() else None,
+            "payload": payload,
+        }
+
+    thumb = thumbnails_path(video)
+    info["thumbnail"] = _entry(thumb)
+
+    preview = None
+    webm = _preview_concat_path(video, fmt="webm")
+    if _file_nonempty(webm):
+        preview = webm
+    else:
+        mp4 = _preview_concat_path(video, fmt="mp4")
+        if _file_nonempty(mp4):
+            preview = mp4
+    info["preview"] = _entry(preview)
+
+    sprites_img, sprites_json = sprite_sheet_paths(video)
+    sprites_payload: dict[str, Any] | None = None
+    if sprites_img.exists() and sprites_json.exists():
+        sprites_payload = {
+            "image": _artifact_rel_path(sprites_img),
+            "json": _artifact_rel_path(sprites_json),
+        }
+    info["sprites"] = {
+        "present": bool(sprites_payload),
+        "path": sprites_payload.get("image") if sprites_payload else None,
+        "payload": sprites_payload,
+    }
+
+    scenes = scenes_json_path(video)
+    info["markers"] = _entry(scenes)
+
+    subs = find_subtitles(video)
+    info["subtitles"] = _entry(subs)
+
+    faces = faces_path(video)
+    info["faces"] = _entry(faces if faces.exists() else None)
+
+    phash_file = phash_path(video)
+    info["phash"] = _entry(phash_file if phash_file.exists() else None)
+
+    heat_png = heatmaps_png_path(video)
+    heat_json = heatmaps_json_path(video)
+    heat_payload: dict[str, Any] | None = None
+    heat_path: Optional[str] = None
+    if heat_png.exists() or heat_json.exists():
+        heat_payload = {}
+        if heat_png.exists():
+            heat_payload["png"] = _artifact_rel_path(heat_png)
+            heat_path = heat_payload["png"]
+        if heat_json.exists():
+            heat_payload["json"] = _artifact_rel_path(heat_json)
+            if not heat_path:
+                heat_path = heat_payload["json"]
+    info["heatmaps"] = {
+        "present": bool(heat_payload),
+        "path": heat_path,
+        "payload": heat_payload,
+    }
+
+    meta = metadata_path(video)
+    info["metadata"] = _entry(meta if meta.exists() else None)
+
+    return info
+
+@_artifact_db_sync(("metadata",))
 def metadata_single(video: Path, *, force: bool = False) -> None:
     out = metadata_path(video)
     if out.exists() and not force:
@@ -896,6 +1199,7 @@ def parse_time_spec(spec: str | float | int | None, duration: Optional[float]) -
     except Exception:
         return 0.0
 
+@_artifact_db_sync(("thumbnail",))
 def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int = "middle", quality: int = 2) -> None:
     out = thumbnails_path(video)
     if out.exists() and not force:
@@ -1008,6 +1312,7 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
 # ----------------------
 # Preview generator
 # ----------------------
+@_artifact_db_sync(("preview",))
 def generate_preview(
     video: Path,
     *,
@@ -1209,7 +1514,6 @@ def generate_preview(
                                 wd_kill_after = max(wd_log_after + 1.0, wd_kill_after)
                                 last_progress_time = start_t
                                 watchdog_logged = False
-                                killed_for_stall = False
                                 last_raw_ms = -1  # for deduping identical out_time_ms values
                                 while True:
                                     if cancel_check and cancel_check():
@@ -1268,7 +1572,6 @@ def generate_preview(
                                             proc_p.kill()
                                         except Exception:
                                             pass
-                                        killed_for_stall = True
                                         break
                                 rc = proc_p.poll()
                                 # Drain remaining stderr for diagnostics
@@ -1358,7 +1661,6 @@ def generate_preview(
                                 import time as _time  # ensure _time for this scope if not imported above
                                 last_progress_time = _time.time()
                                 watchdog_logged = False
-                                killed_for_stall = False
                                 last_raw_ms = -1
                                 while True:
                                     if cancel_check and cancel_check():
@@ -1409,7 +1711,6 @@ def generate_preview(
                                         except Exception: pass
                                         try: proc_p.kill()
                                         except Exception: pass
-                                        killed_for_stall = True
                                         break
                                 rc = proc_p.poll()
                                 stderr_txt=''
@@ -1568,65 +1869,65 @@ def generate_preview(
         ])
         return pr.returncode == 0 and bool((pr.stdout or '').strip())
 
-        valid_clip_paths: list[Path] = []
-        for cp in clip_paths:
-            if _has_video_stream(cp):
-                valid_clip_paths.append(cp)
-            else:
-                if ff_debug:
-                    try:
-                        print(f"[preview] skipping segment without video: {cp}")
-                    except Exception:
-                        pass
-        clip_paths = valid_clip_paths
+    valid_clip_paths: list[Path] = []
+    for cp in clip_paths:
+        if _has_video_stream(cp):
+            valid_clip_paths.append(cp)
+        else:
+            if ff_debug:
+                try:
+                    print(f"[preview] skipping segment without video: {cp}")
+                except Exception:
+                    pass
+    clip_paths = valid_clip_paths
 
-        if not clip_paths:
-            # Final fallback: try encoding a short preview directly from the source
-            # Attempt from 0s, then from 10% into the file if duration known
-            def _try_direct(start_time: float) -> bool:
-                base_cmd = [
-                    "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
-                    *(_ffmpeg_hwaccel_flags()),
-                    "-ss", f"{max(0.0, start_time):.3f}", "-i", str(video), "-t", f"{float(seg_dur):.3f}",
-                    "-vf", f"scale={int(width)}:-2:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2",
-                    "-an",
+    if not clip_paths:
+        # Final fallback: try encoding a short preview directly from the source
+        # Attempt from 0s, then from 10% into the file if duration known
+        def _try_direct(start_time: float) -> bool:
+            base_cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", str(ff_loglevel), "-nostdin", "-y",
+                *(_ffmpeg_hwaccel_flags()),
+                "-ss", f"{max(0.0, start_time):.3f}", "-i", str(video), "-t", f"{float(seg_dur):.3f}",
+                "-vf", f"scale={int(width)}:-2:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                "-an",
+            ]
+            if final_fmt == "webm":
+                cmdx = base_cmd + [
+                    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_effective_preview_crf_vp9()),
+                    *_vp9_realtime_flags(),
+                    "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
                 ]
-                if final_fmt == "webm":
-                    cmdx = base_cmd + [
-                        "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(_effective_preview_crf_vp9()),
-                        *_vp9_realtime_flags(),
-                        "-pix_fmt", "yuv420p", *(_ffmpeg_threads_flags()), str(out),
-                    ]
-                else:
-                    cmdx = base_cmd + [
-                        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_effective_preview_crf_h264()),
-                        "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
-                    ]
-                if ff_debug:
-                    try:
-                        print("[preview] ffmpeg direct-fallback:", " ".join(cmdx))
-                    except Exception:
-                        pass
-                pr = _run(cmdx)
-                return pr.returncode == 0 and _file_nonempty(out)
+            else:
+                cmdx = base_cmd + [
+                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", str(_effective_preview_crf_h264()),
+                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", *(_ffmpeg_threads_flags()), str(out),
+                ]
+            if ff_debug:
+                try:
+                    print("[preview] ffmpeg direct-fallback:", " ".join(cmdx))
+                except Exception:
+                    pass
+            pr = _run(cmdx)
+            return pr.returncode == 0 and _file_nonempty(out)
 
-            tried = _try_direct(0.0)
-            if not tried and (dur and dur > 0):
-                _ = _try_direct(max(0.0, float(dur) * 0.1))
-                tried = _file_nonempty(out)
-            if not tried:
-                raise RuntimeError("no preview segments with video; aborting concat")
-            # Direct fallback succeeded; return final output
-            try:
-                preview_info.update({
-                    "status": "ok",
-                    "strategy": "direct-fallback",
-                    "segments_used": 1,
-                })
-                _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", preview_info)
-            except Exception:
-                pass
-            return out
+        tried = _try_direct(0.0)
+        if not tried and (dur and dur > 0):
+            _ = _try_direct(max(0.0, float(dur) * 0.1))
+            tried = _file_nonempty(out)
+        if not tried:
+            raise RuntimeError("no preview segments with video; aborting concat")
+        # Direct fallback succeeded; return final output
+        try:
+            preview_info.update({
+                "status": "ok",
+                "strategy": "direct-fallback",
+                "segments_used": 1,
+            })
+            _json_dump_atomic(artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}", preview_info)
+        except Exception:
+            pass
+        return out
 
         # If only a single valid segment, transcode straight to final output
         if len(clip_paths) == 1:
@@ -1955,6 +2256,7 @@ def _combine_hashes(hashes: list[list[int]], combine: str = "xor") -> list[int]:
     return acc
 
 
+@_artifact_db_sync(("phash",))
 def phash_create_single(
     video: Path,
     *,
@@ -1981,7 +2283,6 @@ def phash_create_single(
     try:
         from PIL import Image  # type: ignore
     except Exception:
-        import hashlib
         h = hashlib.sha256(video.read_bytes() if video.exists() else b"")
         out.write_text(json.dumps({"phash": h.hexdigest(), "algo": "file-sha256", "frames": 1, "combine": "none"}, indent=2))
         return
@@ -2042,7 +2343,6 @@ def phash_create_single(
                     pass
             return
         except Exception:
-            import hashlib
             h = hashlib.sha256(video.read_bytes() if video.exists() else b"")
             out.write_text(json.dumps({"phash": h.hexdigest(), "algo": "file-sha256", "frames": 1, "combine": "none"}, indent=2))
             try:
@@ -2160,6 +2460,286 @@ def phash_create_single(
 # ------------------
 # Scenes placeholders
 # ------------------
+_WHISPER_CPP_BIN_SUFFIXES: Tuple[Path, ...] = (
+    Path("whisper-cli"),
+    Path("main"),
+    Path("build") / "bin" / "whisper-cli",
+    Path("build") / "bin" / "main",
+    Path("build") / "bin" / "Release" / "whisper-cli",
+    Path("build") / "bin" / "Release" / "main",
+)
+
+_WHISPER_CPP_MODEL_PREFERENCE: Tuple[str, ...] = (
+    "ggml-small.en.bin",
+    "ggml-small.bin",
+    "ggml-base.en.bin",
+    "ggml-base.bin",
+    "ggml-tiny.en.bin",
+    "ggml-tiny.bin",
+)
+
+_WHISPER_CPP_NATIVE_AUDIO_EXTS: Tuple[str, ...] = (
+    ".wav",
+    ".mp3",
+)
+
+
+def _log_safe_token(value: Any, prefix: str = "item") -> str:
+    try:
+        if isinstance(value, Path):
+            try:
+                text = str(value.resolve())
+            except Exception:
+                text = str(value)
+        else:
+            text = str(value)
+    except Exception:
+        text = "?"
+    digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()[:10]
+    return f"<{prefix}:{digest}>"
+
+
+def _log_redaction_map(entries: Iterable[tuple[Any, str]]) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for value, prefix in entries:
+        if value is None:
+            continue
+        token = _log_safe_token(value, prefix)
+        raw_variants: list[str] = []
+        if isinstance(value, Path):
+            try:
+                raw_variants.append(str(value.resolve()))
+            except Exception:
+                pass
+        try:
+            raw_variants.append(str(value))
+        except Exception:
+            continue
+        for raw in raw_variants:
+            if not raw:
+                continue
+            mapping.setdefault(raw, token)
+    return mapping
+
+
+def _log_redact_text(text: Optional[str], replacements: Dict[str, str]) -> str:
+    if text is None:
+        return ""
+    redacted = str(text)
+    for raw, token in replacements.items():
+        if raw:
+            redacted = redacted.replace(raw, token)
+    return redacted
+
+
+def _whisper_cpp_cli_peer(bin_path: Optional[Path]) -> Optional[Path]:
+    if not bin_path:
+        return None
+    candidates: list[Path] = []
+    try:
+        parent = bin_path.parent
+    except Exception:
+        parent = None
+    if parent:
+        candidates.append(parent / "whisper-cli")
+        candidates.append(parent / "whisper-cli.exe")
+        try:
+            candidates.append(parent / "Release" / "whisper-cli")
+        except Exception:
+            pass
+    # If bin path already points to Release/main, walk up two levels
+    try:
+        grand = bin_path.parent.parent
+        if grand:
+            candidates.append(grand / "whisper-cli")
+    except Exception:
+        pass
+    seen: set[str] = set()
+    for cand in candidates:
+        try:
+            key = str(cand)
+        except Exception:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if cand.exists():
+                return cand
+        except Exception:
+            continue
+    return None
+
+
+def _discover_whisper_cli(bin_path: Optional[Path]) -> Optional[Path]:
+    candidates: list[Path] = []
+    env_cli = _existing_path(os.environ.get("WHISPER_CLI_BIN"))
+    if env_cli:
+        candidates.append(env_cli)
+    peer = _whisper_cpp_cli_peer(bin_path)
+    if peer:
+        candidates.append(peer)
+    try:
+        auto_bin, _auto_model = _resolve_whisper_cpp_paths()
+    except Exception:
+        auto_bin = None
+    if auto_bin and "whisper" in auto_bin.name and "cli" in auto_bin.name:
+        candidates.append(auto_bin)
+    which_cli = shutil.which("whisper-cli")
+    if which_cli:
+        try:
+            candidates.append(Path(which_cli))
+        except Exception:
+            pass
+    seen: set[str] = set()
+    for cand in candidates:
+        if not cand:
+            continue
+        try:
+            key = str(cand.resolve())
+        except Exception:
+            key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if cand.exists() and os.access(cand, os.X_OK):
+                return cand
+        except Exception:
+            continue
+    return None
+
+
+def _existing_path(value: Optional[str]) -> Optional[Path]:
+    if not value:
+        return None
+    try:
+        raw = Path(value).expanduser()
+    except Exception:
+        return None
+    candidates: list[Path] = [raw]
+    if not raw.is_absolute():
+        try:
+            candidates.append(Path.cwd() / raw)
+        except Exception:
+            pass
+        root = STATE.get("root")
+        if isinstance(root, Path):
+            candidates.append(root / raw)
+    for cand in candidates:
+        try:
+            if cand.exists():
+                return cand
+        except Exception:
+            continue
+    return None
+
+
+def _whisper_cpp_base_hints() -> list[Path]:
+    hints: list[Path] = []
+
+    def _push(path_like: Optional[Path]) -> None:
+        if path_like is not None:
+            hints.append(path_like)
+
+    for key in ("WHISPER_CPP_HOME", "WHISPER_CPP_PATH"):
+        val = os.environ.get(key)
+        if val:
+            try:
+                _push(Path(val).expanduser())
+            except Exception:
+                continue
+
+    try:
+        code_root = Path(__file__).resolve().parent
+    except Exception:
+        code_root = None
+    if code_root:
+        # Repo-local builds (deps/bin, deps/whisper.cpp, etc.) should win over HOME/MEDIA_ROOT fallbacks
+        for extra in (
+            code_root / "deps" / "whisper.cpp",
+            code_root / "deps" / "bin",
+            code_root / "deps",
+            code_root,
+        ):
+            try:
+                _push(extra)
+            except Exception:
+                continue
+
+    root = STATE.get("root")
+    if isinstance(root, Path):
+        _push(root / "whisper.cpp")
+        try:
+            _push(root.parent / "whisper.cpp")
+        except Exception:
+            pass
+    try:
+        _push(Path.cwd() / "whisper.cpp")
+    except Exception:
+        pass
+    try:
+        _push(Path.home() / "whisper.cpp")
+    except Exception:
+        pass
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for hint in hints:
+        try:
+            key = str(hint)
+        except Exception:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(hint)
+    return uniq
+
+
+def _resolve_whisper_cpp_paths() -> Tuple[Optional[Path], Optional[Path]]:
+    bin_path = _existing_path(os.environ.get("WHISPER_CPP_BIN"))
+    model_path = _existing_path(os.environ.get("WHISPER_CPP_MODEL"))
+    if bin_path and model_path:
+        return bin_path, model_path
+    hints = _whisper_cpp_base_hints()
+    pref_name = os.environ.get("WHISPER_CPP_MODEL_NAME")
+    preferred_models: list[str] = []
+    if pref_name:
+        preferred_models.append(pref_name)
+    preferred_models.extend([name for name in _WHISPER_CPP_MODEL_PREFERENCE if name not in preferred_models])
+    for base in hints:
+        if not bin_path:
+            for suffix in _WHISPER_CPP_BIN_SUFFIXES:
+                try:
+                    cand = (base / suffix)
+                except Exception:
+                    continue
+                try:
+                    if cand.exists():
+                        bin_path = cand
+                        break
+                except Exception:
+                    continue
+        if not model_path:
+            models_dir = base / "models"
+            try:
+                if models_dir.exists():
+                    for name in preferred_models:
+                        cand = models_dir / name
+                        if cand.exists():
+                            model_path = cand
+                            break
+                    if not model_path:
+                        extras = sorted(models_dir.glob("*.bin"))
+                        if extras:
+                            model_path = extras[0]
+            except Exception:
+                continue
+        if bin_path and model_path:
+            break
+    return bin_path, model_path
+
+@_artifact_db_sync(("markers",))
 def generate_scene_artifacts(
     video: Path,
     *,
@@ -2430,6 +3010,7 @@ def generate_scene_artifacts(
 # -----------------
 # Sprites generator
 # -----------------
+@_artifact_db_sync(("sprites",))
 def generate_sprite_sheet(
     video: Path,
     *,
@@ -2510,7 +3091,6 @@ def generate_sprite_sheet(
                     # Uniqueness check similar to legacy path
                     try:
                         from PIL import Image  # type: ignore
-                        import hashlib
 
                         def _unique_tiles_count(path: Path, tw: int, th: int, c: int, r: int) -> int:
                             try:
@@ -2635,7 +3215,6 @@ def generate_sprite_sheet(
                     try:
                         from PIL import Image  # type: ignore
                         import tempfile
-                        import math
                         # Build list of target timestamps centered in equal segments
                         _dur_f = float(dur)
                         if _dur_f < 0.1:  # extremely short clip, fallback
@@ -2901,7 +3480,6 @@ def generate_sprite_sheet(
                     spr_wd_log = max(2.0, spr_wd_log)
                     spr_wd_kill = max(spr_wd_log + 5.0, spr_wd_kill)
                     watchdog_logged = False
-                    killed_for_stall = False
                     # We'll read stderr lines opportunistically for richer diagnostics
                     stderr_buf: list[str] = []
                     while True:
@@ -3013,7 +3591,6 @@ def generate_sprite_sheet(
                                 pass
                             try:
                                 proc.terminate()
-                                killed_for_stall = True
                             except Exception:
                                 pass
                         time.sleep(0.2)
@@ -3051,7 +3628,6 @@ def generate_sprite_sheet(
                 # Optional: sanity check for duplicate tiles; progressively try to improve uniqueness.
                 try:
                     from PIL import Image  # type: ignore
-                    import hashlib
 
                     def _unique_tiles_count(path: Path, tw: int, th: int, c: int, r: int) -> int:
                         try:
@@ -3221,6 +3797,7 @@ def generate_sprite_sheet(
 # ---------------
 # Heatmaps (stub)
 # ---------------
+@_artifact_db_sync(("heatmaps",))
 def compute_heatmaps(
     video: Path,
     interval: float,
@@ -3440,24 +4017,49 @@ def compute_heatmaps(
 # -----------------
 def detect_backend(preference: str) -> str:
     if preference != "auto":
+        print(f"[subtitles.backend] preference override -> {preference}", flush=True)
         return preference
-    # Prefer installed Python backends
-    try:
-        __import__("faster_whisper")
+    # Prefer installed Python backends (faster-whisper first)
+    if _safe_importable("faster_whisper"):
+        print("[subtitles.backend] auto-selected faster-whisper", flush=True)
         return "faster-whisper"
-    except Exception:
-        pass
-    try:
-        __import__("whisper")
+    print("[subtitles.backend] faster-whisper unavailable", flush=True)
+    if _safe_importable("whisper"):
+        print("[subtitles.backend] auto-selected whisper (PyTorch)", flush=True)
         return "whisper"
-    except Exception:
-        pass
-    # If whisper.cpp is configured via env, use it
-    cpp_bin = os.environ.get("WHISPER_CPP_BIN")
-    cpp_model = os.environ.get("WHISPER_CPP_MODEL")
-    if cpp_bin and cpp_model and Path(cpp_bin).exists() and Path(cpp_model).exists():
+    print("[subtitles.backend] whisper module unavailable", flush=True)
+    # If whisper.cpp is available (env or auto-discovered), use it
+    cpp_bin_env = os.environ.get("WHISPER_CPP_BIN")
+    cpp_model_env = os.environ.get("WHISPER_CPP_MODEL")
+    cpp_bin_path, cpp_model_path = _resolve_whisper_cpp_paths()
+    bin_ok = cpp_bin_path is not None
+    model_ok = cpp_model_path is not None
+    if bin_ok and model_ok:
+        bin_token = _log_safe_token(cpp_bin_path, "whisper.bin") if cpp_bin_path else "<whisper.bin:?>"
+        model_token = _log_safe_token(cpp_model_path, "whisper.model") if cpp_model_path else "<whisper.model:?>"
+        print(
+            f"[subtitles.backend] auto-selected whisper.cpp (bin={bin_token}, model={model_token})",
+            flush=True,
+        )
         return "whisper.cpp"
+    if not bin_ok:
+        if cpp_bin_env:
+            print(
+                f"[subtitles.backend] whisper.cpp binary missing or unreadable: {_log_safe_token(cpp_bin_env, 'whisper.bin.env')}",
+                flush=True,
+            )
+        else:
+            print("[subtitles.backend] whisper.cpp binary not configured or auto-discovery failed", flush=True)
+    if not model_ok:
+        if cpp_model_env:
+            print(
+                f"[subtitles.backend] whisper.cpp model missing or unreadable: {_log_safe_token(cpp_model_env, 'whisper.model.env')}",
+                flush=True,
+            )
+        else:
+            print("[subtitles.backend] whisper.cpp model not configured or auto-discovery failed", flush=True)
     # As a last-resort, return stub to avoid hard failure
+    print("[subtitles.backend] falling back to stub backend", flush=True)
     return "stub"
 
 
@@ -3497,6 +4099,7 @@ def run_whisper_backend(
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> List[Dict[str, Any]]:
     # Returns list of segments: {start,end,text}
+    video_token = _log_safe_token(video, "video")
     if os.environ.get("FFPROBE_DISABLE"):
         segs = [{
             "start": i * 2.0,
@@ -3580,49 +4183,243 @@ def run_whisper_backend(
         # Allow env-based autodiscovery
         cpp_bin = cpp_bin or os.environ.get("WHISPER_CPP_BIN")
         cpp_model = cpp_model or os.environ.get("WHISPER_CPP_MODEL")
-        if not cpp_bin or not Path(cpp_bin).exists():
+        bin_path = _existing_path(cpp_bin)
+        model_path = _existing_path(cpp_model)
+        if not bin_path or not model_path:
+            auto_bin, auto_model = _resolve_whisper_cpp_paths()
+            if not bin_path:
+                bin_path = auto_bin
+            if not model_path:
+                model_path = auto_model
+        if not bin_path:
             raise RuntimeError("whisper.cpp binary not found (provide --whisper-cpp-bin)")
-        if not cpp_model or not Path(cpp_model).exists():
+        if not model_path:
             raise RuntimeError("whisper.cpp model not found (provide --whisper-cpp-model)")
-        out_json = artifact_dir(video) / f"{video.stem}.whisper.cpp.json"
-        cmd = [cpp_bin, "-m", cpp_model, "-f", str(video), "-otxt", "-oj"]
-        if language:
-            cmd += ["-l", language]
-        if translate:
-            cmd += ["-tr"]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or "whisper.cpp failed")
         try:
-            data = json.loads(proc.stdout)
-            segs: List[Dict[str, Any]] = []
-            for s in data.get("transcription", {}).get("segments", []):
-                segs.append({"start": (s.get("t0", 0) / 1000.0), "end": (s.get("t1", 0) / 1000.0), "text": s.get("text", "")})
-                if progress_cb:
+            preferred_cli = _discover_whisper_cli(bin_path)
+            if preferred_cli and bin_path and preferred_cli != bin_path:
+                cli_token = _log_safe_token(preferred_cli, "whisper.bin.peer")
+                bin_token = _log_safe_token(bin_path, "whisper.bin")
+                print(f"[subtitles.whisper.cpp] preferring whisper-cli at {cli_token} instead of deprecated {bin_token}", flush=True)
+                bin_path = preferred_cli
+        except Exception:
+            pass
+        cpp_bin = str(bin_path)
+        cpp_model = str(model_path)
+
+        temp_audio: Optional[Path] = None
+        audio_input = video
+        try:
+            if video.suffix.lower() not in _WHISPER_CPP_NATIVE_AUDIO_EXTS:
+                fd, tmp_name = tempfile.mkstemp(prefix="whisper-audio-", suffix=".wav")
+                os.close(fd)
+                temp_audio = Path(tmp_name)
+                ffmpeg_cmd = [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    os.environ.get("WHISPER_CPP_FFMPEG_LOGLEVEL", "error"),
+                    "-y",
+                    "-i",
+                    str(video),
+                    "-vn",
+                    "-ac",
+                    os.environ.get("WHISPER_CPP_AUDIO_CHANNELS", "1"),
+                    "-ar",
+                    os.environ.get("WHISPER_CPP_SAMPLE_RATE", "16000"),
+                    str(temp_audio),
+                ]
+                res = _run(ffmpeg_cmd)
+                if res.returncode != 0:
+                    err = res.stderr.strip() if isinstance(res.stderr, str) else ""
+                    if not err and isinstance(res.stdout, str):
+                        err = res.stdout.strip()
+                    raise RuntimeError(f"Failed to extract audio for whisper.cpp: {err or f'exit {res.returncode}'}")
+                audio_input = temp_audio
+            else:
+                audio_input = video
+
+            art_dir = artifact_dir(video)
+            out_prefix = art_dir / f"{video.stem}.whispercpp"
+            out_json = Path(f"{out_prefix}.json")
+            try:
+                out_json.unlink(missing_ok=True)
+            except TypeError:
+                if out_json.exists():
+                    out_json.unlink()
+
+            cmd = [cpp_bin, "-m", cpp_model, "-f", str(audio_input), "-oj", "-of", str(out_prefix)]
+            if language:
+                cmd += ["-l", language]
+            if translate:
+                cmd += ["-tr"]
+            bin_attempts: set[str] = set()
+            while True:
+                bin_attempts.add(cpp_bin)
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode == 0:
+                    break
+                raw_stderr = (proc.stderr or "").strip()
+                raw_stdout = (proc.stdout or "").strip()
+                err_msg = raw_stderr or raw_stdout or f"exit {proc.returncode}"
+                replacements = _log_redaction_map([
+                    (video, "video"),
+                    (audio_input, "audio"),
+                    (cpp_bin, "whisper.bin"),
+                    (cpp_model, "whisper.model"),
+                    (out_prefix, "whisper.prefix"),
+                    (out_json, "whisper.json"),
+                ])
+                log_ctx = {
+                    "cmd": _log_redact_text(" ".join(cmd), replacements),
+                    "exit": proc.returncode,
+                    "stderr": _log_redact_text(raw_stderr, replacements),
+                    "stdout": _log_redact_text(raw_stdout, replacements),
+                    "video": video_token,
+                }
+                try:
+                    print(
+                        "[subtitles.whisper.cpp] command failed",
+                        log_ctx,
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+                retry = False
+                missing_cli = False
+                combined = f"{proc.stderr}\n{proc.stdout}".lower()
+                if "deprecated" in combined and "whisper-cli" in combined:
                     try:
-                        idx = len(segs)
-                        total = max(idx, len(data.get("transcription", {}).get("segments", []) or []))
-                        if total > 0:
-                            progress_cb(min(1.0, float(idx) / float(total)))
+                        peer_path = _discover_whisper_cli(Path(cpp_bin))
+                    except Exception:
+                        peer_path = None
+                    if peer_path:
+                        peer_str = str(peer_path)
+                        if peer_str not in bin_attempts:
+                            peer_token = _log_safe_token(peer_path, "whisper.bin.peer")
+                            print(f"[subtitles.whisper.cpp] retrying with whisper-cli at {peer_token}", flush=True)
+                            cpp_bin = peer_str
+                            cmd[0] = cpp_bin
+                            retry = True
+                    else:
+                        missing_cli = True
+                if retry:
+                    continue
+                err_msg = _log_redact_text(err_msg, replacements)
+                if missing_cli:
+                    raise RuntimeError(
+                        f"whisper.cpp main binary refused to run for {video_token}. Install or point WHISPER_CLI_BIN to the whisper-cli executable. Upstream warning: {err_msg}"
+                    )
+                raise RuntimeError(f"whisper.cpp failed for {video_token}: {err_msg}")
+
+            if out_json.exists():
+                payload = json.loads(out_json.read_text())
+            else:
+                payload = json.loads(proc.stdout)
+
+            def _collect_segments(raw_payload: Any) -> List[Dict[str, Any]]:
+                root: Any = raw_payload
+                if isinstance(root, dict):
+                    trans = root.get("transcription")
+                    if isinstance(trans, dict):
+                        seg_iter = trans.get("segments", [])
+                    elif isinstance(trans, list):
+                        seg_iter = trans
+                    else:
+                        seg_iter = []
+                elif isinstance(root, list):
+                    seg_iter = root
+                else:
+                    seg_iter = []
+
+                segments: List[Dict[str, Any]] = []
+                for seg in seg_iter:
+                    if not isinstance(seg, dict):
+                        continue
+
+                    def _ts_from_offsets(val: Any) -> Optional[float]:
+                        try:
+                            if val is None:
+                                return None
+                            if isinstance(val, (int, float)):
+                                # whisper.cpp emits offsets in milliseconds
+                                return float(val) / 1000.0
+                            return None
+                        except Exception:
+                            return None
+
+                    def _ts_from_str(val: Any) -> Optional[float]:
+                        if not isinstance(val, str):
+                            return None
+                        try:
+                            parts = val.replace(",", ".").split(":")
+                            if len(parts) != 3:
+                                return None
+                            hours = int(parts[0])
+                            minutes = int(parts[1])
+                            seconds = float(parts[2])
+                            return hours * 3600 + minutes * 60 + seconds
+                        except Exception:
+                            return None
+
+                    start = seg.get("start")
+                    end = seg.get("end")
+
+                    if start is None or end is None:
+                        offsets = seg.get("offsets")
+                        if isinstance(offsets, dict):
+                            start = start or _ts_from_offsets(offsets.get("from"))
+                            end = end or _ts_from_offsets(offsets.get("to"))
+
+                    if (start is None or end is None) and "t0" in seg or "t1" in seg:
+                        try:
+                            start = start or (seg.get("t0") / 1000.0) # type: ignore
+                            end = end or (seg.get("t1") / 1000.0) # type: ignore
+                        except Exception:
+                            pass
+
+                    if (start is None or end is None) and isinstance(seg.get("timestamps"), dict):
+                        ts = seg["timestamps"]
+                        start = start or _ts_from_str(ts.get("from"))
+                        end = end or _ts_from_str(ts.get("to"))
+
+                    def _coerce_time(val: Any) -> Optional[float]:
+                        if val is None:
+                            return None
+                        if isinstance(val, (int, float)):
+                            return float(val)
+                        return _ts_from_str(val)
+
+                    start_f = _coerce_time(start)
+                    end_f = _coerce_time(end)
+                    segments.append({
+                        "start": start_f or 0.0,
+                        "end": end_f or 0.0,
+                        "text": seg.get("text", "")
+                    })
+                return segments
+
+            seg_list = _collect_segments(payload)
+            segs: List[Dict[str, Any]] = []
+            total = len(seg_list)
+            for idx, s in enumerate(seg_list, start=1):
+                segs.append(s)
+                if progress_cb and total > 0:
+                    try:
+                        progress_cb(min(1.0, float(idx) / float(total)))
                     except Exception:
                         pass
             return segs
-        except Exception:
-            if out_json.exists():
-                data = json.loads(out_json.read_text())
-                segs: List[Dict[str, Any]] = []
-                for s in data.get("transcription", {}).get("segments", []):
-                    segs.append({"start": (s.get("t0", 0) / 1000.0), "end": (s.get("t1", 0) / 1000.0), "text": s.get("text", "")})
-                    if progress_cb:
+        finally:
+            if temp_audio is not None:
+                try:
+                    temp_audio.unlink(missing_ok=True)
+                except TypeError:
+                    if temp_audio.exists():
                         try:
-                            idx = len(segs)
-                            total = max(idx, len(data.get("transcription", {}).get("segments", []) or []))
-                            if total > 0:
-                                progress_cb(min(1.0, float(idx) / float(total)))
+                            temp_audio.unlink()
                         except Exception:
                             pass
-                return segs
-            raise RuntimeError("Failed to parse whisper.cpp output")
     if backend == "stub":
         # Deterministic tiny set of segments to ensure UI works without deps
         return [
@@ -3632,6 +4429,7 @@ def run_whisper_backend(
     raise RuntimeError(f"Unknown backend {backend}")
 
 
+@_artifact_db_sync(("subtitles",))
 def generate_subtitles(
     video: Path,
     out_file: Path,
@@ -3643,23 +4441,43 @@ def generate_subtitles(
 ) -> None:
     out_file.parent.mkdir(parents=True, exist_ok=True)
     backend = detect_backend("auto")
+    cpp_bin_path, cpp_model_path = _resolve_whisper_cpp_paths()
+    video_token = _log_safe_token(video, "video")
+    out_token = _log_safe_token(out_file, "subtitles.out")
     dbg = bool(os.environ.get("SUBTITLES_DEBUG")) or True  # always-on lightweight logging (can tune later)
     if dbg:
         try:
-            print(f"[subtitles] start video={video.name} backend={backend} model={model} lang={language or 'auto'} translate={translate} out={out_file.name}")
+            print(
+                f"[subtitles] start video={video_token} backend={backend} model={model} lang={language or 'auto'} translate={translate} out={out_token}",
+                flush=True,
+            )
         except Exception:
             pass
-    segments = run_whisper_backend(
-        video, backend, model, language, translate,
-        progress_cb=progress_cb,
-        cancel_check=cancel_check,
-    )
+    try:
+        segments = run_whisper_backend(
+            video, backend, model, language, translate,
+            cpp_bin=str(cpp_bin_path) if cpp_bin_path else None,
+            cpp_model=str(cpp_model_path) if cpp_model_path else None,
+            progress_cb=progress_cb,
+            cancel_check=cancel_check,
+        )
+    except Exception as exc:
+        if dbg:
+            try:
+                print(f"[subtitles] backend failure video={video_token} backend={backend}: {exc}", flush=True)
+            except Exception:
+                pass
+        try:
+            traceback.print_exc()
+        except Exception:
+            pass
+        raise
     # Write SRT
     srt = _format_srt_segments(segments)
     out_file.write_text(srt, encoding="utf-8")
     if dbg:
         try:
-            print(f"[subtitles] wrote {len(segments)} segments size={out_file.stat().st_size}B backend={backend}")
+            print(f"[subtitles] wrote {len(segments)} segments size={out_file.stat().st_size}B backend={backend}", flush=True)
         except Exception:
             pass
     return None
@@ -3916,6 +4734,7 @@ def _detect_faces(
         }]
 
 
+@_artifact_db_sync(("faces",))
 def compute_face_embeddings(
     video: Path,
     sim_thresh: float | None = None,
@@ -4214,7 +5033,7 @@ api = APIRouter(prefix="/api")
 def openapi_alias():
     try:
         return JSONResponse(app.openapi())  # type: ignore[arg-type]
-    except Exception as e:  # pragma: no cover
+    except Exception as _e:  # pragma: no cover
         # If OpenAPI generation is disabled or fails, return a minimal stub
         return JSONResponse({"openapi": "3.0.2", "info": {"title": "Media Player", "version": "3.0"}, "paths": {}}, status_code=200)
 
@@ -4613,6 +5432,93 @@ def _jobs_state_dir() -> Path:
 def _job_file_path(jid: str) -> Path:
     return _jobs_state_dir() / f"{jid}.json"
 
+def _job_json_dumps(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        return json.dumps(value)
+    except Exception:
+        return None
+
+def _job_json_loads(raw: Optional[str]) -> Optional[Any]:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+def _job_db_row_payload(job: dict, heartbeat: Optional[float]) -> Optional[dict]:
+    jid = str(job.get("id") or "").strip()
+    if not jid:
+        return None
+    now = time.time()
+    created = float(job.get("created_at") or now)
+    updated = float(job.get("ended_at") or job.get("started_at") or created)
+    return {
+        "id": jid,
+        "type": str(job.get("type") or ""),
+        "media_id": job.get("media_id"),
+        "target_path": job.get("path"),
+        "state": str(job.get("state") or ""),
+        "priority": int(1 if job.get("priority") else 0),
+        "progress": int(job.get("processed")) if job.get("processed") is not None else None, # type: ignore
+        "total": int(job.get("total")) if job.get("total") is not None else None, # type: ignore
+        "payload_json": _job_json_dumps(job.get("request")),
+        "result_json": _job_json_dumps(job.get("result")),
+        "error": job.get("error"),
+        "heartbeat_ts": int(heartbeat or now),
+        "created_at": int(created),
+        "updated_at": int(updated),
+    }
+
+def _db_upsert_job(job: dict) -> None:
+    if os.environ.get("JOB_PERSIST_DISABLE"):
+        return
+    try:
+        heartbeat = JOB_HEARTBEATS.get(str(job.get("id")))
+    except Exception:
+        heartbeat = None
+    payload = _job_db_row_payload(job, heartbeat)
+    if not payload:
+        return
+    try:
+        with db.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO job (id, type, media_id, target_path, state, priority, progress, total,
+                                 payload_json, result_json, error, heartbeat_ts, created_at, updated_at)
+                VALUES (:id, :type, :media_id, :target_path, :state, :priority, :progress, :total,
+                        :payload_json, :result_json, :error, :heartbeat_ts, :created_at, :updated_at)
+                ON CONFLICT(id) DO UPDATE SET
+                    type=excluded.type,
+                    media_id=excluded.media_id,
+                    target_path=excluded.target_path,
+                    state=excluded.state,
+                    priority=excluded.priority,
+                    progress=excluded.progress,
+                    total=excluded.total,
+                    payload_json=excluded.payload_json,
+                    result_json=excluded.result_json,
+                    error=excluded.error,
+                    heartbeat_ts=excluded.heartbeat_ts,
+                    created_at=excluded.created_at,
+                    updated_at=excluded.updated_at
+                """,
+                payload,
+            )
+    except Exception:
+        pass
+
+def _db_delete_job(jid: str) -> None:
+    if os.environ.get("JOB_PERSIST_DISABLE"):
+        return
+    try:
+        with db.session() as conn:
+            conn.execute("DELETE FROM job WHERE id = ?", (jid,))
+    except Exception:
+        pass
+
 def _json_dump_atomic(path: Path, data: dict) -> None:
     """
     Write JSON atomically to avoid partial files.
@@ -4654,6 +5560,7 @@ def _persist_job(jid: str) -> None:
         "result": j.get("result"),
     }
     _json_dump_atomic(_job_file_path(str(j.get("id") or "")), payload)  # type: ignore[arg-type]
+    _db_upsert_job(j)
     # Update heartbeat timestamp when persisting job state to reflect liveness
     try:
         JOB_HEARTBEATS[str(j.get("id") or "")] = time.time()
@@ -4667,10 +5574,72 @@ def _delete_persisted_job(jid: str) -> None:
             p.unlink(missing_ok=True)
     except Exception:
         pass
+    _db_delete_job(jid)
+
+def _restore_jobs_from_db(existing_ids: set[str]) -> None:
+    if os.environ.get("JOB_PERSIST_DISABLE"):
+        return
+    try:
+        with db.session(read_only=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, type, target_path, state, priority, progress, total,
+                       payload_json, result_json, error, heartbeat_ts, created_at, updated_at
+                FROM job
+                """
+            ).fetchall()
+    except Exception:
+        rows = []
+    auto_restore = not bool(os.environ.get("JOB_AUTORESTORE_DISABLE"))
+    for row in rows:
+        try:
+            jid = str(row["id"] or "").strip()
+        except Exception:
+            continue
+        if not jid or jid in existing_ids:
+            continue
+        base_type = _normalize_job_type(str(row["type"] or ""))
+        prev = str(row["state"] or "").lower()
+        if prev == "cancel_requested":
+            target_state = "canceled"
+        elif prev in ("done", "failed", "canceled"):
+            target_state = prev
+        elif prev in ("queued", "running"):
+            target_state = "queued" if auto_restore else "restored"
+        else:
+            target_state = "queued" if auto_restore else "restored"
+        job_entry = {
+            "id": jid,
+            "type": base_type,
+            "path": row["target_path"],
+            "state": target_state,
+            "created_at": row["created_at"],
+            "started_at": None,
+            "ended_at": row["updated_at"],
+            "error": row["error"],
+            "total": row["total"],
+            "processed": row["progress"],
+            "label": None,
+            "result": _job_json_loads(row["result_json"]),
+            "request": _job_json_loads(row["payload_json"]),
+            "priority": bool(row["priority"]),
+        }
+        with JOB_LOCK:
+            JOBS[jid] = job_entry
+            JOB_CANCEL_EVENTS[jid] = threading.Event()
+        try:
+            JOB_HEARTBEATS[jid] = float(row["heartbeat_ts"] or time.time())
+        except Exception:
+            JOB_HEARTBEATS[jid] = time.time()
+        existing_ids.add(jid)
+        if prev != target_state:
+            _db_upsert_job(job_entry)
+
 
 def _restore_jobs_on_start() -> None:
     if os.environ.get("JOB_PERSIST_DISABLE"):
         return
+    restored: set[str] = set()
     d = _jobs_state_dir()
     try:
         files = list(d.glob("*.json"))
@@ -4711,11 +5680,15 @@ def _restore_jobs_on_start() -> None:
                     "request": data.get("request"),
                 }
                 JOB_CANCEL_EVENTS[jid] = threading.Event()
+            restored.add(jid)
+            _db_upsert_job(JOBS[jid])
             # Persist any state normalization (e.g., running->queued, or queued->restored)
             if prev != target_state:
                 _persist_job(jid)
         except Exception:
             continue
+
+    _restore_jobs_from_db(restored)
 
     # Optionally auto-resume queued jobs that have a saved request
     if os.environ.get("JOB_AUTORESTORE_DISABLE"):
@@ -4761,14 +5734,6 @@ def _normalize_job_type(job_type: str) -> str:
     """
     Normalize backend job-type variants to base types for the UI and tests."""
     s = (job_type or "").strip().lower()
-    # Legacy aliases
-    if s == "preview-concat":
-        return "preview"
-    if s == "heatmap":
-        return "heatmaps"
-    # Legacy scenes -> markers
-    if s == "scenes":
-        return "markers"
     # Batch suffix normalization
     if s.endswith("-batch"):
         s = s[: -len("-batch")]
@@ -4779,22 +5744,12 @@ def _artifact_from_type(job_type: Optional[str]) -> Optional[str]:
     if not job_type:
         return None
     t = _normalize_job_type(job_type)
-    mapping = {
-        # Canonical, pluralized where UI expects plural
-        "thumbnail": "thumbnails",
-        "preview": "previews",
-        "phash": "phash",
-        # Map both new and legacy scene job names to markers badge
-        "scenes": "markers",
-        "markers": "markers",
-        "sprites": "sprites",
-        "heatmaps": "heatmaps",
-        "faces": "faces",
-        "embed": "faces",      # embed updates faces vectors / faces.json
-        "metadata": "metadata",
-        "subtitles": "subtitles",
-    }
-    return mapping.get(t)
+    if t == "embed":
+        return "faces"
+    if t == "preview":
+        # Frontend/UI expect plural 'previews' badge names even though the artifact key is singular.
+        return "previews"
+    return _canonical_artifact_key(t)
 
 
 def _publish_job_event(evt: dict) -> None:
@@ -5444,7 +6399,6 @@ def apple_touch_icon():
 # Static assets are already mounted at the top of the file - no need to mount again
 
 # Lifespan: replaces deprecated on_event startup handler
-from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app_obj: FastAPI):  # type: ignore[override]
@@ -5527,17 +6481,6 @@ def _is_original_media_file(p: Path, base: Path) -> bool:
     if n.endswith(SUFFIX_PREVIEW_WEBM) or n.endswith(SUFFIX_PREVIEW_MP4) or n.endswith(SUFFIX_SPRITES_JPG):
         return False
     return True
-
-
-# -----------------------------
-# Central registry (tags/performers)
-# -----------------------------
-
-def _registry_dir() -> Path:
-    root = STATE.get("root") or Path.cwd()
-    d = Path(root) / ".artifacts"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 def _tags_registry_path() -> Path:
@@ -5957,6 +6900,9 @@ def config_info():
     effective = {
         "sprites": {**defaults["sprites"], **(raw_cfg.get("sprites") or {})},
     }
+    cpp_bin_path, cpp_model_path = _resolve_whisper_cpp_paths()
+    subtitles_backend = detect_backend("auto")
+    faces_backend = detect_face_backend("auto")
     # Detect SSE jobs events route presence for frontend (avoid 404 probing)
     try:
         jobs_sse = any(getattr(r, "path", None) == "/jobs/events" for r in app.routes)
@@ -5980,8 +6926,8 @@ def config_info():
             "ffprobe": ffprobe_available(),
             "faster_whisper": _has_module("faster_whisper"),
             "openai_whisper": _has_module("whisper"),
-            "whisper_cpp_bin": (lambda p=os.environ.get("WHISPER_CPP_BIN"): bool(p and Path(p).exists()))(),
-            "whisper_cpp_model": (lambda p=os.environ.get("WHISPER_CPP_MODEL"): bool(p and Path(p).exists()))(),
+            "whisper_cpp_bin": bool(cpp_bin_path),
+            "whisper_cpp_model": bool(cpp_model_path),
             "opencv": _has_module("cv2"),
             "insightface": _has_module("insightface"),
             "onnxruntime": _has_module("onnxruntime"),
@@ -6000,10 +6946,10 @@ def config_info():
             "pillow": _module_version("PIL"),
         },
         "capabilities": {
-            "subtitles_backend": detect_backend("auto"),
-            "faces_backend": detect_face_backend("auto"),
-            "subtitles_enabled": detect_backend("auto") != "stub",
-            "faces_enabled": (detect_face_backend("auto") in ("opencv", "insightface")) and (_has_module("cv2") or _has_module("insightface")),
+            "subtitles_backend": subtitles_backend,
+            "faces_backend": faces_backend,
+            "subtitles_enabled": subtitles_backend != "stub",
+            "faces_enabled": (faces_backend in ("opencv", "insightface")) and (_has_module("cv2") or _has_module("insightface")),
         },
         "raw": raw_cfg,
         "defaults": defaults,
@@ -6081,6 +7027,127 @@ def _tags_file(p: Path) -> Path:
     return artifact_dir(p) / f"{p.stem}.tags.json"
 
 
+_METADATA_SIDECAR_WRITE_FLAG = os.environ.get("METADATA_SIDECAR_WRITE", "1")
+_METADATA_SIDECAR_WRITES_ENABLED = str(_METADATA_SIDECAR_WRITE_FLAG or "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _metadata_sidecar_writes_enabled() -> bool:
+    return _METADATA_SIDECAR_WRITES_ENABLED
+
+
+_MEDIA_ATTR_SIDECAR_WRITE_FLAG = os.environ.get("MEDIA_ATTR_SIDECAR_WRITE", "1")
+_MEDIA_ATTR_SIDECAR_WRITES_ENABLED = str(_MEDIA_ATTR_SIDECAR_WRITE_FLAG or "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _media_attr_sidecar_writes_enabled() -> bool:
+    return _MEDIA_ATTR_SIDECAR_WRITES_ENABLED
+
+
+# Sentinel value for database metadata updates (indicates field should not be changed)
+_DB_META_UNSET = object()
+
+
+def _default_tags_sidecar_payload(p: Path) -> dict[str, Any]:
+    return {
+        "video": p.name,
+        "tags": [],
+        "performers": [],
+        "description": "",
+        "rating": 0,
+        "favorite": False,
+    }
+
+
+def _load_tags_sidecar_payload(p: Path) -> dict[str, Any]:
+    data = _default_tags_sidecar_payload(p)
+    tf = _tags_file(p)
+    if tf.exists():
+        try:
+            raw = json.loads(tf.read_text())
+            if isinstance(raw, dict):
+                data.update(raw)
+        except Exception:
+            pass
+    data.setdefault("tags", [])
+    data.setdefault("performers", [])
+    data.setdefault("description", "")
+    data.setdefault("rating", 0)
+    data.setdefault("favorite", False)
+    return data
+
+
+def _read_tags_sidecar_values(p: Path) -> tuple[list[str], list[str], str, int, bool]:
+    data = _load_tags_sidecar_payload(p)
+    tags = [str(t) for t in (data.get("tags") or []) if isinstance(t, str)]
+    perfs = [str(t) for t in (data.get("performers") or []) if isinstance(t, str)]
+    desc = str(data.get("description") or "")
+    try:
+        rating = max(0, min(5, int(data.get("rating") or 0)))
+    except Exception:
+        rating = 0
+    try:
+        favorite = bool(data.get("favorite"))
+    except Exception:
+        favorite = False
+    return tags, perfs, desc, rating, favorite
+
+
+def _resolve_media_path(path: str) -> Path:
+    root = STATE.get("root")
+    if not isinstance(root, Path):
+        raise_api_error("invalid server root", 500)
+    root_path: Path = root  # type: ignore[assignment]
+    return safe_join(root_path, path)
+
+
+def _normalize_metadata_updates(
+    *,
+    description: Any = _DB_META_UNSET,
+    rating: Any = _DB_META_UNSET,
+    favorite: Any = _DB_META_UNSET,
+) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    if description is not _DB_META_UNSET:
+        updates["description"] = str(description or "")
+    if rating is not _DB_META_UNSET:
+        try:
+            val = int(rating if rating is not None else 0)
+        except Exception:
+            val = 0
+        updates["rating"] = max(0, min(5, val))
+    if favorite is not _DB_META_UNSET:
+        updates["favorite"] = bool(favorite)
+    return updates
+
+
+def _persist_metadata_sidecar_fields(video: Path, updates: dict[str, Any]) -> None:
+    if not updates or not _metadata_sidecar_writes_enabled():
+        return
+    payload = _load_tags_sidecar_payload(video)
+    changed = False
+    for key in ("description", "rating", "favorite"):
+        if key in updates:
+            payload[key] = updates[key]
+            changed = True
+    if not changed:
+        return
+    tf = _tags_file(video)
+    try:
+        tf.parent.mkdir(parents=True, exist_ok=True)
+        tf.write_text(json.dumps(payload, indent=2))
+    except Exception as exc:
+        raise DualWriteError(f"Failed to update metadata sidecar for {video}") from exc
+
+
+def _apply_metadata_update(video: Path, **fields: Any) -> dict[str, Any]:
+    updates = _normalize_metadata_updates(**fields)
+    if not updates:
+        return {}
+    _sync_video_meta_to_db(video, **updates)
+    _persist_metadata_sidecar_fields(video, updates)
+    return updates
+
+
 @app.get("/tags/export")
 def tags_export(directory: str = Query("."), recursive: bool = Query(False)):
     # Enforce root scoping
@@ -6134,15 +7201,16 @@ def tags_export(directory: str = Query("."), recursive: bool = Query(False)):
         out.append(data)
     return {"videos": out, "count": len(out)}
 
-
-    videos: Optional[list[dict]] = None
-    mapping: Optional[dict[str, dict]] = None
-    replace: bool = False
-
 class TagsImport(BaseModel):  # type: ignore
     videos: Optional[List[Dict[str, Any]]] = None
     mapping: Optional[Dict[str, Dict[str, Any]]] = None
     replace: bool = False
+
+
+class DBImportRequest(BaseModel):  # type: ignore
+    path: Optional[str] = Field(default=None, description="Optional root-relative directory to scan")
+    recursive: bool = True
+    limit: Optional[int] = Field(default=None, ge=1, description="Optional cap on files processed this run")
 
 @app.post("/tags/import")
 def tags_import(payload: TagsImport):
@@ -6217,9 +7285,39 @@ def tags_import(payload: TagsImport):
         try:
             tf.write_text(json.dumps(cur, indent=2))
             count += 1
+            _sync_video_meta_to_db(
+                p,
+                description=cur.get("description"),
+                rating=cur.get("rating"),
+                favorite=cur.get("favorite"),
+            )
         except Exception:
             continue
     return {"updated": count}
+
+
+@api.post("/db/import")
+def api_db_import(payload: DBImportRequest):
+    root = STATE.get("root")
+    if not isinstance(root, Path):
+        raise_api_error("invalid server root", 500)
+    base = root
+    if payload.path:
+        raw = Path(payload.path).expanduser()
+        if raw.is_absolute():
+            try:
+                raw.resolve().relative_to(root) # type: ignore
+            except Exception:
+                raise_api_error("path outside library root", 400)
+            base = raw
+        else:
+            base = safe_join(root, payload.path) # type: ignore
+    if not base.exists(): # type: ignore
+        raise_api_error("path does not exist", 404)
+    if not base.is_dir(): # type: ignore
+        raise_api_error("path must be a directory", 400)
+    result = _db_backfill_from_fs(base, recursive=payload.recursive, limit=payload.limit) # type: ignore
+    return api_success(result)
 
 
 def _load_metadata_summary(root: Path, recursive: bool) -> dict[str, dict]:
@@ -6341,13 +7439,6 @@ class TagUpdate(BaseModel): # type: ignore
     rating: int | None = None
     favorite: bool | None = None
 
-## Removed legacy: PATCH /videos/{name}/tags
-
-## Removed legacy: GET /tags/summary (use /api/tags/summary)
-
-## Removed legacy: GET /phash/duplicates (replaced by /api/duplicates)
-
-
 def _list_dir(root: Path, rel: str):
     p = safe_join(root, rel) if rel else root
     if not p.exists() or not p.is_dir():
@@ -6415,7 +7506,7 @@ def _list_dir(root: Path, rel: str):
                 "width": width_val,
                 "height": height_val,
                 "phash": phash_exists,
-                "chapters": scenes_exists,
+                "markers": scenes_exists,
                 "sprites": sprites_exists,
                 "heatmaps": heatmaps_exists,
                 "subtitles": subtitles_exists,
@@ -6544,13 +7635,9 @@ def _enrich_file_basic(entry: dict) -> dict:
         except Exception:
             pass
         entry.setdefault("phash", phash_exists)
-        entry.setdefault("chapters", scenes_exists)
-        # Alias scenes/chapters to unified 'markers' key used by /artifacts/status
         entry.setdefault("markers", scenes_exists)
         entry.setdefault("sprites", sprites_exists)
         entry.setdefault("heatmaps", heatmaps_exists)
-        # Unified 'heatmap' boolean (status endpoint uses singular form)
-        entry.setdefault("heatmap", heatmaps_exists)
         entry.setdefault("subtitles", subtitles_exists)
         entry.setdefault("faces", faces_exists)
         # Explicit metadata presence flag so frontend chips avoid per-row /api/metadata fetch
@@ -6575,15 +7662,28 @@ def _enrich_file_basic(entry: dict) -> dict:
                 except Exception:
                     tags_arr = []
                     perf_arr = []
-            # Merge/override with media attribute store (authoritative for current performers/tags)
+            db_tags: list[str] = []
+            db_perfs: list[str] = []
+            # Prefer DB-backed tags/performers when available (keeps UI aligned with SQLite state)
+            try:
+                rel_str = str(rel_path)
+                if rel_str:
+                    db_tags, db_perfs = _current_media_lists(rel_str)
+                if db_tags:
+                    tags_arr = db_tags
+                if db_perfs:
+                    perf_arr = db_perfs
+            except Exception:
+                db_tags, db_perfs = [], []
+            # Merge/override with legacy media attribute store if DB unavailable
             try:
                 ent = _MEDIA_ATTR.get(str(rel_path))
                 if isinstance(ent, dict):
                     mt_tags = ent.get("tags")
                     mt_perfs = ent.get("performers")
-                    if isinstance(mt_tags, list) and mt_tags:
+                    if isinstance(mt_tags, list) and mt_tags and not db_tags:
                         tags_arr = [str(x) for x in mt_tags if str(x).strip()]
-                    if isinstance(mt_perfs, list) and mt_perfs:
+                    if isinstance(mt_perfs, list) and mt_perfs and not db_perfs:
                         perf_arr = [str(x) for x in mt_perfs if str(x).strip()]
             except Exception:
                 pass
@@ -6741,18 +7841,16 @@ def get_library(
                         vp.add(ss)
             except Exception:
                 pass
-        # Merge with media attribute store (authoritative current state)
         try:
-            ent = _MEDIA_ATTR.get(rel_path)
-            if isinstance(ent, dict):
-                for t in (ent.get("tags") or []):
-                    ss = _slugify(str(t))
-                    if ss:
-                        vt.add(ss)
-                for p in (ent.get("performers") or []):
-                    ss = _slugify(str(p))
-                    if ss:
-                        vp.add(ss)
+            db_tags, db_perfs = _current_media_lists(rel_path)
+            for t in db_tags:
+                ss = _slugify(str(t))
+                if ss:
+                    vt.add(ss)
+            for p in db_perfs:
+                ss = _slugify(str(p))
+                if ss:
+                    vp.add(ss)
         except Exception:
             pass
         return vt, vp
@@ -6984,7 +8082,7 @@ def get_library(
             # Sidecar/flags booleans only if requested (can be costly across many files)
             def _ensure_flags(f: dict):
                 try:
-                    needed = any(k in flt_obj for k in ("phash","chapters","sprites","heatmaps","subtitles","faces","thumbnail","preview"))
+                    needed = any(k in flt_obj for k in ("phash","markers","sprites","heatmaps","subtitles","faces","thumbnail","preview"))
                     if not needed:
                         return
                     relp = f.get("path") or ""
@@ -6994,8 +8092,8 @@ def get_library(
                     if "phash" in flt_obj and f.get("phash") in (None, ""):
                         try: f["phash"] = phash_path(fp).exists()
                         except Exception: pass
-                    if "chapters" in flt_obj and f.get("chapters") in (None, ""):
-                        try: f["chapters"] = scenes_json_exists(fp)
+                    if "markers" in flt_obj and f.get("markers") in (None, ""):
+                        try: f["markers"] = scenes_json_exists(fp)
                         except Exception: pass
                     if "sprites" in flt_obj and f.get("sprites") in (None, ""):
                         try:
@@ -7121,7 +8219,7 @@ def get_library(
                     _ensure_metadata_basic(f)
                 if k in ("bitrate", "vcodec", "acodec"):
                     _ensure_bitrate_codecs(f)
-                if k in ("phash","chapters","sprites","heatmaps","subtitles","faces","thumbnail","preview"):
+                if k in ("phash","markers","sprites","heatmaps","subtitles","faces","thumbnail","preview"):
                     _ensure_flags(f)
                 # Provide set values for tags/performers to allow include/exclude matching
                 if k in ("tags", "performers"):
@@ -7518,7 +8616,7 @@ def api_phash_duplicates(
     """
     # First get full (unpaginated) pair list via existing helper
     try:
-        base = api_duplicates_list(
+        base_response = api_duplicates_list(
             directory=directory,
             recursive=recursive,
             phash_threshold=phash_threshold,
@@ -7526,14 +8624,23 @@ def api_phash_duplicates(
             page=1,
             page_size=1000000,  # effectively all; clustering done in-memory
         )
-        if isinstance(base, Response):  # already Response
-            payload = base.body  # type: ignore[attr-defined]
-        data = base.get("data") if isinstance(base, dict) else None  # type: ignore[index]
+        # api_duplicates_list returns JSONResponse via api_success helper
+        if isinstance(base_response, JSONResponse):
+            # Extract the actual data from the response body
+            import json
+            raw_bytes = bytes(base_response.body)
+            response_body = json.loads(raw_bytes.decode('utf-8'))
+            data = response_body.get("data") if isinstance(response_body, dict) else None
+        else:
+            data = None
     except Exception:
         data = None
-    if not data or "pairs" not in data:
+    if not data or not isinstance(data, dict) or "pairs" not in data:
         return api_success({ "data": [] })
-    pairs = data["pairs"]
+    pairs_raw = data.get("pairs")
+    if not isinstance(pairs_raw, list):
+        return api_success({ "data": [] })
+    pairs: list[dict] = pairs_raw
     # Build adjacency graph
     adj: dict[str, set[str]] = {}
     for p in pairs:
@@ -7867,8 +8974,6 @@ def _performers_index_mutate_file(rel_path: str, performers: list[str]) -> None:
             if not ent:
                 ent = {"performers": [], "tags": []}
                 _MEDIA_ATTR[rel_path] = ent
-            # Preserve existing mtime if present (ns precision)
-            mtime_ns = ent.get("mtime", 0)
             seen: set[str] = set()
             clean: list[str] = []
             for n in performers:
@@ -7881,7 +8986,7 @@ def _performers_index_mutate_file(rel_path: str, performers: list[str]) -> None:
                             clean.append(t)
             ent["performers"] = clean
             # Unified model; performers already reflect merged names from scans
-            _save_media_attr()
+            _save_media_attr([rel_path])
             # Update in-memory mapping for immediate count accuracy.
             # Remove stale path references first.
             for perf_norm, paths in list(_PERFORMERS_INDEX.items()):
@@ -7903,7 +9008,7 @@ def _performers_index_rename(old_norm: str, new_name: str) -> None:
     """Apply a rename across the persisted index so future scans reuse the new name."""
     try:
         with _PERFORMERS_INDEX_LOCK:
-            changed = False
+            changed_paths: set[str] = set()
             for rel, ent in _MEDIA_ATTR.items():
                 try:
                     names = ent.get("performers") or []
@@ -7916,12 +9021,13 @@ def _performers_index_rename(old_norm: str, new_name: str) -> None:
                             changed = True
                         else:
                             out.append(nm)
-                    if changed:
+                    if out != names:
                         ent["performers"] = out
+                        changed_paths.add(rel)
                 except Exception:
                     pass
-            if changed:
-                _save_media_attr()
+            if changed_paths:
+                _save_media_attr(changed_paths)
             # Update in-memory mapping already handled by endpoint logic; ensure cache rec name kept.
     except Exception:
         pass
@@ -7932,7 +9038,7 @@ def _performers_index_merge(sources: list[str], target_name: str) -> None:
         src_norms = { _normalize_performer(s) for s in sources if isinstance(s, str) }
         tgt_norm = _normalize_performer(target_name)
         with _PERFORMERS_INDEX_LOCK:
-            changed = False
+            changed_paths: set[str] = set()
             for rel, ent in _MEDIA_ATTR.items():
                 try:
                     names = ent.get("performers") or []
@@ -7954,11 +9060,11 @@ def _performers_index_merge(sources: list[str], target_name: str) -> None:
                                 seen.add(nn)
                     if replaced:
                         ent["performers"] = out
-                        changed = True
+                        changed_paths.add(rel)
                 except Exception:
                     pass
-            if changed:
-                _save_media_attr()
+            if changed_paths:
+                _save_media_attr(changed_paths)
     except Exception:
         pass
 
@@ -7966,7 +9072,7 @@ def _performers_index_delete(norm: str) -> None:
     """Remove a performer from all file entries in the persisted index."""
     try:
         with _PERFORMERS_INDEX_LOCK:
-            changed = False
+            changed_paths: set[str] = set()
             for rel, ent in _MEDIA_ATTR.items():
                 try:
                     names = ent.get("performers") or []
@@ -7975,11 +9081,11 @@ def _performers_index_delete(norm: str) -> None:
                     new_list = [nm for nm in names if _normalize_performer(str(nm)) != norm]
                     if len(new_list) != len(names):
                         ent["performers"] = new_list
-                        changed = True
+                        changed_paths.add(rel)
                 except Exception:
                     pass
-            if changed:
-                _save_media_attr()
+            if changed_paths:
+                _save_media_attr(changed_paths)
     except Exception:
         pass
 
@@ -7991,7 +9097,7 @@ def _load_performers_sidecars() -> None:
     Uses a persisted index file to avoid reparsing unchanged JSON. Always merges registry
     and media-attr store so counts are accurate each call.
     """
-    global _PERFORMERS_CACHE_TS, _PERFORMERS_INDEX, _PERFORMERS_CACHE, _PERFORMERS_SCAN_IN_PROGRESS
+    global _PERFORMERS_CACHE_TS, _PERFORMERS_INDEX
     if STATE.get("root") is None:
         return
     root = Path(STATE["root"]).resolve()
@@ -8006,7 +9112,7 @@ def _load_performers_sidecars() -> None:
         leg = _load_performers_index()  # legacy structure {files:{rel:{mtime_ns, performers}}}
         files_map_legacy: dict = leg.get("files", {}) if isinstance(leg, dict) else {}
         if files_map_legacy:
-            migrated = 0
+            migrated_rels: set[str] = set()
             for rel, entry in files_map_legacy.items():
                 try:
                     names = entry.get("performers") or []
@@ -8028,11 +9134,11 @@ def _load_performers_sidecars() -> None:
                             ent["mtime_ns"] = int(mns) # type: ignore
                         except Exception:
                             pass
-                    migrated += 1
+                    migrated_rels.add(rel)
                 except Exception:
                     pass
-            if migrated:
-                _save_media_attr()
+            if migrated_rels:
+                _save_media_attr(migrated_rels)
             # After migration, remove legacy file to avoid confusion
             try:
                 p = _performers_index_path()
@@ -8048,8 +9154,9 @@ def _load_performers_sidecars() -> None:
     # Scan mp4 list (stat only) - much cheaper than reading metadata content
     videos = _find_mp4s(root, recursive=True)
     changed = 0
+    changed_paths: set[str] = set()
     missing = 0
-    media_attr_changed = False
+    updated_rels: set[str] = set()
     for v in videos:
         m = metadata_path(v)
         if not m.exists():
@@ -8109,7 +9216,7 @@ def _load_performers_sidecars() -> None:
                             seen.add(k); perf_out.append(str(nm).strip())
                     ent["performers"] = perf_out[:500]  # type: ignore[index]
                     ent["mtime"] = int(st)  # type: ignore[index]
-                    media_attr_changed = True
+                    updated_rels.add(rel)
                 except Exception:
                     pass
             if names:
@@ -8173,9 +9280,9 @@ def _load_performers_sidecars() -> None:
     except Exception:
         pass
     # Persist updated sidecar cache into consolidated media-attr file
-    if media_attr_changed:
+    if updated_rels:
         try:
-            _save_media_attr()
+            _save_media_attr(updated_rels)
         except Exception:
             pass
     _PERFORMERS_CACHE_TS = t_start
@@ -8274,7 +9381,7 @@ def api_performers(
     except Exception:
         pass
     # Incremental scan orchestration: always ensure up-to-date counts (no fast/partial mode).
-    global _PERFORMERS_SCAN_IN_PROGRESS, _PERFORMERS_CACHE_TS
+    global _PERFORMERS_SCAN_IN_PROGRESS
     try:
         t_ls0 = _time.perf_counter() if _time else None
         _PERFORMERS_SCAN_IN_PROGRESS = True
@@ -9608,6 +10715,25 @@ def api_performers_graph(
 _MEDIA_ATTR: dict[str, dict] = {}  # relative path -> {"performers": [...], "tags": [...], "mtime": int}
 _MEDIA_ATTR_PATH: Optional[Path] = None
 
+
+def _clean_media_attr_list(values: Iterable[Any]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        item = raw.strip()
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+        if len(out) >= 500:
+            break
+    return out
+
 def _init_media_attr_path() -> Path:
     """
     Centralized media attribute store path.
@@ -9619,14 +10745,76 @@ def _init_media_attr_path() -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d / "scenes.json"
 
+def _load_media_attr_from_db() -> Optional[dict[str, dict]]:
+    try:
+        with db.session(read_only=True) as conn:
+            rows = conn.execute("SELECT id, rel_path FROM video").fetchall()
+            if not rows:
+                return {}
+            rel_by_id: dict[int, str] = {}
+            for row in rows:
+                rel = str(row["rel_path"] or "").strip()
+                if not rel:
+                    continue
+                rel_by_id[int(row["id"])] = rel
+            if not rel_by_id:
+                return {}
+            store: dict[str, dict[str, list[str]]] = {
+                rel: {"performers": [], "tags": []} for rel in rel_by_id.values()
+            }
+            tag_rows = conn.execute(
+                """
+                SELECT mt.media_id AS media_id, t.name AS name
+                  FROM media_tags mt
+                  JOIN tag t ON mt.tag_id = t.id
+                """
+            ).fetchall()
+            for row in tag_rows:
+                media_id = row["media_id"]
+                rel = rel_by_id.get(int(media_id))
+                name = row["name"]
+                if rel and isinstance(name, str):
+                    store.setdefault(rel, {"performers": [], "tags": []})
+                    store[rel]["tags"].append(name)
+            perf_rows = conn.execute(
+                """
+                SELECT mp.media_id AS media_id, p.name AS name
+                  FROM media_performers mp
+                  JOIN performer p ON mp.performer_id = p.id
+                """
+            ).fetchall()
+            for row in perf_rows:
+                media_id = row["media_id"]
+                rel = rel_by_id.get(int(media_id))
+                name = row["name"]
+                if rel and isinstance(name, str):
+                    store.setdefault(rel, {"performers": [], "tags": []})
+                    store[rel]["performers"].append(name)
+            for rel, entry in list(store.items()):
+                entry["tags"] = _clean_media_attr_list(entry.get("tags") or [])
+                entry["performers"] = _clean_media_attr_list(entry.get("performers") or [])
+            return store
+    except Exception:
+        return None
+
+
 def _load_media_attr() -> None:
     global _MEDIA_ATTR_PATH, _MEDIA_ATTR
+    if _MEDIA_ATTR:
+        return
+    _MEDIA_ATTR_PATH = _init_media_attr_path()
+    db_map: Optional[dict[str, dict]] = None
     try:
-        _MEDIA_ATTR_PATH = _init_media_attr_path()
+        db_map = _load_media_attr_from_db()
+        if db_map and len(db_map) > 0:
+            _MEDIA_ATTR = db_map
+            return
+    except Exception:
+        db_map = None
+    try:
         if _MEDIA_ATTR_PATH.exists() and _MEDIA_ATTR_PATH.stat().st_size > 4:
             raw = json.loads(_MEDIA_ATTR_PATH.read_text())
             if isinstance(raw, dict):
-                # Sanitize structure; merge any legacy sidecar_* fields into unified performers list + mtime
                 clean: dict[str, dict] = {}
                 for k, v in raw.items():
                     if not isinstance(k, str) or not isinstance(v, dict):
@@ -9636,21 +10824,13 @@ def _load_media_attr() -> None:
                     perfs = perfs_raw if isinstance(perfs_raw, list) else []
                     tags = tags_raw if isinstance(tags_raw, list) else []
                     ent: dict[str, Any] = {
-                        "performers": [str(p) for p in perfs if isinstance(p, str)][:500],
-                        "tags": [str(t) for t in tags if isinstance(t, str)][:500],
+                        "performers": _clean_media_attr_list(perfs),
+                        "tags": _clean_media_attr_list(tags),
                     }
-                    # Legacy migration support: if sidecar_performers present, merge into performers then drop
                     sc_perfs = v.get("sidecar_performers")
                     if isinstance(sc_perfs, list) and sc_perfs:
                         merged = ent["performers"] + [str(p) for p in sc_perfs if isinstance(p, str)]
-                        seen: set[str] = set()
-                        perf_out: list[str] = []
-                        for nm in merged:
-                            k2 = nm.lower().strip()
-                            if k2 and k2 not in seen:
-                                seen.add(k2)
-                                perf_out.append(nm.strip())
-                        ent["performers"] = perf_out[:500]
+                        ent["performers"] = _clean_media_attr_list(merged)
                     try:
                         sc_mtime = v.get("sidecar_mtime_ns") or v.get("mtime") or v.get("mtime_ns")
                         if isinstance(sc_mtime, (int, float)):
@@ -9659,65 +10839,560 @@ def _load_media_attr() -> None:
                         pass
                     clean[k] = ent
                 _MEDIA_ATTR = clean
+                return
     except Exception:
         pass
+    if db_map is not None and not _MEDIA_ATTR:
+        _MEDIA_ATTR = db_map or {}
 
-def _save_media_attr() -> None:
+def _normalize_registry_value(raw: Any) -> Optional[tuple[str, str]]:
     try:
-        if _MEDIA_ATTR_PATH is None:
-            return
+        text = str(raw).strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    return text, text.casefold()
+
+
+_DB_META_UNSET = object()
+
+
+def _db_update_video_meta(
+    conn,
+    rel_path: str,
+    *,
+    description: Any = _DB_META_UNSET,
+    rating: Any = _DB_META_UNSET,
+    favorite: Any = _DB_META_UNSET,
+) -> None:
+    rel = str(rel_path).strip()
+    if not rel:
+        return
+    updates: dict[str, Any] = {}
+    if description is not _DB_META_UNSET:
+        updates["description"] = description if description is not None else ""
+    if rating is not _DB_META_UNSET:
+        try:
+            val = None if rating is None else max(0, min(5, int(rating)))
+        except Exception:
+            val = 0
+        updates["rating"] = val
+    if favorite is not _DB_META_UNSET:
+        updates["favorite"] = 1 if bool(favorite) else 0
+    if not updates:
+        return
+    video_id = _db_ensure_video(conn, rel)
+    if not video_id:
+        return
+    now = int(time.time())
+    sets: list[str] = []
+    params: list[Any] = []
+    for col, val in updates.items():
+        sets.append(f"{col} = ?")
+        params.append(val)
+    sets.append("updated_at = ?")
+    params.append(now)
+    params.append(video_id)
+    conn.execute(f"UPDATE video SET {', '.join(sets)} WHERE id = ?", params)
+
+
+def _db_update_video_meta_fields(rel_path: str, **fields: Any) -> None:
+    rel = str(rel_path).strip()
+    if not rel:
+        raise DualWriteError("Cannot persist metadata for an empty relative path")
+    try:
+        with db.session() as conn:
+            _db_update_video_meta(conn, rel, **fields)
+    except Exception as exc:
+        raise DualWriteError(f"Failed to persist metadata for {rel}") from exc
+
+
+def _db_fetch_video_meta(rel_path: str) -> Optional[dict[str, Any]]:
+    rel = str(rel_path).strip()
+    if not rel:
+        return None
+    try:
+        with db.session(read_only=True) as conn:
+            row = conn.execute(
+                "SELECT favorite, rating, description FROM video WHERE rel_path = ?",
+                (rel,)
+            ).fetchone()
+            if not row:
+                return None
+            fav_val = row["favorite"]
+            rating_val = row["rating"]
+            desc_val = row["description"]
+            return {
+                "favorite": (bool(fav_val) if fav_val is not None else None),
+                "rating": (int(rating_val) if rating_val is not None else None),
+                "description": desc_val if desc_val is not None else None,
+            }
+    except Exception:
+        return None
+
+
+def _db_fetch_artifact_flags(rel_path: str) -> Optional[dict[str, bool]]:
+    rel = str(rel_path).strip()
+    if not rel:
+        return None
+    try:
+        with db.session(read_only=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT a.type, a.status
+                  FROM artifact a
+                  JOIN video v ON a.media_id = v.id
+                 WHERE v.rel_path = ?
+                """,
+                (rel,)
+            ).fetchall()
+            if not rows:
+                return None
+            out: dict[str, bool] = {}
+            for row in rows:
+                key = _canonical_artifact_key(row["type"])
+                if not key:
+                    continue
+                status = str(row["status"] or "").lower()
+                out[key] = status not in ("missing", "error", "")
+            return out
+    except Exception:
+        return None
+
+
+def _db_fetch_media_tags_performers(rel_path: str) -> Optional[dict[str, list[str]]]:
+    rel = str(rel_path).strip()
+    if not rel:
+        return None
+    try:
+        with db.session(read_only=True) as conn:
+            row = conn.execute("SELECT id FROM video WHERE rel_path = ?", (rel,)).fetchone()
+            if not row:
+                return None
+            vid = int(row["id"])
+            tag_rows = conn.execute(
+                """
+                SELECT t.name
+                  FROM media_tags mt
+                  JOIN tag t ON mt.tag_id = t.id
+                 WHERE mt.media_id = ?
+                 ORDER BY t.name COLLATE NOCASE
+                """,
+                (vid,)
+            ).fetchall()
+            perf_rows = conn.execute(
+                """
+                SELECT p.name
+                  FROM media_performers mp
+                  JOIN performer p ON mp.performer_id = p.id
+                 WHERE mp.media_id = ?
+                 ORDER BY p.name COLLATE NOCASE
+                """,
+                (vid,)
+            ).fetchall()
+        def _row_name(row):
+            try:
+                return str(row["name"]).strip()
+            except Exception:
+                return ""
+
+        tags = [_name for _name in (_row_name(r) for r in tag_rows) if _name]
+        perfs = [_name for _name in (_row_name(r) for r in perf_rows) if _name]
+        return {"tags": [t for t in tags if t], "performers": [p for p in perfs if p]}
+    except Exception:
+        return None
+
+
+def _current_media_lists(rel_path: str) -> tuple[list[str], list[str]]:
+    tags: list[str] = []
+    performers: list[str] = []
+    db_entry = _db_fetch_media_tags_performers(rel_path)
+    if db_entry is not None:
+        tags = [str(t).strip() for t in db_entry.get("tags", []) if str(t).strip()]
+        performers = [str(p).strip() for p in db_entry.get("performers", []) if str(p).strip()]
+        return tags, performers
+    ent = _MEDIA_ATTR.get(rel_path)
+    if isinstance(ent, dict):
+        tags = [str(t).strip() for t in (ent.get("tags") or []) if str(t).strip()]
+        performers = [str(p).strip() for p in (ent.get("performers") or []) if str(p).strip()]
+    return tags, performers
+
+
+def _db_upsert_artifact(conn, video_id: int, art_type: str, entry: dict[str, Any]) -> None:
+    if not art_type or not video_id:
+        return
+    canon = _canonical_artifact_key(art_type)
+    if not canon:
+        return
+    if not entry.get("present"):
+        conn.execute("DELETE FROM artifact WHERE media_id = ? AND type = ?", (video_id, canon))
+        return
+    path = entry.get("path")
+    if not path:
+        # Require a stable path for positive entries; skip if missing
+        return
+    payload = entry.get("payload")
+    payload_json = None
+    if payload is not None:
+        try:
+            payload_json = json.dumps(payload)
+        except Exception:
+            payload_json = None
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT INTO artifact (media_id, type, path, status, payload_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(media_id, type) DO UPDATE SET
+            path = excluded.path,
+            status = excluded.status,
+            payload_json = excluded.payload_json,
+            updated_at = excluded.updated_at
+        """,
+        (video_id, canon, path, entry.get("status") or "present", payload_json, now, now),
+    )
+
+
+def _sync_artifacts_to_db(conn, rel_path: str, info: dict[str, dict[str, Any]], keys: Optional[Iterable[str]] = None) -> None:
+    video_id = _db_ensure_video(conn, rel_path)
+    if not video_id:
+        return
+    target_keys = _normalize_artifact_keys(keys)
+    for art_type in target_keys:
+        entry = info.get(art_type) or {"present": False}
+        if entry.get("present"):
+            _db_upsert_artifact(conn, video_id, art_type, entry)
+        else:
+            conn.execute("DELETE FROM artifact WHERE media_id = ? AND type = ?", (video_id, art_type))
+
+
+def _db_backfill_single_video(conn, video: Path) -> None:
+    root = STATE.get("root")
+    rel = _rel_from_root(video)
+    video_id = _db_ensure_video(conn, rel)
+    if not video_id:
+        return
+    st = video.stat()
+    mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))
+    size_bytes = st.st_size
+    duration = None
+    width = None
+    height = None
+    bitrate = None
+    vformat = None
+    metadata_json = None
+    meta_path = metadata_path(video)
+    if meta_path.exists():
+        try:
+            metadata_json = meta_path.read_text()
+            meta = json.loads(metadata_json)
+            fmt = meta.get("format") if isinstance(meta, dict) else None
+            if isinstance(fmt, dict):
+                try:
+                    duration = float(fmt.get("duration") or 0)
+                except Exception:
+                    duration = None
+                bitrate = fmt.get("bit_rate") or fmt.get("bitrate") or None
+                vformat = fmt.get("format_name") or fmt.get("format") or None
+            streams = meta.get("streams") if isinstance(meta, dict) else None
+            if isinstance(streams, list):
+                for stream in streams:
+                    if not isinstance(stream, dict):
+                        continue
+                    if str(stream.get("codec_type")) == "video":
+                        width = stream.get("width") or width
+                        height = stream.get("height") or height
+                        if stream.get("bit_rate") and not bitrate:
+                            bitrate = stream.get("bit_rate")
+                        break
+        except Exception:
+            metadata_json = None
+    phash_val = None
+    p_path = phash_path(video)
+    if p_path.exists():
+        try:
+            pdata = json.loads(p_path.read_text())
+            if isinstance(pdata, dict):
+                phash_val = pdata.get("hash") or pdata.get("phash")
+            elif isinstance(pdata, str):
+                phash_val = pdata
+        except Exception:
+            phash_val = None
+    now = int(time.time())
+    conn.execute(
+        """
+        UPDATE video
+           SET mtime_ns = ?,
+               size_bytes = ?,
+               duration = COALESCE(?, duration),
+               width = COALESCE(?, width),
+               height = COALESCE(?, height),
+               bitrate = COALESCE(?, bitrate),
+               format = COALESCE(?, format),
+               metadata_json = COALESCE(?, metadata_json),
+               phash = COALESCE(?, phash),
+               updated_at = ?
+         WHERE id = ?
+        """,
+        (
+            mtime_ns,
+            size_bytes,
+            duration,
+            width,
+            height,
+            bitrate,
+            vformat,
+            metadata_json,
+            phash_val,
+            now,
+            video_id,
+        ),
+    )
+    tags, perfs, desc, rating, favorite = _read_tags_sidecar_values(video)
+    ent = _MEDIA_ATTR.get(rel)
+    if not ent:
+        ent = {"tags": tags, "performers": perfs}
+    _db_sync_media_entry(conn, rel, ent)
+    _db_update_video_meta(conn, rel, description=desc, rating=rating, favorite=favorite)
+    artifacts = _detect_artifacts_for_video(video)
+    _sync_artifacts_to_db(conn, rel, artifacts)
+
+
+def _db_backfill_from_fs(base: Path, *, recursive: bool = True, limit: Optional[int] = None) -> dict:
+    try:
+        videos = _find_mp4s(base, recursive)
+    except Exception:
+        videos = []
+    total = len(videos)
+    imported = 0
+    failed = 0
+    errors: list[dict[str, str]] = []
+    max_errors = 25
+    with db.session() as conn:
+        for video in videos:
+            if limit is not None and imported + failed >= int(limit):
+                break
+            try:
+                _db_backfill_single_video(conn, video)
+                imported += 1
+            except Exception as exc:
+                failed += 1
+                if len(errors) < max_errors:
+                    errors.append({"path": _rel_from_root(video), "error": str(exc)})
+    return {
+        "scanned": total,
+        "processed": imported + failed,
+        "imported": imported,
+        "failed": failed,
+        "errors": errors,
+        "remaining": max(0, total - (imported + failed)),
+    }
+
+
+def _db_ensure_tag(conn, name: str) -> Optional[int]:
+    pair = _normalize_registry_value(name)
+    if not pair:
+        return None
+    display, norm = pair
+    row = conn.execute("SELECT id, name FROM tag WHERE norm = ?", (norm,)).fetchone()
+    if row:
+        try:
+            if str(row["name"] or "") != display:
+                conn.execute("UPDATE tag SET name = ? WHERE id = ?", (display, row["id"]))
+        except Exception:
+            pass
+        return int(row["id"])
+    now = int(time.time())
+    cur = conn.execute(
+        "INSERT INTO tag (name, norm, color, created_at) VALUES (?, ?, NULL, ?)",
+        (display, norm, now),
+    )
+    return int(cur.lastrowid)
+
+
+def _db_ensure_performer(conn, name: str) -> Optional[int]:
+    pair = _normalize_registry_value(name)
+    if not pair:
+        return None
+    display, norm = pair
+    row = conn.execute("SELECT id, name FROM performer WHERE norm = ?", (norm,)).fetchone()
+    if row:
+        try:
+            if str(row["name"] or "") != display:
+                conn.execute("UPDATE performer SET name = ? WHERE id = ?", (display, row["id"]))
+        except Exception:
+            pass
+        return int(row["id"])
+    now = int(time.time())
+    cur = conn.execute(
+        "INSERT INTO performer (name, norm, image_path, bio, created_at) VALUES (?, ?, NULL, NULL, ?)",
+        (display, norm, now),
+    )
+    return int(cur.lastrowid)
+
+
+def _db_ensure_video(conn, rel_path: str) -> Optional[int]:
+    rel = str(rel_path).strip()
+    if not rel:
+        return None
+    row = conn.execute("SELECT id FROM video WHERE rel_path = ?", (rel,)).fetchone()
+    now = int(time.time())
+    if row:
+        conn.execute("UPDATE video SET updated_at = ? WHERE id = ?", (now, row["id"]))
+        return int(row["id"])
+    cur = conn.execute(
+        """
+        INSERT INTO video (rel_path, mtime_ns, size_bytes, duration, width, height, bitrate, format,
+                           favorite, rating, description, metadata_json, phash, created_at, updated_at)
+        VALUES (?, 0, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, ?, ?)
+        """,
+        (rel, now, now),
+    )
+    return int(cur.lastrowid)
+
+
+def _db_sync_link_table(conn, table: str, media_id: int, column: str, ids: set[int]) -> None:
+    if media_id is None:
+        return
+    rows = conn.execute(f"SELECT {column} FROM {table} WHERE media_id = ?", (media_id,)).fetchall()
+    existing = {int(row[column]) for row in rows}
+    to_add = ids - existing
+    to_remove = existing - ids
+    for item_id in to_add:
+        conn.execute(f"INSERT OR IGNORE INTO {table} (media_id, {column}) VALUES (?, ?)", (media_id, item_id))
+    for item_id in to_remove:
+        conn.execute(f"DELETE FROM {table} WHERE media_id = ? AND {column} = ?", (media_id, item_id))
+
+
+def _db_sync_media_entry(conn, rel_path: str, ent: dict) -> None:
+    video_id = _db_ensure_video(conn, rel_path)
+    if not video_id:
+        return
+    tag_ids: set[int] = set()
+    for tag in ent.get("tags") or []:
+        tid = _db_ensure_tag(conn, tag)
+        if tid is not None:
+            tag_ids.add(tid)
+    _db_sync_link_table(conn, "media_tags", video_id, "tag_id", tag_ids)
+    perf_ids: set[int] = set()
+    for perf in ent.get("performers") or []:
+        pid = _db_ensure_performer(conn, perf)
+        if pid is not None:
+            perf_ids.add(pid)
+    _db_sync_link_table(conn, "media_performers", video_id, "performer_id", perf_ids)
+
+
+def _sync_media_attr_to_db(updated_paths: Optional[Iterable[str]] = None) -> None:
+    paths = list(dict.fromkeys(updated_paths)) if updated_paths else list(_MEDIA_ATTR.keys())
+    if not paths:
+        return
+    try:
+        with db.session() as conn:
+            for rel in paths:
+                ent = _MEDIA_ATTR.get(rel)
+                if not ent:
+                    continue
+                _db_sync_media_entry(conn, rel, ent)
+    except Exception as exc:
+        sample = ", ".join(paths[:5])
+        raise DualWriteError(
+            f"Failed to persist media attributes to database for {len(paths)} path(s)",
+            context=sample or None,
+        ) from exc
+
+
+def _save_media_attr(updated_paths: Iterable[str]) -> None:
+    updated_list = list(dict.fromkeys(updated_paths))
+    if not updated_list:
+        return
+    sample = ", ".join(updated_list[:5])
+    _sync_media_attr_to_db(updated_list)
+    if not _media_attr_sidecar_writes_enabled():
+        return
+    if _MEDIA_ATTR_PATH is None:
+        raise DualWriteError("Media attribute store is not initialized")
+    try:
         tmp = _MEDIA_ATTR_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(_MEDIA_ATTR, indent=2, sort_keys=True))
         tmp.replace(_MEDIA_ATTR_PATH)
-    except Exception:
-        pass
+    except Exception as exc:
+        raise DualWriteError(
+            f"Failed to update media attribute sidecar for {len(updated_list)} path(s)",
+            context=sample or None,
+        ) from exc
 
 _load_media_attr()
 
 def _media_entry(path: str) -> dict:
     ent = _MEDIA_ATTR.get(path)
     if not ent:
-        ent = {"performers": [], "tags": []}
+        tags, performers = _current_media_lists(path)
+        ent = {"performers": performers, "tags": tags}
         _MEDIA_ATTR[path] = ent
-        _save_media_attr()
     return ent
 
 def _media_info_payload(rel: str, *, include_sidecar: bool = True) -> dict[str, Any]:
-    ent = _MEDIA_ATTR.get(rel, {"performers": [], "tags": []})
+    tags_list: list[str] = []
+    perf_list: list[str] = []
+    try:
+        if rel:
+            tags_list, perf_list = _current_media_lists(rel)
+    except Exception:
+        tags_list, perf_list = [], []
+    if not tags_list or not perf_list:
+        ent = _MEDIA_ATTR.get(rel, {"performers": [], "tags": []})
+        if not tags_list:
+            tags_list = [str(t) for t in (ent.get("tags") or []) if str(t).strip()]
+        if not perf_list:
+            perf_list = [str(p) for p in (ent.get("performers") or []) if str(p).strip()]
     data: dict[str, Any] = {
         "path": rel,
-        "performers": list(ent.get("performers") or []),
-        "tags": list(ent.get("tags") or []),
+        "performers": perf_list,
+        "tags": tags_list,
     }
     if not include_sidecar:
         return data
-    desc = ""
-    rating = 0
-    favorite = False
-    try:
-        root = STATE.get("root")
-        if isinstance(root, Path):
-            root_path: Path = root  # type: ignore[assignment]
-            vp = safe_join(root_path, rel)
-            tf = _tags_file(vp)
-            if tf.exists():
+    desc_val: Optional[str] = None
+    rating_val: Optional[int] = None
+    favorite_val: Optional[bool] = None
+    db_meta = _db_fetch_video_meta(rel)
+    if db_meta:
+        if db_meta.get("description") is not None:
+            desc_val = str(db_meta.get("description") or "")
+        if db_meta.get("rating") is not None:
+            try:
+                rating_val = max(0, min(5, int(db_meta.get("rating") or 0)))
+            except Exception:
+                rating_val = 0
+        if db_meta.get("favorite") is not None:
+            favorite_val = bool(db_meta.get("favorite"))
+    sidecar_desc = ""
+    sidecar_rating = 0
+    sidecar_favorite = False
+    if desc_val is None or rating_val is None or favorite_val is None:
+        try:
+            root = STATE.get("root")
+            if isinstance(root, Path):
+                root_path: Path = root  # type: ignore[assignment]
+                vp = safe_join(root_path, rel)
+                payload = _load_tags_sidecar_payload(vp)
+                sidecar_desc = str(payload.get("description") or "")
                 try:
-                    td = json.loads(tf.read_text())
-                    if isinstance(td.get("description"), str):
-                        desc = td.get("description") or ""
-                    try:
-                        r = int(td.get("rating") or 0)
-                        rating = max(0, min(5, r))
-                    except Exception:
-                        rating = 0
-                    try:
-                        favorite = bool(td.get("favorite") or False)
-                    except Exception:
-                        favorite = False
+                    sidecar_rating = max(0, min(5, int(payload.get("rating") or 0)))
                 except Exception:
-                    pass
-    except Exception:
-        pass
+                    sidecar_rating = 0
+                try:
+                    sidecar_favorite = bool(payload.get("favorite"))
+                except Exception:
+                    sidecar_favorite = False
+        except Exception:
+            pass
+    desc = desc_val if desc_val is not None else sidecar_desc
+    rating = rating_val if rating_val is not None else sidecar_rating
+    if rating is None:
+        rating = 0
+    favorite = favorite_val if favorite_val is not None else sidecar_favorite
     data.update({"description": desc, "rating": rating, "favorite": favorite})
     return data
 
@@ -9752,26 +11427,9 @@ def media_info_bulk(payload: MediaInfoBulkRequest):
 def media_set_rating(path: str = Query(...), rating: Optional[int] = Query(None)):
     # Support rating via querystring param; clamp to 0-5; 0 clears
     try:
-        root = STATE.get("root")
-        if not isinstance(root, Path):
-            raise_api_error("invalid server root", 500)
-        root_path: Path = root  # type: ignore[assignment]
-        vp = safe_join(root_path, path)
-        tf = _tags_file(vp)
-        cur: dict = {"video": vp.name, "tags": [], "performers": [], "description": "", "rating": 0, "favorite": False}
-        if tf.exists():
-            try:
-                cur = json.loads(tf.read_text())
-            except Exception:
-                pass
-        cur.setdefault("description", "")
-        cur.setdefault("rating", 0)
-        cur.setdefault("favorite", False)
-        val = int(rating or 0)
-        cur["rating"] = max(0, min(5, val))
-        tf.parent.mkdir(parents=True, exist_ok=True)
-        tf.write_text(json.dumps(cur, indent=2))
-        return api_success({"rating": cur["rating"]})
+        vp = _resolve_media_path(path)
+        updates = _apply_metadata_update(vp, rating=rating)
+        return api_success({"rating": updates.get("rating", 0)})
     except HTTPException:
         raise
     except Exception:
@@ -9790,28 +11448,12 @@ def media_set_description(
 ):
     # Accept description from JSON body or query param for flexibility
     try:
-        root = STATE.get("root")
-        if not isinstance(root, Path):
-            raise_api_error("invalid server root", 500)
-        root_path: Path = root  # type: ignore[assignment]
-        vp = safe_join(root_path, path)
-        tf = _tags_file(vp)
-        cur: dict = {"video": vp.name, "tags": [], "performers": [], "description": "", "rating": 0, "favorite": False}
-        if tf.exists():
-            try:
-                cur = json.loads(tf.read_text())
-            except Exception:
-                pass
-        cur.setdefault("description", "")
-        cur.setdefault("rating", 0)
-        cur.setdefault("favorite", False)
+        vp = _resolve_media_path(path)
         desc_val = description
         if payload and isinstance(payload.description, str):
             desc_val = payload.description
-        cur["description"] = (desc_val or "")
-        tf.parent.mkdir(parents=True, exist_ok=True)
-        tf.write_text(json.dumps(cur, indent=2))
-        return api_success({"description": cur["description"]})
+        updates = _apply_metadata_update(vp, description=desc_val)
+        return api_success({"description": updates.get("description", "")})
     except HTTPException:
         raise
     except Exception:
@@ -9826,31 +11468,15 @@ def media_set_favorite(
 ):
     # Accept favorite from query bool or JSON {favorite: true/false}
     try:
-        root = STATE.get("root")
-        if not isinstance(root, Path):
-            raise_api_error("invalid server root", 500)
-        root_path: Path = root  # type: ignore[assignment]
-        vp = safe_join(root_path, path)
-        tf = _tags_file(vp)
-        cur: dict = {"video": vp.name, "tags": [], "performers": [], "description": "", "rating": 0, "favorite": False}
-        if tf.exists():
-            try:
-                cur = json.loads(tf.read_text())
-            except Exception:
-                pass
-        cur.setdefault("description", "")
-        cur.setdefault("rating", 0)
-        cur.setdefault("favorite", False)
+        vp = _resolve_media_path(path)
         fav_val = favorite
         if payload and isinstance(payload, dict) and "favorite" in payload:
             try:
                 fav_val = bool(payload.get("favorite"))
             except Exception:
                 fav_val = False
-        cur["favorite"] = bool(fav_val)
-        tf.parent.mkdir(parents=True, exist_ok=True)
-        tf.write_text(json.dumps(cur, indent=2))
-        return api_success({"favorite": cur["favorite"]})
+        updates = _apply_metadata_update(vp, favorite=fav_val)
+        return api_success({"favorite": updates.get("favorite", False)})
     except HTTPException:
         raise
     except Exception:
@@ -9886,7 +11512,7 @@ def media_tags_bulk_add(payload: MediaTagsBulkAddPayload):
     seen_pairs: set[tuple[str, str]] = set()
     updated = 0
     skipped = 0
-    dirty = False
+    dirty_paths: set[str] = set()
     for item in updates:
         path = (item.path or "").strip()
         tag = (item.tag or "").strip()
@@ -9909,9 +11535,9 @@ def media_tags_bulk_add(payload: MediaTagsBulkAddPayload):
         ent["tags"].append(tag)
         ent["tags"] = _norm_list(ent["tags"])
         updated += 1
-        dirty = True
-    if dirty:
-        _save_media_attr()
+        dirty_paths.add(path)
+    if dirty_paths:
+        _save_media_attr(dirty_paths)
     return api_success({"updated": updated, "skipped": skipped, "total": len(updates)})
 
 @api.post("/media/performers/add")
@@ -9920,10 +11546,13 @@ def media_performers_add(path: str = Query(...), performer: str = Query(...)):
     if not performer:
         raise_api_error("performer required", status_code=400)
     ent = _media_entry(path)
+    mutated = False
     if performer.lower() not in {p.lower() for p in ent["performers"]}:
         ent["performers"].append(performer)
         ent["performers"] = _norm_list(ent["performers"])
-    _save_media_attr()
+        mutated = True
+    if mutated:
+        _save_media_attr([path])
     # Update in-memory index for immediate accuracy
     try:
         norm = _normalize_performer(performer)
@@ -9937,8 +11566,10 @@ def media_performers_add(path: str = Query(...), performer: str = Query(...)):
 def media_performers_remove(path: str = Query(...), performer: str = Query(...)):
     performer = performer.strip()
     ent = _media_entry(path)
+    before = len(ent["performers"])
     ent["performers"] = [p for p in ent["performers"] if p.lower() != performer.lower()]
-    _save_media_attr()
+    if len(ent["performers"]) != before:
+        _save_media_attr([path])
     try:
         norm = _normalize_performer(performer)
         paths = _PERFORMERS_INDEX.get(norm)
@@ -9981,18 +11612,23 @@ def media_tags_add(path: str = Query(...), tag: str = Query(...)):
     if not tag:
         raise_api_error("tag required", status_code=400)
     ent = _media_entry(path)
+    mutated = False
     if tag.lower() not in {t.lower() for t in ent["tags"]}:
         ent["tags"].append(tag)
         ent["tags"] = _norm_list(ent["tags"])
-    _save_media_attr()
+        mutated = True
+    if mutated:
+        _save_media_attr([path])
     return api_success({"tags": ent["tags"]})
 
 @api.post("/media/tags/remove")
 def media_tags_remove(path: str = Query(...), tag: str = Query(...)):
     tag = tag.strip()
     ent = _media_entry(path)
+    before = len(ent["tags"])
     ent["tags"] = [t for t in ent["tags"] if t.lower() != tag.lower()]
-    _save_media_attr()
+    if len(ent["tags"]) != before:
+        _save_media_attr([path])
     return api_success({"tags": ent["tags"]})
 
 
@@ -10292,33 +11928,8 @@ def thumbnail_get(path: str = Query(...)):
     root = Path(directory)
     target = root / name
     thumbnail = thumbnails_path(target)
-    # Fallback: legacy sibling thumbnail next to the video (e.g., "<stem>.thumbnail.jpg")
     if not thumbnail.exists():
-        sibling = target.parent / f"{target.stem}.thumbnail.jpg"
-        if sibling.exists():
-            thumbnail = sibling
-    if not thumbnail.exists():
-        # Do NOT 404: return a tiny placeholder JPEG to avoid console errors.
-        # Keep it uncached so a subsequent generation updates immediately.
-        try:
-            # 1x1 black JPEG bytes (valid minimal JPEG)
-            stub = bytes([
-                0xFF,0xD8,0xFF,0xDB,0x00,0x43,0x00,0x03,0x02,0x02,0x03,0x02,0x02,0x03,0x03,0x03,0x03,0x04,0x03,0x03,0x04,0x05,0x08,0x05,0x05,0x04,0x04,0x05,0x0A,0x07,0x07,0x06,0x08,0x0C,0x0A,0x0C,0x0C,0x0B,0x0A,0x0B,0x0B,0x0D,0x0E,0x12,0x10,0x0D,0x0E,0x11,0x0E,0x0B,0x0B,0x10,0x16,0x10,0x11,0x13,0x14,0x15,0x15,0x15,0x0C,0x0F,0x17,0x18,0x16,0x14,0x18,0x12,0x14,0x15,0x14,
-                0xFF,0xC0,0x00,0x0B,0x08,0x00,0x01,0x00,0x01,0x01,0x01,0x11,0x00,
-                0xFF,0xC4,0x00,0x14,0x00,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-                0xFF,0xC4,0x00,0x14,0x10,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-                0xFF,0xDA,0x00,0x08,0x01,0x01,0x00,0x00,0x3F,0x00,0xBF,0xFF,0xD9
-            ])
-            resp = Response(content=stub, media_type="image/jpeg", status_code=200)
-            resp.headers["Cache-Control"] = "no-store, max-age=0"
-            resp.headers["Pragma"] = "no-cache"
-            resp.headers["Expires"] = "0"
-            # Signal to clients that this is a placeholder (not found on disk)
-            resp.headers["X-Thumbnail-Exists"] = "0"
-            return resp
-        except Exception:
-            # As a last resort, still avoid 404 noise
-            return Response(content=b"", media_type="image/jpeg", status_code=200, headers={"Cache-Control": "no-store", "X-Thumbnail-Exists": "0"})
+        raise_api_error("thumbnail not found", status_code=404)
     resp = FileResponse(str(thumbnail))
     try:
         mt = thumbnail.stat().st_mtime
@@ -10327,14 +11938,8 @@ def thumbnail_get(path: str = Query(...)):
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
         resp.headers["Last-Modified"] = formatdate(mt, usegmt=True) if 'formatdate' in globals() else resp.headers.get("Last-Modified", "")
-        resp.headers["X-Thumbnail-Exists"] = "1"
     except Exception:
         resp.headers["Cache-Control"] = "no-store"
-        # Even if stat failed, this is a real file response
-        try:
-            resp.headers["X-Thumbnail-Exists"] = "1"
-        except Exception:
-            pass
     return resp
 
 @api.head("/thumbnail/get")
@@ -10347,15 +11952,11 @@ def thumbnail_head(path: str = Query(...)):
     target = root / name
     thumbnail = thumbnails_path(target)
     if not thumbnail.exists():
-        sibling = target.parent / f"{target.stem}.thumbnail.jpg"
-        if sibling.exists():
-            thumbnail = sibling
-    exists = "1" if thumbnail.exists() else "0"
+        raise_api_error("thumbnail not found", status_code=404)
     return Response(status_code=200, media_type="image/jpeg", headers={
         "Cache-Control": "no-store, max-age=0",
         "Pragma": "no-cache",
         "Expires": "0",
-        "X-Thumbnail-Exists": exists,
     })
 
 
@@ -10531,6 +12132,9 @@ async def thumbnail_delete(request: Request, path: str | None = Query(default=No
 
     root: Path = STATE["root"]
     targets: list[Path] = []
+    videos_for_refresh: list[Path] = []
+    global_delete = not path and not body_paths
+    videos_for_refresh: list[Path] = []
     if path:
         name, directory = _name_and_dir(path)
         targets.append(Path(directory) / name)
@@ -10549,28 +12153,32 @@ async def thumbnail_delete(request: Request, path: str | None = Query(default=No
 
     deleted = 0
     errors = 0
+    global_delete = not path and not body_paths
+    global_delete = not path and not body_paths
     for candidate in targets:
         try:
+            resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
             # If candidate already points to the thumbnail artifact (endswith .thumbnail.jpg) delete directly
-            if str(candidate).endswith(".thumbnail.jpg") and candidate.exists():
+            if str(resolved).endswith(".thumbnail.jpg") and resolved.exists():
                 try:
-                    candidate.unlink()
+                    resolved.unlink()
                     deleted += 1
-                    print(f"[thumbnail.delete] deleted artifact {candidate}", flush=True)
+                    print(f"[thumbnail.delete] deleted artifact {resolved}", flush=True)
                 except Exception:
                     errors += 1
-                    print(f"[thumbnail.delete] failed deleting artifact {candidate}", flush=True)
+                    print(f"[thumbnail.delete] failed deleting artifact {resolved}", flush=True)
                 continue
             # Treat as source video - derive thumbnail path
-            t = thumbnails_path(candidate)
+            t = thumbnails_path(resolved)
             if t.exists():
                 try:
                     t.unlink()
                     deleted += 1
-                    print(f"[thumbnail.delete] deleted derived {t} (source={candidate})", flush=True)
+                    print(f"[thumbnail.delete] deleted derived {t} (source={resolved})", flush=True)
                 except Exception:
                     errors += 1
-                    print(f"[thumbnail.delete] failed derived delete {t} (source={candidate})", flush=True)
+                    print(f"[thumbnail.delete] failed derived delete {t} (source={resolved})", flush=True)
+            videos_for_refresh.append(resolved)
         except Exception:
             errors += 1
             print(f"[thumbnail.delete] unexpected error {candidate}", flush=True)
@@ -10580,6 +12188,10 @@ async def thumbnail_delete(request: Request, path: str | None = Query(default=No
     if mode == "single" and deleted == 0 and errors == 0:
         raise_api_error("Thumbnail not found", status_code=404)
     result = {"requested": len(targets), "deleted": deleted, "errors": errors, "mode": mode}
+    try:
+        _artifact_db_handle_deletions("thumbnail", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     print(f"[thumbnail.delete] result={result}", flush=True)
     return api_success(result)
 
@@ -10908,6 +12520,7 @@ async def preview_delete(request: Request, path: str | None = Query(default=None
         body_paths = []
 
     targets: list[Path] = []
+    videos_for_refresh: list[Path] = []
     root: Path = STATE["root"]
     if path:
         name, directory = _name_and_dir(path)
@@ -10937,52 +12550,55 @@ async def preview_delete(request: Request, path: str | None = Query(default=None
             pass
     _p(f"start mode={'single' if path else ('batch' if body_paths else 'global')} path={path!r} body_paths={len(body_paths)}")
     _p(f"targets={len(targets)} first_target={targets[0] if targets else None}")
+    global_delete = not path and not body_paths
     for candidate in targets:
         try:
+            resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
             # If candidate is already a preview artifact (webm/mp4 or json) delete directly
-            name = str(candidate)
+            name = str(resolved)
             if name.endswith(SUFFIX_PREVIEW_WEBM) or name.endswith(SUFFIX_PREVIEW_MP4) or name.endswith(SUFFIX_PREVIEW_JSON):
-                if candidate.exists():
+                if resolved.exists():
                     try:
-                        candidate.unlink()
+                        resolved.unlink()
                         if name.endswith(SUFFIX_PREVIEW_WEBM) or name.endswith(SUFFIX_PREVIEW_MP4):
                             deleted += 1
-                            _p(f"deleted preview {candidate}")
+                            _p(f"deleted preview {resolved}")
                         else:
                             metadata_deleted += 1
-                            _p(f"deleted preview metadata {candidate}")
+                            _p(f"deleted preview metadata {resolved}")
                     except Exception:
                         errors += 1
-                        _p(f"failed deleting direct artifact {candidate}")
+                        _p(f"failed deleting direct artifact {resolved}")
                 continue
             # Otherwise treat as source video
             try:
-                webm = preview_webm_path(candidate)
+                webm = preview_webm_path(resolved)
                 if webm.exists():
                     webm.unlink()
                     deleted += 1
-                    _p(f"deleted derived preview {webm} (source={candidate})")
+                    _p(f"deleted derived preview {webm} (source={resolved})")
             except Exception:
                 errors += 1
-                _p(f"failed deleting derived preview {candidate}")
+                _p(f"failed deleting derived preview {resolved}")
             try:
-                mp4 = preview_mp4_path(candidate)
+                mp4 = preview_mp4_path(resolved)
                 if mp4.exists():
                     mp4.unlink()
                     deleted += 1
-                    _p(f"deleted derived preview {mp4} (source={candidate})")
+                    _p(f"deleted derived preview {mp4} (source={resolved})")
             except Exception:
                 errors += 1
-                _p(f"failed deleting derived preview (mp4) {candidate}")
+                _p(f"failed deleting derived preview (mp4) {resolved}")
             try:
-                metadata = preview_json_path(candidate)
+                metadata = preview_json_path(resolved)
                 if metadata.exists():
                     metadata.unlink()
                     metadata_deleted += 1
-                    _p(f"deleted derived preview metadata {metadata} (source={candidate})")
+                    _p(f"deleted derived preview metadata {metadata} (source={resolved})")
             except Exception:
                 errors += 1
-                _p(f"failed deleting derived preview metadata {candidate}")
+                _p(f"failed deleting derived preview metadata {resolved}")
+            videos_for_refresh.append(resolved)
         except Exception:
             errors += 1
             _p(f"unexpected error deleting candidate {candidate}")
@@ -10994,6 +12610,10 @@ async def preview_delete(request: Request, path: str | None = Query(default=None
         "errors": errors,
         "mode": "single" if path else ("batch" if body_paths else "global"),
     }
+    try:
+        _artifact_db_handle_deletions("preview", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     _p(f"result={result}")
     return api_success(result)
 
@@ -11081,47 +12701,36 @@ def artifacts_status(path: str = Query(...)):
     video = Path(directory) / name
     if not video.exists():
         # Suppress 404 noise for missing videos; return all-false status with marker
-        # Standard keys
-        base = {
-            "thumbnail": False,
-            "preview": False,
-            "sprites": False,
-            "markers": False,
-            "subtitles": False,
-            "faces": False,
-            "phash": False,
-            "heatmap": False,
-            "metadata": False,
-            "missing": True,
-        }
+        base = {key: False for key in ARTIFACT_KEYS}
+        base["missing"] = True
         return api_success(base)
-    def _safe(f):
+    try:
+        rel = _rel_from_root(video)
+    except Exception:
+        rel = str(video)
+    payload: dict[str, bool]
+    db_flags = _db_fetch_artifact_flags(rel)
+    if db_flags is not None:
+        payload = {key: bool(db_flags.get(key)) for key in ARTIFACT_KEYS}
+        missing = [key for key in ARTIFACT_KEYS if key not in db_flags]
+        if missing:
+            info = _detect_artifacts_for_video(video)
+            for key in missing:
+                payload[key] = bool((info.get(key) or {}).get("present"))
+            try:
+                with db.session() as conn:
+                    _sync_artifacts_to_db(conn, rel, info, keys=missing)
+            except Exception:
+                pass
+    else:
+        info = _detect_artifacts_for_video(video)
+        payload = {key: bool((info.get(key) or {}).get("present")) for key in ARTIFACT_KEYS}
         try:
-            return bool(f())
+            with db.session() as conn:
+                _sync_artifacts_to_db(conn, rel, info)
         except Exception:
-            return False
-    thumbnail_flag = _safe(lambda: thumbnails_path(video).exists() or (video.parent / f"{video.stem}.thumbnail.jpg").exists())
-    preview_flag = _safe(lambda: _file_nonempty(_preview_concat_path(video, fmt="webm")) or _file_nonempty(_preview_concat_path(video, fmt="mp4")))
-    sprites_flag = _safe(lambda: all(p.exists() for p in sprite_sheet_paths(video)))
-    scenes_flag = _safe(lambda: scenes_json_path(video).exists() or (artifact_dir(video) / f"{video.stem}.markers.json").exists())
-    subtitles_flag = _safe(lambda: bool(find_subtitles(video)))
-    faces_flag = _safe(lambda: faces_path(video).exists())
-    phash_flag = _safe(lambda: phash_path(video).exists())
-    heatmap_json_flag = _safe(lambda: heatmaps_json_path(video).exists())
-    heatmap_png_flag = _safe(lambda: heatmaps_png_path(video).exists())
-    heatmap_flag = heatmap_json_flag or heatmap_png_flag
-    metadata_flag = _safe(lambda: metadata_path(video).exists())
-    payload = {
-        "thumbnail": thumbnail_flag,
-        "preview": preview_flag,
-        "sprites": sprites_flag,
-        "markers": scenes_flag,
-        "subtitles": subtitles_flag,
-        "faces": faces_flag,
-        "phash": phash_flag,
-        "heatmap": heatmap_flag,
-        "metadata": metadata_flag,
-    }
+            pass
+    payload["missing"] = False
     return api_success(payload)
 
 
@@ -11220,6 +12829,7 @@ async def phash_delete(request: Request, path: str | None = Query(default=None))
 
     root: Path = STATE["root"]
     targets: list[Path] = []
+    videos_for_refresh: list[Path] = []
     if path:
         name, directory = _name_and_dir(path)
         targets.append(Path(directory) / name)
@@ -11234,6 +12844,7 @@ async def phash_delete(request: Request, path: str | None = Query(default=None))
 
     deleted = 0
     errors = 0
+    global_delete = not path and not body_paths
     for candidate in targets:
         try:
             resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
@@ -11252,12 +12863,17 @@ async def phash_delete(request: Request, path: str | None = Query(default=None))
                     deleted += 1
                 except Exception:
                     errors += 1
+            videos_for_refresh.append(resolved)
         except Exception:
             errors += 1
 
     mode = "single" if path else ("batch" if body_paths else "global")
     if mode == "single" and deleted == 0 and errors == 0:
         raise_api_error("pHash not found", status_code=404)
+    try:
+        _artifact_db_handle_deletions("phash", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     return api_success({"deleted": deleted, "errors": errors, "mode": mode})
 
 @api.delete("/phash/delete/batch")
@@ -11266,15 +12882,24 @@ def phash_delete_batch(path: str = Query(default=""), recursive: bool = Query(de
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
     deleted = 0
+    videos_for_refresh: list[Path] = []
+    global_delete = not bool(path)
     it = base.rglob("*") if recursive else base.iterdir()
     for p in it:
         if _is_original_media_file(p, base):
             ph = phash_path(p)
             try:
                 if ph.exists():
-                    ph.unlink(); deleted += 1
+                    ph.unlink()
+                    deleted += 1
+                    if not global_delete:
+                        videos_for_refresh.append(p)
             except Exception:
                 pass
+    try:
+        _artifact_db_handle_deletions("phash", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     return api_success({"deleted": deleted})
 
 
@@ -11461,6 +13086,8 @@ async def markers_clear(request: Request, path: str | None = Query(default=None)
 
     root: Path = STATE["root"]
     targets: list[Path] = []
+    videos_for_refresh: list[Path] = []
+    global_delete = not path and not body_paths
     if path:
         name, directory = _name_and_dir(path)
         targets.append(Path(directory) / name)
@@ -11525,12 +13152,17 @@ async def markers_clear(request: Request, path: str | None = Query(default=None)
                 errors += 1
             d = artifact_dir(fp) / f"{fp.stem}.scenes"
             _remove_dir(d)
+            videos_for_refresh.append(fp)
         except Exception:
             errors += 1
 
     mode = "single" if path else ("batch" if body_paths else "global")
     if mode == "single" and deleted == 0 and errors == 0:
         raise_api_error("Markers not found", status_code=404)
+    try:
+        _artifact_db_handle_deletions("markers", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     return api_success({"deleted": deleted, "errors": errors, "mode": mode})
 
 @api.delete("/markers/clear/batch")
@@ -11539,6 +13171,8 @@ def markers_clear_batch(path: str = Query(default=""), recursive: bool = Query(d
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
     deleted = 0
+    videos_for_refresh: list[Path] = []
+    global_delete = not bool(path)
     it = base.rglob("*") if recursive else base.iterdir()
     for p in it:
         if _is_original_media_file(p, base):
@@ -11546,7 +13180,10 @@ def markers_clear_batch(path: str = Query(default=""), recursive: bool = Query(d
             d = scenes_dir(p)
             try:
                 if j.exists():
-                    j.unlink(); deleted += 1
+                    j.unlink()
+                    deleted += 1
+                    if not global_delete:
+                        videos_for_refresh.append(p)
             except Exception:
                 pass
             try:
@@ -11556,9 +13193,16 @@ def markers_clear_batch(path: str = Query(default=""), recursive: bool = Query(d
                             q.unlink()
                         except Exception:
                             pass
-                    d.rmdir(); deleted += 1
+                    d.rmdir()
+                    deleted += 1
+                    if not global_delete:
+                        videos_for_refresh.append(p)
             except Exception:
                 pass
+    try:
+        _artifact_db_handle_deletions("markers", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     return api_success({"deleted": deleted})
 
 
@@ -11847,6 +13491,7 @@ async def sprites_delete(request: Request, path: str | None = Query(default=None
 
     root: Path = STATE["root"]
     targets: list[Path] = []
+    videos_for_refresh: list[Path] = []
     if path:
         name, directory = _name_and_dir(path)
         targets.append(Path(directory) / name)
@@ -11863,6 +13508,7 @@ async def sprites_delete(request: Request, path: str | None = Query(default=None
 
     deleted = 0
     errors = 0
+    global_delete = not path and not body_paths
     for candidate in targets:
         try:
             resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
@@ -11888,12 +13534,17 @@ async def sprites_delete(request: Request, path: str | None = Query(default=None
                     deleted += 1
                 except Exception:
                     errors += 1
+            videos_for_refresh.append(resolved)
         except Exception:
             errors += 1
 
     mode = "single" if path else ("batch" if body_paths else "global")
     if mode == "single" and deleted == 0 and errors == 0:
         raise_api_error("Sprites not found", status_code=404)
+    try:
+        _artifact_db_handle_deletions("sprites", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     return api_success({"deleted": deleted, "errors": errors, "mode": mode})
 
 @api.delete("/sprites/delete/batch")
@@ -11902,6 +13553,8 @@ def sprites_delete_batch(path: str = Query(default=""), recursive: bool = Query(
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
     deleted = 0
+    videos_for_refresh: list[Path] = []
+    global_delete = not bool(path)
     it = base.rglob("*") if recursive else base.iterdir()
     for p in it:
         if _is_original_media_file(p, base):
@@ -11910,11 +13563,19 @@ def sprites_delete_batch(path: str = Query(default=""), recursive: bool = Query(
                 if j.exists():
                     j.unlink()
                     deleted += 1
+                    if not global_delete:
+                        videos_for_refresh.append(p)
                 if s.exists():
                     s.unlink()
                     deleted += 1
+                    if not global_delete:
+                        videos_for_refresh.append(p)
             except Exception:
                 pass
+    try:
+        _artifact_db_handle_deletions("sprites", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     return api_success({"deleted": deleted})
 
 
@@ -12077,6 +13738,7 @@ async def heatmaps_delete(request: Request, path: str | None = Query(default=Non
 
     root: Path = STATE["root"]
     targets: list[Path] = []
+    videos_for_refresh: list[Path] = []
     if path:
         name, directory = _name_and_dir(path)
         targets.append(Path(directory) / name)
@@ -12093,19 +13755,21 @@ async def heatmaps_delete(request: Request, path: str | None = Query(default=Non
 
     deleted = 0
     errors = 0
+    global_delete = not path and not body_paths
     for candidate in targets:
         try:
-            name = str(candidate)
+            resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
+            name = str(resolved)
             if name.endswith(SUFFIX_HEATMAPS_JSON) or name.endswith(SUFFIX_HEATMAPS_PNG):
-                if candidate.exists():
+                if resolved.exists():
                     try:
-                        candidate.unlink()
+                        resolved.unlink()
                         deleted += 1
                     except Exception:
                         errors += 1
                 continue
-            j = heatmaps_json_path(candidate)
-            png = heatmaps_png_path(candidate)
+            j = heatmaps_json_path(resolved)
+            png = heatmaps_png_path(resolved)
             if j.exists():
                 try:
                     j.unlink(); deleted += 1
@@ -12116,12 +13780,17 @@ async def heatmaps_delete(request: Request, path: str | None = Query(default=Non
                     png.unlink(); deleted += 1
                 except Exception:
                     errors += 1
+            videos_for_refresh.append(resolved)
         except Exception:
             errors += 1
 
     mode = "single" if path else ("batch" if body_paths else "global")
     if mode == "single" and deleted == 0 and errors == 0:
         raise_api_error("Heatmaps not found", status_code=404)
+    try:
+        _artifact_db_handle_deletions("heatmaps", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     return api_success({"deleted": deleted, "errors": errors, "mode": mode})
 
 @api.delete("/heatmaps/delete/batch")
@@ -12130,6 +13799,8 @@ def heatmaps_delete_batch(path: str = Query(default=""), recursive: bool = Query
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
     deleted = 0
+    videos_for_refresh: list[Path] = []
+    global_delete = not bool(path)
     it = base.rglob("*") if recursive else base.iterdir()
     for p in it:
         if _is_original_media_file(p, base):
@@ -12137,11 +13808,21 @@ def heatmaps_delete_batch(path: str = Query(default=""), recursive: bool = Query
             png = heatmaps_png_path(p)
             try:
                 if j.exists():
-                    j.unlink(); deleted += 1
+                    j.unlink()
+                    deleted += 1
+                    if not global_delete:
+                        videos_for_refresh.append(p)
                 if png.exists():
-                    png.unlink(); deleted += 1
+                    png.unlink()
+                    deleted += 1
+                    if not global_delete:
+                        videos_for_refresh.append(p)
             except Exception:
                 pass
+    try:
+        _artifact_db_handle_deletions("heatmaps", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     return api_success({"deleted": deleted})
 
 
@@ -12435,6 +14116,7 @@ async def metadata_delete(request: Request, path: str | None = Query(default=Non
 
     root: Path = STATE["root"]
     targets: list[Path] = []
+    videos_for_refresh: list[Path] = []
     if path:
         name, directory = _name_and_dir(path)
         targets.append(Path(directory) / name)
@@ -12452,28 +14134,31 @@ async def metadata_delete(request: Request, path: str | None = Query(default=Non
 
     deleted = 0
     errors = 0
+    global_delete = not path and not body_paths
     for candidate in targets:
         try:
+            resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
             # Direct artifact?
-            if str(candidate).endswith(".metadata.json") and candidate.exists():
+            if str(resolved).endswith(".metadata.json") and resolved.exists():
                 try:
-                    candidate.unlink()
+                    resolved.unlink()
                     deleted += 1
-                    print(f"[metadata.delete] deleted artifact {candidate}", flush=True)
+                    print(f"[metadata.delete] deleted artifact {resolved}", flush=True)
                 except Exception:
                     errors += 1
-                    print(f"[metadata.delete] failed deleting artifact {candidate}", flush=True)
+                    print(f"[metadata.delete] failed deleting artifact {resolved}", flush=True)
                 continue
             # Derive from source
-            m = metadata_path(candidate)
+            m = metadata_path(resolved)
             if m.exists():
                 try:
                     m.unlink()
                     deleted += 1
-                    print(f"[metadata.delete] deleted derived {m} (source={candidate})", flush=True)
+                    print(f"[metadata.delete] deleted derived {m} (source={resolved})", flush=True)
                 except Exception:
                     errors += 1
-                    print(f"[metadata.delete] failed derived delete {m} (source={candidate})", flush=True)
+                    print(f"[metadata.delete] failed derived delete {m} (source={resolved})", flush=True)
+            videos_for_refresh.append(resolved)
         except Exception:
             errors += 1
             print(f"[metadata.delete] unexpected error {candidate}", flush=True)
@@ -12482,6 +14167,10 @@ async def metadata_delete(request: Request, path: str | None = Query(default=Non
     if mode == "single" and deleted == 0 and errors == 0:
         raise_api_error("Metadata not found", status_code=404)
     result = {"requested": len(targets), "deleted": deleted, "errors": errors, "mode": mode}
+    try:
+        _artifact_db_handle_deletions("metadata", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     print(f"[metadata.delete] result={result}", flush=True)
     return api_success(result)
 
@@ -12597,13 +14286,14 @@ def subtitles_backend_info():
     Helps explain 'instant completion' when the stub backend or FFPROBE_DISABLE shortcut is active.
     """
     be = detect_backend("auto")
+    cpp_bin_path, cpp_model_path = _resolve_whisper_cpp_paths()
     return api_success({
         "backend": be,
         "ffprobe_disable": bool(os.environ.get("FFPROBE_DISABLE")),
         "has_faster_whisper": _safe_importable("faster_whisper"),
         "has_whisper": _safe_importable("whisper"),
-        "whisper_cpp_bin": os.environ.get("WHISPER_CPP_BIN") or None,
-        "whisper_cpp_model": os.environ.get("WHISPER_CPP_MODEL") or None,
+        "whisper_cpp_bin": str(cpp_bin_path) if cpp_bin_path else None,
+        "whisper_cpp_model": str(cpp_model_path) if cpp_model_path else None,
     })
 
 
@@ -12614,6 +14304,10 @@ def subtitles_delete(path: str = Query(...)):
     if s and s.exists():
         try:
             s.unlink()
+            try:
+                _artifact_db_handle_deletions("subtitles", [fp], global_delete=False)
+            except Exception:
+                pass
             return api_success({"deleted": True})
         except Exception as e:
             raise_api_error(f"Failed to delete subtitles: {e}", status_code=500)
@@ -12675,21 +14369,59 @@ def subtitles_create_batch(
 
 
 @api.delete("/subtitles/delete/batch")
-def subtitles_delete_batch(path: str = Query(default=""), recursive: bool = Query(default=True)):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
+async def subtitles_delete_batch(request: Request, path: str = Query(default=""), recursive: bool = Query(default=True)):
+    body_paths: list[str] = []
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            payload = await request.json()
+            if isinstance(payload, dict):
+                arr = payload.get("paths")
+                if isinstance(arr, list):
+                    body_paths = [str(p) for p in arr if isinstance(p, str)]
+    except Exception:
+        body_paths = []
+
     deleted = 0
-    it = base.rglob("*") if recursive else base.iterdir()
-    for p in it:
-        if _is_original_media_file(p, base):
-            s = find_subtitles(p)
-            if s and s.exists():
-                try:
+    videos_for_refresh: list[Path] = []
+    global_delete = False
+    if body_paths:
+        targets: list[Path] = []
+        for rel in body_paths:
+            try:
+                name, directory = _name_and_dir(rel)
+            except Exception:
+                continue
+            targets.append(Path(directory) / name)
+        for fp in targets:
+            try:
+                s = find_subtitles(fp)
+                if s and s.exists():
                     s.unlink()
                     deleted += 1
-                except Exception:
-                    pass
+            except Exception:
+                continue
+            videos_for_refresh.append(fp)
+    else:
+        base = safe_join(STATE["root"], path) if path else STATE["root"]
+        if not base.exists() or not base.is_dir():
+            raise_api_error("Not found", status_code=404)
+        it = base.rglob("*") if recursive else base.iterdir()
+        global_delete = not bool(path)
+        for p in it:
+            if _is_original_media_file(p, base):
+                s = find_subtitles(p)
+                if s and s.exists():
+                    try:
+                        s.unlink()
+                        deleted += 1
+                        if not global_delete:
+                            videos_for_refresh.append(p)
+                    except Exception:
+                        pass
+    try:
+        _artifact_db_handle_deletions("subtitles", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     return api_success({"deleted": deleted})
 
 
@@ -13331,16 +15063,66 @@ def faces_create_batch(
 
 
 @api.delete("/faces/delete")
-def faces_delete(path: str = Query(...)):
-    fp = safe_join(STATE["root"], path)
-    f = faces_path(fp)
-    if f.exists():
+async def faces_delete(request: Request, path: str | None = Query(default=None)):
+    body_paths: list[str] = []
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            payload = await request.json()
+            if isinstance(payload, dict):
+                arr = payload.get("paths")
+                if isinstance(arr, list):
+                    body_paths = [str(p) for p in arr if isinstance(p, str)]
+    except Exception:
+        body_paths = []
+
+    root: Path = STATE["root"]
+    targets: list[Path] = []
+    if path:
+        name, directory = _name_and_dir(path)
+        targets.append(Path(directory) / name)
+    elif body_paths:
+        for rel in body_paths:
+            name, directory = _name_and_dir(rel)
+            targets.append(Path(directory) / name)
+    else:
+        for p in root.rglob(f"*{SUFFIX_FACES_JSON}"):
+            targets.append(p)
+
+    deleted = 0
+    errors = 0
+    videos_for_refresh: list[Path] = []
+    global_delete = not path and not body_paths
+    for candidate in targets:
         try:
-            f.unlink()
-            return api_success({"deleted": True})
-        except Exception as e:
-            raise_api_error(f"Failed to delete faces: {e}", status_code=500)
-    raise_api_error("Faces not found", status_code=404)
+            resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
+            if str(resolved).endswith(SUFFIX_FACES_JSON):
+                if resolved.exists():
+                    try:
+                        resolved.unlink()
+                        deleted += 1
+                    except Exception:
+                        errors += 1
+                continue
+            fp = resolved
+            art = faces_path(fp)
+            if art.exists():
+                try:
+                    art.unlink()
+                    deleted += 1
+                except Exception:
+                    errors += 1
+            videos_for_refresh.append(fp)
+        except Exception:
+            errors += 1
+
+    mode = "single" if path else ("batch" if body_paths else "global")
+    if mode == "single" and deleted == 0 and errors == 0:
+        raise_api_error("Faces not found", status_code=404)
+    try:
+        _artifact_db_handle_deletions("faces", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
+    return api_success({"deleted": deleted, "errors": errors, "mode": mode})
 
 @api.delete("/faces/delete/batch")
 def faces_delete_batch(path: str = Query(default=""), recursive: bool = Query(default=True)):
@@ -13348,15 +15130,24 @@ def faces_delete_batch(path: str = Query(default=""), recursive: bool = Query(de
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
     deleted = 0
+    videos_for_refresh: list[Path] = []
+    global_delete = not bool(path)
     it = base.rglob("*") if recursive else base.iterdir()
     for p in it:
         if _is_original_media_file(p, base):
             f = faces_path(p)
             try:
                 if f.exists():
-                    f.unlink(); deleted += 1
+                    f.unlink()
+                    deleted += 1
+                    if not global_delete:
+                        videos_for_refresh.append(p)
             except Exception:
                 pass
+    try:
+        _artifact_db_handle_deletions("faces", videos_for_refresh, global_delete=global_delete)
+    except Exception:
+        pass
     return api_success({"deleted": deleted})
 
 
@@ -13421,7 +15212,6 @@ def faces_listing(path: str = Query(default=""), recursive: bool = Query(default
 
 @api.get("/faces/signatures")
 def faces_signatures(path: str = Query(default=""), recursive: bool = Query(default=True)):
-    import hashlib
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
@@ -13622,7 +15412,6 @@ def frame_crop(path: str = Query(...), t: float = Query(...), x: int = Query(...
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if proc.returncode != 0 or not proc.stdout:
             raise RuntimeError(proc.stderr.decode("utf-8", errors="ignore"))
-        import io
         im = Image.open(io.BytesIO(proc.stdout)).convert("RGB")
         # Clamp crop box to image bounds to avoid errors on edge cases
         cx, cy, cw, ch = int(x), int(y), int(w), int(h)
@@ -13696,7 +15485,6 @@ def frame_boxed(
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if proc.returncode != 0 or not proc.stdout:
             raise RuntimeError(proc.stderr.decode("utf-8", errors="ignore"))
-        import io
         from PIL import ImageDraw  # type: ignore
         im = Image.open(io.BytesIO(proc.stdout)).convert("RGB")
         # Draw rectangle clamped to bounds
@@ -14902,122 +16690,192 @@ def artifacts_repair_preview_stream_api(path: str = Query(default=""), local_onl
 # Tasks API for batch operations and coverage
 # --------------------------
 
+_COVERAGE_KEYS: tuple[str, ...] = (
+    "metadata",
+    "thumbnails",
+    "sprites",
+    "previews",
+    "phash",
+    "markers",
+    "heatmaps",
+    "subtitles",
+    "faces",
+)
+
+_ARTIFACT_TYPE_TO_COVERAGE_KEY: dict[str, str] = {
+    "metadata": "metadata",
+    "thumbnail": "thumbnails",
+    "sprites": "sprites",
+    "preview": "previews",
+    "phash": "phash",
+    "markers": "markers",
+    "heatmaps": "heatmaps",
+    "subtitles": "subtitles",
+    "faces": "faces",
+}
+
+_ARTIFACT_TYPES_FOR_COVERAGE: tuple[str, ...] = tuple(_ARTIFACT_TYPE_TO_COVERAGE_KEY.keys())
+
+
+def _coverage_template(total: int) -> dict[str, dict[str, int]]:
+    data: dict[str, dict[str, int]] = {}
+    for key in _COVERAGE_KEYS:
+        data[key] = {"processed": 0, "missing": max(0, total), "total": total}
+    return data
+
+
+def _finalize_coverage_entries(coverage: dict[str, dict[str, int]], total: int) -> None:
+    for key in _COVERAGE_KEYS:
+        entry = coverage.setdefault(key, {"processed": 0, "missing": total, "total": total})
+        processed = int(entry.get("processed", 0))
+        entry["total"] = total
+        entry["missing"] = max(0, total - processed)
+
+
+def _sql_like_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
+def _video_scope_clause(base: Path, root: Path) -> tuple[str, list[str]]:
+    try:
+        base_resolved = base.resolve()
+    except Exception:
+        base_resolved = base
+    try:
+        root_resolved = root.resolve()
+    except Exception:
+        root_resolved = root
+    if base_resolved == root_resolved:
+        return "", []
+    try:
+        rel = str(base_resolved.relative_to(root_resolved))
+    except Exception:
+        return "", []
+    rel = rel.replace("\\", "/").strip("/")
+    if not rel:
+        return "", []
+    escaped = _sql_like_escape(rel)
+    return "v.rel_path LIKE ? ESCAPE '\\'", [f"{escaped}/%"]
+
+
+def _compute_db_coverage(base: Path, root: Path) -> tuple[dict[str, dict[str, int]], int]:
+    coverage = _coverage_template(0)
+    total = 0
+    try:
+        clause_sql, clause_params = _video_scope_clause(base, root)
+        where_clause = f"WHERE {clause_sql}" if clause_sql else ""
+        with db.session(read_only=True) as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM video AS v {where_clause}",
+                clause_params,
+            ).fetchone()
+            total = int(total_row["cnt"] or 0) if total_row else 0
+            coverage = _coverage_template(total)
+            if total == 0:
+                _finalize_coverage_entries(coverage, total)
+                return coverage, 0
+            art_sql = (
+                "SELECT a.type AS type, COUNT(*) AS cnt "
+                "FROM artifact AS a "
+                "JOIN video AS v ON v.id = a.media_id "
+                "WHERE a.status = 'present'"
+            )
+            art_params: list[Any] = []
+            if clause_sql:
+                art_sql += f" AND {clause_sql}"
+                art_params.extend(clause_params)
+            placeholders = ",".join("?" for _ in _ARTIFACT_TYPES_FOR_COVERAGE)
+            art_sql += f" AND a.type IN ({placeholders})"
+            art_sql += " GROUP BY a.type"
+            art_params.extend(_ARTIFACT_TYPES_FOR_COVERAGE)
+            rows = conn.execute(art_sql, art_params).fetchall()
+            for row in rows:
+                art_type = str(row["type"] or "")
+                key = _ARTIFACT_TYPE_TO_COVERAGE_KEY.get(art_type)
+                if not key:
+                    continue
+                coverage[key]["processed"] = int(row["cnt"] or 0)
+    except Exception:
+        coverage = _coverage_template(0)
+        total = 0
+    _finalize_coverage_entries(coverage, total)
+    return coverage, total
+
+
+def _compute_filesystem_coverage(base: Path) -> tuple[dict[str, dict[str, int]], int]:
+    try:
+        videos = _find_mp4s(base, recursive=True)
+    except Exception:
+        videos = []
+    total = len(videos)
+    coverage = _coverage_template(total)
+    if total == 0:
+        return coverage, 0
+
+    def _set(key: str, count: int) -> None:
+        coverage[key]["processed"] = count
+
+    def _sprites_ok(v: Path) -> bool:
+        s, jj = sprite_sheet_paths(v)
+        return s.exists() and jj.exists()
+
+    _set("metadata", sum(1 for v in videos if metadata_path(v).exists()))
+    _set("thumbnails", sum(1 for v in videos if thumbnails_path(v).exists()))
+    _set("sprites", sum(1 for v in videos if _sprites_ok(v)))
+    preview_count = sum(1 for v in videos if _file_nonempty(_preview_concat_path(v)))
+    _set("previews", preview_count)
+    _set("phash", sum(1 for v in videos if phash_path(v).exists()))
+    _set("markers", sum(1 for v in videos if scenes_json_exists(v)))
+    heatmaps_count = 0
+    for v in videos:
+        try:
+            if heatmaps_json_exists(v):
+                heatmaps_count += 1
+        except Exception:
+            continue
+    _set("heatmaps", heatmaps_count)
+    subtitles_count = 0
+    for v in videos:
+        try:
+            if find_subtitles(v) is not None:
+                subtitles_count += 1
+        except Exception:
+            continue
+    _set("subtitles", subtitles_count)
+    faces_count = 0
+    for v in videos:
+        try:
+            if faces_exists_check(v):
+                faces_count += 1
+        except Exception:
+            continue
+    _set("faces", faces_count)
+    _finalize_coverage_entries(coverage, total)
+    return coverage, total
+
+
 @api.get("/tasks/coverage")
 def tasks_coverage(path: str = Query(default="")):
     """
-    Get artifact coverage statistics for the given path."""
+    Get artifact coverage statistics for the given path.
+    """
     try:
-        base = safe_join(STATE["root"], path) if path else STATE["root"]
+        root_val = STATE.get("root")
+        if not isinstance(root_val, Path):
+            raise_api_error("Root not set", status_code=400)
+        root: Path = cast(Path, root_val)
+        base: Path = root if path in ("", ".") else safe_join(root, path)
         if not base.exists() or not base.is_dir():
             raise_api_error("Path not found", status_code=404)
-
-        # Find all video files
-        videos = _find_mp4s(base, recursive=True)
-        total_count = len(videos)
-
-        # Count artifacts for each type
-        coverage = {}
-
-        # Metadata artifacts
-        metadata_count = sum(1 for v in videos if metadata_path(v).exists())
-        coverage["metadata"] = {
-            "processed": metadata_count,
-            "missing": total_count - metadata_count,
-            "total": total_count
-        }
-
-        # Thumbnail artifacts
-        thumbnails_count = sum(1 for v in videos if thumbnails_path(v).exists())
-        coverage["thumbnails"] = {
-            "processed": thumbnails_count,
-            "missing": total_count - thumbnails_count,
-            "total": total_count
-        }
-
-        # Sprite artifacts (require both sheet and index json)
-        def _sprites_ok(v: Path) -> bool:
-            s, jj = sprite_sheet_paths(v)
-            return s.exists() and jj.exists()
-        sprite_count = sum(1 for v in videos if _sprites_ok(v))
-        coverage["sprites"] = {
-            "processed": sprite_count,
-            "missing": total_count - sprite_count,
-            "total": total_count
-        }
-
-        # Preview artifacts (concatenated preview files)
-        preview_count = 0
-        for v in videos:
-            # Check for concatenated preview file (non-empty to avoid counting stubs)
-            concat_path = _preview_concat_path(v)
-            if _file_nonempty(concat_path):
-                preview_count += 1
-        coverage["previews"] = {
-            "processed": preview_count,
-            "missing": total_count - preview_count,
-            "total": total_count
-        }
-
-        # Phash artifacts
-        phash_count = sum(1 for v in videos if phash_path(v).exists())
-        coverage["phash"] = {
-            "processed": phash_count,
-            "missing": total_count - phash_count,
-            "total": total_count
-        }
-
-        # Markers artifacts (scene detection writes into marker store)
-        markers_count = sum(1 for v in videos if scenes_json_exists(v))
-        coverage["markers"] = {
-            "processed": markers_count,
-            "missing": total_count - markers_count,
-            "total": total_count
-        }
-
-        # Heatmaps artifacts (JSON is the source of truth)
-        heatmaps_count = 0
-        for v in videos:
-            try:
-                if heatmaps_json_exists(v):
-                    heatmaps_count += 1
-            except Exception:
-                pass
-        coverage["heatmaps"] = {
-            "processed": heatmaps_count,
-            "missing": total_count - heatmaps_count,
-            "total": total_count,
-        }
-
-        # Subtitles artifacts (supports multiple naming conventions)
-        subtitles_count = 0
-        for v in videos:
-            try:
-                if find_subtitles(v) is not None:
-                    subtitles_count += 1
-            except Exception:
-                pass
-        coverage["subtitles"] = {
-            "processed": subtitles_count,
-            "missing": total_count - subtitles_count,
-            "total": total_count,
-        }
-
-        # Faces artifacts (supports multiple naming conventions)
-        faces_count = 0
-        for v in videos:
-            try:
-                if faces_exists_check(v):
-                    faces_count += 1
-            except Exception:
-                pass
-        coverage["faces"] = {
-            "processed": faces_count,
-            "missing": total_count - faces_count,
-            "total": total_count,
-        }
-
+        base = base.resolve()
+        coverage, db_total = _compute_db_coverage(base, root)
+        if db_total == 0:
+            fallback_coverage, fs_total = _compute_filesystem_coverage(base)
+            if fs_total > 0:
+                coverage = fallback_coverage
         return api_success({"coverage": coverage})
-
+    except HTTPException:
+        raise
     except Exception as e:
         raise_api_error(f"Failed to get coverage: {str(e)}")
 
@@ -15674,21 +17532,9 @@ def tasks_jobs():
             try:
                 jtype = (job.get("type") or "").lower()
                 # Provide a stable "artifact" key aligning with frontend badge dataset values
-                # Badge keys (sidebar): metadata, thumbnail, preview, phash, sprites, heatmaps, subtitles, markers, faces
-                artifact_map = {
-                    "thumbnail": "thumbnail",
-                    "preview": "preview",
-                    "phash": "phash",
-                    "markers": "markers",
-                    "sprites": "sprites",
-                    "heatmaps": "heatmaps",
-                    "faces": "faces",
-                    "embed": "faces",           # embed updates faces.json; reuse faces spinner
-                    "metadata": "metadata",
-                    "subtitles": "subtitles",
-                }
-                if jtype in artifact_map:
-                    formatted_job["artifact"] = artifact_map[jtype]
+                canon_art = _artifact_from_type(jtype)
+                if canon_art:
+                    formatted_job["artifact"] = canon_art
                 cur = job.get("current") or job.get("label") or job.get("path") or ""
                 target_path_str: Optional[str] = None
                 if cur:
@@ -17257,7 +19103,7 @@ def _handle_autotag_job(jid: str, jr: JobRequest, base: Path) -> None:
                 merged_tags = _norm_list((ent.get("tags") or []) + list(found_tags))
                 ent["performers"] = merged_perfs
                 ent["tags"] = merged_tags
-                _save_media_attr()
+                _save_media_attr([rel])
             except Exception:
                 pass
         finally:
@@ -18008,24 +19854,48 @@ def _handle_subtitles_job(jid: str, jr: JobRequest, base: Path) -> None:
                 continue
     else:
         vids = _iter_videos(base, bool(jr.recursive))
-    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
+    total_targets = len(vids)
+    _set_job_progress(jid, total=max(0, total_targets * 100), processed_set=0)
     model = str(prm.get("model", "small"))
     language = prm.get("language")
     translate = bool(prm.get("translate", False))
     done_files = 0
+    try:
+        print(
+            f"[subtitles.job] start jid={jid} targets={total_targets} model={model} lang={language or 'auto'} translate={translate} recursive={bool(jr.recursive)}",
+            flush=True,
+        )
+    except Exception:
+        pass
     for v in vids:
+        rel: Any = v
+        rel_safe = _log_safe_token(rel, "video")
         if _job_check_canceled(jid):
             _finish_job(jid)
             return
         try:
+            try:
+                rel = v.relative_to(STATE["root"])
+            except Exception:
+                rel = v
+            rel_safe = _log_safe_token(rel, "video")
             _set_job_current(jid, str(v))
             out_file = artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}"
+            dest_safe = _log_safe_token(out_file, "subtitles.out")
             lk = _file_task_lock(v, "subtitles")
             with lk:
                 if out_file.exists() and not bool(jr.force) and not _is_stub_subtitles_file(out_file):
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
+                    try:
+                        print(f"[subtitles.job] skip existing subtitles rel={rel_safe}", flush=True)
+                    except Exception:
+                        pass
                 else:
+                    try:
+                        print(f"[subtitles.job] generate rel={rel_safe} destination={dest_safe}", flush=True)
+                    except Exception:
+                        pass
                     def _pcb_sub(frac: float):
                         try:
                             frac = max(0.0, min(1.0, float(frac)))
@@ -18041,12 +19911,32 @@ def _handle_subtitles_job(jid: str, jr: JobRequest, base: Path) -> None:
                     )
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
+                    try:
+                        size = out_file.stat().st_size if out_file.exists() else 0
+                    except Exception:
+                        size = 0
+                    try:
+                        print(f"[subtitles.job] finished rel={rel_safe} size={size}B", flush=True)
+                    except Exception:
+                        pass
         except Exception:
             done_files += 1
             _set_job_progress(jid, processed_set=done_files * 100)
+            try:
+                print(f"[subtitles.job] error rel={rel_safe} (jid={jid})", flush=True)
+            except Exception:
+                pass
+            try:
+                traceback.print_exc()
+            except Exception:
+                pass
     _set_job_current(jid, None)
     _job_set_result(jid, {"processed": len(vids)})
     _finish_job(jid)
+    try:
+        print(f"[subtitles.job] finish jid={jid} processed={done_files}/{total_targets}", flush=True)
+    except Exception:
+        pass
 
 def _handle_concat_job(jid: str, jr: JobRequest, base: Path) -> None:
     """Concatenate multiple input files into a single MP4 (H.264/AAC).
@@ -18925,7 +20815,6 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 def _placeholder_clip_embedding(seed_text: str) -> list[float]:
     """Deterministic pseudo embedding (size 128) using sha256 of seed."""
-    import hashlib
     h = hashlib.sha256(seed_text.encode("utf-8", "ignore")).digest()
     # Expand to 128 floats by hashing blocks
     out: list[float] = []
@@ -19342,6 +21231,7 @@ def api_update_video_tags(name: str, payload: TagUpdate, directory: str = Query(
     data.setdefault("description", "")
     data.setdefault("rating", 0)
     data.setdefault("favorite", False)
+    meta_updates: dict[str, Any] = {}
     if payload.replace and payload.add is not None:
         data["tags"] = []
     if payload.replace:
@@ -19360,20 +21250,25 @@ def api_update_video_tags(name: str, payload: TagUpdate, directory: str = Query(
         data["performers"] = [t for t in data["performers"] if t not in payload.performers_remove]
     if payload.description is not None:
         data["description"] = payload.description
+        meta_updates["description"] = data["description"]
     if payload.rating is not None:
         try:
             data["rating"] = max(0, min(5, int(payload.rating)))
         except (ValueError, TypeError):
             data["rating"] = 0
+        meta_updates["rating"] = data["rating"]
     if payload.favorite is not None:
         try:
             data["favorite"] = bool(payload.favorite)
         except Exception:
             data["favorite"] = False
+        meta_updates["favorite"] = data["favorite"]
     try:
         tfile.write_text(json.dumps(data, indent=2))
     except Exception:
         raise_api_error("failed to write tags", status_code=500)
+    if meta_updates:
+        _sync_video_meta_to_db(path, **meta_updates)
     return data
 
 
@@ -19510,6 +21405,7 @@ def _rewrite_media_attr_tags_with_registry() -> int:
         by_slug = {}
     changed = 0
     try:
+        changed_paths: set[str] = set()
         for rel, ent in (_MEDIA_ATTR or {}).items():
             tags = list((ent or {}).get("tags") or [])
             new_tags: list[str] = []
@@ -19525,8 +21421,9 @@ def _rewrite_media_attr_tags_with_registry() -> int:
             if new_tags != tags:
                 ent["tags"] = new_tags
                 changed += 1
-        if changed:
-            _save_media_attr()
+                changed_paths.add(rel)
+        if changed_paths:
+            _save_media_attr(changed_paths)
     except Exception:
         pass
     # Invalidate tags list cache so next /api/tags reflects updates
@@ -19545,7 +21442,7 @@ def _delete_tag_everywhere(slug: str) -> dict[str, int]:
     sidecars_updated = 0
 
     try:
-        changed = False
+        changed_paths: set[str] = set()
         for rel, ent in (_MEDIA_ATTR or {}).items():
             tags = list((ent or {}).get("tags") or [])
             if not tags:
@@ -19553,10 +21450,10 @@ def _delete_tag_everywhere(slug: str) -> dict[str, int]:
             new_tags = [t for t in tags if _slugify(str(t)) != slug_norm]
             if new_tags != tags:
                 ent["tags"] = new_tags
-                changed = True
+                changed_paths.add(rel)
                 media_attr_updated += 1
-        if changed:
-            _save_media_attr()
+        if changed_paths:
+            _save_media_attr(changed_paths)
     except Exception:
         pass
 
@@ -20548,18 +22445,15 @@ def api_finish_run(payload: dict = Body(default_factory=dict)):
                 err: Optional[str] = None
                 try:
                     if kind == "metadata":
-                        try:
-                            _ = _probe_metadata(v, force=force)  # type: ignore[name-defined]
-                        except NameError:  # pragma: no cover
-                            _ = probe_metadata(v, force=force)  # type: ignore[name-defined]
+                        metadata_single(v, force=force)
                     elif kind == "thumbnail":
                         generate_thumbnail(v, force=force)
                     elif kind == "preview":
                         generate_preview(v, segments=9, seg_dur=0.8, width=240, fmt="webm")
                     elif kind == "heatmaps":
-                        _ = _generate_heatmap(v)  # type: ignore[name-defined]
+                        compute_heatmaps(v, interval=1.0, mode="avg", png=True)
                     elif kind == "phash":
-                        _ = phash_create_single(v, overwrite=force)  # type: ignore[name-defined]
+                        phash_create_single(v)
                     elif kind == "faces":
                         if force or force_faces or not faces_exists_check(v):
                             _ = _detect_faces(v, stride=30)  # type: ignore[name-defined]

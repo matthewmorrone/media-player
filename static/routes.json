@@ -176,6 +176,7 @@
   "POST /api/admin/panic-kill": "Immediately terminate runaway ffmpeg processes and workers",
   "POST /api/autotag/preview": "Dry-run automatic tag assignment and return a preview of changes",
   "POST /api/autotag/scan": "Scan library and assign tags based on filename patterns and metadata",
+  "POST /api/db/import": "Backfill the SQLite database from existing files/sidecars under an optional path",
 
   "GET /api/health": "Server health status and basic system information (uptime, versions)",
   "GET /api/previews": "List videos that have previews under a path",

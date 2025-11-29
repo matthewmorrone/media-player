@@ -63,10 +63,7 @@ function hide(el) {
       el.setAttribute('hidden', '');
     }
   }
-  try {
-    el.style.removeProperty('display');
-  }
-  catch (_) {}
+  el.style.removeProperty('display');
 }
 function show(el) {
   if (!el) return;
@@ -81,7 +78,7 @@ function showAs(el, display) {
   if (el.hasAttribute('hidden')) el.removeAttribute('hidden');
 }
 function isHidden(el) {
-  return !el || el.classList.contains('hidden') || el.hasAttribute('hidden');
+  return !el || el.classList.contains('hidden') || el.classList.contains('d-none') || el.hasAttribute('hidden');
 }
 
 function getOpenModals() {
@@ -97,14 +94,11 @@ function getOpenModals() {
 function requestModalClose(modal, reason = 'manual') {
   if (!modal) return false;
   let evt = null;
-  try {
-    evt = new CustomEvent('modal:requestClose', {
-      cancelable: true,
-      detail: { reason },
-    });
-    modal.dispatchEvent(evt);
-  }
-  catch (_) {}
+  evt = new CustomEvent('modal:requestClose', {
+    cancelable: true,
+    detail: { reason },
+  });
+  modal.dispatchEvent(evt);
   if (!evt || !evt.defaultPrevented) {
     hide(modal);
   }
@@ -187,13 +181,10 @@ function isAbsolutePath(p) {
 }
 
 function notify(message, type = 'info') {
-  try {
-    if (window.tasksManager && typeof window.tasksManager.showNotification === 'function') {
-      window.tasksManager.showNotification(message, type);
-      return;
-    }
+  if (window.tasksManager && typeof window.tasksManager.showNotification === 'function') {
+    window.tasksManager.showNotification(message, type);
+    return;
   }
-  catch (_) {}
   let host = document.getElementById('toastHost');
   if (!host) {
     host = document.createElement('div'); host.id = 'toastHost'; document.body.appendChild(host);
@@ -237,13 +228,13 @@ function getLocalStorageItem(key, opts = null) {
     case 'bool':
       if (raw === '1' || raw === 'true') return true;
       if (raw === '0' || raw === 'false') return false;
-        return fallback;
+      return fallback;
     case 'number': {
       const n = Number(raw);
       return Number.isFinite(n) ? n : fallback;
     }
     default:
-        return raw;
+      return raw;
     }
   }
   catch (_) {
@@ -274,13 +265,10 @@ function setLocalStorageItem(key, value, opts = null) {
 
 function lsKeysWithPrefix(prefix) {
   const out = [];
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith(prefix)) out.push(k);
-    }
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(prefix)) out.push(k);
   }
-  catch (_) {}
   return out;
 }
 function lsRemove(key) {
@@ -312,11 +300,8 @@ function setLocalStorageBoolean(key, value) {
 let __dropInterceptSuspended = false;
 function setDropInterceptSuspended(state) {
   __dropInterceptSuspended = Boolean(state);
-  try {
-    const body = document.body;
-    if (body) body.classList.toggle('drop-intercept-suspended', __dropInterceptSuspended);
-  }
-  catch (_) {}
+  const body = document.body;
+  if (body) body.classList.toggle('drop-intercept-suspended', __dropInterceptSuspended);
 }
 function isDropInterceptSuspended() {
   return __dropInterceptSuspended;
@@ -333,17 +318,11 @@ function loadToggleSetting(name, defaultValue = false) {
   }
 }
 function saveToggleSetting(name, value) {
-  try {
-    setLocalStorageItem(`setting.${name}`, value ? '1' : '0');
-  }
-  catch (_) {}
+  setLocalStorageItem(`setting.${name}`, value ? '1' : '0');
 }
 // Attach to window for any legacy non-module access patterns (defensive)
-try {
-  window.loadToggleSetting = window.loadToggleSetting || loadToggleSetting;
-  window.saveToggleSetting = window.saveToggleSetting || saveToggleSetting;
-}
-catch (_) {}
+window.loadToggleSetting = window.loadToggleSetting || loadToggleSetting;
+window.saveToggleSetting = window.saveToggleSetting || saveToggleSetting;
 
 function devLog(level, scope, ...args) {
   try {
@@ -375,10 +354,7 @@ function devLog(level, scope, ...args) {
         const hasUrlDebug = /(^|[?&#])debug=1(?!\d)/.test(window.location.search) || /(^|[?&#])debug=1(?!\d)/.test(window.location.hash);
         if (hasUrlDebug && !window.__DEBUG_LOGS) {
           window.__DEBUG_LOGS = true;
-          try {
-            localStorage.setItem('setting.debugLogs', '1');
-          }
-          catch (_) {}
+          localStorage.setItem('setting.debugLogs', '1');
         }
         enabled = Boolean(window.__DEBUG_LOGS) || loadToggleSetting('debugLogs', false);
       }
@@ -428,10 +404,7 @@ function devLog(level, scope, ...args) {
     };
     window.addEventListener('error', (e) => {
       if (isKnownExtError(e?.message, e?.filename)) {
-        try {
-          e.preventDefault(); e.stopImmediatePropagation();
-        }
-        catch (_) { }
+        e.preventDefault(); e.stopImmediatePropagation();
         return false;
       }
     }, true);
@@ -440,10 +413,7 @@ function devLog(level, scope, ...args) {
       const msg = reason && (reason.message || String(reason));
       const src = reason && (reason.fileName || reason.sourceURL || reason.stack || '');
       if (isKnownExtError(msg, src)) {
-        try {
-          e.preventDefault(); e.stopImmediatePropagation();
-        }
-        catch (_) { }
+        e.preventDefault(); e.stopImmediatePropagation();
         return false;
       }
     }, true);
@@ -453,10 +423,7 @@ function devLog(level, scope, ...args) {
           if (n && n.nodeType === 1) {
             const el = n;
             if (el.classList && el.classList.contains('modal')) wireBackdrop(el);
-            try {
-              el.querySelectorAll && el.querySelectorAll('.modal').forEach(wireBackdrop);
-            }
-            catch (_) {}
+            el.querySelectorAll && el.querySelectorAll('.modal').forEach(wireBackdrop);
           }
         }
       }
@@ -470,10 +437,7 @@ function devLog(level, scope, ...args) {
 const loadArtifactStatuses = (..._args) => {};
 const refreshSidebarThumbnail = (..._args) => {};
 // Default SSE to unavailable until /config explicitly enables it (prevents 404 probes)
-try {
-  if (typeof window !== 'undefined') window.__JOBS_SSE_UNAVAILABLE = true;
-}
-catch (_) {}
+if (typeof window !== 'undefined') window.__JOBS_SSE_UNAVAILABLE = true;
 
 // ============================================================
 // Network Request Logging & Tracking
@@ -579,10 +543,7 @@ function fetchMetadataCached(path) {
       .catch(() => null)
       .then((d) => {
         if (d) window.__metadataByPath[path] = d;
-        try {
-          delete window.__metadataInflight[path];
-        }
-        catch (_) { }
+        delete window.__metadataInflight[path];
         return d;
       });
     window.__metadataInflight[path] = p;
@@ -612,10 +573,7 @@ async function fetchMediaInfoCached(path) {
       })
       .catch(() => null)
       .then((data) => {
-        try {
-          delete window.__mediaInfoInflight[path];
-        }
-        catch (_) { }
+        delete window.__mediaInfoInflight[path];
         return data;
       });
     window.__mediaInfoInflight[path] = p;
@@ -709,10 +667,7 @@ async function loadRegistry(kind) {
         return getRegistryEntries(kind);
       })
       .finally(() => {
-        try {
-          delete window.__REG_PROMISES[kind];
-        }
-        catch (_) {}
+        delete window.__REG_PROMISES[kind];
       });
     window.__REG_PROMISES[kind] = p;
     return p;
@@ -756,28 +711,41 @@ function guessPerformerImagePath(name) {
   if (!slug) return '';
   return `/files/.artifacts/performers/${slug}/${slug}.jpg`;
 }
+
+const EDGE_WIDTH_PRESETS = {
+  graph(count) {
+    const n = Math.max(1, Number(count) || 1);
+    return Math.max(1, Math.min(8, 1 + Math.log2(1 + n)));
+  },
+  connections(count) {
+    const n = Math.max(0, Number(count) || 0);
+    const width = 1.5 + Math.min(10, n) * 0.85;
+    return Number(width.toFixed(2));
+  },
+};
+
+function edgeWidthForCount(count, preset = 'graph') {
+  const fn = EDGE_WIDTH_PRESETS[preset] || EDGE_WIDTH_PRESETS.graph;
+  return fn(count);
+}
+
 // Local toast helper: prefer existing window.showToast if present; otherwise use notify()
 const legacyShowToast = (typeof window !== 'undefined' && typeof window.showToast === 'function') ? window.showToast : null;
 const showToast = (message, type) => {
-  try {
-    if (legacyShowToast) {
-      legacyShowToast(message, type || 'is-info');
-    }
-    else {
-      const map = { 'is-error': 'error', 'is-success': 'success' };
-      notify(message, map[type] || 'info');
-    }
+  if (legacyShowToast) {
+    legacyShowToast(message, type || 'is-info');
   }
-  catch (_) { }
+  else {
+    const map = { 'is-error': 'error', 'is-success': 'success' };
+    notify(message, map[type] || 'info');
+  }
 };
 if (typeof window !== 'undefined' && typeof window.showToast !== 'function') {
   window.showToast = (message, type) => showToast(message, type);
 }
 const grid = document.getElementById('grid');
-try {
-  devLog('info', 'app', 'script loaded build=reset-debug-1', {ts: Date.now()});
-}
-catch (_) {}
+devLog('info', 'app', 'script loaded build=reset-debug-1', {ts: Date.now()});
+
 
 // Artifact Filters Popover (Library Grid)
 (function wireArtifactFiltersUI() {
@@ -785,7 +753,14 @@ catch (_) {}
   const menu = document.getElementById('artifactFiltersMenu');
   if (!btn || !menu) return;
   const artDefs = [
-    ['metadata', 'Metadata'], ['thumbnail', 'Thumbnail'], ['sprites', 'Sprites'], ['chapters', 'Scenes'], ['subtitles', 'Subtitles'], ['heatmaps', 'Heatmaps'], ['faces', 'Faces'], ['preview', 'Preview'], ['waveform', 'Waveform'], ['motion', 'Motion'],
+    ['metadata', 'Metadata'],
+    ['thumbnail', 'Thumbnail'],
+    ['sprites', 'Sprites'],
+    ['markers', 'Scenes'],
+    ['subtitles', 'Subtitles'],
+    ['heatmaps', 'Heatmaps'],
+    ['faces', 'Faces'],
+    ['preview', 'Preview'],
   ];
   function render() {
     menu.innerHTML = '';
@@ -802,22 +777,28 @@ catch (_) {}
     const clearB = document.createElement('button'); clearB.className = 'btn-sm'; clearB.textContent = 'Clear';
     const applyB = document.createElement('button'); applyB.className = 'btn-sm'; applyB.textContent = 'Apply';
     clearB.addEventListener('click', async () => {
-      libraryArtifactFilters = {}; saveLibraryArtifactFilters(libraryArtifactFilters); hide(); currentPage = 1; await loadLibrary(); try {
-        renderArtifactFilterChips();
-      }
-      catch (_) {}
+      libraryArtifactFilters = {};
+      saveLibraryArtifactFilters(libraryArtifactFilters);
+      hide();
+      currentPage = 1;
+      await loadLibrary();
+      renderArtifactFilterChips();
     });
     applyB.addEventListener('click', async () => {
       const sels = Array.from(menu.querySelectorAll('select.control-select'));
       const obj = {}; sels.forEach((sel) => {
         const k = sel.dataset.key; if (sel.value === 'yes') obj[k] = true; else if (sel.value === 'no') obj[k] = false;
       });
-      libraryArtifactFilters = obj; saveLibraryArtifactFilters(libraryArtifactFilters); hide(); currentPage = 1; await loadLibrary(); try {
-        renderArtifactFilterChips();
-      }
-      catch (_) {}
+      libraryArtifactFilters = obj;
+      saveLibraryArtifactFilters(libraryArtifactFilters);
+      hide();
+      currentPage = 1;
+      await loadLibrary();
+      renderArtifactFilterChips();
     });
-    footer.appendChild(clearB); footer.appendChild(applyB); menu.appendChild(footer);
+    footer.appendChild(clearB);
+    footer.appendChild(applyB);
+    menu.appendChild(footer);
   }
   function position() {
     const br = btn.getBoundingClientRect(); menu.style.left = br.left + 'px'; menu.style.top = (br.bottom + 6) + 'px';
@@ -843,6 +824,16 @@ function renderArtifactFilterChips() {
   const host = document.getElementById('artifactFilterChips');
   if (!host) return;
   host.innerHTML = '';
+  const labels = {
+    metadata: 'Metadata',
+    thumbnail: 'Thumbnail',
+    sprites: 'Sprites',
+    markers: 'Scenes',
+    subtitles: 'Subtitles',
+    heatmaps: 'Heatmaps',
+    faces: 'Faces',
+    preview: 'Preview',
+  };
   const entries = Object.entries(libraryArtifactFilters || {}).filter(([k, v]) => v === true || v === false);
   if (!entries.length) {
     host.hidden = true; return;
@@ -850,12 +841,14 @@ function renderArtifactFilterChips() {
   entries.forEach(([k, v]) => {
     const chip = document.createElement('span');
     chip.className = 'chip';
-    chip.textContent = (v ? k + ':Y' : k + ':N');
-    chip.title = v ? ('Has ' + k) : ('Missing ' + k);
+    const friendly = labels[k] || k;
+    chip.textContent = `${friendly}:${v ? 'Y' : 'N'}`;
+    chip.title = v ? (`Has ${friendly}`) : (`Missing ${friendly}`);
     chip.addEventListener('click', (e) => {
       e.preventDefault(); const btn = document.getElementById('artifactFiltersBtn'); if (btn) btn.click();
+
     });
-    const clear = document.createElement('button'); clear.type = 'button'; clear.textContent = '×'; clear.setAttribute('aria-label', 'Remove ' + k + ' artifact filter');
+    const clear = document.createElement('button'); clear.type = 'button'; clear.textContent = '×'; clear.setAttribute('aria-label', 'Remove ' + friendly + ' artifact filter');
     clear.addEventListener('click', async (e) => {
       e.stopPropagation(); delete libraryArtifactFilters[k]; saveLibraryArtifactFilters(libraryArtifactFilters); currentPage = 1; await loadLibrary(); renderArtifactFilterChips();
     });
@@ -870,10 +863,7 @@ function renderArtifactFilterChips() {
   clearAll.appendChild(btnAll); host.appendChild(clearAll);
   host.hidden = false;
 }
-try {
-  renderArtifactFilterChips();
-}
-catch (_) {}
+renderArtifactFilterChips();
 
 // --------------------------------------------------
 // Global Player Reset (moved to top-level so it's definitely defined & wired)
@@ -903,16 +893,13 @@ function resetPlayer(opts = {}) {
       }
     }
     // Remove transient preview videos
-    try {
-      document.querySelectorAll('.tile video.preview-video').forEach((v) => {
-        try {
-          v.pause();
-        }
-        catch (_) {}
-        v.remove();
-      });
-    }
-    catch (_) {}
+    document.querySelectorAll('.tile video.preview-video').forEach((v) => {
+      try {
+        v.pause();
+      }
+      catch (_) {}
+      v.remove();
+    });
     // Immediately clear player UI state
     try {
       const titleEl = document.getElementById('playerTitle');
@@ -1024,10 +1011,7 @@ if (!wireResetButton()) {
   }, {once: true});
 }
 // Removed delegated document-level reset handler to prevent double-fire
-try {
-  window.resetPlayer = resetPlayer;
-}
-catch (_) {}
+window.resetPlayer = resetPlayer;
 const statusEl = document.getElementById('status');
 const spinner = document.getElementById('spinner');
 const refreshBtn = document.getElementById('refresh');
@@ -1080,21 +1064,18 @@ const adjVals = {
 const adjResetBtn = document.getElementById('adjResetBtn');
 const ADJ_LS_KEY = 'mediaPlayer:videoAdjust';
 let adjState = {brightness: 1, contrast: 1, saturation: 1, hue: 0};
-try {
-  const raw = getLocalStorageItem(ADJ_LS_KEY);
-  if (raw) {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') {
-      adjState = {
-        ...adjState, ...['brightness', 'contrast', 'saturation', 'hue'].reduce((acc, k) => {
-          if (parsed[k] !== undefined && isFinite(parsed[k])) acc[k] = parsed[k];
-          return acc;
-        }, {}),
-      };
-    }
+const raw = getLocalStorageItem(ADJ_LS_KEY);
+if (raw) {
+  const parsed = JSON.parse(raw);
+  if (parsed && typeof parsed === 'object') {
+    adjState = {
+      ...adjState, ...['brightness', 'contrast', 'saturation', 'hue'].reduce((acc, k) => {
+        if (parsed[k] !== undefined && isFinite(parsed[k])) acc[k] = parsed[k];
+        return acc;
+      }, {}),
+    };
   }
 }
-catch (_) { }
 function applyVideoAdjustments() {
   const v = document.getElementById('playerVideo');
   if (!v) return;
@@ -1102,10 +1083,7 @@ function applyVideoAdjustments() {
   v.style.filter = `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) hue-rotate(${hue}deg)`;
 }
 function persistAdjustments() {
-  try {
-    setLocalStorageJSON(ADJ_LS_KEY, adjState);
-  }
-  catch (_) { }
+  setLocalStorageJSON(ADJ_LS_KEY, adjState);
 }
 function updateAdjUI(fromLoad = false) {
   if (adjBrightness) adjBrightness.value = String(adjState.brightness);
@@ -1148,14 +1126,11 @@ function wireAdjustments() {
     });
   }
   // Apply adjustments after each new video metadata loads
-  try {
-    const v = document.getElementById('playerVideo');
-    if (v && !v._adjMetadataWired) {
-      v._adjMetadataWired = true;
-      v.addEventListener('loadedmetadata', () => applyVideoAdjustments());
-    }
+  const v = document.getElementById('playerVideo');
+  if (v && !v._adjMetadataWired) {
+    v._adjMetadataWired = true;
+    v.addEventListener('loadedmetadata', () => applyVideoAdjustments());
   }
-  catch (_) { }
   updateAdjUI(true); // set slider positions & labels
   applyVideoAdjustments();
 }
@@ -1231,17 +1206,29 @@ let librarySearchTerms = [];
 const LIB_ART_FILTERS_LS_KEY = 'library.artifact.filters.v1';
 let libraryArtifactFilters = (() => {
   try {
-    return getLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, {}) || {};
+    const raw = getLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, {}) || {};
+    const cleaned = {};
+    let mutated = false;
+    Object.entries(raw).forEach(([k, v]) => {
+      const canon = normalizeArtifactKey(k);
+      if (!canon) {
+        mutated = true;
+        return;
+      }
+      cleaned[canon] = v;
+      if (canon !== k) mutated = true;
+    });
+    if (mutated) {
+      setLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, cleaned);
+    }
+    return cleaned;
   }
   catch (_) {
     return {};
   }
 })();
 function saveLibraryArtifactFilters(obj) {
-  try {
-    setLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, obj || {});
-  }
-  catch (_) {}
+  setLocalStorageJSON(LIB_ART_FILTERS_LS_KEY, obj || {});
 }
 // plain text search tokens (chips)
 let autoRandomEnabled = false;
@@ -1299,48 +1286,18 @@ if (imgModal) {
 // Ensure a preview artifact exists for a video record;
 // returns a blob URL or empty string.
 async function ensurePreview(v) {
-  // Goal: avoid generating any 404 network entries. We first consult unified
-  // artifact status (cheap, should never 404). Only if it reports preview=true
-  // do we attempt to fetch the blob. If preview is absent but on‑demand
-  // generation is enabled, we trigger creation and poll status (not the blob)
-  // until it reports present, then fetch. No HEAD probes.
   const path = (v && (v.path || v.name)) || '';
   if (!path) return '';
   if (v && v.preview_url) return v.preview_url;
-  // Coalesce concurrent preview work for the same path
-  try {
-    window.__previewInflight = window.__previewInflight || {};
-    if (window.__previewInflight[path]) {
-      return await window.__previewInflight[path];
-    }
-  }
-  catch (_) {}
+
   const qp = encodeURIComponent(path);
-  // Use shared cached status function
-  let status = await fetchArtifactStatusForPath(path);
-  const refreshStatus = async () =>
-    // Use the shared fetchArtifactStatusForPath with cache bypass
-    await fetchArtifactStatusForPath(path, true)
-  ;
-  // Determine best preview format for this device
-  let preferredFmt = 'webm';
-  try {
-    const probe = document.createElement('video');
-    const canWebm = Boolean(probe.canPlayType) && probe.canPlayType('video/webm; codecs="vp9,vorbis"');
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-    // Safari on iOS/macOS historically has limited webm; prefer mp4 there
-    if (isIOS) preferredFmt = 'mp4';
-    else if (!canWebm || canWebm === 'no') preferredFmt = 'mp4';
-  }
-  catch (_) {
-    preferredFmt = 'webm';
-  }
-  if (status && status.preview) {
-    // Fetch the blob directly (GET). If this 404s (race), we just abort silently.
+  const preferredFmt = 'mp4';
+  const fetchPreviewBlob = async (bypassCache = false) => {
     try {
-      const r = await fetch(`/api/preview?path=${qp}&fmt=${encodeURIComponent(preferredFmt)}`);
-      if (!r.ok) return '';
-      const blob = await r.blob();
+      const cacheBust = bypassCache ? `&cb=${Date.now()}` : '';
+      const resp = await fetch(`/api/preview?path=${qp}&fmt=${encodeURIComponent(preferredFmt)}${cacheBust}`, { cache: 'no-store' });
+      if (!resp.ok) return '';
+      const blob = await resp.blob();
       if (!blob || !blob.size) return '';
       const obj = URL.createObjectURL(blob);
       v.preview_url = obj;
@@ -1349,114 +1306,44 @@ async function ensurePreview(v) {
     catch (_) {
       return '';
     }
-  }
-  // Not present yet.
-  if (!status) {
-    // Status unknown (not cached);
-    // treat as absent for now.
-    status = {preview: false};
-  }
-  // If preview is missing but on-demand generation is enabled, trigger creation
-  try {
-    if (previewOnDemandEnabled) {
-      // Wrap the entire generation+poll in a single inflight promise per path
-      const inflightPromise = (async () => {
-      // Mark UI state for generation
-        try {
-          const card = document.querySelector(`.card[data-path="${path}"]`);
-          if (card) card.classList.add('preview-generating');
-        }
-        catch (_) { }
-        // Trigger creation endpoint if available
-        try {
-        // Prefer non-blocking background job to avoid tying up the request thread.
-        // Fall back to synchronous POST if /api/preview/bg is not available.
-          let kicked = false;
-          try {
-            const bg = new URL('/api/preview/bg', window.location.origin);
-            bg.searchParams.set('path', path);
-            bg.searchParams.set('fmt', preferredFmt);
-            const resp = await fetch(bg.toString(), { method: 'POST' });
-            // Accept 200/202 with a job id payload; ignore body either way
-            if (resp.ok) kicked = true;
-          }
-          catch (_) { /* ignore and try sync */ }
-          if (!kicked) {
-            const u = new URL('/api/preview', window.location.origin);
-            u.searchParams.set('path', path);
-            u.searchParams.set('fmt', preferredFmt);
-            await fetch(u.toString(), { method: 'POST' });
-            kicked = true;
-          }
-          // Poll status for completion (background may take a bit longer)
-          const deadline = Date.now() + 12000;
-          const backoffSeq = [600, 900, 1300, 1800, 2200]; // progressive backoff to reduce status spam
-          let attempt = 0;
-          let canceled = false;
-          while (Date.now() < deadline) {
-          // Cancellation: card no longer previewing or grid hidden/tab inactive
-            try {
-              const card = document.querySelector(`.card[data-path="${path}"]`);
-              if (!card || !card._previewing || (typeof grid !== 'undefined' && grid && isHidden(grid)) || document.hidden) {
-                canceled = true;
-                break;
-              }
-            }
-            catch (_) { /* ignore */ }
-            const sleepMs = backoffSeq[Math.min(attempt, backoffSeq.length - 1)];
-            attempt++;
-            await new Promise((r) => setTimeout(r, sleepMs));
-            // Use cache-bypassed status (helper internally throttles bypasses)
-            const s = await refreshStatus();
-            if (s && s.preview) {
-              try {
-                const r = await fetch(`/api/preview?path=${qp}&fmt=${encodeURIComponent(preferredFmt)}`);
-                if (!r.ok) break;
-                const blob = await r.blob();
-                if (blob && blob.size) {
-                  const obj = URL.createObjectURL(blob);
-                  v.preview_url = obj;
-                  try {
-                    const card = document.querySelector(`.card[data-path="${path}"]`);
-                    if (card) card.classList.remove('preview-generating');
-                  }
-                  catch (_) { }
-                  return obj;
-                }
-              }
-              catch (_) {
-                break;
-              }
-            }
-          }
-          if (canceled) {
-            return '';
-          }
-          return '';
-        }
-        catch (_) { }
-        finally {
-          try {
-            const card = document.querySelector(`.card[data-path="${path}"]`);
-            if (card) card.classList.remove('preview-generating');
-          }
-          catch (_) { }
-        }
-      })();
-      try {
-        window.__previewInflight[path] = inflightPromise;
+  };
+
+  const existing = await fetchPreviewBlob();
+  if (existing) return existing;
+  if (!previewOnDemandEnabled) return '';
+
+  window.__previewInflight = window.__previewInflight || Object.create(null);
+  if (window.__previewInflight[path]) return window.__previewInflight[path];
+
+  const inflightPromise = (async () => {
+    const card = document.querySelector(`.card[data-path="${path}"]`);
+    if (card) card.classList.add('preview-generating');
+    try {
+      await fetch(`/api/preview?path=${qp}`, { method: 'POST' }).catch(() => null);
+      const deadline = Date.now() + 12000;
+      const backoffSeq = [600, 900, 1300, 1800, 2200];
+      let attempt = 0;
+      while (Date.now() < deadline) {
+        if (card && (!card.isConnected || !card._previewing || document.hidden)) break;
+        const sleepMs = backoffSeq[Math.min(attempt, backoffSeq.length - 1)];
+        attempt++;
+        await new Promise((resolve) => setTimeout(resolve, sleepMs));
+        const refreshed = await fetchPreviewBlob(true);
+        if (refreshed) return refreshed;
       }
-      catch (_) {}
-      const result = await inflightPromise;
-      try {
-        delete window.__previewInflight[path];
-      }
-      catch (_) {}
-      return result;
+      return '';
     }
-  }
-  catch (_) { }
-  return '';
+    catch (_) {
+      return '';
+    }
+    finally {
+      if (card) card.classList.remove('preview-generating');
+      delete window.__previewInflight[path];
+    }
+  })();
+
+  window.__previewInflight[path] = inflightPromise;
+  return inflightPromise;
 }
 // (fmtDuration moved to utils.js)
 // Clean up any existing preview videos except an optional tile we want to keep active
@@ -1503,26 +1390,20 @@ function videoCard(v) {
   const checkbox = el.querySelector('.card-checkbox');
   if (isSelected) checkbox.classList.add('checked');
   // Make the overlay checkbox interactive and accessible
-  try {
-    checkbox.setAttribute('role', 'checkbox');
-    checkbox.setAttribute('tabindex', '0');
-    checkbox.setAttribute('aria-checked', isSelected ? 'true' : 'false');
-  }
-  catch (_) { }
+  checkbox.setAttribute('role', 'checkbox');
+  checkbox.setAttribute('tabindex', '0');
+  checkbox.setAttribute('aria-checked', isSelected ? 'true' : 'false');
   // Clicking the checkbox should always toggle selection (no modifiers required)
   checkbox.addEventListener('click', (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     // Support Shift-click range selection via checkbox as well
     if (ev.shiftKey) {
-      try {
-        if (lastSelectedPath) {
-          selectRange(lastSelectedPath, v.path);
-          lastSelectedPath = v.path;
-          return;
-        }
+      if (lastSelectedPath) {
+        selectRange(lastSelectedPath, v.path);
+        lastSelectedPath = v.path;
+        return;
       }
-      catch (_) { }
       // No prior anchor: select current and set anchor
       if (!selectedItems.has(v.path)) {
         selectedItems.add(v.path);
@@ -1547,27 +1428,22 @@ function videoCard(v) {
   const thumbWrap = el.querySelector('.thumbnail-wrap');
   // Small helper: ensure /api/thumbnail exists; if not, generate and return cb URL
   async function ensureThumbUrlIfNeeded(url, pathRel) {
-    try {
-      if (!url || !String(url).startsWith('/api/thumbnail') || !pathRel) return url;
-      const head = await fetch(url, { method: 'HEAD', cache: 'no-store' });
-      if (head.ok) {
-        const u = new URL(url, window.location.origin);
-        u.searchParams.set('cb', Date.now());
-        return u.pathname + '?' + u.searchParams.toString();
-      }
-      // generate on demand, then return cb url (suppress 404 console errors)
-      const gen = await fetch(`/api/thumbnail?path=${encodeURIComponent(pathRel)}&t=middle&quality=2&overwrite=0`, { method: 'POST' }).catch(() => ({ ok: false }));
-      if (gen.ok) {
-        try {
-          const m = window.__LIB_LAST_METRICS; if (m) m.thumbGen = (m.thumbGen || 0) + 1;
-        }
-        catch (_) {}
-        const u = new URL(`/api/thumbnail?path=${encodeURIComponent(pathRel)}`, window.location.origin);
-        u.searchParams.set('cb', Date.now());
-        return u.pathname + '?' + u.searchParams.toString();
-      }
+    if (!url || !String(url).startsWith('/api/thumbnail') || !pathRel) return url;
+    const head = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    if (head.ok) {
+      const u = new URL(url, window.location.origin);
+      u.searchParams.set('cb', Date.now());
+      return u.pathname + '?' + u.searchParams.toString();
     }
-    catch (_) {}
+    // generate on demand, then return cb url (suppress 404 console errors)
+    const gen = await fetch(`/api/thumbnail?path=${encodeURIComponent(pathRel)}&t=middle&quality=2&overwrite=0`, { method: 'POST' }).catch(() => ({ ok: false }));
+    if (gen.ok) {
+      const m = window.__LIB_LAST_METRICS;
+      if (m) m.thumbGen = (m.thumbGen || 0) + 1;
+      const u = new URL(`/api/thumbnail?path=${encodeURIComponent(pathRel)}`, window.location.origin);
+      u.searchParams.set('cb', Date.now());
+      return u.pathname + '?' + u.searchParams.toString();
+    }
     return url;
   }
   // Always start with placeholder visible until the image truly loads to avoid blank flashes.
@@ -1593,57 +1469,40 @@ function videoCard(v) {
     }
     markLoaded(el, true);
     // Metrics: count image load and mark first/all timings
-    try {
-      const m = window.__LIB_LAST_METRICS;
-      if (m) {
-        m.imgLoaded = (m.imgLoaded || 0) + 1;
-        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        if (m.firstImgMs == null) m.firstImgMs = Math.max(0, Math.round(now - m.t0));
-        const exp = m.imgExpected || 0;
-        if (exp && (m.imgLoaded + (m.imgError || 0)) >= exp && m.allImgsMs == null) {
-          m.allImgsMs = Math.max(0, Math.round(now - m.t0));
-          try {
-            devLog('info', 'library', 'images', { page: m.page, expected: exp, loaded: m.imgLoaded, errors: (m.imgError || 0), firstMs: m.firstImgMs, allMs: m.allImgsMs, requested: m.requested, returned: m.returned, total: m.total });
-          }
-          catch (_) {}
-        }
+    const m = window.__LIB_LAST_METRICS;
+    if (m) {
+      m.imgLoaded = (m.imgLoaded || 0) + 1;
+      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      if (m.firstImgMs == null) m.firstImgMs = Math.max(0, Math.round(now - m.t0));
+      const exp = m.imgExpected || 0;
+      if (exp && (m.imgLoaded + (m.imgError || 0)) >= exp && m.allImgsMs == null) {
+        m.allImgsMs = Math.max(0, Math.round(now - m.t0));
+        devLog('info', 'library', 'images', { page: m.page, expected: exp, loaded: m.imgLoaded, errors: (m.imgError || 0), firstMs: m.firstImgMs, allMs: m.allImgsMs, requested: m.requested, returned: m.returned, total: m.total });
       }
     }
-    catch (_) {}
   });
   img.addEventListener('error', async () => {
     markLoaded(el, false);
-    try {
-      const m = window.__LIB_LAST_METRICS; if (m) m.imgError = (m.imgError || 0) + 1;
-    }
-    catch (_) {}
+    let m = window.__LIB_LAST_METRICS;
+    if (m) m.imgError = (m.imgError || 0) + 1;
     // Attempt on-demand thumbnail generation once per card to heal 404s
-    try {
-      if (el._thumbGenTried) return;
-      el._thumbGenTried = true;
-      const p = el.dataset.path || v.path || '';
-      if (!p) return;
-      const enc = encodeURIComponent(p);
-      // Generate thumbnail synchronously (server endpoint performs work inline)
-      const genUrl = `/api/thumbnail?path=${enc}&t=middle&quality=2&overwrite=0`;
-      const r = await fetch(genUrl, { method: 'POST' }).catch(() => ({ ok: false }));
-      if (!r.ok) return;
-      try {
-        const m = window.__LIB_LAST_METRICS; if (m) m.thumbGen = (m.thumbGen || 0) + 1;
-      }
-      catch (_) {}
-      // Retry load with cache buster (suppress console error if still 404)
-      const base = `/api/thumbnail?path=${enc}`;
-      const retry = `${base}&cb=${Date.now()}`;
-      try {
-        img.loading = 'eager';
-      }
-      catch (_) {}
-      // Set a flag to suppress error logging for this retry attempt
-      img._retryAttempt = true;
-      img.src = retry;
-    }
-    catch (_) {}
+    if (el._thumbGenTried) return;
+    el._thumbGenTried = true;
+    const p = el.dataset.path || v.path || '';
+    if (!p) return;
+    const enc = encodeURIComponent(p);
+    // Generate thumbnail synchronously (server endpoint performs work inline)
+    const genUrl = `/api/thumbnail?path=${enc}&t=middle&quality=2&overwrite=0`;
+    const r = await fetch(genUrl, { method: 'POST' }).catch(() => ({ ok: false }));
+    if (!r.ok) return;
+    m = window.__LIB_LAST_METRICS; if (m) m.thumbGen = (m.thumbGen || 0) + 1;
+    // Retry load with cache buster (suppress console error if still 404)
+    const base = `/api/thumbnail?path=${enc}`;
+    const retry = `${base}&cb=${Date.now()}`;
+    img.loading = 'eager';
+    // Set a flag to suppress error logging for this retry attempt
+    img._retryAttempt = true;
+    img.src = retry;
   });
   // Defer assigning src for non-eager tiles to reduce main thread contention.
   // We attach data attributes for deferred metadata computation as well.
@@ -1658,10 +1517,7 @@ function videoCard(v) {
     const eager = window.__TILE_EAGER_COUNT < eagerLimit;
     if (eager) {
       window.__TILE_EAGER_COUNT++;
-      try {
-        img.loading = 'eager';
-      }
-      catch (_) {}
+      img.loading = 'eager';
       // Preflight /api/thumbnail and auto-generate if needed
       (async () => {
         const finalUrl = await ensureThumbUrlIfNeeded(imgSrc, v?.path);
@@ -1673,10 +1529,7 @@ function videoCard(v) {
       img.dataset.src = imgSrc;
       // Will be set when intersecting (observer installed below)
       if (window.__tileIO) {
-        try {
-          window.__tileIO.observe(img);
-        }
-        catch (_) { /* noop */ }
+        window.__tileIO.observe(img);
       }
     }
   }
@@ -1718,34 +1571,19 @@ function videoCard(v) {
       video.autoplay = true;
       video.loop = true;
       video.playsInline = true;
-      try {
-        video.setAttribute('playsinline', '');
-      }
-      catch (_) {}
-      try {
-        video.disablePictureInPicture = true;
-      }
-      catch (_) {}
+      video.setAttribute('playsinline', '');
+      video.disablePictureInPicture = true;
       video.style.pointerEvents = 'none';
       if (img) img.replaceWith(video);
-      try {
-        await video.play();
-      }
-      catch (_) {}
+      await video.play();
     }, PREVIEW_HOVER_DEBOUNCE_MS);
   });
   function restoreThumbnail() {
     const vid = el.querySelector('video.preview-video');
     if (!vid) return;
-    try {
-      vid.pause();
-    }
-    catch (_) { }
-    try {
-      vid.src = '';
-      vid.load();
-    }
-    catch (_) { }
+    vid.pause();
+    vid.src = '';
+    vid.load();
     // Put original <img> back (it still exists in closure even after replaceWith)
     if (img && !img.parentNode) {
       vid.replaceWith(img);
@@ -1865,26 +1703,17 @@ if (!window.__tileIO) {
         if (q) {
           q.textContent = label || '';
           hide(q); // prefer overlay variant
-          try {
-            q.setAttribute('aria-hidden', label ? 'false' : 'true');
-          }
-          catch (_) { }
+          q.setAttribute('aria-hidden', label ? 'false' : 'true');
         }
         if (overlay && overlayRes) {
           if (label) {
             overlayRes.textContent = label;
             showAs(overlay, 'inline-flex');
-            try {
-              overlay.setAttribute('aria-hidden', 'false');
-            }
-            catch (_) { }
+            overlay.setAttribute('aria-hidden', 'false');
           }
           else {
             hide(overlay);
-            try {
-              overlay.setAttribute('aria-hidden', 'true');
-            }
-            catch (_) { }
+            overlay.setAttribute('aria-hidden', 'true');
           }
         }
         // Lazy duration fix: if duration text is empty or "0:00", fetch media info once for this path
@@ -1912,10 +1741,7 @@ if (!window.__tileIO) {
                 })
                 .catch(() => {})
                 .finally(() => {
-                  try {
-                    window.__durPending.delete(path);
-                  }
-                  catch (_) {}
+                  window.__durPending.delete(path);
                 });
             }
           }
@@ -1930,11 +1756,8 @@ if (!window.__tileIO) {
     // scroll container (content taller than its client height), use it; otherwise fall back
     // to the viewport so mobile/body scrolling still triggers intersections.
     let rootEl = null;
-    try {
-      const rp = document.getElementById('library-panel');
-      if (rp && rp.scrollHeight > (rp.clientHeight + 4)) rootEl = rp;
-    }
-    catch (_) {}
+    const rp = document.getElementById('library-panel');
+    if (rp && rp.scrollHeight > (rp.clientHeight + 4)) rootEl = rp;
     window.__tileIO = new IntersectionObserver((entries) => {
       for (const e of entries) {
         if (!e.isIntersecting) continue;
@@ -2022,17 +1845,11 @@ let __libLoading = false;
 let __libReloadRequested = false;
 async function loadLibrary() {
   // Run only when Library tab is active; otherwise do nothing
-  try {
-    if (!window.tabSystem || window.tabSystem.getActiveTab() !== 'library') {
-      return;
-    }
+  if (!window.tabSystem || window.tabSystem.getActiveTab() !== 'library') {
+    return;
   }
-  catch (_) {}
   if (__libLoading) {
-    try {
-      devLog('debug', 'library', 'coalesce');
-    }
-    catch (_) {}
+    devLog('debug', 'library', 'coalesce');
     __libReloadRequested = true;
     return;
   }
@@ -2040,26 +1857,24 @@ async function loadLibrary() {
   try {
     const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     // Initialize a fresh metrics batch for this load (console-visible)
-    try {
-      window.__LIB_BATCH_SEQ = (window.__LIB_BATCH_SEQ || 0) + 1;
-      const batchId = window.__LIB_BATCH_SEQ;
-      const m = {
-        id: batchId,
-        t0,
-        page: currentPage,
-        requested: null,
-        returned: 0,
-        total: null,
-        imgExpected: 0,
-        imgLoaded: 0,
-        imgError: 0,
-        thumbGen: 0,
-        firstImgMs: null,
-        allImgsMs: null,
-      };
-      window.__LIB_LAST_METRICS = m;
-    }
-    catch (_) {}
+    window.__LIB_BATCH_SEQ = (window.__LIB_BATCH_SEQ || 0) + 1;
+    const batchId = window.__LIB_BATCH_SEQ;
+    const m = {
+      id: batchId,
+      t0,
+      page: currentPage,
+      requested: null,
+      returned: 0,
+      total: null,
+      imgExpected: 0,
+      imgLoaded: 0,
+      imgError: 0,
+      thumbGen: 0,
+      firstImgMs: null,
+      allImgsMs: null,
+    };
+    window.__LIB_LAST_METRICS = m;
+
     const isAppend = infiniteScrollEnabled && currentPage > 1;
     if (!isAppend) {
       hide(statusEl);
@@ -2114,10 +1929,7 @@ async function loadLibrary() {
         }
       }
       stablePageSize = pageSize;
-      try {
-        if (window.__LIB_LAST_METRICS) window.__LIB_LAST_METRICS.requested = pageSize;
-      }
-      catch (_) {}
+      if (window.__LIB_LAST_METRICS) window.__LIB_LAST_METRICS.requested = pageSize;
     }
     else {
       // Still update columns (visual responsiveness) but ignore new dynamic size
@@ -2171,7 +1983,7 @@ async function loadLibrary() {
       params.set('performers', libraryPerformerFilters.join(','));
     }
     // Artifact filters: build filters object compatible with list tab format
-    const artKeys = ['metadata', 'thumbnail', 'sprites', 'chapters', 'subtitles', 'heatmaps', 'faces', 'preview', 'waveform', 'motion'];
+    const artKeys = ['metadata', 'thumbnail', 'sprites', 'markers', 'subtitles', 'heatmaps', 'faces', 'preview'];
     const artFilterPayload = {};
     for (const k of artKeys) {
       const v = libraryArtifactFilters[k];
@@ -2179,16 +1991,10 @@ async function loadLibrary() {
       else if (v === false) artFilterPayload[k] = { bool: false };
     }
     if (Object.keys(artFilterPayload).length) {
-      try {
-        params.set('filters', JSON.stringify(artFilterPayload));
-      }
-      catch (_) {}
+      params.set('filters', JSON.stringify(artFilterPayload));
     }
     const endpoint = '/api/library' + (params.toString() ? ('?' + params.toString()) : '');
-    try {
-      devLog('info', 'library', 'request', { page: currentPage, pageSize, path: (currentPath() || ''), sort: (overrideFromSortState || sortSelect.value || 'date'), order: (orderToggle.dataset.order || 'desc') });
-    }
-    catch (_) {}
+    devLog('info', 'library', 'request', { page: currentPage, pageSize, path: (currentPath() || ''), sort: (overrideFromSortState || sortSelect.value || 'date'), order: (orderToggle.dataset.order || 'desc') });
     const res = await fetch(endpoint, {headers: {Accept: 'application/json' } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const payload = await res.json();
@@ -2260,19 +2066,13 @@ async function loadLibrary() {
     // we already sliced above in the unpaginated branch. Avoid blunt trimming here
     // as it would wrongly re-trim paginated pages when currentPage>1.
     // Client-side log of how many items we got vs expected
-    try {
-      const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-      const elapsed = Math.max(0, Math.round(t1 - t0));
-      const total = Number.isFinite(data.total_files) ? data.total_files : (Array.isArray(data.files) ? data.files.length : 0);
-      devLog('info', 'library', 'response', { page: currentPage, requested: effectivePageSize, returned: (files ? files.length : 0), total, elapsedMs: elapsed });
-      try {
-        if (window.__LIB_LAST_METRICS) {
-          window.__LIB_LAST_METRICS.returned = (files ? files.length : 0); window.__LIB_LAST_METRICS.total = total;
-        }
-      }
-      catch (_) {}
+    const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const elapsed = Math.max(0, Math.round(t1 - t0));
+    const total = Number.isFinite(data.total_files) ? data.total_files : (Array.isArray(data.files) ? data.files.length : 0);
+    devLog('info', 'library', 'response', { page: currentPage, requested: effectivePageSize, returned: (files ? files.length : 0), total, elapsedMs: elapsed });
+    if (window.__LIB_LAST_METRICS) {
+      window.__LIB_LAST_METRICS.returned = (files ? files.length : 0); window.__LIB_LAST_METRICS.total = total;
     }
-    catch (_) {}
     // Update pagination / infinite scroll UI
     if (infiniteScrollEnabled) {
       const effectiveSize = stablePageSize || applyColumnsAndComputePageSize();
@@ -2371,10 +2171,8 @@ async function loadLibrary() {
             const sp2 = new URLSearchParams();
             sp2.set('page', '1');
             sp2.set('page_size', String(Math.max(24, applyColumnsAndComputePageSize() || 24)));
-            {
-              const override2 = (sortState && sortState.id && SERVER_SORT_MAP[sortState.id]) ? SERVER_SORT_MAP[sortState.id] : null;
-              sp2.set('sort', override2 || (sortSelect.value || 'date'));
-            }
+            const override2 = (sortState && sortState.id && SERVER_SORT_MAP[sortState.id]) ? SERVER_SORT_MAP[sortState.id] : null;
+            sp2.set('sort', override2 || (sortSelect.value || 'date'));
             sp2.set('order', orderToggle.dataset.order || 'desc');
             const u2 = '/api/library?' + sp2.toString();
             const r2 = await fetch(u2, { headers: { Accept: 'application/json' } });
@@ -2423,11 +2221,8 @@ async function loadLibrary() {
           if (resVal) {
             // Show the selected option text if possible
             let label = resVal;
-            try {
-              const opt = resSel.options[resSel.selectedIndex];
-              if (opt && opt.text) label = opt.text;
-            }
-            catch (_) {}
+            const opt = resSel.options[resSel.selectedIndex];
+            if (opt && opt.text) label = opt.text;
             activeFilters.push(label);
           }
           const hasFilters = activeFilters.length > 0;
@@ -2441,21 +2236,19 @@ async function loadLibrary() {
           if (clearBtn && !clearBtn._wired) {
             clearBtn._wired = true;
             clearBtn.addEventListener('click', () => {
-              try {
-                // Clear search input and chips
-                if (unifiedInput) unifiedInput.value = '';
-                librarySearchTerms = [];
-                libraryTagFilters = [];
-                libraryPerformerFilters = [];
-                // Reset resolution
-                const rs = document.getElementById('resSelect');
-                if (rs) rs.value = '';
-                // Persist + re-render chip UI if helpers exist
-                if (typeof persistLibraryFilters === 'function') persistLibraryFilters();
-                if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips();
-                if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
-              }
-              catch (_) {}
+              // Clear search input and chips
+              if (unifiedInput) unifiedInput.value = '';
+              librarySearchTerms = [];
+              libraryTagFilters = [];
+              libraryPerformerFilters = [];
+              // Reset resolution
+              const rs = document.getElementById('resSelect');
+              if (rs) rs.value = '';
+              // Persist + re-render chip UI if helpers exist
+              if (typeof persistLibraryFilters === 'function') persistLibraryFilters();
+              if (typeof renderUnifiedFilterChips === 'function') renderUnifiedFilterChips();
+              if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
+
               currentPage = 1;
               loadLibrary();
             });
@@ -2472,25 +2265,19 @@ async function loadLibrary() {
     // Progressive tile insertion (improves responsiveness for large sets)
     const nodes = files.map(videoCard);
     // Attach expected image count to current metrics batch and set a timeout fallback
-    try {
-      if (window.__LIB_LAST_METRICS) {
-        window.__LIB_LAST_METRICS.imgExpected = nodes.length;
-        const mRef = window.__LIB_LAST_METRICS;
-        // If all images haven't loaded within 10s, emit a timeout summary for diagnostics
-        setTimeout(() => {
-          try {
-            if (!mRef) return;
-            const exp = mRef.imgExpected || 0;
-            const done = (mRef.imgLoaded || 0) + (mRef.imgError || 0);
-            if (exp && !mRef.allImgsMs && done < exp) {
-              devLog('warn', 'library', 'images-timeout', { page: mRef.page, expected: exp, loaded: (mRef.imgLoaded || 0), errors: (mRef.imgError || 0), requested: mRef.requested, returned: mRef.returned, total: mRef.total, timeoutMs: 10000 });
-            }
-          }
-          catch (_) {}
-        }, 10000);
-      }
+    if (window.__LIB_LAST_METRICS) {
+      window.__LIB_LAST_METRICS.imgExpected = nodes.length;
+      const mRef = window.__LIB_LAST_METRICS;
+      // If all images haven't loaded within 10s, emit a timeout summary for diagnostics
+      setTimeout(() => {
+        if (!mRef) return;
+        const exp = mRef.imgExpected || 0;
+        const done = (mRef.imgLoaded || 0) + (mRef.imgError || 0);
+        if (exp && !mRef.allImgsMs && done < exp) {
+          devLog('warn', 'library', 'images-timeout', { page: mRef.page, expected: exp, loaded: (mRef.imgLoaded || 0), errors: (mRef.imgError || 0), requested: mRef.requested, returned: mRef.returned, total: mRef.total, timeoutMs: 10000 });
+        }
+      }, 10000);
     }
-    catch (_) {}
     const BATCH = 48;
     let i = 0;
     hide(statusEl);
@@ -2506,10 +2293,7 @@ async function loadLibrary() {
     }
     function finishInsertion() {
       if (grid._resolveInsertion) {
-        try {
-          grid._resolveInsertion();
-        }
-        catch (_) { }
+        grid._resolveInsertion();
         delete grid._resolveInsertion;
       }
       infiniteScrollPendingInsertion = null;
@@ -2522,19 +2306,16 @@ async function loadLibrary() {
       }
       grid.appendChild(frag);
       // Ensure initially visible cards get their metadata overlays immediately (e.g., 1080p labels)
-      try {
-        const cards = Array.from(grid.querySelectorAll('.card'));
-        const vh = (typeof window !== 'undefined') ? window.innerHeight : 0;
-        const computeMeta = window.__computeTileMetadata || null;
-        if (computeMeta && vh) {
-          for (const c of cards) {
-            if (!c || !c._needsMetadata) continue;
-            const r = c.getBoundingClientRect();
-            if (r.top < vh && r.bottom > 0) computeMeta(c);
-          }
+      const cards = Array.from(grid.querySelectorAll('.card'));
+      const vh = (typeof window !== 'undefined') ? window.innerHeight : 0;
+      const computeMeta = window.__computeTileMetadata || null;
+      if (computeMeta && vh) {
+        for (const c of cards) {
+          if (!c || !c._needsMetadata) continue;
+          const r = c.getBoundingClientRect();
+          if (r.top < vh && r.bottom > 0) computeMeta(c);
         }
       }
-      catch (_) {}
       if (i < nodes.length) {
         if (window.requestIdleCallback) {
           requestIdleCallback(insertBatch, {timeout: 120});
@@ -2564,10 +2345,7 @@ async function loadLibrary() {
             autoFillAfterLayoutChangeBudget -= 1;
             currentPage += 1;
             setTimeout(() => {
-              try {
-                loadLibrary();
-              }
-              catch (_) {}
+              loadLibrary();
             }, 0);
           }
           else {
@@ -2587,19 +2365,16 @@ async function loadLibrary() {
       grid.appendChild(frag);
       show(grid);
       // One-shot immediate metadata for visible cards
-      try {
-        const cards = Array.from(grid.querySelectorAll('.card'));
-        const vh = (typeof window !== 'undefined') ? window.innerHeight : 0;
-        const computeMeta = window.__computeTileMetadata || null;
-        if (computeMeta && vh) {
-          for (const c of cards) {
-            if (!c || !c._needsMetadata) continue;
-            const r = c.getBoundingClientRect();
-            if (r.top < vh && r.bottom > 0) computeMeta(c);
-          }
+      const cards = Array.from(grid.querySelectorAll('.card'));
+      const vh = (typeof window !== 'undefined') ? window.innerHeight : 0;
+      const computeMeta = window.__computeTileMetadata || null;
+      if (computeMeta && vh) {
+        for (const c of cards) {
+          if (!c || !c._needsMetadata) continue;
+          const r = c.getBoundingClientRect();
+          if (r.top < vh && r.bottom > 0) computeMeta(c);
         }
       }
-      catch (_) {}
       requestAnimationFrame(() => enforceGridSideSpacing());
       finishInsertion();
       // Do not auto-trigger; wait for explicit bottom overscroll.
@@ -2608,10 +2383,7 @@ async function loadLibrary() {
         autoFillAfterLayoutChangeBudget -= 1;
         currentPage += 1;
         setTimeout(() => {
-          try {
-            loadLibrary();
-          }
-          catch (_) {}
+          loadLibrary();
         }, 0);
       }
       else {
@@ -2642,10 +2414,7 @@ async function loadLibrary() {
     if (__libReloadRequested) {
       __libReloadRequested = false;
       setTimeout(() => {
-        try {
-          loadLibrary();
-        }
-        catch (_) {}
+        loadLibrary();
       }, 0);
     }
   }
@@ -2655,16 +2424,11 @@ async function loadLibrary() {
   if (!window.__JOBS_SSE_ENABLED) return;
   if (window.__JOBS_SSE_UNAVAILABLE) return;
   // already decided
-  try {
-    const res = await fetch('/config', {cache: 'no-store' });
-    if (!res.ok) return;
-    const cfg = await res.json();
-    const has = Boolean(cfg && cfg.features && cfg.features.jobs_sse);
-    if (!has) {
-      window.__JOBS_SSE_UNAVAILABLE = true;
-    }
-  }
-  catch (_) { }
+  const res = await fetch('/config', {cache: 'no-store' });
+  if (!res.ok) return;
+  const cfg = await res.json();
+  const has = Boolean(cfg && cfg.features && cfg.features.jobs_sse);
+  if (!has) window.__JOBS_SSE_UNAVAILABLE = true;
 })();
 // -----------------------------
 // Simple Accordion Wiring (robust, minimal)
@@ -2684,10 +2448,7 @@ async function loadLibrary() {
       }
     };
     const saveState = (st) => {
-      try {
-        localStorage.setItem(LS_KEY, JSON.stringify(st));
-      }
-      catch (_) { }
+      localStorage.setItem(LS_KEY, JSON.stringify(st));
     };
     let state = loadState();
     items.forEach((it, idx) => {
@@ -2825,10 +2586,7 @@ function loadAutoRandomSetting() {
   }
 }
 function saveAutoRandomSetting() {
-  try {
-    setLocalStorageBoolean('setting.autoRandom', autoRandomEnabled);
-  }
-  catch (_) { }
+  setLocalStorageBoolean('setting.autoRandom', autoRandomEnabled);
 }
 loadAutoRandomSetting();
 if (randomAutoBtn) {
@@ -2936,12 +2694,9 @@ function maybeTriggerPendingInfiniteScroll() {
   if (!infiniteScrollUserScrolled) return; // require explicit user interaction
   // Require that a new user scroll (or intent) occurred since the last load to
   // prevent continuous chaining while the sentinel remains visible.
-  try {
-    const lastScrollAt = Number(window.__INF_LAST_USER_SCROLL_AT || 0);
-    const lastLoadAt = Number(window.__INF_LAST_LOAD_AT || 0);
-    if (lastScrollAt <= lastLoadAt) return;
-  }
-  catch (_) {}
+  const lastScrollAt = Number(window.__INF_LAST_USER_SCROLL_AT || 0);
+  const lastLoadAt = Number(window.__INF_LAST_LOAD_AT || 0);
+  if (lastScrollAt <= lastLoadAt) return;
   if (!isAtBottom()) return; // not actually at bottom
   const sc = getScrollContainer();
   if (sc && sc.scrollHeight === infiniteScrollLastTriggerHeight) {
@@ -2951,10 +2706,7 @@ function maybeTriggerPendingInfiniteScroll() {
   infiniteScrollLastTriggerHeight = sc ? sc.scrollHeight : 0;
   infiniteScrollLoading = true;
   currentPage += 1;
-  try {
-    window.__INF_LAST_LOAD_AT = Date.now();
-  }
-  catch (_) {}
+  window.__INF_LAST_LOAD_AT = Date.now();
   const done = () => {
     infiniteScrollLoading = false;
   };
@@ -2965,10 +2717,7 @@ function maybeTriggerPendingInfiniteScroll() {
 function markUserScrolled() {
   if (!infiniteScrollEnabled) return;
   if (!infiniteScrollUserScrolled) infiniteScrollUserScrolled = true;
-  try {
-    window.__INF_LAST_USER_SCROLL_AT = Date.now();
-  }
-  catch (_) {}
+  window.__INF_LAST_USER_SCROLL_AT = Date.now();
   // Do not auto-trigger; bottom overscroll check happens via sentinel/intersection.
 }
 function setupInfiniteScrollSentinel() {
@@ -3004,10 +2753,7 @@ function setupInfiniteScrollSentinel() {
   }
   else {
     // Ensure it is last child
-    try {
-      gridParent.appendChild(infiniteScrollSentinel);
-    }
-    catch (_) { }
+    gridParent.appendChild(infiniteScrollSentinel);
   }
   if (!infiniteScrollIO) {
     try {
@@ -3024,21 +2770,15 @@ function setupInfiniteScrollSentinel() {
       return;
     }
   }
-  try {
-    infiniteScrollIO.observe(infiniteScrollSentinel);
-  }
-  catch (_) { }
+  infiniteScrollIO.observe(infiniteScrollSentinel);
 }
 // -----------------------------
 // Unified search + filter chips (#tag, @performer, plain text tokens)
 // -----------------------------
 function persistLibraryFilters() {
-  try {
-    setLocalStorageJSON('filters.tags', libraryTagFilters);
-    setLocalStorageJSON('filters.performers', libraryPerformerFilters);
-    setLocalStorageJSON('filters.searchTerms', librarySearchTerms);
-  }
-  catch (_) { }
+  setLocalStorageJSON('filters.tags', libraryTagFilters);
+  setLocalStorageJSON('filters.performers', libraryPerformerFilters);
+  setLocalStorageJSON('filters.searchTerms', librarySearchTerms);
 }
 // Helper: whether any Library filters/search are active
 function hasAnyLibraryFiltersActive() {
@@ -3055,25 +2795,19 @@ function hasAnyLibraryFiltersActive() {
 function updateClearFiltersBtnState() {
   if (!clearFiltersTopBtn) return;
   const on = hasAnyLibraryFiltersActive();
-  try {
-    clearFiltersTopBtn.disabled = !on;
-  }
-  catch (_) {}
+  clearFiltersTopBtn.disabled = !on;
 }
 function clearAllLibraryFilters() {
-  try {
-    if (unifiedInput) unifiedInput.value = '';
-    librarySearchTerms = [];
-    libraryTagFilters = [];
-    libraryPerformerFilters = [];
-    const rs = document.getElementById('resSelect');
-    if (rs) rs.value = '';
-    persistLibraryFilters();
-    renderUnifiedFilterChips();
-    updateClearFiltersBtnState();
-    if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
-  }
-  catch (_) {}
+  if (unifiedInput) unifiedInput.value = '';
+  librarySearchTerms = [];
+  libraryTagFilters = [];
+  libraryPerformerFilters = [];
+  const rs = document.getElementById('resSelect');
+  if (rs) rs.value = '';
+  persistLibraryFilters();
+  renderUnifiedFilterChips();
+  updateClearFiltersBtnState();
+  if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
   currentPage = 1;
   loadLibrary();
 }
@@ -3083,15 +2817,12 @@ if (clearFiltersTopBtn && !clearFiltersTopBtn._wired) {
   updateClearFiltersBtnState();
 }
 function loadLibraryFilters() {
-  try {
-    const t = getLocalStorageJSON('filters.tags', []);
-    const p = getLocalStorageJSON('filters.performers', []);
-    const s = getLocalStorageJSON('filters.searchTerms', []);
-    if (Array.isArray(t)) libraryTagFilters = t.filter(Boolean);
-    if (Array.isArray(p)) libraryPerformerFilters = p.filter(Boolean);
-    if (Array.isArray(s)) librarySearchTerms = s.filter(Boolean);
-  }
-  catch (_) { }
+  const t = getLocalStorageJSON('filters.tags', []);
+  const p = getLocalStorageJSON('filters.performers', []);
+  const s = getLocalStorageJSON('filters.searchTerms', []);
+  if (Array.isArray(t)) libraryTagFilters = t.filter(Boolean);
+  if (Array.isArray(p)) libraryPerformerFilters = p.filter(Boolean);
+  if (Array.isArray(s)) librarySearchTerms = s.filter(Boolean);
 }
 function renderUnifiedFilterChips() {
   if (!unifiedChipsEl) return;
@@ -3225,16 +2956,14 @@ function applyLibraryStateFromUrl() {
 }
 // Apply URL state once on load and when navigating history
 window.addEventListener('DOMContentLoaded', () => {
-  try {
-    applyLibraryStateFromUrl(); currentPage = 1; loadLibrary();
-  }
-  catch (_) {}
+  applyLibraryStateFromUrl();
+  currentPage = 1;
+  loadLibrary();
 });
 window.addEventListener('popstate', () => {
-  try {
-    applyLibraryStateFromUrl(); currentPage = 1; loadLibrary();
-  }
-  catch (_) {}
+  applyLibraryStateFromUrl();
+  currentPage = 1;
+  loadLibrary();
 });
 // Keep the browser URL in sync with current Library filters and search
 function updateLibraryUrlFromState() {
@@ -3347,31 +3076,28 @@ function drawPieChart(canvas, dataObj) {
   });
 }
 async function loadStats() {
-  try {
-    const res = await fetch('/api/stats');
-    if (!res.ok) {
-      throw new Error('failed');
-    }
-    const body = await res.json();
-    if (!body || body.status !== 'success') return;
-    const d = body.data || {};
-    const setText = (id, val) => {
-      const el = document.getElementById(id);
-      if (el) {
-        el.textContent = (val === null || val === undefined) ? '—' : val;
-      }
-    };
-    setText('statsNumFiles', d.num_files ?? '—');
-    setText('statsTotalSize', (typeof d.total_size === 'number') ? fmtSize(d.total_size) : '—');
-    setText('statsTotalDuration', (typeof d.total_duration === 'number') ? fmtDuration(d.total_duration) : '—');
-    setText('statsNumTags', d.tags ?? '—');
-    setText('statsNumPerformers', d.performers ?? '—');
-    const resCanvas = document.getElementById('statsResChart');
-    const durCanvas = document.getElementById('statsDurationChart');
-    if (resCanvas && d.res_buckets) drawPieChart(resCanvas, d.res_buckets);
-    if (durCanvas && d.duration_buckets) drawPieChart(durCanvas, d.duration_buckets);
+  const res = await fetch('/api/stats');
+  if (!res.ok) {
+    throw new Error('failed');
   }
-  catch (e) { }
+  const body = await res.json();
+  if (!body || body.status !== 'success') return;
+  const d = body.data || {};
+  const setText = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = (val === null || val === undefined) ? '—' : val;
+    }
+  };
+  setText('statsNumFiles', d.num_files ?? '—');
+  setText('statsTotalSize', (typeof d.total_size === 'number') ? fmtSize(d.total_size) : '—');
+  setText('statsTotalDuration', (typeof d.total_duration === 'number') ? fmtDuration(d.total_duration) : '—');
+  setText('statsNumTags', d.tags ?? '—');
+  setText('statsNumPerformers', d.performers ?? '—');
+  const resCanvas = document.getElementById('statsResChart');
+  const durCanvas = document.getElementById('statsDurationChart');
+  if (resCanvas && d.res_buckets) drawPieChart(resCanvas, d.res_buckets);
+  if (durCanvas && d.duration_buckets) drawPieChart(durCanvas, d.duration_buckets);
 }
 // Lazy load Stats: only when Stats tab becomes active
 // (initial eager load removed to avoid loading inactive tab content)
@@ -3395,11 +3121,8 @@ sortSelect.addEventListener('change', () => {
 // Wire up sidebar artifact generation buttons
 function getSelectedFilePath() {
   // Prefer the actively playing path from the Player, if available
-  try {
-    const p = (window.Player && typeof window.Player.getPath === 'function') ? window.Player.getPath() : null;
-    if (p) return p;
-  }
-  catch (_) { }
+  const p = (window.Player && typeof window.Player.getPath === 'function') ? window.Player.getPath() : null;
+  if (p) return p;
   // Otherwise use the currently selected file in the grid
   if (selectedItems && selectedItems.size > 0) return Array.from(selectedItems)[0];
   // Fallback: try to get the first card in the grid
@@ -3451,10 +3174,7 @@ async function triggerArtifactJob(artifact) {
   }
   catch (e) {
     setArtifactSpinner(artifact, false);
-    try {
-      window.__activeArtifactSpinners?.delete?.(`${filePath}::${artifact}`);
-    }
-    catch (_) { }
+    window.__activeArtifactSpinners?.delete?.(`${filePath}::${artifact}`);
     showMessageModal(`Failed to generate ${artifact}: ${e.message}`, {title: 'Generate Artifact' });
   }
 }
@@ -3469,75 +3189,50 @@ document.querySelectorAll('.artifact-gen-btn[data-artifact]').forEach((btn) => {
 
 // List chips: trigger the same artifact actions scoped to that row's file
 function resolveArtifactRequest(artifact, filePath) {
-  const a = String(artifact || '').toLowerCase();
+  const a = String(artifact || '').trim().toLowerCase();
   const qp = encodeURIComponent(filePath || '');
-  // Normalize common aliases
-  const normMap = {
-    meta: 'metadata',
-    chapter: 'markers',
-    chapters: 'markers',
-    scene: 'markers',
-    scenes: 'markers',
-    marker: 'markers',
-    markers: 'markers',
-    thumb: 'thumbnail',
-    thumbnail: 'thumbnail',
-    preview: 'preview',
-    previews: 'preview',
-    sprite: 'sprites',
-    sprites: 'sprites',
-    subs: 'subtitles',
-    subtitles: 'subtitles',
-    heat: 'heatmaps',
-    heatmap: 'heatmaps',
-    heatmaps: 'heatmaps',
-    faces: 'faces',
-    phash: 'phash',
-    waveform: 'waveform',
-    wave: 'waveform',
-    motion: 'motion',
-  };
-  const k = normMap[a] || a;
-  switch (k) {
+  switch (a) {
   case 'metadata':
-      return { url: `/api/metadata?path=${qp}`, method: 'POST' };
+    return { url: `/api/metadata?path=${qp}`, method: 'POST' };
   case 'thumbnail':
-      return { url: `/api/thumbnail?path=${qp}&t=middle&quality=2&overwrite=0`, method: 'POST' };
+    return { url: `/api/thumbnail?path=${qp}&t=middle&quality=2&overwrite=0`, method: 'POST' };
   case 'preview':
-      return { url: `/api/preview?path=${qp}`, method: 'POST' };
+    return { url: `/api/preview?path=${qp}`, method: 'POST' };
   case 'sprites':
-      return { url: `/api/sprites/create?path=${qp}`, method: 'POST' };
+    return { url: `/api/sprites/create?path=${qp}`, method: 'POST' };
   case 'markers':
-      return { url: `/api/markers/detect?path=${qp}&priority=1`, method: 'POST' };
+    return { url: `/api/markers/detect?path=${qp}&priority=1`, method: 'POST' };
   case 'subtitles':
-      return { url: `/api/subtitles/create?path=${qp}`, method: 'POST' };
+    return { url: `/api/subtitles/create?path=${qp}`, method: 'POST' };
   case 'heatmaps':
-      return { url: `/api/heatmaps/create?path=${qp}`, method: 'POST' };
+    return { url: `/api/heatmaps/create?path=${qp}`, method: 'POST' };
   case 'faces':
-      return { url: `/api/faces/create?path=${qp}`, method: 'POST' };
+    return { url: `/api/faces/create?path=${qp}`, method: 'POST' };
   case 'phash':
-      return { url: `/api/phash?path=${qp}`, method: 'POST' };
-    // Waveform & motion may not be implemented; return null so UI can message
-  case 'waveform':
-  case 'motion':
-      return null;
+    return { url: `/api/phash?path=${qp}`, method: 'POST' };
   default:
-      return null;
+    return null;
   }
 }
 
+const CANONICAL_ARTIFACT_KEYS = new Set([
+  'metadata',
+  'thumbnail',
+  'preview',
+  'sprites',
+  'markers',
+  'subtitles',
+  'faces',
+  'phash',
+  'heatmaps',
+]);
+
 // Unified artifact chip renderer used by both Sidebar and List
 function normalizeArtifactKey(key) {
-  const k = String(key || '').toLowerCase();
-  if (k === 'meta') return 'metadata';
-  if (k === 'thumb' || k === 'thumbnail') return 'thumbnail';
-  if (k === 'sprite' || k === 'sprites') return 'sprites';
-  if (k === 'subs' || k === 'subtitles') return 'subtitles';
-  if (k === 'chapters' || k === 'scenes' || k === 'markers') return 'markers';
-  if (k === 'previews' || k === 'preview') return 'preview';
-  if (k === 'heat' || k === 'heatmap' || k === 'heatmaps') return 'heatmaps';
-  if (k === 'wave' || k === 'waveform') return 'waveform';
-  return k;
+  const k = String(key ?? '').trim().toLowerCase();
+  if (k === 'previews') return 'preview';
+  if (k === 'heatmap') return 'heatmaps';
+  return CANONICAL_ARTIFACT_KEYS.has(k) ? k : '';
 }
 
 const ARTIFACT_DEFS = [
@@ -3547,16 +3242,14 @@ const ARTIFACT_DEFS = [
   { key: 'sprites', label: 'Sprites', statusKey: 'sprites' },
   { key: 'markers', label: 'Scenes', statusKey: 'markers' },
   { key: 'subtitles', label: 'Subtitles', statusKey: 'subtitles' },
-  { key: 'heatmaps', label: 'Heatmaps', statusKey: 'heatmap' },
+  { key: 'heatmaps', label: 'Heatmaps', statusKey: 'heatmaps' },
   { key: 'faces', label: 'Faces', statusKey: 'faces' },
   { key: 'phash', label: 'pHash', statusKey: 'phash' },
-  { key: 'waveform', label: 'Waveform', statusKey: 'waveform' },
-  { key: 'motion', label: 'Motion', statusKey: 'motion' },
 ];
 
 function getArtifactDefs(keys) {
   if (Array.isArray(keys) && keys.length) {
-    const want = new Set(keys.map(normalizeArtifactKey));
+    const want = new Set(keys.map((k) => normalizeArtifactKey(k)).filter(Boolean));
     return ARTIFACT_DEFS.filter((d) => want.has(d.key));
   }
   return ARTIFACT_DEFS;
@@ -3564,22 +3257,13 @@ function getArtifactDefs(keys) {
 
 // --- Chip sync helpers: keep list and sidebar chips in sync for a given file ---
 function setChipLoadingFor(path, chipKey, loading = true) {
+  const domKey = normalizeArtifactKey(chipKey);
+  if (!domKey) return;
   try {
-    const selSafe = (s) => s.replace(/\"/g, '\\\"');
-    const domKey = normalizeArtifactKey(chipKey);
+    const selSafe = (s) => s.replace(/\"/g, '\\"');
     const row = document.querySelector(`[data-path="${selSafe(path || '')}"]`);
     if (row) {
-      let c = null;
-      try {
-        c = row.querySelector(`.chips-list [data-key="${domKey}"]`);
-      }
-      catch (_) {}
-      if (!c) {
-        try {
-          c = row.querySelector(`.chips-list [data-key="${chipKey}"]`);
-        }
-        catch (_) {}
-      }
+      const c = row.querySelector(`.chips-list [data-key="${domKey}"]`);
       if (c) {
         if (loading) c.dataset.loading = '1'; else c.removeAttribute('data-loading');
       }
@@ -3587,21 +3271,7 @@ function setChipLoadingFor(path, chipKey, loading = true) {
   }
   catch (_) {}
   try {
-    const side = (function() {
-      try {
-        return document.querySelector(`#artifactBadgesSidebar [data-key="${domKey}"]`);
-      }
-      catch (_) {
-        return null;
-      }
-    })() || (function() {
-      try {
-        return document.querySelector(`#artifactBadgesSidebar [data-key="${chipKey}"]`);
-      }
-      catch (_) {
-        return null;
-      }
-    })();
+    const side = document.querySelector(`#artifactBadgesSidebar [data-key="${domKey}"]`);
     if (side) {
       if (loading) side.dataset.loading = '1'; else side.removeAttribute('data-loading');
     }
@@ -3610,42 +3280,19 @@ function setChipLoadingFor(path, chipKey, loading = true) {
 }
 
 function setChipPresentFor(path, chipKey) {
+  const domKey = normalizeArtifactKey(chipKey);
+  if (!domKey) return;
   try {
-    const selSafe = (s) => s.replace(/\"/g, '\\\"');
-    const domKey = normalizeArtifactKey(chipKey);
+    const selSafe = (s) => s.replace(/\"/g, '\\"');
     const row = document.querySelector(`[data-path="${selSafe(path || '')}"]`);
     if (row) {
-      let c = null;
-      try {
-        c = row.querySelector(`.chips-list [data-key="${domKey}"]`);
-      }
-      catch (_) {}
-      if (!c) {
-        try {
-          c = row.querySelector(`.chips-list [data-key="${chipKey}"]`);
-        }
-        catch (_) {}
-      }
+      const c = row.querySelector(`.chips-list [data-key="${domKey}"]`);
       if (c) applyChipPresent(c);
     }
   }
   catch (_) {}
   try {
-    const side = (function() {
-      try {
-        return document.querySelector(`#artifactBadgesSidebar [data-key="${domKey}"]`);
-      }
-      catch (_) {
-        return null;
-      }
-    })() || (function() {
-      try {
-        return document.querySelector(`#artifactBadgesSidebar [data-key="${chipKey}"]`);
-      }
-      catch (_) {
-        return null;
-      }
-    })();
+    const side = document.querySelector(`#artifactBadgesSidebar [data-key="${domKey}"]`);
     if (side) applyChipPresent(side);
   }
   catch (_) {}
@@ -3754,12 +3401,7 @@ async function triggerArtifactForPath(filePath, artifact, chipEl = null) {
 
 // Map chip key to artifacts/status payload key
 function mapChipKeyToStatusKey(key) {
-  const k = String(key || '').toLowerCase();
-  if (k === 'metadata') return 'metadata';
-  if (k === 'chapters' || k === 'scenes' || k === 'markers') return 'markers';
-  if (k === 'heatmaps' || k === 'heatmap') return 'heatmap';
-  // passthroughs: thumbnail, preview, sprites, subtitles, faces
-  return k;
+  return normalizeArtifactKey(key) || '';
 }
 
 function applyChipPresent(chip) {
@@ -3781,18 +3423,6 @@ function applyChipPresent(chip) {
     }
     catch (_) {}
     return;
-  }
-  // Legacy fallback: plain chip element
-  if (chip.classList.contains('chip')) {
-    const key = chip.getAttribute('data-key') || '';
-    const label = key === 'chapters' ? 'Scenes' : (chip.textContent || '').replace(/^✕\s*/, '') || 'OK';
-    chip.className = 'chip chip--ok';
-    chip.textContent = label;
-    chip.title = `${label} present`;
-    try {
-      chip.classList.remove('btn-busy');
-    }
-    catch (_) {}
   }
 }
 
@@ -3841,16 +3471,17 @@ async function fetchArtifactStatusForPath(path, skipCache = false) {
       const r = await fetch(u.toString());
       if (!r.ok) return null;
       const j = await r.json();
-      const d = (j && (j.data || j)) || null;
-      if (d) {
-        window.__artifactStatus[path] = d;
+      const raw = (j && (j.data || j)) || null;
+      if (raw) {
+        window.__artifactStatus[path] = raw;
         try {
           window.__artifactStatusLast[path] = Date.now();
         }
         catch (_) {}
         devLog('debug', 'Artifacts', 'status cached', { path });
+        return raw;
       }
-      return d;
+      return raw;
     })();
     window.__artifactStatusInflight[path] = p;
     const d = await p;
@@ -3876,7 +3507,15 @@ function pollArtifactStatusAndUpdateChip(path, chipKey, chipEl) {
   }
   catch (_) {}
   const statusKey = mapChipKeyToStatusKey(chipKey);
-  if (!statusKey) return;
+  if (!statusKey) {
+    try {
+      if (window.__statusPollers) {
+        delete window.__statusPollers[`${path}|${chipKey}`];
+      }
+    }
+    catch (_) {}
+    return;
+  }
   const rowEl = (() => {
     try {
       return document.querySelector(`[data-path="${(path || '').replace(/"/g, '\\"')}"]`);
@@ -4574,14 +4213,26 @@ window.addEventListener('load', () => {
 });
 // Utility: toggled tooltip menus for artifact options
 function initArtifactOptionsMenus() {
-  // Close any open tooltip when clicking outside
-  document.addEventListener('click', (e) => {
+  const closeTooltip = (tooltip) => {
+    if (!tooltip) return;
+    hide(tooltip);
+    tooltip.classList.add('d-none');
+  };
+  const openTooltip = (tooltip) => {
+    if (!tooltip) return;
+    tooltip.classList.remove('d-none');
+    showAs(tooltip, 'block');
+  };
+  const closeAllTooltips = () => {
     document.querySelectorAll('.options-tooltip').forEach((tt) => {
-      hide(tt);
+      closeTooltip(tt);
     });
-    // also drop raised stacking on any cards
     document.querySelectorAll('.artifact-card.menu-open')
       .forEach((card) => card.classList.remove('menu-open'));
+  };
+  // Close any open tooltip when clicking outside
+  document.addEventListener('click', () => {
+    closeAllTooltips();
   });
   // Open corresponding tooltip for clicked options button
   document.querySelectorAll('.btn-options[data-artifact]').forEach((btn) => {
@@ -4594,14 +4245,16 @@ function initArtifactOptionsMenus() {
       const card = btn.closest('.artifact-card');
       // Toggle: hide others, then toggle this
       document.querySelectorAll('.options-tooltip').forEach((tt) => {
-        if (tt !== tooltip) hide(tt);
+        if (tt !== tooltip) closeTooltip(tt);
       });
       document.querySelectorAll('.artifact-card.menu-open')
-        .forEach((c) => c.classList.remove('menu-open'));
+        .forEach((c) => {
+          if (c !== card) c.classList.remove('menu-open');
+        });
       if (tooltip) {
         const willOpen = isHidden(tooltip);
-        if (willOpen) showAs(tooltip, 'block');
-        else hide(tooltip);
+        if (willOpen) openTooltip(tooltip);
+        else closeTooltip(tooltip);
         if (card) {
           if (willOpen) card.classList.add('menu-open');
           else card.classList.remove('menu-open');
@@ -6111,12 +5764,9 @@ function setupListTab() {
     {id: 'art-thumbnail', label: 'Thumbnail', keys: ['has_thumbnail', 'thumbnail', 'thumbnails'], width: 78},
     {id: 'art-sprites', label: 'Sprites', keys: ['has_sprites', 'sprites'], width: 64},
     {id: 'art-preview', label: 'Preview', keys: ['has_preview', 'preview', 'previewUrl'], width: 60},
-    {id: 'art-waveform', label: 'Waveform', keys: ['has_waveform', 'waveform'], width: 80},
-    {id: 'art-scenes', label: 'Scenes', keys: ['has_scenes', 'scenes', 'chapters'], width: 60},
-    {id: 'art-faces', label: 'Faces', keys: ['has_faces', 'faces'], width: 54},
-    {id: 'art-subtitles', label: 'Subtitles', keys: ['has_subtitles', 'subtitles'], width: 78},
+    {id: 'art-scenes', label: 'Scenes', keys: ['has_scenes', 'scenes', 'markers'], width: 60},
+    {id: 'art-phash', label: 'pHash', keys: ['has_phash', 'phash'], width: 60},
     {id: 'art-heatmaps', label: 'Heatmaps', keys: ['has_heatmaps', 'heatmaps'], width: 74},
-    {id: 'art-motion', label: 'Motion', keys: ['has_motion', 'motion'], width: 60},
   ];
   for (const ac of ART_COLS) {
     DEFAULT_COLS.push({ id: ac.id, label: ac.label, width: ac.width, visible: false,
@@ -6154,13 +5804,10 @@ function setupListTab() {
         status.thumbnail = pres(['has_thumbnail', 'thumbnail', 'thumbnails']);
         status.sprites = pres(['has_sprites', 'sprites']);
         status.preview = pres(['has_preview', 'preview', 'previewUrl']);
-        status.markers = pres(['has_scenes', 'scenes', 'chapters']);
-        status.subtitles = pres(['has_subtitles', 'subtitles']);
-        status.heatmap = pres(['has_heatmaps', 'heatmaps']);
-        status.faces = pres(['has_faces', 'faces']);
-        status.waveform = pres(['has_waveform', 'waveform']);
-        status.motion = pres(['has_motion', 'motion']);
-        const keys = ['metadata', 'thumbnail', 'sprites', 'preview', 'markers', 'subtitles', 'heatmaps', 'faces', 'waveform', 'motion'];
+        status.markers = pres(['has_scenes', 'scenes', 'markers']);
+        status.heatmaps = pres(['has_heatmaps', 'heatmaps']);
+        status.phash = pres(['has_phash', 'phash']);
+        const keys = ['metadata', 'thumbnail', 'sprites', 'preview', 'markers', 'heatmaps', 'phash'];
         renderArtifactChips(cont, f.path || '', { style: 'chip', keys, status });
       }
       catch (_) { }
@@ -6755,7 +6402,7 @@ function setupListTab() {
       closeFilterMenu();
     }
     function isArtifactsFilterActive() {
-      const keys = ['metadata', 'thumbnail', 'sprites', 'chapters', 'subtitles', 'heatmaps', 'faces', 'preview'];
+      const keys = ['metadata', 'thumbnail', 'sprites', 'markers', 'subtitles', 'heatmaps', 'faces', 'preview'];
       return keys.some((k) => listFilters && listFilters[k]);
     }
     function isFilterActiveForKey(key, colId) {
@@ -6845,13 +6492,11 @@ function setupListTab() {
           { k: 'metadata', label: 'Metadata' },
           { k: 'thumbnail', label: 'Thumbnail' },
           { k: 'sprites', label: 'Sprites' },
-          { k: 'chapters', label: 'Scenes' },
+          { k: 'markers', label: 'Scenes' },
           { k: 'subtitles', label: 'Subtitles' },
           { k: 'heatmaps', label: 'Heatmaps' },
-          { k: 'faces', label: 'Faces' },
+          { k: 'phash', label: 'pHash' },
           { k: 'preview', label: 'Preview' },
-          { k: 'waveform', label: 'Waveform' },
-          { k: 'motion', label: 'Motion' },
         ];
         const wrap = document.createElement('div'); wrap.className = 'values';
         items.forEach(({k, label}) => {
@@ -8189,11 +7834,6 @@ catch (_) {}
     // sqrt scale to tame large counts
     return Math.max(18, Math.min(90, 14 + Math.sqrt(n) * 8));
   }
-  function edgeWidthForCount(c) {
-    const n = Math.max(1, Number(c) || 1);
-    return Math.max(1, Math.min(8, 1 + Math.log2(1 + n)));
-  }
-
   // Compute per-node dimensions so the label text is contained inside the node
   function nodeDims(name, count) {
     const base = nodeSizeForCount(count);
@@ -8248,7 +7888,7 @@ catch (_) {}
         source: e.source,
         target: e.target,
         count: Number(e.count || 0),
-        width: edgeWidthForCount(e.count),
+        width: edgeWidthForCount(e.count, 'graph'),
         videos: Array.isArray(e.videos) ? e.videos : [],
         a: e.a || e.source,
         b: e.b || e.target,
@@ -8923,6 +8563,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // =============================
 (function ConnectionsModule() {
   const PREF_KEY = 'mediaPlayer:connectionsShowImageless';
+  const FILTER_PREF_KEY = 'mediaPlayer:connectionsFilters';
   const NODE_BASE_SIZE = 64;
   const NODE_MINI_SIZE = 26;
   const INITIALS_COLORS = ['#2563eb', '#0ea5e9', '#14b8a6', '#7c3aed', '#f97316', '#dc2626'];
@@ -8931,8 +8572,21 @@ document.addEventListener('DOMContentLoaded', () => {
   let initialized = false;
   let controlsBound = false;
   let showImageless = readTogglePref();
+  let lastGraphData = null;
   let loadSeq = 0;
-  const DEFAULT_GRAPH_PARAMS = Object.freeze({ minCount: 1, maxVideosPerEdge: 6 });
+  const DEFAULT_GRAPH_PARAMS = Object.freeze({ maxVideosPerEdge: 6 });
+  const DEFAULT_FILTERS = Object.freeze({
+    minPerformerVideos: 1,
+    minEdgeVideos: 1,
+    showOrphans: true,
+    variableThickness: true,
+  });
+  const FILTER_BOUNDS = Object.freeze({
+    minPerformerVideos: { min: 1, max: 500 },
+    minEdgeVideos: { min: 1, max: 500 },
+  });
+  const EDGE_BASE_WIDTH = 2.6;
+  let filterState = loadFilterSettings();
   const CONSOLE_PREFIX = '[Connections]';
   const log = (level, ...args) => {
     try {
@@ -8967,6 +8621,72 @@ document.addEventListener('DOMContentLoaded', () => {
     if (val > max) return max;
     return val;
   };
+
+  function clampInt(val, bounds, fallback) {
+    const min = Number(bounds?.min ?? 0);
+    const max = Number(bounds?.max ?? Number.MAX_SAFE_INTEGER);
+    const n = Number(val);
+    if (!Number.isFinite(n)) return Number.isFinite(fallback) ? fallback : min;
+    if (n < min) return min;
+    if (n > max) return max;
+    return Math.round(n);
+  }
+
+  function normalizeFilterState(raw) {
+    const next = { ...DEFAULT_FILTERS };
+    if (!raw || typeof raw !== 'object') return next;
+    next.minPerformerVideos = clampInt(raw.minPerformerVideos, FILTER_BOUNDS.minPerformerVideos, DEFAULT_FILTERS.minPerformerVideos);
+    next.minEdgeVideos = clampInt(raw.minEdgeVideos, FILTER_BOUNDS.minEdgeVideos, DEFAULT_FILTERS.minEdgeVideos);
+    next.showOrphans = raw.showOrphans !== false;
+    next.variableThickness = raw.variableThickness !== false;
+    return next;
+  }
+
+  function loadFilterSettings() {
+    try {
+      const raw = localStorage.getItem(FILTER_PREF_KEY);
+      if (!raw) return { ...DEFAULT_FILTERS };
+      const parsed = JSON.parse(raw);
+      return normalizeFilterState(parsed);
+    }
+    catch (_) {
+      return { ...DEFAULT_FILTERS };
+    }
+  }
+
+  function persistFilterSettings() {
+    try {
+      localStorage.setItem(FILTER_PREF_KEY, JSON.stringify(filterState));
+    }
+    catch (_) {}
+  }
+
+  function syncFilterControls() {
+    try {
+      const minVideosInput = document.getElementById('connectionsMinVideos');
+      if (minVideosInput) minVideosInput.value = filterState.minPerformerVideos;
+      const minEdgeInput = document.getElementById('connectionsMinEdgeVideos');
+      if (minEdgeInput) minEdgeInput.value = filterState.minEdgeVideos;
+      const showOrphansToggle = document.getElementById('connectionsShowOrphans');
+      if (showOrphansToggle) showOrphansToggle.checked = Boolean(filterState.showOrphans);
+      const varWidthToggle = document.getElementById('connectionsVariableThickness');
+      if (varWidthToggle) varWidthToggle.checked = Boolean(filterState.variableThickness);
+    }
+    catch (_) {}
+  }
+
+  function updateFilterState(key, value, opts = {}) {
+    if (!(key in filterState)) return;
+    if (filterState[key] === value) return;
+    filterState = { ...filterState, [key]: value };
+    persistFilterSettings();
+    syncFilterControls();
+    if (opts.requiresFetch) {
+      loadConnections();
+      return;
+    }
+    applyFiltersAndRender();
+  }
 
   function parseFaceBoxInput(raw) {
     if (!raw) return null;
@@ -9229,13 +8949,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function edgeWidthForCount(count) {
-    const n = Math.max(0, Number(count) || 0);
-    // Scale linearly with shared video count but clamp to avoid unreadable lines
-    const width = 1.5 + Math.min(10, n) * 0.85;
-    return Number(width.toFixed(2));
-  }
-
   function readTogglePref() {
     try {
       const raw = localStorage.getItem(PREF_KEY);
@@ -9309,12 +9022,45 @@ document.addEventListener('DOMContentLoaded', () => {
     controlsBound = true;
     log('debug', 'bindControls');
     syncToggleUI();
+    syncFilterControls();
     const toggle = document.getElementById('connectionsShowImageless');
     if (toggle && !toggle._wiredConnToggle) {
       toggle._wiredConnToggle = true;
       toggle.addEventListener('change', (e) => {
         log('debug', 'imageless toggle change', { checked: Boolean(e?.target?.checked) });
         persistTogglePref(Boolean(e?.target?.checked));
+      });
+    }
+    const minVideosInput = document.getElementById('connectionsMinVideos');
+    if (minVideosInput && !minVideosInput._wiredConnMinVideos) {
+      minVideosInput._wiredConnMinVideos = true;
+      minVideosInput.addEventListener('change', (e) => {
+        const nextVal = clampInt(e?.target?.value, FILTER_BOUNDS.minPerformerVideos, filterState.minPerformerVideos);
+        e.target.value = nextVal;
+        updateFilterState('minPerformerVideos', nextVal, { requiresFetch: true });
+      });
+    }
+    const minEdgeInput = document.getElementById('connectionsMinEdgeVideos');
+    if (minEdgeInput && !minEdgeInput._wiredConnMinEdges) {
+      minEdgeInput._wiredConnMinEdges = true;
+      minEdgeInput.addEventListener('change', (e) => {
+        const nextVal = clampInt(e?.target?.value, FILTER_BOUNDS.minEdgeVideos, filterState.minEdgeVideos);
+        e.target.value = nextVal;
+        updateFilterState('minEdgeVideos', nextVal);
+      });
+    }
+    const showOrphansToggle = document.getElementById('connectionsShowOrphans');
+    if (showOrphansToggle && !showOrphansToggle._wiredConnOrphans) {
+      showOrphansToggle._wiredConnOrphans = true;
+      showOrphansToggle.addEventListener('change', (e) => {
+        updateFilterState('showOrphans', Boolean(e?.target?.checked));
+      });
+    }
+    const varWidthToggle = document.getElementById('connectionsVariableThickness');
+    if (varWidthToggle && !varWidthToggle._wiredConnVarWidth) {
+      varWidthToggle._wiredConnVarWidth = true;
+      varWidthToggle.addEventListener('change', (e) => {
+        updateFilterState('variableThickness', Boolean(e?.target?.checked));
       });
     }
     const refreshBtn = document.getElementById('connectionsRefreshBtn');
@@ -9330,7 +9076,8 @@ document.addEventListener('DOMContentLoaded', () => {
   async function fetchConnectionsGraphData() {
     try {
       const url = new URL('/api/performers/graph', window.location.origin);
-      url.searchParams.set('min_count', String(DEFAULT_GRAPH_PARAMS.minCount));
+      const minCount = clampInt(filterState.minPerformerVideos, FILTER_BOUNDS.minPerformerVideos, DEFAULT_FILTERS.minPerformerVideos);
+      url.searchParams.set('min_count', String(minCount));
       url.searchParams.set('limit_videos_per_edge', String(DEFAULT_GRAPH_PARAMS.maxVideosPerEdge));
       log('info', 'fetchConnectionsGraphData start', { url: url.toString() });
       consoleLog('info', 'fetch start', { url: url.toString() });
@@ -9351,11 +9098,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function toElements(graphData) {
+  function toElements(graphData, currentFilters = filterState) {
+    const filters = normalizeFilterState(currentFilters);
+    const minNodeCount = clampInt(filters.minPerformerVideos, FILTER_BOUNDS.minPerformerVideos, DEFAULT_FILTERS.minPerformerVideos);
+    const minEdgeCount = clampInt(filters.minEdgeVideos, FILTER_BOUNDS.minEdgeVideos, DEFAULT_FILTERS.minEdgeVideos);
+    const showOrphans = Boolean(filters.showOrphans);
+    const variableThickness = Boolean(filters.variableThickness);
     const rawNodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
     const rawEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+    const filteredRawNodes = rawNodes.filter((p) => Number(p?.count || 0) >= minNodeCount);
+    const filteredRawEdges = rawEdges.filter((edge) => Number(edge?.count || 0) >= minEdgeCount);
     const nodeIdSet = new Set();
-    const nodes = rawNodes
+    let nodes = filteredRawNodes
       .map((p) => {
         const meta = buildNodeViewModel(p);
         if (!meta) return null;
@@ -9388,7 +9142,7 @@ document.addEventListener('DOMContentLoaded', () => {
       })
       .filter(Boolean);
 
-    const edges = rawEdges
+    let edges = filteredRawEdges
       .filter((edge) => edge && edge.source && edge.target)
       .filter((edge) => nodeIdSet.has(edge.source) && nodeIdSet.has(edge.target))
       .map((edge) => ({
@@ -9397,10 +9151,26 @@ document.addEventListener('DOMContentLoaded', () => {
           source: edge.source,
           target: edge.target,
           count: Number(edge.count || 0),
-          width: edgeWidthForCount(edge.count || 0),
+          width: variableThickness ? edgeWidthForCount(edge.count || 0, 'connections') : EDGE_BASE_WIDTH,
           videos: Array.isArray(edge.videos) ? edge.videos : [],
         },
       }));
+    if (!showOrphans) {
+      const connectedIds = new Set();
+      edges.forEach((edge) => {
+        connectedIds.add(edge.data.source);
+        connectedIds.add(edge.data.target);
+      });
+      if (connectedIds.size === 0) {
+        nodes = [];
+        edges = [];
+      }
+      else {
+        nodes = nodes.filter((node) => connectedIds.has(node.data.id));
+        const allowedIds = new Set(nodes.map((node) => node.data.id));
+        edges = edges.filter((edge) => allowedIds.has(edge.data.source) && allowedIds.has(edge.data.target));
+      }
+    }
     const elementCount = nodes.length + edges.length;
     log('debug', 'toElements complete', { rawNodes: rawNodes.length, nodes: nodes.length, rawEdges: rawEdges.length, edges: edges.length, elementCount });
     consoleLog('debug', 'elements prepared', { nodes: nodes.length, edges: edges.length });
@@ -9496,36 +9266,9 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const graphData = await fetchConnectionsGraphData();
       log('debug', 'loadConnections data received', { token, nodeCount: graphData.nodes.length, edgeCount: graphData.edges.length });
-       consoleLog('info', 'data received', { token, nodeCount: graphData.nodes.length, edgeCount: graphData.edges.length });
+      consoleLog('info', 'data received', { token, nodeCount: graphData.nodes.length, edgeCount: graphData.edges.length });
       if (token !== loadSeq) return;
-      const elements = toElements(graphData);
-      if (!cy) initCy();
-      if (!cy) {
-        log('error', 'loadConnections abort (cy missing)');
-        consoleLog('error', 'cy missing during load');
-        return;
-      }
-      cy.elements().remove();
-      log('debug', 'loadConnections cleared elements');
-      consoleLog('debug', 'cleared elements');
-      cy.add(elements);
-      log('debug', 'loadConnections added elements', { elementCount: elements.length });
-      consoleLog('info', 'elements added', { nodes: cy.nodes().length, edges: cy.edges().length });
-      scheduleConnectionsFaceCrops(graphData.nodes);
-      const autoToggle = autoEnableImagelessIfNeeded();
-      applyDefaultLayout();
-      applyImagelessVisibility({ animate: !autoToggle });
-      setTimeout(() => {
-        try {
-          cy.resize();
-          cy.fit(null, 30);
-          log('debug', 'post-layout resize/fit complete');
-        }
-        catch (err) {
-          log('warn', 'post-layout resize/fit failed', err);
-        }
-      }, 40);
-      log('info', 'loadConnections finished', { token });
+      renderGraphFromData(graphData, { animateImageless: true, token });
     }
     catch (err) {
       log('error', 'loadConnections failed', err);
@@ -9648,6 +9391,52 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       catch (_) {}
     });
+  }
+
+  function renderGraphFromData(graphData, options = {}) {
+    if (!graphData) {
+      log('warn', 'renderGraphFromData skipped (no data)');
+      return;
+    }
+    lastGraphData = graphData;
+    const elements = toElements(graphData, filterState);
+    if (!cy) initCy();
+    if (!cy) {
+      log('error', 'renderGraphFromData abort (cy missing)');
+      consoleLog('error', 'render aborted (cy missing)');
+      return;
+    }
+    cy.elements().remove();
+    log('debug', 'renderGraphFromData cleared elements');
+    consoleLog('debug', 'elements cleared');
+    cy.add(elements);
+    log('debug', 'renderGraphFromData added elements', { elementCount: elements.length });
+    consoleLog('info', 'elements added', { nodes: cy.nodes().length, edges: cy.edges().length });
+    scheduleConnectionsFaceCrops(graphData.nodes);
+    const autoToggle = autoEnableImagelessIfNeeded();
+    applyDefaultLayout();
+    const animateImageless = options.animateImageless !== false && !autoToggle;
+    applyImagelessVisibility({ animate: animateImageless });
+    setTimeout(() => {
+      try {
+        cy.resize();
+        cy.fit(null, 30);
+        log('debug', 'post-layout resize/fit complete');
+      }
+      catch (err) {
+        log('warn', 'post-layout resize/fit failed', err);
+      }
+    }, 40);
+    log('info', 'renderGraphFromData complete', { token: options.token, nodes: cy.nodes().length, edges: cy.edges().length });
+  }
+
+  function applyFiltersAndRender(options = {}) {
+    if (!lastGraphData) {
+      log('debug', 'applyFiltersAndRender no cache, triggering load');
+      loadConnections();
+      return;
+    }
+    renderGraphFromData(lastGraphData, options);
   }
 
   function show() {
@@ -14815,7 +14604,7 @@ const Player = (() => {
           'heatmaps',
           'markers',
           'sprites',
-          'previews',
+          'preview',
           'phash',
         ]);
         if (needsFfmpeg.has(kind) && caps.ffmpeg === false) {
@@ -14839,7 +14628,7 @@ const Player = (() => {
         else if (kind === 'subtitles') url = new URL('/api/subtitles/create', window.location.origin);
         else if (kind === 'sprites') url = new URL('/api/sprites/create', window.location.origin);
         else if (kind === 'faces') url = new URL('/api/faces/create', window.location.origin);
-        else if (kind === 'previews') url = new URL('/api/preview', window.location.origin);
+        else if (kind === 'preview') url = new URL('/api/preview', window.location.origin);
         else if (kind === 'phash') url = new URL('/api/phash', window.location.origin);
         else return;
         url.searchParams.set('path', currentPath);
@@ -14871,7 +14660,7 @@ const Player = (() => {
               else if (kind === 'subtitles') present = Boolean(st.subtitles);
               else if (kind === 'sprites') present = Boolean(st.sprites);
               else if (kind === 'faces') present = Boolean(st.faces);
-              else if (kind === 'previews') present = Boolean(st.preview ?? st.hover);
+              else if (kind === 'preview') present = Boolean(st.preview ?? st.hover);
               else if (kind === 'phash') present = Boolean(st.phash);
             }
             if (present) {
@@ -14919,7 +14708,7 @@ const Player = (() => {
     attach(bSubs, 'subtitles');
     attach(bSprites, 'sprites');
     attach(bFaces, 'faces');
-    attach(bPreview, 'previews');
+    attach(bPreview, 'preview');
     attach(bPhash, 'phash');
   }
   function handleSpriteHover(evt) {
@@ -20377,7 +20166,7 @@ const Tags = (() => {
       ensureControlsVisible();
       openMergeModal([a, b]);
     }
-    catch (e) { devLog('warn', '[Tags:debugMerge] failed', e); }
+      catch (e) { devLog('warn', '[Tags:debugMerge] failed', e); }
   } */
   /*   function debugState() {
     try {
@@ -20393,7 +20182,7 @@ const Tags = (() => {
           panelHidden: panel ? panel.hidden : undefined
         });
     }
-    catch (e) {
+        catch (e) {
       devLog('warn', '[Tags:debugState] failed', e);
     }
   } */
@@ -20449,6 +20238,18 @@ catch (_) { }
 })();
 
 // Tasks System
+const ACTIVE_JOB_STATES = new Set([
+  'running',
+  'queued',
+  'pending',
+  'starting',
+  'paused',
+  'waiting',
+  'retrying',
+  'restoring',
+  'scheduled',
+]);
+
 class TasksManager {
   constructor () {
     this.jobs = new Map();
@@ -20473,6 +20274,11 @@ class TasksManager {
     this.activeFilters = new Set();
     this._jobRows = new Map();
     // id -> tr element for stable rendering
+    this._jobPollTimer = null;
+    this._jobPollInFlight = null;
+    this._activePollSuspended = false;
+    this._idlePollTimer = null;
+    this._idlePollBackoffMs = 15000;
     this.init();
   }
   init() {
@@ -20718,7 +20524,7 @@ class TasksManager {
       }
       catch (_) { }
     };
-    const sel = '#spritesOptions input, #previewsOptions input, #thumbnailsOptions input, #phashOptions select, #phashOptions input, #markersOptions input, #heatmapsOptions input, #heatmapsOptions select, #subtitlesOptions select, #subtitlesOptions input, #facesOptions input, #facesOptions select, #embedOptions input, #embedOptions select';
+    const sel = '#spritesOptions input, #previewOptions input, #thumbnailOptions input, #phashOptions select, #phashOptions input, #markersOptions input, #heatmapsOptions input, #heatmapsOptions select, #subtitlesOptions select, #subtitlesOptions input, #facesOptions input, #facesOptions select, #embedOptions input, #embedOptions select';
     document.querySelectorAll(sel).forEach((el) => {
       if (el._persistWired) return;
       el._persistWired = true;
@@ -20931,20 +20737,23 @@ class TasksManager {
   initJobEvents() {
     // Respect feature gating from /config to avoid 404 probes
     if (!window.__JOBS_SSE_ENABLED) return;
-    // New approach: avoid any preflight fetches that can 404. Attempt primary EventSource;
-    // on immediate failure, try alias once.
+    // Avoid any preflight fetches that can 404; attach directly to the canonical stream.
     if (window.__JOBS_SSE_UNAVAILABLE) return;
     // If an EventSource already exists, don't attach twice
     if (this._jobEventSource && this._jobEventSource.readyState !== 2) return;
-    const primary = '/jobs/events';
-    const fallback = '/api/jobs/events';
+    const url = '/jobs/events';
     const throttle = 400;
-    const attach = (url, isFallback) => {
+    const attach = () => {
       let es;
       try {
         es = new EventSource(url);
       }
       catch (_) {
+        window.__JOBS_SSE_UNAVAILABLE = true;
+        try {
+          localStorage.setItem('jobs:sse', 'off');
+        }
+        catch (_) {}
         return false;
       }
       this._jobEventsUrl = url;
@@ -20977,7 +20786,8 @@ class TasksManager {
         try {
           if (evt && evt.data) {
             const payload = JSON.parse(evt.data);
-            const art = (payload.artifact || '').toLowerCase();
+            const rawArt = payload.artifact ?? payload.type;
+            const art = normalizeArtifactKey(rawArt);
             const file = payload.file || payload.path;
             if (art && file) {
               // Register spinner for active states; clear when finished/cancel/error
@@ -21045,18 +20855,7 @@ class TasksManager {
           this._onJobEventsConnected();
         }
       };
-      let triedFallback = false;
       es.onerror = () => {
-        // If primary fails very early, attempt fallback exactly once.
-        if (!isFallback && !triedFallback && es.readyState === EventSource.CLOSED) {
-          triedFallback = true;
-          try {
-            es.close();
-          }
-          catch (_) { }
-          attach(fallback, true);
-          return;
-        }
         try {
           es.close();
         }
@@ -21070,11 +20869,7 @@ class TasksManager {
       this._jobEventSource = es;
       return true;
     };
-    // Try primary;
-    // if it throws synchronously, attempt fallback.
-    if (!attach(primary, false)) {
-      attach(fallback, true);
-    }
+    attach();
   }
   stopJobEvents() {
     try {
@@ -21964,9 +21759,11 @@ class TasksManager {
       }
       const data = await response.json();
       if (data.status === 'success') {
-        this.updateJobsDisplay(data.data.jobs);
+        const jobs = data.data.jobs || [];
+        this.updateJobsDisplay(jobs);
         this.updateJobStats(data.data.stats);
-        return data.data.jobs;
+        this._updatePollingModeFromJobs(jobs);
+        return jobs;
       }
     }
     catch (error) { }
@@ -22039,14 +21836,7 @@ class TasksManager {
       // Resolve currently open file path once for comparisons
       const activePath = (window.Player && typeof window.Player.getPath === 'function') ? window.Player.getPath() : (typeof currentPath === 'function' ? currentPath() : (window.currentPath || currentPath));
       // Helper: normalize backend artifact names to sidebar badge keys
-      const normArt = (k) => {
-        if (!k) return '';
-        k = String(k).toLowerCase();
-        if (k === 'previews' || k === 'preview') return 'preview';
-        if (k === 'thumbnails' || k === 'covers' || k === 'cover' || k === 'thumb' || k === 'thumbs') return 'thumbnail';
-        if (k === 'heatmap' || k === 'heatmaps') return 'heatmaps';
-        return k;
-      };
+      const normArt = (k) => normalizeArtifactKey(k) || '';
       for (const job of jobs) {
         const st = (job.state || '').toLowerCase();
         const isActive = st === 'running' || st === 'queued' || st === 'pending' || st === 'starting';
@@ -22645,6 +22435,7 @@ class TasksManager {
     if (this._jobPollTimer) clearInterval(this._jobPollTimer);
     this._jobPollInFlight = this._jobPollInFlight || {jobs: false, coverage: false};
     const doPoll = async () => {
+      if (this._activePollSuspended) return;
       // Skip overlap
       if (this._jobPollInFlight.jobs || this._jobPollInFlight.coverage) return;
       try {
@@ -22655,6 +22446,7 @@ class TasksManager {
       finally {
         this._jobPollInFlight.jobs = false;
       }
+      if (this._activePollSuspended) return;
       try {
         this._jobPollInFlight.coverage = true;
         await this.loadCoverage();
@@ -22668,6 +22460,7 @@ class TasksManager {
       doPoll();
     };
     this._startPollingNow = () => {
+      if (this._activePollSuspended) return;
       if (this._jobPollTimer) return;
       this._jobPollTimer = setInterval(tick, INTERVAL);
       // Kick an immediate fetch on start
@@ -22680,6 +22473,86 @@ class TasksManager {
       }
     };
     // Do not start automatically here; tabchange handler in init() will control lifecycle
+  }
+  _isJobActive(job) {
+    if (!job) return false;
+    const state = (job.state || job.status || '').toLowerCase();
+    if (ACTIVE_JOB_STATES.has(state)) return true;
+    return false;
+  }
+  _jobsHaveActiveState(jobs) {
+    if (!Array.isArray(jobs) || jobs.length === 0) return false;
+    return jobs.some((job) => this._isJobActive(job));
+  }
+  _updatePollingModeFromJobs(jobs) {
+    if (this._jobsHaveActiveState(jobs)) {
+      this._exitIdlePollingMode();
+    }
+    else {
+      this._enterIdlePollingMode();
+    }
+  }
+  _enterIdlePollingMode() {
+    if (this._activePollSuspended) {
+      this._scheduleIdlePing();
+      return;
+    }
+    this._activePollSuspended = true;
+    if (typeof this._stopPollingNow === 'function') {
+      try {
+        this._stopPollingNow();
+      }
+      catch (_) {}
+    }
+    this._scheduleIdlePing();
+  }
+  _exitIdlePollingMode() {
+    if (!this._activePollSuspended) return;
+    this._activePollSuspended = false;
+    this._cancelIdlePing();
+    this._idlePollBackoffMs = 15000;
+    const tabActive = window.tabSystem && typeof window.tabSystem.getActiveTab === 'function' && window.tabSystem.getActiveTab() === 'tasks';
+    if (tabActive && typeof this._startPollingNow === 'function') {
+      try {
+        this._startPollingNow();
+      }
+      catch (_) {}
+    }
+  }
+  _scheduleIdlePing(delay) {
+    if (!this._activePollSuspended) return;
+    if (window.__JOBS_SSE_ENABLED && !window.__JOBS_SSE_UNAVAILABLE) return;
+    if (this._idlePollTimer) return;
+    const base = typeof delay === 'number' ? delay : (this._idlePollBackoffMs || 15000);
+    const wait = Math.max(5000, Math.min(base, 60000));
+    this._idlePollBackoffMs = wait;
+    this._idlePollTimer = setTimeout(async () => {
+      this._idlePollTimer = null;
+      if (!this._activePollSuspended) {
+        this._idlePollBackoffMs = 15000;
+        return;
+      }
+      try {
+        await this.refreshJobs();
+        await this.loadCoverage();
+      }
+      catch (_) {}
+      if (this._activePollSuspended) {
+        const next = Math.min(Math.round(wait * 1.5), 60000);
+        this._idlePollBackoffMs = next;
+        this._scheduleIdlePing(next);
+      }
+      else {
+        this._idlePollBackoffMs = 15000;
+      }
+    }, wait);
+  }
+  _cancelIdlePing() {
+    if (this._idlePollTimer) {
+      clearTimeout(this._idlePollTimer);
+      this._idlePollTimer = null;
+    }
+    this._idlePollBackoffMs = 15000;
   }
   showNotification(message, type = 'info') {
     // Host container (idempotent)
