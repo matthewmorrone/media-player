@@ -91,3 +91,14 @@ CREATE TABLE IF NOT EXISTS job (
 );
 CREATE INDEX IF NOT EXISTS idx_job_state ON job(state);
 CREATE INDEX IF NOT EXISTS idx_job_media ON job(media_id);
+
+-- Schema version tracking (Alembic-lite). Row id stays fixed at 1; bump version via migrations.
+CREATE TABLE IF NOT EXISTS schema_version (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  version INTEGER NOT NULL,
+  applied_at INTEGER NOT NULL
+);
+
+INSERT INTO schema_version (id, version, applied_at)
+SELECT 1, 1, CAST(strftime('%s','now') AS INTEGER)
+WHERE NOT EXISTS (SELECT 1 FROM schema_version WHERE id = 1);

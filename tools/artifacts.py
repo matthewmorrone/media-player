@@ -7,7 +7,7 @@ Artifacts covered:
 - preview (webm)
 - sprite sheet JPG + JSON
 - scene JSON (+ optional thumbs/clips)
-- heatmaps JSON (+ optional PNG)
+- heatmap JSON (+ optional PNG)
 - phash JSON
 - metadata JSON
 
@@ -15,7 +15,7 @@ Usage:
     python artifacts.py \
         --root /path/to/videos \
     [--recursive] \
-    [--what all|thumb|preview|sprites|scenes|heatmaps|phash|metadata] \
+    [--what all|thumb|preview|sprites|scenes|heatmap|phash|metadata] \
     [--force] [--concurrency 2]
 
 Notes:
@@ -122,7 +122,7 @@ def import_app_module():
 def find_videos(m, base: Path, recursive: bool) -> list[Path]:
     """
     Use server's media filter to find eligible videos.
-    This respects hidden/.previews rules and app.MEDIA_EXTS.
+    This respects hidden directory rules and app.MEDIA_EXTS.
     """
     it = base.rglob("*") if recursive else base.iterdir()
     vids: list[Path] = []
@@ -167,9 +167,9 @@ def task_scenes(m, v: Path, thumbs: bool, clips: bool):
     )
 
 
-def task_heatmaps(m, v: Path, png: bool):
+def task_heatmap(m, v: Path, png: bool):
     # Default interval/mode align with server defaults
-    m.compute_heatmaps(v, interval=5.0, mode="both", png=png)
+    m.compute_heatmap(v, interval=5.0, mode="both", png=png)
 
 
 def task_phash(m, v: Path):
@@ -185,14 +185,14 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--root", default=os.environ.get("MEDIA_ROOT", os.getcwd()), help="Directory containing media files")
     ap.add_argument("--recursive", action="store_true", help="Recurse into subdirectories")
     ap.add_argument("--what", default="all", choices=[
-        "all", "thumb", "preview", "sprites", "scenes", "heatmaps", "phash", "metadata"
+        "all", "thumb", "preview", "sprites", "scenes", "heatmap", "phash", "metadata"
     ], help="Which artifact(s) to generate")
     ap.add_argument("--force", action="store_true", help="Force overwrite where applicable")
     # Align with server default JOB_MAX_CONCURRENCY=4 (overridable via env)
     ap.add_argument("--concurrency", type=int, default=int(os.environ.get("JOB_MAX_CONCURRENCY", "4")), help="Max parallel workers")
     ap.add_argument("--scene-thumbs", action="store_true", help="For scenes: write thumbnail JPEGs")
     ap.add_argument("--scene-clips", action="store_true", help="For scenes: write MP4 clips")
-    ap.add_argument("--heatmaps-png", action="store_true", help="For heatmaps: also write PNG strip")
+    ap.add_argument("--heatmap-png", action="store_true", help="For heatmap: also write PNG strip")
     ap.add_argument("--ffmpeg-timelimit", type=int, default=int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600), help="Hard cap for each ffmpeg invocation in seconds (0 disables)")
     ap.add_argument("--no-ffprobe", action="store_true", help="Disable ffprobe (set FFPROBE_DISABLE=1) to avoid probe hangs; some features may be approximate")
     ap.add_argument("--preview-fmt", default=os.environ.get("PREVIEW_FMT", "webm"), choices=["webm", "mp4"], help="Container for previews (webm/libvpx-vp9 or mp4/h264)")
@@ -278,7 +278,7 @@ def main(argv: list[str]) -> int:
                 "sprites",
                 "preview",
                 "scenes",
-                "heatmaps",
+                "heatmap",
                 "phash"
             ]
         return [args.what]
@@ -347,11 +347,11 @@ def main(argv: list[str]) -> int:
                     return bool(getattr(m, "scenes_json_exists")(v))  # type: ignore[misc]
                 except Exception:
                     return m.scenes_json_path(v).exists()
-            if task == "heatmaps":
+            if task == "heatmap":
                 try:
-                    return bool(getattr(m, "heatmaps_json_exists")(v))  # type: ignore[misc]
+                    return bool(getattr(m, "heatmap_json_exists")(v))  # type: ignore[misc]
                 except Exception:
-                    return m.heatmaps_json_path(v).exists()
+                    return m.heatmap_json_path(v).exists()
             if task == "phash":
                 return m.phash_path(v).exists()
         except Exception:
@@ -456,10 +456,10 @@ def main(argv: list[str]) -> int:
                     starting("scenes"); task_scenes(m, v, thumbs=args.scene_thumbs, clips=args.scene_clips); advance("scenes")
                 if cancel_event.is_set():
                     return f"{v}: cancelled"
-                if only_missing and artifact_exists("heatmaps", v):
-                    advance("heatmaps (skip)")
+                if only_missing and artifact_exists("heatmap", v):
+                    advance("heatmap (skip)")
                 else:
-                    starting("heatmaps"); task_heatmaps(m, v, png=args.heatmaps_png); advance("heatmaps")
+                    starting("heatmap"); task_heatmap(m, v, png=args.heatmap_png); advance("heatmap")
                 if cancel_event.is_set():
                     return f"{v}: cancelled"
                 if only_missing and artifact_exists("phash", v):
@@ -516,11 +516,11 @@ def main(argv: list[str]) -> int:
                     advance("scenes (skip)")
                 else:
                     starting("scenes"); task_scenes(m, v, thumbs=args.scene_thumbs, clips=args.scene_clips); advance("scenes")
-            elif args.what == "heatmaps":
-                if only_missing and artifact_exists("heatmaps", v):
-                    advance("heatmaps (skip)")
+            elif args.what == "heatmap":
+                if only_missing and artifact_exists("heatmap", v):
+                    advance("heatmap (skip)")
                 else:
-                    starting("heatmaps"); task_heatmaps(m, v, png=args.heatmaps_png); advance("heatmaps")
+                    starting("heatmap"); task_heatmap(m, v, png=args.heatmap_png); advance("heatmap")
             elif args.what == "phash":
                 if only_missing and artifact_exists("phash", v):
                     advance("phash (skip)")

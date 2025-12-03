@@ -104,16 +104,59 @@ function formatDateTime(sec) {
   const s = pad2(d.getSeconds());
   return `${Y}/${M}/${D} ${h}:${m}:${s}`;
 }
-function placeCaretAtEnd(el) {
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  range.collapse(false);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
-}
 function tokenize(str) {
   return String(str || '').split(/[\,\n]+/).map((s) => s.trim()).filter(Boolean);
+}
+function cloneTemplate(id) {
+  const tpl = document.getElementById(id);
+  if (!tpl || !tpl.content || !tpl.content.firstElementChild) {
+    throw new Error(`Template ${id} missing or empty`);
+  }
+  return tpl.content.firstElementChild.cloneNode(true);
+}
+function createChipElement(opts = {}) {
+  const {
+    label = '',
+    title = '',
+    classes = [],
+    removable = false,
+    removeLabel = 'Remove',
+  } = opts;
+  const chip = cloneTemplate('chipTemplate');
+  if (title) chip.title = title;
+  const labelEl = chip.querySelector('.chip-label');
+  if (labelEl) labelEl.textContent = label;
+  else chip.textContent = label;
+  const extraClasses = Array.isArray(classes) ? classes : String(classes || '').split(/\s+/);
+  extraClasses.filter((cls) => typeof cls === 'string' && cls.trim()).forEach((cls) => chip.classList.add(cls.trim()));
+  const removeBtn = chip.querySelector('.chip-remove');
+  if (!removable && removeBtn) removeBtn.remove();
+  else if (removeBtn) {
+    removeBtn.setAttribute('aria-label', removeLabel || 'Remove');
+  }
+  return { chip, removeBtn, labelEl };
+}
+function createSuggestChip(label, opts = {}) {
+  const { title = '', classes = [] } = opts;
+  const chip = cloneTemplate('chipSuggestTemplate');
+  const labelEl = chip.querySelector('.chip-label');
+  if (labelEl) labelEl.textContent = label;
+  else chip.textContent = label;
+  if (title) chip.title = title;
+  const extraSuggestClasses = Array.isArray(classes) ? classes : String(classes || '').split(/\s+/);
+  extraSuggestClasses.filter((cls) => typeof cls === 'string' && cls.trim()).forEach((cls) => chip.classList.add(cls.trim()));
+  return chip;
+}
+function createOrphanRow(text, opts = {}) {
+  const { title = '', classes = [] } = opts;
+  const row = cloneTemplate('orphanFileTemplate');
+  const textEl = row.querySelector('.orphan-file__text');
+  if (textEl) textEl.textContent = text;
+  else row.textContent = text;
+  if (title) row.title = title;
+  const extraClasses = Array.isArray(classes) ? classes : String(classes || '').split(/\s+/);
+  extraClasses.filter((cls) => typeof cls === 'string' && cls.trim()).forEach((cls) => row.classList.add(cls.trim()));
+  return row;
 }
 function enhanceSegmentedSelect(select, opts = {}) {
   if (!select || select._segmentedInit) return null;
@@ -124,16 +167,18 @@ function enhanceSegmentedSelect(select, opts = {}) {
   select.classList.add('sr-only');
   select.setAttribute('aria-hidden', 'true');
   select.setAttribute('tabindex', '-1');
-  const control = document.createElement('div');
-  control.className = 'segmented-control';
-  control.setAttribute('role', 'group');
+  const controlTemplateId = 'segmentedControlTemplate';
+  const buttonTemplateId = 'segmentedControlButtonTemplate';
+  const control = cloneTemplate(controlTemplateId);
+  control.classList.add('segmented-control');
+  if (!control.getAttribute('role')) control.setAttribute('role', 'group');
   if (labelText) control.setAttribute('aria-label', labelText);
   if (select.id) control.dataset.segmentedFor = select.id;
   const buttons = [];
   options.forEach((opt) => {
-    const btn = document.createElement('button');
+    const btn = cloneTemplate(buttonTemplateId);
     btn.type = 'button';
-    btn.className = 'segmented-control__btn';
+    btn.classList.add('segmented-control__btn');
     btn.dataset.value = opt.value;
     btn.textContent = opt.dataset.chip || opt.textContent.trim();
     btn.setAttribute('aria-pressed', 'false');
@@ -196,7 +241,10 @@ function bootstrapSegmentedFilters() {
   ];
   targets.forEach((cfg) => {
     const el = document.getElementById(cfg.id);
-    if (el) enhanceSegmentedSelect(el, cfg);
+    if (!el) return;
+    const wantsSegmented = el.dataset.segmented === '1' || el.classList.contains('sr-only');
+    if (!wantsSegmented) return;
+    enhanceSegmentedSelect(el, cfg);
   });
 }
 
@@ -321,26 +369,27 @@ function notify(message, type = 'info') {
     window.tasksManager.showNotification(message, type);
     return;
   }
-  let host = document.getElementById('toastHost');
+  const host = document.getElementById('toastHost');
   if (!host) {
-    host = document.createElement('div');
-    host.id = 'toastHost';
-    document.body.appendChild(host);
+    console.error('toastHost missing');
+    return;
   }
-  const el = document.createElement('div');
-  el.className = 'toast';
-  if (type === 'success') el.classList.add('is-success');
-  else if (type === 'error') el.classList.add('is-error');
-  else el.classList.add('is-info');
-  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
-  el.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
-  el.textContent = message;
-  host.appendChild(el);
+  const toast = cloneTemplate('toastTemplate');
+  toast.classList.remove('is-success', 'is-error', 'is-info');
+  if (type === 'success') toast.classList.add('is-success');
+  else if (type === 'error') toast.classList.add('is-error');
+  else toast.classList.add('is-info');
+  toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+  const textEl = toast.querySelector('.toast-text');
+  if (textEl) textEl.textContent = message;
+  else toast.textContent = message;
+  host.appendChild(toast);
   const lifespan = 5000;
   const fadeMs = 250;
   setTimeout(() => {
-    el.classList.add('fade-out');
-    setTimeout(() => el.remove(), fadeMs + 30);
+    toast.classList.add('fade-out');
+    setTimeout(() => toast.remove(), fadeMs + 30);
   }, lifespan - fadeMs);
 }
 
@@ -538,6 +587,25 @@ function devLog(level, scope, ...args) {
     originalConsoleError.apply(console, args);
   };
 })();
+
+// Chrome/Safari now emit network 404s for <img>/<video> loads directly, bypassing console.error.
+// Catch those resource error events in the capture phase and swallow the ones we expect.
+(function suppressResource404Events() {
+  const shouldSilence = (target) => {
+    if (!target || !target.tagName) return false;
+    const tag = target.tagName.toUpperCase();
+    if (!['IMG', 'PICTURE', 'SOURCE', 'VIDEO'].includes(tag)) return false;
+    const src = target.currentSrc || target.src || target.dataset?.src || '';
+    if (!src) return false;
+    return src.includes('/api/thumbnail') || src.includes('/files/') || src.includes('.thumbnail.jpg') || src.includes('.sprites.jpg');
+  };
+  window.addEventListener('error', (event) => {
+    const target = event?.target;
+    if (!shouldSilence(target)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+})();
 // Some browser extensions inject content_script.js that can throw on focus events
 // when inspecting non-form elements (e.g., reading element.control of undefined).
 // Swallow that specific, external error so it doesn't clutter the console or
@@ -674,34 +742,6 @@ if (typeof window !== 'undefined') window.__JOBS_SSE_UNAVAILABLE = true;
   devLog('info', 'Fetch', 'Network logging enabled');
 })();
 
-// Global lightweight metadata cache used across views (List, chips, etc.)
-// Returns parsed metadata JSON for a file or null. Caches responses and in-flight requests.
-function fetchMetadataCached(path) {
-  try {
-    if (!path) return Promise.resolve(null);
-    window.__metadataByPath = window.__metadataByPath || {};
-    window.__metadataInflight = window.__metadataInflight || {};
-    if (window.__metadataByPath[path]) return Promise.resolve(window.__metadataByPath[path]);
-    if (window.__metadataInflight[path]) return window.__metadataInflight[path];
-    const u = new URL('/api/metadata', window.location.origin);
-    u.searchParams.set('path', path);
-    const p = fetch(u.toString())
-      .then((r) => r.json())
-      .then((j) => j?.data || null)
-      .catch(() => null)
-      .then((d) => {
-        if (d) window.__metadataByPath[path] = d;
-        delete window.__metadataInflight[path];
-        return d;
-      });
-    window.__metadataInflight[path] = p;
-    return p;
-  }
-  catch (_) {
-    return Promise.resolve(null);
-  }
-}
-
 // Lightweight /api/media/info cache so repeated lookups for tags/performers avoid duplicate requests
 async function fetchMediaInfoCached(path) {
   try {
@@ -768,6 +808,16 @@ async function fetchMediaInfoBulk(paths = [], opts = {}) {
   }
   catch (_) {
     return [];
+  }
+}
+
+function invalidateMediaInfoCache(path) {
+  if (!path) return;
+  if (window.__mediaInfoCache && window.__mediaInfoCache[path]) {
+    delete window.__mediaInfoCache[path];
+  }
+  if (window.__mediaInfoInflight && window.__mediaInfoInflight[path]) {
+    delete window.__mediaInfoInflight[path];
   }
 }
 
@@ -896,6 +946,61 @@ devLog('info', 'app', 'script loaded build=reset-debug-1', {ts: Date.now()});
 // Artifact filters state is consumed before the deferred library setup runs, so declare early.
 let libraryArtifactFilters = {};
 
+const buildThumbnailUrl = (pathRel, opts = {}) => {
+  if (!pathRel) return '';
+  const enc = encodeURIComponent(pathRel);
+  const parts = [`path=${enc}`];
+  if (opts.cacheBust) parts.push(`cb=${Date.now()}`);
+  return `/api/thumbnail?${parts.join('&')}`;
+};
+
+async function probeThumbnailExists(url) {
+  try {
+    const resp = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    if (!resp.ok) return { exists: false, status: resp.status };
+    const headerVal = resp.headers && typeof resp.headers.get === 'function' ? resp.headers.get('x-thumbnail-exists') : null;
+    let exists = Boolean(resp.ok);
+    if (headerVal === '1') exists = true;
+    else if (headerVal === '0') exists = false;
+    return { exists, status: resp.status };
+  }
+  catch (_) {
+    return { exists: false, status: null };
+  }
+}
+
+async function generateThumbnailInline(pathRel, opts = {}) {
+  if (!pathRel) return false;
+  try {
+    const params = new URLSearchParams();
+    params.set('path', pathRel);
+    params.set('t', opts.timeSpec ?? 'middle');
+    params.set('quality', String(opts.quality ?? 2));
+    params.set('overwrite', opts.overwrite ? '1' : '0');
+    const resp = await fetch(`/api/thumbnail/create/sync?${params.toString()}`, { method: 'POST' });
+    return Boolean(resp && resp.ok);
+  }
+  catch (_) {
+    return false;
+  }
+}
+
+async function ensureThumbUrlIfNeeded(src, pathRel) {
+  if (!src) return '';
+  const isApiThumb = typeof src === 'string' && src.startsWith('/api/thumbnail');
+  if (!isApiThumb || !pathRel) return src;
+  try {
+    const probe = await probeThumbnailExists(src);
+    if (!probe.exists) {
+      await generateThumbnailInline(pathRel);
+    }
+    return buildThumbnailUrl(pathRel, { cacheBust: true }) || src;
+  }
+  catch (_) {
+    return src;
+  }
+}
+
 // Artifact Filters Popover (Library Grid)
 (function wireArtifactFiltersUI() {
   const btn = document.getElementById('artifactFiltersBtn');
@@ -911,9 +1016,7 @@ let libraryArtifactFilters = {};
     ['thumbnail', 'Thumbnail'],
     ['sprites', 'Sprites'],
     ['markers', 'Scenes'],
-    ['subtitles', 'Subtitles'],
-    ['heatmaps', 'Heatmaps'],
-    ['faces', 'Faces'],
+    ['heatmap', 'Heatmap'],
     ['preview', 'Preview'],
   ];
   const renderRows = () => {
@@ -991,17 +1094,15 @@ let libraryArtifactFilters = {};
 // Render artifact filter chips next to Artifacts button
 function renderArtifactFilterChips() {
   const host = document.getElementById('artifactFilterChips');
-  const tpl = document.getElementById('artifactFilterChipTemplate');
-  if (!host || !tpl) return;
+  if (!host) return;
   host.innerHTML = '';
+  // @todo copilot redundant
   const labels = {
     metadata: 'Metadata',
     thumbnail: 'Thumbnail',
     sprites: 'Sprites',
     markers: 'Scenes',
-    subtitles: 'Subtitles',
-    heatmaps: 'Heatmaps',
-    faces: 'Faces',
+    heatmap: 'Heatmap',
     preview: 'Preview',
   };
   const entries = Object.entries(libraryArtifactFilters || {}).filter(([k, v]) => v === true || v === false);
@@ -1010,23 +1111,21 @@ function renderArtifactFilterChips() {
     return;
   }
   entries.forEach(([k, v]) => {
-    const fragment = tpl.content.cloneNode(true);
-    const chip = fragment.querySelector('.chip');
-    const labelEl = fragment.querySelector('.artifact-filter-chip-label');
-    const removeBtn = fragment.querySelector('.artifact-filter-chip-remove');
     const friendly = labels[k] || k;
-    if (labelEl) labelEl.textContent = `${friendly}:${v ? 'Y' : 'N'}`;
-    if (chip) {
-      chip.title = v ? (`Has ${friendly}`) : (`Missing ${friendly}`);
-      chip.addEventListener('click', (event) => {
-        if (event.target && event.target.closest('.artifact-filter-chip-remove')) return;
-        event.preventDefault();
-        const trigger = document.getElementById('artifactFiltersBtn');
-        if (trigger) trigger.click();
-      });
-    }
+    const { chip, removeBtn } = createChipElement({
+      label: `${friendly}:${v ? 'Y' : 'N'}`,
+      title: v ? `Has ${friendly}` : `Missing ${friendly}`,
+      classes: ['chip--artifact-filter'],
+      removable: true,
+      removeLabel: `Remove ${friendly} artifact filter`,
+    });
+    chip.addEventListener('click', (event) => {
+      if (event.target && event.target.closest('.chip-remove')) return;
+      event.preventDefault();
+      const trigger = document.getElementById('artifactFiltersBtn');
+      if (trigger) trigger.click();
+    });
     if (removeBtn) {
-      removeBtn.setAttribute('aria-label', 'Remove ' + friendly + ' artifact filter');
       removeBtn.addEventListener('click', async (event) => {
         event.stopPropagation();
         delete libraryArtifactFilters[k];
@@ -1036,19 +1135,16 @@ function renderArtifactFilterChips() {
         renderArtifactFilterChips();
       });
     }
-    host.appendChild(fragment);
+    host.appendChild(chip);
   });
-  const clearFragment = tpl.content.cloneNode(true);
-  const clearChip = clearFragment.querySelector('.chip');
-  const clearLabel = clearFragment.querySelector('.artifact-filter-chip-label');
-  const clearBtn = clearFragment.querySelector('.artifact-filter-chip-remove');
-  if (clearChip) {
-    clearChip.classList.add('chip--clear');
-    clearChip.title = 'Clear all artifact filters';
-  }
-  if (clearLabel) clearLabel.textContent = 'Clear Artifacts';
+  const { chip: clearChip, removeBtn: clearBtn } = createChipElement({
+    label: 'Clear Artifacts',
+    title: 'Clear all artifact filters',
+    classes: ['chip--clear'],
+    removable: true,
+    removeLabel: 'Clear all artifact filters',
+  });
   if (clearBtn) {
-    clearBtn.setAttribute('aria-label', 'Clear all artifact filters');
     clearBtn.addEventListener('click', async (event) => {
       event.stopPropagation();
       libraryArtifactFilters = {};
@@ -1058,7 +1154,7 @@ function renderArtifactFilterChips() {
       renderArtifactFilterChips();
     });
   }
-  host.appendChild(clearFragment);
+  host.appendChild(clearChip);
   host.hidden = false;
 }
 renderArtifactFilterChips();
@@ -1548,6 +1644,20 @@ function stopAllTilePreviews(exceptTile) {
 function videoCard(v) {
   const template = document.getElementById('cardTemplate');
   const el = template.content.cloneNode(true).querySelector('.card');
+  const thumbWrap = el.querySelector('.thumbnail-wrap');
+  const img = thumbWrap ? thumbWrap.querySelector('.thumbnail-img') : el.querySelector('.thumbnail-img');
+  const markLoaded = (card, loaded) => {
+    if (!card) return;
+    if (loaded) card.classList.add('loaded');
+    else card.classList.remove('loaded');
+  };
+  if (img) {
+    img.alt = v.title || v.name || 'Thumbnail';
+    img.decoding = 'async';
+    img.addEventListener('load', () => {
+      markLoaded(el, true);
+    });
+  }
   // Resolve thumbnail URL: prefer payload-provided URL; fall back to canonical endpoint
   // Filter out undefined/null values explicitly
   const thumbUrl = v?.thumbnail ?? v?.thumb ?? v?.thumbnail_url;
@@ -1567,90 +1677,7 @@ function videoCard(v) {
   checkbox.setAttribute('tabindex', '0');
   checkbox.setAttribute('aria-checked', isSelected ? 'true' : 'false');
   // Clicking the checkbox should always toggle selection (no modifiers required)
-  checkbox.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    // Support Shift-click range selection via checkbox as well
-    if (ev.shiftKey) {
-      if (lastSelectedPath) {
-        selectRange(lastSelectedPath, v.path);
-        lastSelectedPath = v.path;
-        return;
-      }
-      // No prior anchor: select current and set anchor
-      if (!selectedItems.has(v.path)) {
-        selectedItems.add(v.path);
-        updateCardSelection(v.path);
-        updateSelectionUI();
-      }
-      lastSelectedPath = v.path;
-      return;
-    }
-    toggleSelection(ev, v.path);
-  });
-  // Keyboard support for accessibility
-  checkbox.addEventListener('keydown', (ev) => {
-    if (ev.key === ' ' || ev.key === 'Enter') {
-      ev.preventDefault();
-      ev.stopPropagation();
-      toggleSelection(ev, v.path);
-    }
-  });
-  // Updated naming: template now uses .thumbnail-img instead of legacy .thumb
-  const img = el.querySelector('.thumbnail-img');
-  const thumbWrap = el.querySelector('.thumbnail-wrap');
-  // Small helper: ensure /api/thumbnail exists;
-  // if not, generate and return cb URL
-  async function ensureThumbUrlIfNeeded(url, pathRel) {
-    if (!url || !String(url).startsWith('/api/thumbnail') || !pathRel) return url;
-    const head = await fetch(url, { method: 'HEAD', cache: 'no-store' });
-    if (head.ok) {
-      const u = new URL(url, window.location.origin);
-      u.searchParams.set('cb', Date.now());
-      return u.pathname + '?' + u.searchParams.toString();
-    }
-    // generate on demand, then return cb url (suppress 404 console errors)
-    const gen = await fetch(`/api/thumbnail?path=${encodeURIComponent(pathRel)}&t=middle&quality=2&overwrite=0`, { method: 'POST' }).catch(() => ({ ok: false }));
-    if (gen.ok) {
-      const m = window.__LIB_LAST_METRICS;
-      if (m) m.thumbGen = (m.thumbGen || 0) + 1;
-      const u = new URL(`/api/thumbnail?path=${encodeURIComponent(pathRel)}`, window.location.origin);
-      u.searchParams.set('cb', Date.now());
-      return u.pathname + '?' + u.searchParams.toString();
-    }
-    return url;
-  }
-  // Always start with placeholder visible until the image truly loads to avoid blank flashes.
-  img.alt = v.title || v.name;
-  const placeholderSvg = el.querySelector('svg.thumbnail-placeholder');
-  // Placeholder is now absolutely positioned overlay; class toggles handle fade.
-  function markLoaded(el, success) {
-    if (success) el.classList.add('loaded');
-    else el.classList.remove('loaded');
-  }
-  // Start in not-loaded state (placeholder visible via CSS)
-  el.classList.remove('loaded');
-  // Load events: hide placeholder after successful decode
-  img.addEventListener('load', () => {
-    // Guard: if naturalWidth is 0, treat as failure
-    if (!img.naturalWidth || (img.naturalWidth <= 2 && img.naturalHeight <= 2)) {
-      markLoaded(el, false);
-      return;
-    }
-    markLoaded(el, true);
-    // Metrics: count image load and mark first/all timings
-    const m = window.__LIB_LAST_METRICS;
-    if (m) {
-      m.imgLoaded = (m.imgLoaded || 0) + 1;
-      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-      if (m.firstImgMs == null) m.firstImgMs = Math.max(0, Math.round(now - m.t0));
-      const exp = m.imgExpected || 0;
-      if (exp && (m.imgLoaded + (m.imgError || 0)) >= exp && m.allImgsMs == null) {
-        m.allImgsMs = Math.max(0, Math.round(now - m.t0));
-        devLog('info', 'library', 'images', { page: m.page, expected: exp, loaded: m.imgLoaded, errors: (m.imgError || 0), firstMs: m.firstImgMs, allMs: m.allImgsMs, requested: m.requested, returned: m.returned, total: m.total });
-      }
-    }
-  });
+  // (actual behavior handled by global card checkbox listener + card click logic)
   img.addEventListener('error', async () => {
     markLoaded(el, false);
     let m = window.__LIB_LAST_METRICS;
@@ -1660,16 +1687,13 @@ function videoCard(v) {
     el._thumbGenTried = true;
     const p = el.dataset.path || v.path || '';
     if (!p) return;
-    const enc = encodeURIComponent(p);
-    // Generate thumbnail synchronously (server endpoint performs work inline)
-    const genUrl = `/api/thumbnail?path=${enc}&t=middle&quality=2&overwrite=0`;
-    const r = await fetch(genUrl, { method: 'POST' }).catch(() => ({ ok: false }));
-    if (!r.ok) return;
+    const generated = await generateThumbnailInline(p);
+    if (!generated) return;
     m = window.__LIB_LAST_METRICS;
     if (m) m.thumbGen = (m.thumbGen || 0) + 1;
     // Retry load with cache buster (suppress console error if still 404)
-    const base = `/api/thumbnail?path=${enc}`;
-    const retry = `${base}&cb=${Date.now()}`;
+    const retry = buildThumbnailUrl(p, { cacheBust: true });
+    if (!retry) return;
     img.loading = 'eager';
     // Set a flag to suppress error logging for this retry attempt
     img._retryAttempt = true;
@@ -1767,8 +1791,7 @@ function videoCard(v) {
       vid.remove();
     }
     // Show placeholder if no thumbnail source
-    if (!imgSrc) el.classList.remove('loaded');
-    else el.classList.add('loaded');
+    markLoaded(el, !!imgSrc);
   }
   el.addEventListener('mouseleave', () => {
     el._previewing = false;
@@ -1933,29 +1956,13 @@ if (!window.__tileIO) {
         const cardPath = card ? card.dataset.path : '';
         const setSrc = async () => {
           try {
-            const docOrigin = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : undefined;
             if (src && String(src).startsWith('/api/thumbnail') && cardPath) {
-              const headResp = await fetch(src, { method: 'HEAD', cache: 'no-store' }).catch(() => ({ ok: false }));
-              let exists = false;
-              try {
-                const h = headResp && headResp.headers && typeof headResp.headers.get === 'function' ? headResp.headers.get('x-thumbnail-exists') : null;
-                if (h === '1' || h === '0') {
-                  exists = (h === '1');
-                }
-                else {
-                  // Back-compat with older server: fall back to HTTP ok
-                  exists = Boolean(headResp.ok);
-                }
+              const probe = await probeThumbnailExists(src);
+              if (!probe.exists) {
+                await generateThumbnailInline(cardPath);
               }
-              catch (_) {
-                exists = Boolean(headResp.ok);
-              }
-              if (!exists) {
-                await fetch(`/api/thumbnail?path=${encodeURIComponent(cardPath)}&t=middle&quality=2&overwrite=0`, { method: 'POST' }).catch(() => ({ ok: false }));
-              }
-              const u = new URL(`/api/thumbnail?path=${encodeURIComponent(cardPath)}`, docOrigin);
-              u.searchParams.set('cb', Date.now());
-              node.src = u.pathname + '?' + u.searchParams.toString();
+              const refreshed = buildThumbnailUrl(cardPath, { cacheBust: true });
+              node.src = refreshed || src;
             }
             else {
               node.src = src;
@@ -2145,7 +2152,7 @@ async function loadLibrary() {
     }
     // Artifact filters: build filters object compatible with list tab format
     // @todo copilot redundant
-    const artKeys = ['metadata', 'thumbnail', 'sprites', 'markers', 'subtitles', 'heatmaps', 'faces', 'preview'];
+    const artKeys = ['metadata', 'thumbnail', 'sprites', 'markers', 'heatmap', 'preview'];
     const artFilterPayload = {};
     for (const k of artKeys) {
       const v = libraryArtifactFilters[k];
@@ -2978,36 +2985,16 @@ function loadLibraryFilters() {
 function renderUnifiedFilterChips() {
   if (!unifiedChipsEl) return;
   unifiedChipsEl.innerHTML = '';
-  const tpl = document.getElementById('filterChipTemplate');
   function add(label, cls, removeFn, title) {
-    let el = null;
-    if (tpl && tpl.content) {
-      el = tpl.content.firstElementChild.cloneNode(true);
-    }
-    else {
-      el = document.createElement('span');
-      el.className = 'chip';
-      const span = document.createElement('span');
-      span.className = 'chip-label';
-      span.textContent = label;
-      el.appendChild(span);
-      const rm = document.createElement('button');
-      rm.type = 'button';
-      rm.className = 'remove';
-      rm.textContent = '×';
-      el.appendChild(rm);
-    }
-    el.classList.add(cls);
-    const labelEl = el.querySelector('.chip-label');
-    if (labelEl) {
-      labelEl.textContent = label;
-    }
-    if (title) {
-      el.title = title;
-    }
-    const rmBtn = el.querySelector('.remove');
-    if (rmBtn) {
-      rmBtn.addEventListener('click', () => {
+    const { chip, removeBtn } = createChipElement({
+      label,
+      title,
+      classes: [cls],
+      removable: true,
+      removeLabel: `Remove ${label}`,
+    });
+    if (removeBtn) {
+      removeBtn.addEventListener('click', () => {
         removeFn();
         persistLibraryFilters();
         renderUnifiedFilterChips();
@@ -3016,7 +3003,7 @@ function renderUnifiedFilterChips() {
         loadLibrary();
       });
     }
-    unifiedChipsEl.appendChild(el);
+    unifiedChipsEl.appendChild(chip);
   }
   librarySearchTerms.forEach((term) => add(term, 'chip-search', () => {
     librarySearchTerms = librarySearchTerms.filter((t) => t !== term);
@@ -3345,10 +3332,8 @@ function resolveArtifactRequest(artifact, filePath) {
     return { url: `/api/sprites/create?path=${qp}`, method: 'POST' };
   case 'markers':
     return { url: `/api/markers/detect?path=${qp}&priority=1`, method: 'POST' };
-  case 'subtitles':
-    return { url: `/api/subtitles/create?path=${qp}`, method: 'POST' };
-  case 'heatmaps':
-    return { url: `/api/heatmaps/create?path=${qp}`, method: 'POST' };
+  case 'heatmap':
+    return { url: `/api/heatmap/create?path=${qp}`, method: 'POST' };
   case 'phash':
     return { url: `/api/phash?path=${qp}`, method: 'POST' };
   default:
@@ -3363,9 +3348,8 @@ const CANONICAL_ARTIFACT_KEYS = new Set([
   'preview',
   'sprites',
   'markers',
-  'subtitles',
   'phash',
-  'heatmaps',
+  'heatmap',
 ]);
 
 // @todo copilot redundant
@@ -3373,7 +3357,7 @@ const CANONICAL_ARTIFACT_KEYS = new Set([
 function normalizeArtifactKey(key) {
   const k = String(key ?? '').trim().toLowerCase();
   if (k === 'previews') return 'preview';
-  if (k === 'heatmap') return 'heatmaps';
+  if (k === 'heatmap') return 'heatmap';
   return CANONICAL_ARTIFACT_KEYS.has(k) ? k : '';
 }
 
@@ -3384,9 +3368,7 @@ const ARTIFACT_DEFS = [
   { key: 'preview', label: 'Preview', statusKey: 'preview' },
   { key: 'sprites', label: 'Sprites', statusKey: 'sprites' },
   { key: 'markers', label: 'Scenes', statusKey: 'markers' },
-  { key: 'subtitles', label: 'Subtitles', statusKey: 'subtitles' },
-  { key: 'heatmaps', label: 'Heatmaps', statusKey: 'heatmaps' },
-  { key: 'faces', label: 'Faces', statusKey: 'faces' },
+  { key: 'heatmap', label: 'Heatmap', statusKey: 'heatmap' },
   { key: 'phash', label: 'pHash', statusKey: 'phash' },
 ];
 
@@ -3432,20 +3414,14 @@ function setChipPresentFor(path, chipKey) {
 }
 
 function makeArtifactEl(style, def, present) {
-  // Unify visuals: both styles use "artifact-chip" badge with state attributes
-  const el = document.createElement('div');
-  el.className = 'badge-pill artifact-chip';
+  // Unify visuals via shared template for artifact chips
+  const el = cloneTemplate('artifactChipTemplate');
   el.dataset.key = def.key;
-  const lab = document.createElement('span');
-  lab.className = 'label';
-  lab.textContent = def.label;
-  const st = document.createElement('span');
-  st.className = 'status';
-  st.setAttribute('aria-hidden', 'true');
-  st.textContent = present ? '✓' : '✗';
   el.dataset.present = present ? '1' : '0';
-  el.appendChild(lab);
-  el.appendChild(st);
+  const lab = el.querySelector('.label');
+  if (lab) lab.textContent = def.label;
+  const st = el.querySelector('.status');
+  if (st) st.textContent = present ? '✓' : '✗';
   return el;
 }
 
@@ -3465,21 +3441,6 @@ async function renderArtifactChips(container, filePath, opts = {}) {
       ev.stopPropagation();
       triggerArtifactForPath(filePath, def.key, el);
     });
-    // Metadata verification (list-friendly): we already have status from above,
-    // so just confirm via /api/metadata if status is absent (avoid duplicate status call)
-    if (!present && def.key === 'metadata' && filePath) {
-      // Status already fetched above, so skip the redundant fetchArtifactStatusForPath call.
-      // Just check /api/metadata endpoint as fallback (cheaper than re-fetching status)
-      fetchMetadataCached(filePath).then((d) => {
-        if (!d) return;
-        applyChipPresent(el);
-        setChipPresentFor(filePath, 'metadata');
-        // Update cache so subsequent calls don't repeat this check
-        if (window.__artifactStatus && window.__artifactStatus[filePath]) {
-          window.__artifactStatus[filePath].metadata = true;
-        }
-      }).catch(() => {});
-    }
     frag.appendChild(el);
   }
   container.appendChild(frag);
@@ -3728,7 +3689,7 @@ function savePreviewOnDemandSetting() {
   setLocalStorageItem('setting.previewOnDemand', previewOnDemandEnabled ? '1' : '0');
 }
 // Settings for timeline display toggles
-function loadShowHeatmapSetting() {
+function loadShowHeatmapetting() {
   try {
     const raw = getLocalStorageItem('setting.showHeatmap');
     // Default to ON when unset
@@ -3738,7 +3699,7 @@ function loadShowHeatmapSetting() {
     showHeatmap = true;
   }
 }
-function saveShowHeatmapSetting() {
+function saveShowHeatmapetting() {
   setLocalStorageItem('setting.showHeatmap', showHeatmap ? '1' : '0');
 }
 function loadShowScenesSetting() {
@@ -3753,6 +3714,27 @@ function loadShowScenesSetting() {
 function saveShowScenesSetting() {
   setLocalStorageItem('setting.showScenes', showScenes ? '1' : '0');
 }
+function loadStartAtBeginningSetting() {
+  try {
+    return getLocalStorageItem('setting.startAtBeginning') === '1';
+  }
+  catch (_) {
+    return false;
+  }
+}
+function saveStartAtBeginningSetting(v) {
+  setLocalStorageItem('setting.startAtBeginning', v ? '1' : '0');
+}
+function isStartAtBeginningEnabled() {
+  try {
+    const cb = document.getElementById('settingStartAtBeginning');
+    if (cb) return Boolean(cb.checked);
+  }
+  catch (_) {
+    /* no-op */
+  }
+  return loadStartAtBeginningSetting();
+}
 function wireSettings() {
   const cbPlay = document.getElementById('settingPreview');
   const cbDemand = document.getElementById('settingPreviewOnDemand');
@@ -3762,12 +3744,13 @@ function wireSettings() {
   const ffmpegThreadsInput = document.getElementById('settingFfmpegThreads');
   const ffmpegTimelimitInput = document.getElementById('settingFfmpegTimelimit');
   const cbAutoplayResume = document.getElementById('settingAutoplayResume');
+  const cbStartAtBeginning = document.getElementById('settingStartAtBeginning');
   const cbShowHeatmap = document.getElementById('settingShowHeatmap');
   const cbShowScenes = document.getElementById('settingShowScenes');
   const cbInfinite = document.getElementById('settingInfiniteScroll');
   loadPreviewSetting();
   loadPreviewOnDemandSetting();
-  loadShowHeatmapSetting();
+  loadShowHeatmapetting();
   loadShowScenesSetting();
   // Load confirm delete preference
   try {
@@ -3882,7 +3865,7 @@ function wireSettings() {
     cbShowHeatmap.checked = Boolean(showHeatmap);
     cbShowHeatmap.addEventListener('change', () => {
       showHeatmap = Boolean(cbShowHeatmap.checked);
-      saveShowHeatmapSetting();
+      saveShowHeatmapetting();
       // Defer actual UI toggle to Player module when active
     });
   }
@@ -3909,6 +3892,13 @@ function wireSettings() {
   if (cbAutoplayResume) {
     cbAutoplayResume.checked = loadAutoplayResume();
     cbAutoplayResume.addEventListener('change', () => saveAutoplayResume(Boolean(cbAutoplayResume.checked)));
+  }
+  if (cbStartAtBeginning) {
+    cbStartAtBeginning.checked = loadStartAtBeginningSetting();
+    cbStartAtBeginning.addEventListener('change', () => {
+      const next = Boolean(cbStartAtBeginning.checked);
+      saveStartAtBeginningSetting(next);
+    });
   }
   // Start at Intro End setting (default ON)
   const loadStartAtIntro = () => {
@@ -4545,15 +4535,10 @@ if (bulkEditBtn && bulkEditPanel && bulkValueInput && bulkApplyBtn) {
     matches.sort((a, b) => a.rank - b.rank || a.pos - b.pos || a.name.localeCompare(b.name));
     const top = matches.slice(0, 10).map((m) => m.name);
     const frag = document.createDocumentFragment();
-    const label = document.createElement('div');
-    label.className = 'hint-sm hint-sm--muted mb-4';
-    label.textContent = 'Matches:';
+    const label = cloneTemplate('bulkSuggestionsLabelTemplate');
     frag.appendChild(label);
     top.forEach((name) => {
-      const chip = document.createElement('span');
-      chip.className = 'chip chip-suggest';
-      chip.title = 'Click to use';
-      chip.textContent = name;
+      const chip = createSuggestChip(name, { title: 'Click to use' });
       chip.addEventListener('click', () => {
         bulkValueInput.value = name;
         bulkSuggestions.innerHTML = '';
@@ -4997,22 +4982,17 @@ async function renderDir(path) {
       dirlistEl.appendChild(item);
     }
     if (dirs.length === 0) {
-      const none = document.createElement('div');
-      none.className = 'dir muted';
-      const icon = document.createElement('div');
-      icon.className = 'icon dim';
-      const label = document.createElement('div');
-      label.textContent = 'No folders here';
-      none.appendChild(icon);
-      none.appendChild(label);
-      dirlistEl.appendChild(none);
+      const emptyEl = cloneTemplate('dirEmptyTemplate');
+      const label = emptyEl.querySelector('.name');
+      if (label) label.textContent = 'No folders here';
+      dirlistEl.appendChild(emptyEl);
     }
   }
   catch (e) {
-    const err = document.createElement('div');
-    err.className = 'dir';
-    err.textContent = 'Failed to list directories.';
-    dirlistEl.appendChild(err);
+    const errEl = cloneTemplate('dirErrorTemplate');
+    const label = errEl.querySelector('.name');
+    if (label) label.textContent = 'Failed to list directories.';
+    dirlistEl.appendChild(errEl);
   }
 }
 function openFolderPicker() {
@@ -5469,32 +5449,6 @@ function setupListTab() {
   const AUTOSIZED_ONCE_LS_KEY = 'mediaPlayer:list:autosizedOnce';
   const MAX_LIST_PAGE_SIZE = 500;
   let listLoadPageRef = null;
-  // Lightweight metadata cache for list rows (used to populate codec columns when missing)
-  function fetchMetadataCached(path) {
-    try {
-      if (!path) return Promise.resolve(null);
-      window.__metadataByPath = window.__metadataByPath || {};
-      window.__metadataInflight = window.__metadataInflight || {};
-      if (window.__metadataByPath[path]) return Promise.resolve(window.__metadataByPath[path]);
-      if (window.__metadataInflight[path]) return window.__metadataInflight[path];
-      const u = new URL('/api/metadata', window.location.origin);
-      u.searchParams.set('path', path);
-      const p = fetch(u.toString())
-        .then((r) => r.json())
-        .then((j) => j?.data || null)
-        .catch(() => null)
-        .then((d) => {
-        if (d) window.__metadataByPath[path] = d;
-        delete window.__metadataInflight[path];
-        return d;
-      });
-      window.__metadataInflight[path] = p;
-      return p;
-    }
-    catch (_) {
-      return Promise.resolve(null);
-    }
-  }
   // Compute natural width for a column based on body cell textual/content width only.
   // Uses an off-DOM measurement element for more accurate sizing unaffected by table layout.
   function computeAutoWidth(panel, colId) {
@@ -5560,51 +5514,49 @@ function setupListTab() {
         width: 34,
         defaultVisible: true,
         render: (td, f) => {
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.className = 'list-row-checkbox';
-      cb.setAttribute('aria-label', 'Select row');
-      const path = f.path || '';
-      cb.checked = selectedItems.has(path);
-      cb.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (!path) return;
-        // Shift-click range selection for checkboxes: extend from anchor to current
-        if (e.shiftKey) {
-          const rowsAll = Array.from(document.querySelectorAll('#listTable tbody tr[data-path]'));
-          const currentTr = cb.closest('tr');
-          const idx = rowsAll.indexOf(currentTr);
-          if (idx !== -1) {
-            if (listLastAnchorIndex == null) {
-              listLastAnchorIndex = idx;
-            }
-            else {
-              const targetChecked = cb.checked;
-              const a = Math.min(listLastAnchorIndex, idx);
-              const b = Math.max(listLastAnchorIndex, idx);
-              for (let i = a;
-                i <= b;
-                i++) {
-                const p = rowsAll[i].dataset.path || '';
-                if (!p) continue;
-                if (targetChecked) selectedItems.add(p);
-                else selectedItems.delete(p);
-                const rowCb = rowsAll[i].querySelector('.list-row-checkbox');
-                if (rowCb) rowCb.checked = targetChecked;
-                rowsAll[i].setAttribute('data-selected', targetChecked ? '1' : '0');
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.className = 'list-row-checkbox';
+          cb.setAttribute('aria-label', 'Select row');
+          const path = f.path || '';
+          cb.checked = selectedItems.has(path);
+          cb.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (!path) return;
+          // Shift-click range selection for checkboxes: extend from anchor to current
+          if (e.shiftKey) {
+            const rowsAll = Array.from(document.querySelectorAll('#listTable tbody tr[data-path]'));
+            const currentTr = cb.closest('tr');
+            const idx = rowsAll.indexOf(currentTr);
+            if (idx !== -1) {
+              if (listLastAnchorIndex == null) {
+                listLastAnchorIndex = idx;
               }
-              listLastAnchorIndex = idx;
-              if (typeof updateSelectionUI === 'function') updateSelectionUI();
-              if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI();
-              return; // done handling shift range
+              else {
+                const targetChecked = cb.checked;
+                const a = Math.min(listLastAnchorIndex, idx);
+                const b = Math.max(listLastAnchorIndex, idx);
+                for (let i = a; i <= b; i++) {
+                  const p = rowsAll[i].dataset.path || '';
+                  if (!p) continue;
+                  if (targetChecked) selectedItems.add(p);
+                  else selectedItems.delete(p);
+                  const rowCb = rowsAll[i].querySelector('.list-row-checkbox');
+                  if (rowCb) rowCb.checked = targetChecked;
+                  rowsAll[i].setAttribute('data-selected', targetChecked ? '1' : '0');
+                }
+                listLastAnchorIndex = idx;
+                if (typeof updateSelectionUI === 'function') updateSelectionUI();
+                if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI();
+                return; // done handling shift range
+              }
             }
           }
-        }
-        if (cb.checked) selectedItems.add(path);
-        else selectedItems.delete(path);
-        if (typeof updateSelectionUI === 'function') updateSelectionUI();
-        if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI();
-      });
+          if (cb.checked) selectedItems.add(path);
+          else selectedItems.delete(path);
+          if (typeof updateSelectionUI === 'function') updateSelectionUI();
+          if (typeof window.__updateListSelectionUI === 'function') window.__updateListSelectionUI();
+        });
         td.appendChild(cb);
       }},
       {
@@ -5646,13 +5598,6 @@ function setupListTab() {
         render: (td, f) => {
           const v = Number(f.duration);
           td.textContent = Number.isFinite(v) && v > 0 ? fmtDuration(v) : '';
-          if ((!Number.isFinite(v) || v <= 0) && f.path) {
-            fetchMetadataCached(f.path).then((d) => {
-              if (!d || !td.isConnected) return;
-              const sec = Number(d.duration);
-              if (Number.isFinite(sec) && sec > 0) td.textContent = fmtDuration(sec);
-            });
-          }
         }
       },
       {
@@ -5670,13 +5615,6 @@ function setupListTab() {
         render: (td, f) => {
           const w = Number(f.width);
           td.textContent = Number.isFinite(w) && w > 0 ? `${w} px` : '';
-          if ((!Number.isFinite(w) || w <= 0) && f.path) {
-            fetchMetadataCached(f.path).then((d) => {
-              if (!d || !td.isConnected) return;
-              const val = Number(d.width);
-              if (Number.isFinite(val) && val > 0) td.textContent = `${val} px`;
-            });
-          }
         }
       },
       {
@@ -5687,13 +5625,6 @@ function setupListTab() {
         render: (td, f) => {
           const h = Number(f.height);
           td.textContent = Number.isFinite(h) && h > 0 ? `${h} px` : '';
-          if ((!Number.isFinite(h) || h <= 0) && f.path) {
-            fetchMetadataCached(f.path).then((d) => {
-              if (!d || !td.isConnected) return;
-              const val = Number(d.height);
-              if (Number.isFinite(val) && val > 0) td.textContent = `${val} px`;
-            });
-          }
         }
       },
       {
@@ -5720,13 +5651,6 @@ function setupListTab() {
         render: (td, f) => {
           const initial = (f.video_codec || f.vcodec || f.vcodec_name || f.codec || f.codec_name || '').toString();
           td.textContent = initial || '—';
-          if (!initial && f.path) {
-            fetchMetadataCached(f.path).then((d) => {
-              if (!d || !td.isConnected) return;
-              const v = (d.vcodec || d.video_codec || '').toString();
-              if (v) td.textContent = v;
-            });
-          }
         }
       },
       {
@@ -5737,13 +5661,6 @@ function setupListTab() {
         render: (td, f) => {
           const initial = (f.audio_codec || f.acodec || f.acodec_name || f.audio_codec_name || '').toString();
           td.textContent = initial || '—';
-          if (!initial && f.path) {
-            fetchMetadataCached(f.path).then((d) => {
-              if (!d || !td.isConnected) return;
-              const v = (d.acodec || d.audio_codec || '').toString();
-              if (v) td.textContent = v;
-            });
-          }
         }
       },
       {
@@ -5774,18 +5691,6 @@ function setupListTab() {
       }
       else {
         td.textContent = '';
-        if (f.path) {
-          fetchMetadataCached(f.path).then((d) => {
-            if (!d || !td.isConnected) return;
-            const bps = Number(d.bitrate);
-            if (Number.isFinite(bps) && bps > 0) td.textContent = renderBps(bps);
-            else {
-              const dur2 = Number(d.duration) || 0;
-              const size2 = Number(d.size) || size;
-              if (dur2 > 0 && size2 > 0) td.textContent = renderBps((size2 * 8) / dur2);
-            }
-          });
-        }
       }
     }},
     ];
@@ -5797,7 +5702,7 @@ function setupListTab() {
       {id: 'art-preview', label: 'Preview', keys: ['has_preview', 'preview', 'previewUrl'], width: 60},
       {id: 'art-scenes', label: 'Scenes', keys: ['has_scenes', 'scenes', 'markers'], width: 60},
       {id: 'art-phash', label: 'pHash', keys: ['has_phash', 'phash'], width: 60},
-      {id: 'art-heatmaps', label: 'Heatmaps', keys: ['has_heatmaps', 'heatmaps'], width: 74},
+      {id: 'art-heatmap', label: 'Heatmap', keys: ['has_heatmap', 'heatmap'], width: 74},
     ].map((ac) => ({
       id: ac.id,
       label: ac.label,
@@ -5812,12 +5717,6 @@ function setupListTab() {
           span.textContent = ok ? '✓' : '✕';
         };
         apply(present);
-        if (!present && ac.id === 'art-metadata' && f && f.path) {
-          fetchMetadataCached(f.path).then((d) => {
-            if (!td.isConnected) return;
-            apply(Boolean(d));
-          });
-        }
         td.appendChild(span);
       },
     }));
@@ -5840,9 +5739,9 @@ function setupListTab() {
         status.sprites = pres(['has_sprites', 'sprites']);
         status.preview = pres(['has_preview', 'preview', 'previewUrl']);
         status.markers = pres(['has_scenes', 'scenes', 'markers']);
-        status.heatmaps = pres(['has_heatmaps', 'heatmaps']);
+        status.heatmap = pres(['has_heatmap', 'heatmap']);
         status.phash = pres(['has_phash', 'phash']);
-        const keys = ['metadata', 'thumbnail', 'sprites', 'preview', 'markers', 'heatmaps', 'phash'];
+        const keys = ['metadata', 'thumbnail', 'sprites', 'preview', 'markers', 'heatmap', 'phash'];
         renderArtifactChips(cont, f.path || '', { style: 'chip', keys, status });
       }});
 
@@ -5864,11 +5763,14 @@ function setupListTab() {
             const isObj = entry && typeof entry === 'object';
             const name = isObj ? (entry.name || entry.label || String(entry)) : String(entry);
             const isUnconfirmed = Boolean(isObj && (entry.suggested || entry.unconfirmed || entry.confirmed === false));
-            const chip = document.createElement('span');
-            chip.className = 'chip chip--performer' + (isUnconfirmed ? ' chip--pending' : '');
-            chip.textContent = name;
+            const chipClasses = ['chip--performer'];
+            if (isUnconfirmed) chipClasses.push('chip--pending');
+            const { chip } = createChipElement({
+              label: name,
+              classes: chipClasses,
+              title: isUnconfirmed ? `Confirm performer: ${name}` : `Filter by performer: ${name}`,
+            });
             if (isUnconfirmed) {
-              chip.title = `Confirm performer: ${name}`;
               chip.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 const url = new URL('/api/media/performers/add', window.location.origin);
@@ -5883,7 +5785,6 @@ function setupListTab() {
               });
             }
             else {
-              chip.title = `Filter by performer: ${name}`;
               chip.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 if (!libraryPerformerFilters.includes(name)) libraryPerformerFilters.push(name);
@@ -5919,9 +5820,10 @@ function setupListTab() {
               url.searchParams.set('performer', p);
               await fetch(url.toString(), {method: 'POST'});
             }
-            const d = await fetchMetadataCached(f.path).catch(() => null);
+            invalidateMediaInfoCache(f.path);
+            const info = await fetchMediaInfoCached(f.path);
             if (!td.isConnected) return;
-            apply(d?.performers || d?.perfs || d?.actors || []);
+            apply(info?.performers || info?.perfs || info?.actors || []);
             if (td._editing) {
               cont.appendChild(input);
               placeCaretAtEnd(input);
@@ -5984,10 +5886,7 @@ function setupListTab() {
           const wrap = document.createElement('div');
           wrap.className = 'chips-suggestions-inline';
           sug.forEach((nm) => {
-            const chip = document.createElement('span');
-            chip.className = 'chip chip-suggest';
-            chip.textContent = nm;
-            chip.title = 'Add performer';
+            const chip = createSuggestChip(nm, { title: 'Add performer' });
             chip.addEventListener('click', async (e) => {
               e.stopPropagation();
               const url = new URL('/api/media/performers/add', window.location.origin);
@@ -6010,9 +5909,9 @@ function setupListTab() {
         }
         else if (f && f.path) {
           ensurePerformerRegistry().then(() => {
-            fetchMetadataCached(f.path).then((d) => {
+            fetchMediaInfoCached(f.path).then((info) => {
               if (!td.isConnected) return;
-              apply(d && (d.performers || d.perfs || d.actors || []));
+              apply(info && (info.performers || info.perfs || info.actors || []));
             });
           });
         }
@@ -6039,11 +5938,14 @@ function setupListTab() {
             const isObj = entry && typeof entry === 'object';
             const tag = isObj ? (entry.name || entry.label || String(entry)) : String(entry);
             const isUnconfirmed = Boolean(isObj && (entry.suggested || entry.unconfirmed || entry.confirmed === false));
-            const chip = document.createElement('span');
-            chip.className = 'chip chip--tag' + (isUnconfirmed ? ' chip--pending' : '');
-            chip.textContent = tag;
+            const chipClasses = ['chip--tag'];
+            if (isUnconfirmed) chipClasses.push('chip--pending');
+            const { chip } = createChipElement({
+              label: tag,
+              classes: chipClasses,
+              title: isUnconfirmed ? `Confirm tag: ${tag}` : `Filter by tag: ${tag}`,
+            });
             if (isUnconfirmed) {
-              chip.title = `Confirm tag: ${tag}`;
               chip.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 const url = new URL('/api/media/tags/add', window.location.origin);
@@ -6058,7 +5960,6 @@ function setupListTab() {
               });
             }
             else {
-              chip.title = `Filter by tag: ${tag}`;
               chip.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 if (!libraryTagFilters.includes(tag)) libraryTagFilters.push(tag);
@@ -6094,9 +5995,10 @@ function setupListTab() {
               url.searchParams.set('tag', p);
               await fetch(url.toString(), {method: 'POST'});
             }
-            const d = await fetchMetadataCached(f.path).catch(() => null);
+            invalidateMediaInfoCache(f.path);
+            const info = await fetchMediaInfoCached(f.path);
             if (!td.isConnected) return;
-            apply(d?.tags || d?.tag_names || []);
+            apply(info?.tags || info?.tag_names || []);
             if (td._editing) {
               cont.appendChild(input);
               placeCaretAtEnd(input);
@@ -6160,10 +6062,7 @@ function setupListTab() {
           const wrap = document.createElement('div');
           wrap.className = 'chips-suggestions-inline';
           sug.forEach((nm) => {
-            const chip = document.createElement('span');
-            chip.className = 'chip chip-suggest';
-            chip.textContent = nm;
-            chip.title = 'Add tag';
+            const chip = createSuggestChip(nm, { title: 'Add tag' });
             chip.addEventListener('click', async (e) => {
               e.stopPropagation();
               const url = new URL('/api/media/tags/add', window.location.origin);
@@ -6186,9 +6085,9 @@ function setupListTab() {
         }
         else if (f && f.path) {
           ensureTagRegistry().then(() => {
-            fetchMetadataCached(f.path).then((d) => {
+            fetchMediaInfoCached(f.path).then((info) => {
               if (!td.isConnected) return;
-              apply(d && (d.tags || d.tag_names || []));
+              apply(info && (info.tags || info.tag_names || []));
             });
           });
         }
@@ -6197,9 +6096,9 @@ function setupListTab() {
         }
       }});
 
-    return columns;
-  }
-  // Artifact/sidecar presence helpers
+      return columns;
+    }
+    // Artifact/sidecar presence helpers
   function hasArtifact(f, keys) {
     for (const k of keys) {
       if (f && f[k]) {
@@ -6226,7 +6125,7 @@ function setupListTab() {
     {id: 'art-preview', label: 'Preview', keys: ['has_preview', 'preview', 'previewUrl'], width: 60},
     {id: 'art-scenes', label: 'Scenes', keys: ['has_scenes', 'scenes', 'markers'], width: 60},
     {id: 'art-phash', label: 'pHash', keys: ['has_phash', 'phash'], width: 60},
-    {id: 'art-heatmaps', label: 'Heatmaps', keys: ['has_heatmaps', 'heatmaps'], width: 74},
+    {id: 'art-heatmap', label: 'Heatmap', keys: ['has_heatmap', 'heatmap'], width: 74},
   ];
   for (const ac of ART_COLS) {
     DEFAULT_COLS.push({ id: ac.id, label: ac.label, width: ac.width, visible: false,
@@ -6239,15 +6138,19 @@ function setupListTab() {
           span.textContent = ok ? '✓' : '✕';
         };
         apply(present);
-        // Special-case Metadata: if unknown from quick flags, confirm via metadata fetch
-        if (!present && ac.id === 'art-metadata' && f && f.path) {
-          fetchMetadataCached(f.path).then((d) => {
-            if (!td.isConnected) return;
-            apply(Boolean(d));
-          });
+        // Special-case Metadata: if quick flags unknown, confirm against media-info cache
+        if (!present && ac.id === 'art-metadata') {
+          const path = f?.path || '';
+          if (path) {
+            fetchMediaInfoCached(path).then((info) => {
+              if (!td.isConnected) return;
+              apply(Boolean(info));
+            });
+          }
         }
         td.appendChild(span);
-      }});
+      }
+    });
   }
   // Merged Artifacts column using chips UI (visible by default)
   // Widen merged Artifacts column default width so chips do not wrap by default
@@ -6264,11 +6167,12 @@ function setupListTab() {
       status.sprites = pres(['has_sprites', 'sprites']);
       status.preview = pres(['has_preview', 'preview', 'previewUrl']);
       status.markers = pres(['has_scenes', 'scenes', 'markers']);
-      status.heatmaps = pres(['has_heatmaps', 'heatmaps']);
+      status.heatmap = pres(['has_heatmap', 'heatmap']);
       status.phash = pres(['has_phash', 'phash']);
-      const keys = ['metadata', 'thumbnail', 'sprites', 'preview', 'markers', 'heatmaps', 'phash'];
+      const keys = ['metadata', 'thumbnail', 'sprites', 'preview', 'markers', 'heatmap', 'phash'];
       renderArtifactChips(cont, f.path || '', { style: 'chip', keys, status });
-    }});
+    }
+  });
 
   // Performers column (chips). Visible by default; wide to avoid wrapping.
   DEFAULT_COLS.push({ id: 'performers', label: 'Performers', width: 340, visible: true,
@@ -6285,11 +6189,14 @@ function setupListTab() {
           const isObj = entry && typeof entry === 'object';
           const name = isObj ? (entry.name || entry.label || String(entry)) : String(entry);
           const isUnconfirmed = Boolean(isObj && (entry.suggested || entry.unconfirmed || entry.confirmed === false));
-          const chip = document.createElement('span');
-          chip.className = 'chip chip--performer' + (isUnconfirmed ? ' chip--pending' : '');
-          chip.textContent = name;
+          const chipClasses = ['chip--performer'];
+          if (isUnconfirmed) chipClasses.push('chip--pending');
+          const { chip } = createChipElement({
+            label: name,
+            classes: chipClasses,
+            title: isUnconfirmed ? `Confirm performer: ${name}` : `Filter by performer: ${name}`,
+          });
           if (isUnconfirmed) {
-            chip.title = `Confirm performer: ${name}`;
             chip.addEventListener('click', async (e) => {
               e.stopPropagation();
               const url = new URL('/api/media/performers/add', window.location.origin);
@@ -6304,7 +6211,6 @@ function setupListTab() {
             });
           }
           else {
-            chip.title = `Filter by performer: ${name}`;
             chip.addEventListener('click', async (e) => {
               e.stopPropagation();
               if (!libraryPerformerFilters.includes(name)) libraryPerformerFilters.push(name);
@@ -6343,16 +6249,17 @@ function setupListTab() {
             url.searchParams.set('performer', p);
             await fetch(url.toString(), {method: 'POST'});
           }
-          // Refresh chips; remain in edit if td still editing
-          const d = await fetchMetadataCached(f.path).catch(() => null);
+          invalidateMediaInfoCache(f.path);
+          const info = await fetchMediaInfoCached(f.path).catch(() => null);
           if (!td.isConnected) return;
-          apply(d?.performers || d?.perfs || d?.actors || []);
+          apply(info?.performers || info?.perfs || info?.actors || []);
           if (td._editing) {
             cont.appendChild(input);
             placeCaretAtEnd(input);
           }
         }
 
+        // @todo copilot deduplicate
         function placeCaretAtEnd(el) {
           const range = document.createRange();
           range.selectNodeContents(el);
@@ -6362,6 +6269,7 @@ function setupListTab() {
           sel.addRange(range);
         }
 
+        // @todo copilot deduplicate
         function tokenize(str) {
           return String(str || '').split(/[,\n]+/)
             .map((s) => s.trim())
@@ -6426,10 +6334,7 @@ function setupListTab() {
         const wrap = document.createElement('div');
         wrap.className = 'chips-suggestions-inline';
         sug.forEach((nm) => {
-          const chip = document.createElement('span');
-          chip.className = 'chip chip-suggest';
-          chip.textContent = nm;
-          chip.title = 'Add performer';
+          const chip = createSuggestChip(nm, { title: 'Add performer' });
           chip.addEventListener('click', async (e) => {
             e.stopPropagation();
             const url = new URL('/api/media/performers/add', window.location.origin);
@@ -6446,16 +6351,16 @@ function setupListTab() {
         });
         cont.appendChild(wrap);
       };
-      // Prefer direct row data; fallback to metadata fetch
+      // Prefer direct row data; fallback to media-info cache
       let initial = f && (f.performers || f.perfs || f.actors);
       if (Array.isArray(initial)) {
         ensurePerformerRegistry().then(() => apply(initial));
       }
       else if (f && f.path) {
         ensurePerformerRegistry().then(() => {
-          fetchMetadataCached(f.path).then((d) => {
+          fetchMediaInfoCached(f.path).then((info) => {
             if (!td.isConnected) return;
-            apply(d && (d.performers || d.perfs || d.actors || []));
+            apply(info && (info.performers || info.perfs || info.actors || []));
           });
         });
       }
@@ -6479,11 +6384,14 @@ function setupListTab() {
           const isObj = entry && typeof entry === 'object';
           const tag = isObj ? (entry.name || entry.label || String(entry)) : String(entry);
           const isUnconfirmed = Boolean(isObj && (entry.suggested || entry.unconfirmed || entry.confirmed === false));
-          const chip = document.createElement('span');
-          chip.className = 'chip chip--tag' + (isUnconfirmed ? ' chip--pending' : '');
-          chip.textContent = tag;
+          const chipClasses = ['chip--tag'];
+          if (isUnconfirmed) chipClasses.push('chip--pending');
+          const { chip } = createChipElement({
+            label: tag,
+            classes: chipClasses,
+            title: isUnconfirmed ? `Confirm tag: ${tag}` : `Filter by tag: ${tag}`,
+          });
           if (isUnconfirmed) {
-            chip.title = `Confirm tag: ${tag}`;
             chip.addEventListener('click', async (e) => {
               e.stopPropagation();
               const url = new URL('/api/media/tags/add', window.location.origin);
@@ -6498,7 +6406,6 @@ function setupListTab() {
             });
           }
           else {
-            chip.title = `Filter by tag: ${tag}`;
             chip.addEventListener('click', async (e) => {
               e.stopPropagation();
               if (!libraryTagFilters.includes(tag)) libraryTagFilters.push(tag);
@@ -6535,9 +6442,10 @@ function setupListTab() {
             url.searchParams.set('tag', p);
             await fetch(url.toString(), {method: 'POST'});
           }
-          const d = await fetchMetadataCached(f.path).catch(() => null);
+          invalidateMediaInfoCache(f.path);
+          const info = await fetchMediaInfoCached(f.path).catch(() => null);
           if (!td.isConnected) return;
-          apply(d?.tags || d?.tag_names || []);
+          apply(info?.tags || info?.tag_names || []);
           if (td._editing) {
             cont.appendChild(input);
             placeCaretAtEnd(input);
@@ -6603,10 +6511,7 @@ function setupListTab() {
         const wrap = document.createElement('div');
         wrap.className = 'chips-suggestions-inline';
         sug.forEach((nm) => {
-          const chip = document.createElement('span');
-          chip.className = 'chip chip-suggest';
-          chip.textContent = nm;
-          chip.title = 'Add tag';
+          const chip = createSuggestChip(nm, { title: 'Add tag' });
           chip.addEventListener('click', async (e) => {
             e.stopPropagation();
             const url = new URL('/api/media/tags/add', window.location.origin);
@@ -6629,16 +6534,17 @@ function setupListTab() {
       }
       else if (f && f.path) {
         ensureTagRegistry().then(() => {
-          fetchMetadataCached(f.path).then((d) => {
+          fetchMediaInfoCached(f.path).then((info) => {
             if (!td.isConnected) return;
-            apply(d && (d.tags || d.tag_names || []));
+            apply(info && (info.tags || info.tag_names || []));
           });
         });
       }
       else {
         ensureTagRegistry().then(() => apply([]));
       }
-    }});
+    }
+  });
   function loadCols() {
     try {
       const raw = getLocalStorageItem(COL_LS_KEY, {type: 'json', fallback: null});
@@ -6796,7 +6702,7 @@ function setupListTab() {
     }
     function isArtifactsFilterActive() {
       // todo @copilot redundant
-      const keys = ['metadata', 'thumbnail', 'sprites', 'markers', 'subtitles', 'heatmaps', 'faces', 'preview'];
+      const keys = ['metadata', 'thumbnail', 'sprites', 'markers', 'heatmap', 'preview'];
       return keys.some((k) => listFilters && listFilters[k]);
     }
     function isFilterActiveForKey(key, colId) {
@@ -6810,23 +6716,34 @@ function setupListTab() {
     }
     function openFilterMenu(anchorTh, colId) {
       closeFilterMenu();
-      const menu = document.createElement('div');
-      menu.className = 'list-filter-menu';
+      const menu = cloneTemplate('listFilterMenuTemplate');
+      const makeRow = (child = null) => {
+        const r = cloneTemplate('listFilterRowTemplate');
+        if (child) r.appendChild(child);
+        return r;
+      };
+      const makeButton = (label) => {
+        const b = cloneTemplate('listFilterButtonTemplate');
+        b.textContent = label;
+        return b;
+      };
+      const makeValues = () => cloneTemplate('listFilterValuesTemplate');
+      const makeFooter = () => cloneTemplate('listFilterFooterTemplate');
+      const makeCheckboxLabel = () => cloneTemplate('listFilterCheckboxLabelTemplate');
+      const makeSelect = () => cloneTemplate('listFilterSelectTemplate');
+      const makeNumberInput = () => cloneTemplate('listFilterNumberInputTemplate');
+      const makeDateInput = () => cloneTemplate('listFilterDateInputTemplate');
+      const makeHint = () => cloneTemplate('listFilterHintTemplate');
+      const makeMessageRow = (text) => {
+        const row = cloneTemplate('listFilterMessageTemplate');
+        const span = row.querySelector('.hint-sm');
+        if (span) span.textContent = text;
+        return row;
+      };
+      const makeArtifactRow = () => cloneTemplate('listFilterArtifactRowTemplate');
       // todo @copilot redundant
       const keyMap = { format: 'format', codec: 'vcodec', vcodec: 'vcodec', acodec: 'acodec', bitrate: 'bitrate', duration: 'duration', size: 'size', width: 'width', height: 'height', mtime: 'mtime', created: 'ctime', artifacts: 'artifacts', tags: 'tags', performers: 'performers' };
       const key = keyMap[colId] || null;
-      function row(el) {
-        const r = document.createElement('div');
-        r.className = 'row';
-        if (el) r.appendChild(el);
-        return r;
-      }
-      function btn(label) {
-        const b = document.createElement('button');
-        b.className = 'btn-sm';
-        b.textContent = label;
-        return b;
-      }
       if (key === 'format' || key === 'vcodec' || key === 'acodec') {
         const values = key === 'format' ? uniqueValues(filesCache, (f) => {
           const p = f.path || f.name || '';
@@ -6836,25 +6753,21 @@ function setupListTab() {
           ? uniqueValues(filesCache, (f) => f.video_codec || f.vcodec || f.vcodec_name || '')
           : uniqueValues(filesCache, (f) => f.audio_codec || f.acodec || f.acodec_name || ''));
         const selected = (listFilters[key] && Array.isArray(listFilters[key].in)) ? new Set(listFilters[key].in.map(String)) : new Set();
-        const wrap = document.createElement('div');
-        wrap.className = 'values';
+        const wrap = makeValues();
         values.slice(0, 50).forEach((val) => {
-          const lab = document.createElement('label');
-          const cb = document.createElement('input');
+          const lab = makeCheckboxLabel();
+          const cb = lab.querySelector('input');
           cb.type = 'checkbox';
           cb.checked = selected.has(val);
           cb.value = val;
-          const sp = document.createElement('span');
+          const sp = lab.querySelector('span');
           sp.textContent = val || '—';
-          lab.appendChild(cb);
-          lab.appendChild(sp);
           wrap.appendChild(lab);
         });
         menu.appendChild(wrap);
-        const footer = document.createElement('div');
-        footer.className = 'footer';
-        const clearB = btn('Clear');
-        const applyB = btn('Apply');
+        const footer = makeFooter();
+        const clearB = makeButton('Clear');
+        const applyB = makeButton('Apply');
         clearB.addEventListener('click', async () => {
           delete listFilters[key];
           saveListFilters(listFilters);
@@ -6877,27 +6790,21 @@ function setupListTab() {
       }
       else if (key === 'bitrate' || key === 'duration' || key === 'size' || key === 'width' || key === 'height') {
         const cur = listFilters[key] || {};
-        const sel = document.createElement('select');
-        sel.className = 'control-select';
+        const sel = makeSelect();
         // todo @copilot refactor
         sel.innerHTML = '<option value="">—</option><option value="gt">&gt;</option><option value="ge">≥</option><option value="lt">&lt;</option><option value="le">≤</option><option value="eq">=</option>';
-        const inp = document.createElement('input');
-        inp.type = 'number';
-        inp.className = 'chips-input';
-        inp.placeholder = 'value';
+        const inp = makeNumberInput();
         const op = cur.gt != null ? 'gt' : cur.ge != null ? 'ge' : cur.lt != null ? 'lt' : cur.le != null ? 'le' : cur.eq != null ? 'eq' : '';
         if (op) sel.value = op;
         const vv = (cur.gt ?? cur.ge ?? cur.lt ?? cur.le ?? cur.eq);
         if (vv != null) inp.value = String(vv);
-        const r = document.createElement('div');
-        r.className = 'row';
+        const r = makeRow();
         r.appendChild(sel);
         r.appendChild(inp);
         menu.appendChild(r);
-        const footer = document.createElement('div');
-        footer.className = 'footer';
-        const clearB = btn('Clear');
-        const applyB = btn('Apply');
+        const footer = makeFooter();
+        const clearB = makeButton('Clear');
+        const applyB = makeButton('Apply');
         clearB.addEventListener('click', async () => {
           delete listFilters[key];
           saveListFilters(listFilters);
@@ -6922,9 +6829,7 @@ function setupListTab() {
       else if (key === 'mtime' || key === 'ctime') {
         const cur = listFilters[key] || {};
         const mkInp = (val) => {
-          const i = document.createElement('input');
-          i.type = 'datetime-local';
-          i.className = 'chips-input';
+          const i = makeDateInput();
           if (val) {
             const d = new Date(val * 1000);
             const pad = (n) => String(n).padStart(2, '0');
@@ -6933,19 +6838,16 @@ function setupListTab() {
         };
         const afterInp = mkInp(cur.after);
         const beforeInp = mkInp(cur.before);
-        const wrap = document.createElement('div');
-        wrap.className = 'row';
+        const wrap = makeRow();
         wrap.appendChild(afterInp);
-        const span = document.createElement('span');
-        span.className = 'hint-sm';
+        const span = makeHint();
         span.textContent = 'to';
         wrap.appendChild(span);
         wrap.appendChild(beforeInp);
         menu.appendChild(wrap);
-        const footer = document.createElement('div');
-        footer.className = 'footer';
-        const clearB = btn('Clear');
-        const applyB = btn('Apply');
+        const footer = makeFooter();
+        const clearB = makeButton('Clear');
+        const applyB = makeButton('Apply');
         clearB.addEventListener('click', async () => {
           delete listFilters[key];
           saveListFilters(listFilters);
@@ -6983,25 +6885,20 @@ function setupListTab() {
           { k: 'thumbnail', label: 'Thumbnail' },
           { k: 'sprites', label: 'Sprites' },
           { k: 'markers', label: 'Scenes' },
-          { k: 'subtitles', label: 'Subtitles' },
-          { k: 'heatmaps', label: 'Heatmaps' },
+          { k: 'heatmap', label: 'Heatmap' },
           { k: 'phash', label: 'pHash' },
           { k: 'preview', label: 'Preview' },
         ];
-        const wrap = document.createElement('div');
-        wrap.className = 'values';
+        const wrap = makeValues();
         items.forEach(({k, label}) => {
-          const lab = document.createElement('label');
-          const sel = document.createElement('select');
-          sel.className = 'control-select';
+          const lab = makeArtifactRow();
+          const sel = lab.querySelector('select');
+          const labSpan = lab.querySelector('.label') || lab.querySelector('span');
           sel.dataset.key = k;
           sel.innerHTML = '<option value="">Any</option><option value="yes">Yes</option><option value="no">No</option>';
           const cur = listFilters[k];
           if (cur && 'bool' in cur) sel.value = cur.bool === true ? 'yes' : (cur.bool === false ? 'no' : '');
-          const sp = document.createElement('span');
-          sp.textContent = label;
-          lab.appendChild(sp);
-          lab.appendChild(sel);
+          if (labSpan) labSpan.textContent = label;
           wrap.appendChild(lab);
           sel.addEventListener('change', async () => {
             const v = sel.value;
@@ -7014,9 +6911,8 @@ function setupListTab() {
           });
         });
         menu.appendChild(wrap);
-        const footer = document.createElement('div');
-        footer.className = 'footer';
-        const clearB = btn('Clear');
+        const footer = makeFooter();
+        const clearB = makeButton('Clear');
         clearB.addEventListener('click', async () => {
           items.forEach(({k}) => {
             delete listFilters[k];
@@ -7040,23 +6936,20 @@ function setupListTab() {
         const selIn = new Set(Array.isArray(cur.in) ? cur.in.map(String) : []);
         const selNot = new Set(Array.isArray(cur.not_in) ? cur.not_in.map(String) : []);
         const mkGroup = (title, selectedSet) => {
-          const wrap = document.createElement('div');
-          wrap.className = 'values';
-          const hdr = document.createElement('div');
-          hdr.className = 'hint-sm';
+          const wrap = makeValues();
+          const hdr = makeHint();
           hdr.textContent = title;
           hdr.style.margin = '4px 0 2px';
+          hdr.style.display = 'block';
           menu.appendChild(hdr);
           uniq.slice(0, 200).forEach((val) => {
-            const lab = document.createElement('label');
-            const cb = document.createElement('input');
+            const lab = makeCheckboxLabel();
+            const cb = lab.querySelector('input');
             cb.type = 'checkbox';
             cb.checked = selectedSet.has(val);
             cb.value = val;
-            const sp = document.createElement('span');
+            const sp = lab.querySelector('span');
             sp.textContent = val;
-            lab.appendChild(cb);
-            lab.appendChild(sp);
             wrap.appendChild(lab);
           });
           return wrap;
@@ -7065,10 +6958,9 @@ function setupListTab() {
         const excWrap = mkGroup('Exclude any of', selNot);
         menu.appendChild(incWrap);
         menu.appendChild(excWrap);
-        const footer = document.createElement('div');
-        footer.className = 'footer';
-        const clearB = btn('Clear');
-        const applyB = btn('Apply');
+        const footer = makeFooter();
+        const clearB = makeButton('Clear');
+        const applyB = makeButton('Apply');
         clearB.addEventListener('click', async () => {
           delete listFilters[key];
           saveListFilters(listFilters);
@@ -7094,13 +6986,7 @@ function setupListTab() {
         menu.appendChild(footer);
       }
       else {
-        const p = document.createElement('div');
-        p.className = 'row';
-        const s = document.createElement('span');
-        s.className = 'hint-sm';
-        s.textContent = 'No filters for this column';
-        p.appendChild(s);
-        menu.appendChild(p);
+        menu.appendChild(makeMessageRow('No filters for this column'));
       }
       // Position near header
       const rect = anchorTh.getBoundingClientRect();
@@ -9927,6 +9813,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return buildFromOpenAPI(j2);
     }
     // Fallback minimal list of known endpoints
+    // @todo copilot redundant
     return [
       {method: 'GET', path: '/api/health', summary: 'Server health'},
       {method: 'GET', path: '/config', summary: 'Server config (unprefixed)'},
@@ -10595,7 +10482,6 @@ const Player = (() => {
   let btnMute;
   let volSlider;
   let rateSelect;
-  let btnCC;
   let btnPip;
   let btnFullscreen;
   // New controls
@@ -10603,6 +10489,7 @@ const Player = (() => {
   let btnSeekFwd30;
   let btnPrevFrame;
   let btnNextFrame;
+  let btnRestartVideo;
   let btnPrevVideo;
   let btnNextVideo;
   // Remember last non-zero volume so unmute can restore it
@@ -10651,16 +10538,12 @@ const Player = (() => {
   // Compact artifact badges
   let badgeHeatmap;
   let badgeScenes;
-  let badgeSubtitles;
   let badgeSprites;
-  let badgeFaces;
   let badgePreview;
   let badgePhash;
   let badgeHeatmapStatus;
   let badgeScenesStatus;
-  let badgeSubtitlesStatus;
   let badgeSpritesStatus;
-  let badgeFacesStatus;
   let badgePreviewStatus;
   let badgePhashStatus;
   // Marker / overlay control buttons (grouped for clarity)
@@ -10904,33 +10787,25 @@ const Player = (() => {
     }
     badgeHeatmap = qs('badgeHeatmap');
     badgeScenes = qs('badgeScenes');
-    badgeSubtitles = qs('badgeSubtitles');
     badgeSprites = qs('badgeSprites');
-    badgeFaces = qs('badgeFaces');
     badgePreview = qs('badgePreview');
     badgePhash = qs('badgePhash');
     badgeHeatmapStatus = qs('badgeHeatmapStatus');
     badgeScenesStatus = qs('badgeScenesStatus');
-    badgeSubtitlesStatus = qs('badgeSubtitlesStatus');
     badgeSpritesStatus = qs('badgeSpritesStatus');
-    badgeFacesStatus = qs('badgeFacesStatus');
     badgePreviewStatus = qs('badgePreviewStatus');
     badgePhashStatus = qs('badgePhashStatus');
     // Support new hyphenated badge IDs (preferred) with fallback to legacy camelCase if present
     const pick = (id1, id2, id3) => document.getElementById(id1) || (id2 ? document.getElementById(id2) : null) || (id3 ? document.getElementById(id3) : null);
-    // Note: heatmap badge in markup uses plural "badge-heatmaps"; support both
-    badgeHeatmap = pick('badge-heatmaps', 'badge-heatmap', 'badgeHeatmap');
+    // Note: heatmap badge in markup uses plural "badge-heatmap"; support both
+    badgeHeatmap = pick('badge-heatmap', 'badge-heatmap', 'badgeHeatmap');
     badgeScenes = pick('badge-scenes', 'badgeScenes');
-    badgeSubtitles = pick('badge-subtitles', 'badgeSubtitles');
     badgeSprites = pick('badge-sprites', 'badgeSprites');
-    badgeFaces = pick('badge-faces', 'badgeFaces');
     badgePreview = pick('badge-preview', 'badgePreview');
     badgePhash = pick('badge-phash', 'badgePhash');
-    badgeHeatmapStatus = pick('badge-heatmaps-status', 'badge-heatmap-status', 'badgeHeatmapStatus');
+    badgeHeatmapStatus = pick('badge-heatmap-status', 'badge-heatmap-status', 'badgeHeatmapStatus');
     badgeScenesStatus = pick('badge-scenes-status', 'badgeScenesStatus');
-    badgeSubtitlesStatus = pick('badge-subtitles-status', 'badgeSubtitlesStatus');
     badgeSpritesStatus = pick('badge-sprites-status', 'badgeSpritesStatus');
-    badgeFacesStatus = pick('badge-faces-status', 'badgeFacesStatus');
     badgePreviewStatus = pick('badge-preview-status', 'badgePreviewStatus');
     badgePhashStatus = pick('badge-phash-status', 'badgePhashStatus');
     // Extra resilience: if a status element wasn't found but the badge exists, try to locate a child span ending with -status
@@ -10946,7 +10821,6 @@ const Player = (() => {
     btnMute = qs('btnMute');
     volSlider = qs('volSlider');
     rateSelect = qs('rateSelect');
-    btnCC = qs('btnCC');
     btnPip = qs('btnPip');
     btnFullscreen = qs('btnFullscreen');
     // New controls
@@ -10954,6 +10828,7 @@ const Player = (() => {
     btnSeekFwd30 = qs('btnSeekFwd30');
     btnPrevFrame = qs('btnPrevFrame');
     btnNextFrame = qs('btnNextFrame');
+    btnRestartVideo = qs('btnRestartVideo');
     btnPrevVideo = qs('btnPrevVideo');
     btnNextVideo = qs('btnNextVideo');
     // Actions panel buttons
@@ -11166,7 +11041,7 @@ const Player = (() => {
         syncControls();
         const saved = currentPath ? loadProgress(currentPath) : null;
         const override = resumeOverrideTime;
-        // helper: set currentTime and await seek completion (or timeout)
+        const forceStartAtBeginning = isStartAtBeginningEnabled();
         const awaitSeek = (t, timeout = 2000) => new Promise((res) => {
           if (!videoEl) return res();
           let done = false;
@@ -11187,7 +11062,6 @@ const Player = (() => {
               res();
             }
           }
-          // fallback timeout
           setTimeout(() => {
             if (!done) {
               done = true;
@@ -11196,14 +11070,22 @@ const Player = (() => {
             }
           }, timeout);
         });
-        // use Player-level safePlay(videoEl) to attempt playback and swallow rejections
-        if (saved && Number.isFinite(saved.t)) {
+        if (saved && Number.isFinite(saved.rate)) {
+          videoEl.playbackRate = Number(saved.rate);
+        }
+        if (forceStartAtBeginning) {
+          if (Math.abs(videoEl.currentTime || 0) > 0.01) {
+            await awaitSeek(0);
+          }
+          const autoplayResume = localStorage.getItem('setting.autoplayResume') === '1';
+          if (saved && !saved.paused && autoplayResume) {
+            await safePlay(videoEl);
+          }
+        }
+        else if (saved && Number.isFinite(saved.t)) {
           const target = Math.max(0, Math.min(duration || 0, Number(saved.t)));
           if (target && Math.abs(target - (videoEl.currentTime || 0)) > 0.5) {
             await awaitSeek(target);
-          }
-          if (saved.rate && Number.isFinite(saved.rate)) {
-            videoEl.playbackRate = Number(saved.rate);
           }
           const autoplayResume = localStorage.getItem('setting.autoplayResume') === '1';
           if (!(saved.paused || !autoplayResume)) {
@@ -11478,15 +11360,6 @@ const Player = (() => {
         if (videoEl) videoEl.playbackRate = parseFloat(rateSelect.value || '1');
       });
     }
-    if (btnCC && !btnCC._wired) {
-      btnCC._wired = true;
-      btnCC.addEventListener('click', () => {
-        const tracks = videoEl ? Array.from(videoEl.querySelectorAll('track')) : [];
-        const anyShowing = tracks.some((t) => t.mode === 'showing');
-        tracks.forEach((t) => (t.mode = anyShowing ? 'disabled' : 'showing'));
-        syncControls();
-      });
-    }
     if (btnPip && !btnPip._wired) {
       btnPip._wired = true;
       btnPip.addEventListener('click', async () => {
@@ -11556,6 +11429,22 @@ const Player = (() => {
       const p = cards[nextIdx]?.dataset?.path;
       if (p) open(p);
     };
+    if (btnRestartVideo && !btnRestartVideo._wired) {
+      btnRestartVideo._wired = true;
+      btnRestartVideo.addEventListener('click', async () => {
+        if (!videoEl) return;
+        const wasPaused = videoEl.paused;
+        try {
+          videoEl.currentTime = 0;
+          await awaitSeekEvent(videoEl, 1200);
+        }
+        catch (_) {
+          /* swallow seek errors */
+        }
+        if (!wasPaused) await safePlay(videoEl);
+        showOverlayBar();
+      });
+    }
     if (btnSeekBack30 && !btnSeekBack30._wired) {
       btnSeekBack30._wired = true;
       btnSeekBack30.addEventListener('click', () => {
@@ -11965,14 +11854,6 @@ const Player = (() => {
       else volSlider.classList.remove('is-muted');
     }
     if (rateSelect) rateSelect.value = String(videoEl.playbackRate || 1);
-    if (btnCC) {
-      const tracks = Array.from(videoEl.querySelectorAll('track'));
-      const anyShowing = tracks.some((t) => t.mode === 'showing');
-      btnCC.classList.toggle('active', anyShowing);
-      if (subtitleOverlayEl && !anyShowing) {
-        hide(subtitleOverlayEl);
-      }
-    }
   }
   // Volume keyboard shortcuts (ArrowUp / ArrowDown)
   if (!window._volKeysBound) {
@@ -12175,7 +12056,6 @@ const Player = (() => {
     const group = document.getElementById('videoRating');
     const desc = document.getElementById('videoDescription');
     const favBtn = document.getElementById('videoFavorite');
-    const favCtrl = document.getElementById('btnFavorite');
     // Reset UI defaults
     if (group) setStarsVisual(0);
     if (desc) {
@@ -12213,14 +12093,8 @@ const Player = (() => {
         favBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
         favBtn.classList.toggle('active', Boolean(on));
       }
-      if (favCtrl) {
-        favCtrl.setAttribute('aria-pressed', on ? 'true' : 'false');
-        favCtrl.classList.toggle('active', Boolean(on));
-      }
     };
-    if (favBtn || favCtrl) {
-      updateFav(favorite);
-    }
+    if (favBtn) updateFav(favorite);
   }
   async function saveRating(r) {
     if (!currentPath || !Number.isFinite(r)) return;
@@ -12405,31 +12279,23 @@ const Player = (() => {
       });
     }
     const fav = document.getElementById('videoFavorite');
-    const favCtrlBtn = document.getElementById('btnFavorite');
-    const wireFavBtn = (btn) => {
-      if (!btn || btn._wired) return;
-      btn._wired = true;
-      btn.addEventListener('click', () => {
-        const cur = btn.getAttribute('aria-pressed') === 'true';
+    if (fav && !fav._wired) {
+      fav._wired = true;
+      const toggleFavorite = () => {
+        const cur = fav.getAttribute('aria-pressed') === 'true';
         const next = !cur;
-        btn.setAttribute('aria-pressed', next ? 'true' : 'false');
-        btn.classList.toggle('active', next);
-        const other = btn === fav ? favCtrlBtn : fav;
-        if (other) {
-          other.setAttribute('aria-pressed', next ? 'true' : 'false');
-          other.classList.toggle('active', next);
-        }
+        fav.setAttribute('aria-pressed', next ? 'true' : 'false');
+        fav.classList.toggle('active', next);
         saveFavorite(next);
-      });
-      btn.addEventListener('keydown', (e) => {
+      };
+      fav.addEventListener('click', toggleFavorite);
+      fav.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          btn.click();
+          toggleFavorite();
         }
       });
-    };
-    wireFavBtn(fav);
-    wireFavBtn(favCtrlBtn);
+    }
     const di = document.getElementById('videoDescription');
     if (di && !di._wired) {
       di._wired = true;
@@ -13002,7 +12868,7 @@ const Player = (() => {
     // Artifacts: load consolidated status first, then conditional loaders
     (async () => {
       await loadArtifactStatuses();
-      if (typeof showHeatmap !== 'undefined' && showHeatmap) loadHeatmaps();
+      if (typeof showHeatmap !== 'undefined' && showHeatmap) loadHeatmap();
       if (typeof showScenes !== 'undefined' && showScenes) loadScenes();
       loadVideoChips();
     })();
@@ -13090,10 +12956,7 @@ const Player = (() => {
       label.textContent = 'Suggestions:';
       frag.appendChild(label);
       arr.forEach((name) => {
-        const chip = document.createElement('span');
-        chip.className = 'chip chip-suggest';
-        chip.title = 'Click to add';
-        chip.textContent = name;
+        const chip = createSuggestChip(name, { title: 'Click to add' });
         chip.addEventListener('click', () => addChip(kind, name));
         frag.appendChild(chip);
       });
@@ -13108,14 +12971,16 @@ const Player = (() => {
     container.innerHTML = '';
     (items || []).forEach((item) => {
       if (!item || typeof item !== 'string') return;
-      const chip = document.createElement('span');
-      chip.className = 'chip';
+      const { chip, removeBtn, labelEl } = createChipElement({
+        label: item,
+        removable: true,
+        removeLabel: 'Remove',
+        title: 'View in Library',
+      });
       chip.dataset.nameLower = String(item).toLowerCase();
-      const label = document.createElement('span');
-      label.className = 'chip-label';
-      label.textContent = item;
-      label.title = 'View in Library';
-      label.addEventListener('click', (ev) => {
+      const labelTarget = labelEl || chip;
+      labelTarget.title = 'View in Library';
+      labelTarget.addEventListener('click', (ev) => {
         ev.preventDefault();
         const tab = document.querySelector('[data-tab="library"]');
         if (tab) tab.click();
@@ -13131,18 +12996,12 @@ const Player = (() => {
         if (typeof loadLibrary === 'function') loadLibrary();
         if (typeof updateLibraryUrlFromState === 'function') updateLibraryUrlFromState();
       });
-      const rm = document.createElement('span');
-      rm.className = 'remove';
-      rm.setAttribute('role', 'button');
-      rm.setAttribute('aria-label', 'Remove');
-      rm.title = 'Remove';
-      rm.textContent = '×';
-      rm.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        removeChip(kind, item);
-      });
-      chip.appendChild(label);
-      chip.appendChild(rm);
+      if (removeBtn) {
+        removeBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          removeChip(kind, item);
+        });
+      }
       container.appendChild(chip);
     });
   }
@@ -13184,10 +13043,7 @@ const Player = (() => {
       label.textContent = 'Matches:';
       frag.appendChild(label);
       top.forEach((name) => {
-        const chip = document.createElement('span');
-        chip.className = 'chip chip-suggest';
-        chip.title = 'Click to add';
-        chip.textContent = name;
+        const chip = createSuggestChip(name, { title: 'Click to add' });
         chip.addEventListener('click', () => {
           addChip(kind, name);
           const input = document.getElementById(kind === 'performer' ? 'videoPerformerInput' : 'videoTagInput');
@@ -13262,163 +13118,11 @@ const Player = (() => {
       notify('Failed to remove ' + kind, 'error');
     }
   }
-  // Run browser-side face detection using the FaceDetector API and upload results to server
-  async function detectAndUploadFacesBrowser(opts) {
-    try {
-      initDom();
-      if (!currentPath || !videoEl) {
-        notify('Open a video in the Player first, then try again.', 'error');
-        // Removed auto-switch: only switch when user initiates face detection from Player context.
-        // if (window.tabSystem) window.tabSystem.switchToTab('player');
-        return;
-      }
-      // Feature check
-      const Supported = 'FaceDetector' in window && typeof window.FaceDetector === 'function';
-      if (!Supported) {
-        notify('FaceDetector API not available in this browser. Try Chrome/Edge desktop.', 'error');
-        return;
-      }
-      // Options from UI
-      const intervalSec = Math.max(0.2, parseFloat(document.getElementById('faceInterval')?.value || '1.0'));
-      const minSizeFrac = Math.max(0.01, Math.min(0.9, parseFloat(document.getElementById('faceMinSize')?.value || '0.10')));
-      const maxSamples = 300;
-      // safety cap
-      // Ensure metadata is ready
-      if (!Number.isFinite(duration) || duration <= 0) {
-        await new Promise((res) => {
-          const onMetadata = () => {
-            videoEl.removeEventListener('loadedmetadata', onMeta);
-            res();
-          };
-          videoEl.addEventListener('loadedmetadata', onMeta);
-        });
-      }
-      const W = Math.max(1, videoEl.videoWidth || 0);
-      const H = Math.max(1, videoEl.videoHeight || 0);
-      // Prepare canvas
-      const canvas = document.createElement('canvas');
-      canvas.width = W;
-      canvas.height = H;
-      const ctx = canvas.getContext('2d', {willReadFrequently: false});
-      if (!ctx) {
-        notify('Canvas not available for capture.', 'error');
-        return;
-      }
-      const detector = new window.FaceDetector({
-        fastMode: true,
-        maxDetectedFaces: 10,
-      });
-      // Build sampling timeline
-      const total = Math.max(0, Number(duration) || 0);
-      let step = intervalSec;
-      let samples = [];
-      if (total <= 0) samples = [0];
-      else {
-        for (let t = 0; t <= total; t += step) {
-          samples.push(t);
-        }
-        if (samples.length > maxSamples) {
-          const ratio = samples.length / maxSamples;
-          const out = [];
-          for (let i = 0; i < samples.length; i += Math.ceil(ratio)) {
-            out.push(samples[i]);
-          }
-          samples = out;
-        }
-      }
-      if (samples.length === 0) samples = [0];
-      // Pause and remember state
-      const wasPaused = videoEl.paused;
-      const prevT = videoEl.currentTime || 0;
-      videoEl.pause();
-      notify(`Browser face detection: sampling ${samples.length} frame(s)...`, 'info');
-      const faces = [];
-      // Helper: precise seek
-      const seekTo = (t) =>
-        new Promise((res) => {
-          const onSeek = () => {
-            videoEl.removeEventListener('seeked', onSeek);
-            res();
-          };
-          videoEl.addEventListener('seeked', onSeek);
-          try {
-            videoEl.currentTime = Math.max(0, Math.min(total, t));
-          }
-          catch (_) {
-            res();
-          }
-        });
-      for (let i = 0;
-        i < samples.length;
-        i++) {
-        const t = samples[i];
-        await seekTo(t);
-        ctx.drawImage(videoEl, 0, 0, W, H);
-        // FaceDetector accepts Canvas as source
-        const dets = await detector.detect(canvas);
-        for (const d of dets || []) {
-          const bb = d && d.boundingBox ? d.boundingBox : null;
-          if (!bb) continue;
-          let x = Math.max(0, Math.floor(bb.x || 0));
-          let y = Math.max(0, Math.floor(bb.y || 0));
-          let w = Math.max(0, Math.floor(bb.width || 0));
-          let h = Math.max(0, Math.floor(bb.height || 0));
-          if (w <= 1 || h <= 1) continue;
-          const minFrac = Math.min(w / W, h / H);
-          if (minFrac < minSizeFrac) continue;
-          faces.push({
-            time: Number(t.toFixed(3)),
-            box: [x, y, w, h],
-            score: 1.0,
-          });
-        }
-      }
-      videoEl.currentTime = prevT;
-      if (!wasPaused) await safePlay(videoEl);
-      if (faces.length === 0) {
-        notify('No faces detected in sampled frames.', 'error');
-        return;
-      }
-      // If an existing faces.json is present, confirm overwrite
-      let overwrite = true;
-      const head = await fetch('/api/faces?path=' + encodeURIComponent(currentPath), {method: 'HEAD' });
-      if (head.ok) {
-        overwrite = confirm('faces.json already exists for this video. Replace it with browser-detected faces?');
-        if (!overwrite) return;
-      }
-      // Upload
-      const payload = {faces: faces, backend: 'browser-facedetector', stub: false};
-      const url = new URL('/api/faces/upload', window.location.origin);
-      url.searchParams.set('path', currentPath);
-      url.searchParams.set('compute_embeddings', 'true');
-      url.searchParams.set('overwrite', overwrite ? 'true' : 'false');
-      const r = await fetch(url.toString(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!r.ok) {
-        throw new Error('HTTP ' + r.status);
-      }
-      const j = await r.json();
-      if (j?.status === 'success') {
-        notify(`Uploaded ${faces.length} face(s) from browser detection.`, 'success');
-        if (window.tasksManager) window.tasksManager.loadCoverage();
-        await loadArtifactStatuses();
-      }
-      else {
-        throw new Error(j?.message || 'Upload failed');
-      }
-    }
-    catch (e) {
-      notify('Browser detection failed: ' + (e && e.message ? e.message : 'error'), 'error');
-    }
-  }
-  async function loadHeatmaps() {
+  async function loadHeatmap() {
     if (!currentPath) return;
     try {
       const st = window.__artifactStatus && window.__artifactStatus[currentPath];
-      if (st && st.heatmaps === false) {
+      if (st && st.heatmap === false) {
         if (badgeHeatmapStatus) badgeHeatmapStatus.textContent = '✗';
         if (badgeHeatmap) badgeHeatmap.dataset.present = '0';
         applyTimelineDisplayToggles();
@@ -13426,14 +13130,14 @@ const Player = (() => {
       }
       // Prefer JSON + canvas rendering for higher fidelity
       let renderedViaJson = false;
-      const ju = new URL('/api/heatmaps', window.location.origin);
+      const ju = new URL('/api/heatmap', window.location.origin);
       ju.searchParams.set('path', currentPath);
       const jr = await fetch(ju.toString(), {
         headers: {Accept: 'application/json' },
       });
       if (jr.ok) {
         const jj = await jr.json();
-        const hm = jj?.data?.heatmaps || jj?.heatmaps || jj;
+        const hm = jj?.data?.heatmap || jj?.heatmap || jj;
         const samples = Array.isArray(hm?.samples) ? hm.samples : [];
         if (samples.length && heatmapCanvasEl) {
           drawHeatmapCanvas(samples);
@@ -13444,7 +13148,7 @@ const Player = (() => {
         }
       }
       if (!renderedViaJson) {
-        const url = '/api/heatmaps?path=' + encodeURIComponent(currentPath) + `&t=${Date.now()}`;
+        const url = '/api/heatmap?path=' + encodeURIComponent(currentPath) + `&t=${Date.now()}`;
         // Try to load an image to detect availability
         const ok = await new Promise((resolve) => {
           const probe = new Image();
@@ -13789,11 +13493,7 @@ const Player = (() => {
     subtitlesUrl = null;
     if (!currentPath || !videoEl) return;
     const st = window.__artifactStatus && window.__artifactStatus[currentPath];
-    if (st && st.subtitles === false) {
-      if (badgeSubtitlesStatus) badgeSubtitlesStatus.textContent = '✗';
-      if (badgeSubtitles) badgeSubtitles.dataset.present = '0';
-      return;
-    }
+    if (st && st.subtitles === false) return;
     // Remove existing tracks and their cue listeners
     Array.from(videoEl.querySelectorAll('track')).forEach((t) => {
       const tt = t.track || null;
@@ -13839,13 +13539,8 @@ const Player = (() => {
         track._cueHandler = onCueChange;
         tt.addEventListener('cuechange', onCueChange);
       }
-      if (badgeSubtitlesStatus) badgeSubtitlesStatus.textContent = '✓';
-      if (badgeSubtitles) badgeSubtitles.dataset.present = '1';
     }
-    if (!subtitlesUrl) {
-      if (badgeSubtitlesStatus) badgeSubtitlesStatus.textContent = '✗';
-      if (badgeSubtitles) badgeSubtitles.dataset.present = '0';
-    }
+    if (!subtitlesUrl) return;
   }
   function renderMarkers() {
     if (!markersEl) return;
@@ -14311,7 +14006,8 @@ const Player = (() => {
     const d = await fetchArtifactStatusForPath(currentPath);
     window.__artifactStatus = window.__artifactStatus || {};
     window.__artifactStatus[currentPath] = d || {};
-    const keys = ['metadata', 'thumbnail', 'preview', 'phash', 'sprites', 'heatmaps', 'subtitles', 'markers', 'faces'];
+    // @todo copilot redundant
+    const keys = ['metadata', 'thumbnail', 'preview', 'phash', 'sprites', 'heatmap', 'markers'];
     await renderArtifactChips(cont, currentPath, { style: 'badge', keys, status: d || {} });
   }
   function wireBadgeActions() {
@@ -14319,7 +14015,7 @@ const Player = (() => {
       if (!currentPath) return;
       const caps = (window.tasksManager && window.tasksManager.capabilities) || window.__capabilities || {};
       const needsFfmpeg = new Set([
-        'heatmaps',
+        'heatmap',
         'markers',
         'sprites',
         'preview',
@@ -14329,21 +14025,11 @@ const Player = (() => {
         notify('Cannot start: FFmpeg not detected', 'error');
         return;
       }
-      if (kind === 'subtitles' && caps.subtitles_enabled === false) {
-        notify('Cannot start subtitles: no backend available', 'error');
-        return;
-      }
-      if (kind === 'faces' && caps.faces_enabled === false) {
-        notify('Cannot start faces: face backends unavailable', 'error');
-        return;
-      }
       try {
         let url;
-        if (kind === 'heatmaps') url = new URL('/api/heatmaps/create', window.location.origin);
+        if (kind === 'heatmap') url = new URL('/api/heatmap/create', window.location.origin);
         else if (kind === 'markers') url = new URL('/api/markers/detect', window.location.origin);
-        else if (kind === 'subtitles') url = new URL('/api/subtitles/create', window.location.origin);
         else if (kind === 'sprites') url = new URL('/api/sprites/create', window.location.origin);
-        else if (kind === 'faces') url = new URL('/api/faces/create', window.location.origin);
         else if (kind === 'preview') url = new URL('/api/preview', window.location.origin);
         else if (kind === 'phash') url = new URL('/api/phash', window.location.origin);
         else return;
@@ -14370,20 +14056,17 @@ const Player = (() => {
           const st = window.__artifactStatus && window.__artifactStatus[currentPath];
           let present = false;
           if (st) {
-            if (kind === 'heatmaps') present = Boolean(st.heatmaps);
+            if (kind === 'heatmap') present = Boolean(st.heatmap);
             else if (kind === 'markers') present = Boolean(st.markers);
-            else if (kind === 'subtitles') present = Boolean(st.subtitles);
             else if (kind === 'sprites') present = Boolean(st.sprites);
-            else if (kind === 'faces') present = Boolean(st.faces);
             else if (kind === 'preview') present = Boolean(st.preview ?? st.hover);
             else if (kind === 'phash') present = Boolean(st.phash);
           }
           if (present) {
             // Load any richer data renderers once present
-            if (kind === 'heatmaps') await loadHeatmaps();
+            if (kind === 'heatmap') await loadHeatmap();
             else if (kind === 'markers') await loadScenes();
             else if (kind === 'sprites') await loadSprites();
-            else if (kind === 'subtitles') await loadSubtitles();
             return finish();
           }
           // Keep polling until present; avoid clearing spinner prematurely.
@@ -14409,18 +14092,14 @@ const Player = (() => {
       });
     };
     // Resolve current badge elements (hyphenated IDs preferred)
-    const bHeat = document.getElementById('badge-heatmaps') || badgeHeatmap;
+    const bHeat = document.getElementById('badge-heatmap') || badgeHeatmap;
     const bScenes = document.getElementById('badge-scenes') || badgeScenes;
-    const bSubs = document.getElementById('badge-subtitles') || badgeSubtitles;
     const bSprites = document.getElementById('badge-sprites') || badgeSprites;
-    const bFaces = document.getElementById('badge-faces') || badgeFaces;
     const bPreview = document.getElementById('badge-preview') || badgePreview;
     const bPhash = document.getElementById('badge-phash') || badgePhash;
-    attach(bHeat, 'heatmaps');
+    attach(bHeat, 'heatmap');
     attach(bScenes, 'markers');
-    attach(bSubs, 'subtitles');
     attach(bSprites, 'sprites');
-    attach(bFaces, 'faces');
     attach(bPreview, 'preview');
     attach(bPhash, 'phash');
   }
@@ -14615,7 +14294,7 @@ const Player = (() => {
   function getPath() {
     return currentPath;
   }
-  return {open, showOverlayBar, detectAndUploadFacesBrowser, getPath};
+  return {open, showOverlayBar, getPath};
 })();
 window.Player = Player;
 // Player module assigned to window
@@ -17458,10 +17137,8 @@ const Performers = (() => {
     }
   }
   function chipForName(name) {
-    const span = document.createElement('span');
-    span.className = 'chip';
-    span.textContent = name;
-    return span;
+    const { chip } = createChipElement({ label: name });
+    return chip;
   }
   function openMergeModal() {
     ensureModalDom();
@@ -17644,10 +17321,8 @@ const Performers = (() => {
       if (!modal || !list || !confirmBtn || !closeBtn) return;
       list.innerHTML = '';
       rawNames.forEach((name) => {
-        const div = document.createElement('div');
-        div.className = 'chip';
-        div.textContent = name;
-        list.appendChild(div);
+        const { chip } = createChipElement({ label: name });
+        list.appendChild(chip);
       });
       show(modal);
       function closeModal() {
@@ -18439,13 +18114,9 @@ const Tags = (() => {
     if (mergeSelectedWrap) {
       mergeSelectedWrap.innerHTML = '';
       const makeChip = (name) => {
-        const span = document.createElement('span');
-        span.className = 'chip chip-tag';
-        const lab = document.createElement('span');
-        lab.className = 'chip-label';
-        lab.textContent = `#${name}`;
-        span.appendChild(lab);
-        return span;
+        const { chip } = createChipElement({ label: `#${name}` });
+        chip.classList.add('chip-tag');
+        return chip;
       };
       names.forEach((name, idx) => {
         mergeSelectedWrap.appendChild(makeChip(name));
@@ -18494,13 +18165,9 @@ const Tags = (() => {
     devLog('log', '[Tags:openRenameModal] start');
     if (renameSelectedWrap) {
       renameSelectedWrap.innerHTML = '';
-      const span = document.createElement('span');
-      span.className = 'chip chip-tag';
-      const lab = document.createElement('span');
-      lab.className = 'chip-label';
-      lab.textContent = `#${currentName}`;
-      span.appendChild(lab);
-      renameSelectedWrap.appendChild(span);
+      const { chip } = createChipElement({ label: `#${currentName}` });
+      chip.classList.add('chip-tag');
+      renameSelectedWrap.appendChild(chip);
     }
     if (renameInput) {
       renameInput.value = currentName || '';
@@ -19629,7 +19296,6 @@ class TasksManager {
     this.capabilities = {
       ffmpeg: true,
       ffprobe: true,
-      subtitles_enabled: true,
       faces_enabled: true,
     };
     // Multi-select filters: empty set means "no filtering" (show all). User can narrow by toggling cards.
@@ -19660,8 +19326,6 @@ class TasksManager {
     this.wireGenerateAll();
     // Initialize resizer for job queue container
     setTimeout(() => this.initJobQueueResizer(), 0);
-    // Wire browser faces button (idempotent)
-    setTimeout(() => this.wireBrowserFacesButton(), 0);
     // Fetch server defaults, then hydrate option inputs (with local overrides) & add validation/tooltips
     setTimeout(() => this.loadDefaultsAndHydrate(), 0);
     // Persist changes on any option input change
@@ -19751,15 +19415,10 @@ class TasksManager {
       else {
         window.__JOBS_SSE_UNAVAILABLE = true;
       }
-      this.capabilities.subtitles_enabled = Boolean(
-        caps.subtitles_enabled ?? true,
-      );
       this.capabilities.faces_enabled = Boolean(caps.faces_enabled ?? true);
       window.__capabilities = { ...this.capabilities};
     }
     this.applyCapabilityGates();
-    // Re-evaluate and wire browser faces button when caps are known
-    this.wireBrowserFacesButton();
     this.updateCapabilityBanner();
   }
   canRunOperation(op) {
@@ -19771,12 +19430,11 @@ class TasksManager {
       'previews',
       'sprites',
       'markers',
-      'heatmaps',
+      'heatmap',
       'phash',
     ]);
     if (needsFfmpeg.has(base)) return Boolean(caps.ffmpeg);
-    if (base === 'subtitles') return Boolean(caps.subtitles_enabled);
-    if (base === 'faces' || base === 'embed') return Boolean(caps.faces_enabled);
+    if (base === 'embed') return Boolean(caps.faces_enabled);
     // metadata and others default to allowed
     return true;
   }
@@ -19807,9 +19465,7 @@ class TasksManager {
       previews: {segments: 'previewSegments', duration: 'previewDuration', width: 'previewWidth' },
       phash: {frames: 'phashFrames', algorithm: 'phashAlgo' },
       markers: {threshold: 'sceneThreshold', limit: 'sceneLimit' },
-      heatmaps: {interval: 'heatmapInterval', mode: 'heatmapMode', png: 'heatmapPng' },
-      subtitles: {model: 'subtitleModel', language: 'subtitleLang' },
-      faces: {interval: 'faceInterval', min_size_frac: 'faceMinSize', backend: 'faceBackend', scale_factor: 'faceScale', min_neighbors: 'faceMinNeighbors', sim_thresh: 'faceSimThresh' },
+      heatmap: {interval: 'heatmapInterval', mode: 'heatmapMode', png: 'heatmapPng' },
       embed: {interval: 'embedInterval', min_size_frac: 'embedMinSize', backend: 'embedBackend', sim_thresh: 'embedSimThresh' },
     };
     Object.entries(map).forEach(([art, fields]) => {
@@ -19830,7 +19486,7 @@ class TasksManager {
     const persist = () => {
       localStorage.setItem(LS_KEY, JSON.stringify(cache));
     };
-    const sel = '#spritesOptions input, #previewOptions input, #thumbnailOptions input, #phashOptions select, #phashOptions input, #markersOptions input, #heatmapsOptions input, #heatmapsOptions select, #subtitlesOptions select, #subtitlesOptions input, #facesOptions input, #facesOptions select, #embedOptions input, #embedOptions select';
+    const sel = '#spritesOptions input, #previewOptions input, #thumbnailOptions input, #phashOptions select, #phashOptions input, #markersOptions input, #heatmapOptions input, #heatmapOptions select, #embedOptions input, #embedOptions select';
     document.querySelectorAll(sel).forEach((el) => {
       if (el._persistWired) return;
       el._persistWired = true;
@@ -19857,11 +19513,6 @@ class TasksManager {
       heatmapMode: 'Metric: brightness, motion, color, or both combined (legacy composite).',
       heatmapPng: 'Whether to write a PNG stripe alongside JSON data (uses extra disk).',
       phashAlgo: 'Hash algorithm for perceptual similarity matching.',
-      faceInterval: 'Seconds between sampled frames for face detection.',
-      faceMinSize: 'Minimum face bounding box size as a fraction of frame dimension.',
-      faceScale: 'Scale factor for cascade / detector; lower detects more, slower.',
-      faceMinNeighbors: 'Min neighbors (cascade) to keep a detection; higher = stricter.',
-      faceSimThresh: 'Similarity threshold when clustering deduplicated faces.',
       embedSimThresh: 'Similarity threshold for re-embedding / clustering.',
       spriteInterval: 'Seconds between sprite capture frames.',
       spriteWidth: 'Scaled width for each captured frame before compositing.',
@@ -19886,11 +19537,6 @@ class TasksManager {
       'sceneLimit',
       'heatmapInterval',
       'thumbnailOffset',
-      'faceInterval',
-      'faceMinSize',
-      'faceScale',
-      'faceMinNeighbors',
-      'faceSimThresh',
       'embedInterval',
       'embedMinSize',
       'embedSimThresh',
@@ -19937,7 +19583,7 @@ class TasksManager {
       disableIf('[data-operation="previews-missing"], [data-operation="previews-all"]', true, 'Disabled: FFmpeg not detected');
       disableIf('[data-operation="sprites-missing"], [data-operation="sprites-all"]', true, 'Disabled: FFmpeg not detected');
       disableIf('[data-operation="markers-missing"], [data-operation="markers-all"]', true, 'Disabled: FFmpeg not detected');
-      disableIf('[data-operation="heatmaps-missing"], [data-operation="heatmaps-all"]', true, 'Disabled: FFmpeg not detected');
+      disableIf('[data-operation="heatmap-missing"], [data-operation="heatmap-all"]', true, 'Disabled: FFmpeg not detected');
       disableIf('[data-operation="phash-missing"], [data-operation="phash-all"]', true, 'Disabled: FFmpeg not detected');
       // Player badges
       ['badgeHeatmap', 'badgeScenes', 'badgeSprites', 'badgePreview', 'badgePhash'].forEach((id) => {
@@ -19948,64 +19594,31 @@ class TasksManager {
         }
       });
     }
-    // Subtitles
-    if (!caps.subtitles_enabled) {
-      disableIf(
-        '[data-operation="subtitles-missing"], [data-operation="subtitles-all"]',
-        true,
-        'Disabled: no subtitles backend available',
-      );
-      const el = document.getElementById('badgeSubtitles');
-      if (el) {
-        el.disabled = true;
-        el.title = 'Disabled: no subtitles backend available';
-      }
-    }
-    // Faces/Embeddings
     if (!caps.faces_enabled) {
-      disableIf('[data-operation="faces-missing"], [data-operation="faces-all"]', true, 'Disabled: face backends not available');
       disableIf('[data-operation="embed-missing"], [data-operation="embed-all"]', true, 'Disabled: face backends not available');
-      const bf = document.getElementById('badgeFaces');
-      if (bf) {
-        bf.disabled = true;
-        bf.title = 'Disabled: face backends not available';
-      }
-    }
-    // Browser-side faces button gating: requires FaceDetector OR a server path to compute embeddings may still work
-    const fb = document.getElementById('facesBrowserBtn');
-    if (fb) {
-      const hasFD = 'FaceDetector' in window && typeof window.FaceDetector === 'function';
-      // We require either FaceDetector availability (client) AND at least one embedding path on server (ffmpeg or faces backend)
-      const serverOk = Boolean(caps.ffmpeg) || Boolean(caps.faces_enabled);
-      fb.disabled = !(hasFD && serverOk);
-      fb.title = fb.disabled ? !hasFD ? 'Disabled: FaceDetector API not available in this browser' : 'Disabled: no server embedding path available' : 'Detect faces in your browser and upload';
     }
   }
   updateCapabilityBanner() {
     const caps = this.capabilities || {};
     const issues = [];
-    const facesMsg = 'Face backends unavailable — face detection and embeddings are disabled.';
+    const embedMsg = 'Embedding backends unavailable — embeddings are disabled.';
     if (!caps.ffmpeg) {
       issues.push(
-        'FFmpeg not detected — thumbnails, previews, sprites, markers, heatmaps, and pHash are disabled.',
-      );
-    }
-    if (!caps.subtitles_enabled) {
-      issues.push('Subtitles backend unavailable — subtitles generation is disabled.',
+        'FFmpeg not detected — thumbnails, previews, sprites, markers, heatmap, and pHash are disabled.',
       );
     }
     if (!caps.faces_enabled) {
-      issues.push(facesMsg);
+      issues.push(embedMsg);
     }
     let banner = document.getElementById('capabilityBanner');
     // Where to insert: top of the tasks panel container
     const tasksPanel = document.getElementById('tasks-panel');
     const container = tasksPanel ? tasksPanel.querySelector('.tasks-container') : null;
     if (!container) return;
-    // If the only issue is faces, suppress the banner entirely (we still gate actions);
-    // advanced users can enable faces later without being nagged.
-    const facesOnly = issues.length === 1 && issues[0] === facesMsg;
-    if (facesOnly) {
+    // If the only issue is embeddings, suppress the banner entirely (we still gate actions);
+    // advanced users can enable the backend later without being nagged.
+    const embedOnly = issues.length === 1 && issues[0] === embedMsg;
+    if (embedOnly) {
       if (banner) banner.remove();
       return;
     }
@@ -20025,14 +19638,14 @@ class TasksManager {
     strong.textContent = 'Tools notice:';
     banner.appendChild(strong);
     banner.appendChild(document.createTextNode(' ' + issues.join(' ')));
-    // Add a small dismiss control. If only faces warning, persist the dismissal; otherwise hide once.
+    // Add a small dismiss control. If only embeddings warning, persist the dismissal; otherwise hide once.
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
     dismiss.className = 'btn btn-link btn-dismiss';
     dismiss.textContent = 'Dismiss';
     dismiss.style.marginLeft = '0.5rem';
     dismiss.addEventListener('click', () => {
-      if (facesOnly) localStorage.setItem('mediaPlayer:dismissFacesNotice', '1');
+      if (embedOnly) localStorage.setItem('mediaPlayer:dismissFacesNotice', '1');
       banner.remove();
     });
     banner.appendChild(dismiss);
@@ -20383,30 +19996,6 @@ class TasksManager {
       });
     }
   }
-  // Wire facesBrowserBtn to run browser detection on the currently open video
-  wireBrowserFacesButton() {
-    const btn = document.getElementById('facesBrowserBtn');
-    if (!btn || btn._wired) return;
-    btn._wired = true;
-    btn.addEventListener('click', async () => {
-      try {
-        // Switch to player tab if needed so the user can see progress and allow playback controls
-        // Suppress implicit tab switch;
-        // user will already be on Player when meaningful.
-        // if (window.tabSystem && window.tabSystem.getActiveTab() !== 'player') window.tabSystem.switchToTab('player');
-        // Delegate to Player module
-        if (window.Player && typeof window.Player.detectAndUploadFacesBrowser === 'function') {
-          await window.Player.detectAndUploadFacesBrowser();
-        }
-        else {
-          this.showNotification('Player not ready for browser detection.', 'error');
-        }
-      }
-      catch (e) {
-        this.showNotification('Browser faces failed: ' + (e && e.message ? e.message : 'error'), 'error');
-      }
-    });
-  }
   async previewHeatmapSample() {
     try {
       // Find first video in current folder
@@ -20430,7 +20019,7 @@ class TasksManager {
       // Ensure heatmap exists;
       // try a GET probe;
       // if missing, trigger create and poll briefly
-      const headUrl = new URL('/api/heatmaps', window.location.origin);
+      const headUrl = new URL('/api/heatmap', window.location.origin);
       headUrl.searchParams.set('path', path);
       let ok = false;
       for (let i = 0; i < 10; i++) {
@@ -20442,7 +20031,7 @@ class TasksManager {
         }
         // Trigger creation once at the beginning
         if (i === 0) {
-          const createUrl = new URL('/api/heatmaps/create', window.location.origin);
+          const createUrl = new URL('/api/heatmap/create', window.location.origin);
           createUrl.searchParams.set('path', path);
           createUrl.searchParams.set('interval', String(parseFloat(document.getElementById('heatmapInterval')?.value || '5.0')));
           createUrl.searchParams.set('mode', document.getElementById('heatmapMode')?.value || 'both');
@@ -20456,7 +20045,7 @@ class TasksManager {
         return;
       }
       // Show modal
-      const imgUrl = new URL('/api/heatmaps', window.location.origin);
+      const imgUrl = new URL('/api/heatmap', window.location.origin);
       imgUrl.searchParams.set('path', path);
       imgModalImage.src = imgUrl.toString() + `&t=${Date.now()}`;
       show(imgModal);
@@ -20486,7 +20075,7 @@ class TasksManager {
       }
       // Capability gate (skip for clear which only deletes existing files)
       if (!isClear && !this.canRunOperation(base)) {
-        const why = base === 'subtitles' ? 'No subtitles backend available.' : base === 'faces' || base === 'embed' ? 'Face backends unavailable.' : 'FFmpeg not detected.';
+        const why = base === 'embed' ? 'Embedding backends unavailable.' : 'FFmpeg not detected.';
         this.showNotification(`Cannot start ${base} (${mode}). ${why}`, 'error');
         return;
       }
@@ -20501,7 +20090,6 @@ class TasksManager {
         if (confirmDeletesEnabled) {
           const confirmed = confirm(`Clear all ${base} artifacts? This cannot be undone.`);
           if (!confirmed) return;
-
         }
         // Attempt scoped clear if selected-only chosen and supported
         try {
@@ -20510,12 +20098,10 @@ class TasksManager {
             previews: '/api/preview',
             sprites: '/api/sprites/delete',
             phash: '/api/phash',
-            heatmaps: '/api/heatmaps/delete',
+            heatmap: '/api/heatmap/delete',
             metadata: '/api/metadata/delete',
-            subtitles: '/api/subtitles/delete/batch',
             scenes: '/api/markers/clear',
             markers: '/api/markers/clear',
-            faces: '/api/faces/delete',
             embed: '/api/faces/delete',
           };
           const mapped = endpointMap[base] || `/api/artifacts/${base}`;
@@ -20611,17 +20197,16 @@ class TasksManager {
     if (btn._wired) return;
     btn._wired = true;
     btn.addEventListener('click', async () => {
+      // @todo copilot redundant
       const ops = [
         'metadata-missing',
         'phash-missing',
         'thumbnails-missing',
         'previews-missing',
         'sprites-missing',
-        'heatmaps-missing',
+        'heatmap-missing',
         'scenes-missing',
-        'faces-missing',
         'embed-missing',
-        'subtitles-missing',
       ].filter((op) => this.canRunOperation(op));
       if (ops.length === 0) {
         this.showNotification(
@@ -20686,36 +20271,16 @@ class TasksManager {
       params.duration = document.getElementById('previewDuration')?.value || 1.0;
       params.width = document.getElementById('previewWidth')?.value || 320;
       break;
-    case 'heatmaps':
+    case 'heatmap':
       params.interval = parseFloat(document.getElementById('heatmapInterval')?.value || '5.0');
       // Accept legacy 'both' plus new modes
       params.mode = document.getElementById('heatmapMode')?.value || 'both';
       // Use checkbox to control PNG generation (default true)
       params.png = document.getElementById('heatmapPng')?.checked !== false;
       break;
-    case 'subtitles': {
-      params.model = document.getElementById('subtitleModel')?.value || 'small';
-      const langVal = (document.getElementById('subtitleLang')?.value || '').trim();
-      params.language = langVal || 'auto';
-      // translate option not exposed in UI;
-      // default false
-      params.translate = false;
-      break;
-    }
     case 'markers':
       params.threshold = parseFloat(document.getElementById('sceneThreshold')?.value || '0.4');
       params.limit = parseInt(document.getElementById('sceneLimit')?.value || '0', 10);
-      break;
-    case 'faces':
-      params.interval = parseFloat(document.getElementById('faceInterval')?.value || '1.0');
-      params.min_size_frac = parseFloat(document.getElementById('faceMinSize')?.value || '0.10');
-      // Advanced tunables (parity with legacy FaceLab)
-      params.backend = document.getElementById('faceBackend')?.value || 'auto';
-      // Only some backends use these;
-      // harmless to pass through
-      params.scale_factor = parseFloat(document.getElementById('faceScale')?.value || '1.1');
-      params.min_neighbors = parseInt(document.getElementById('faceMinNeighbors')?.value || '5', 10);
-      params.sim_thresh = parseFloat(document.getElementById('faceSimThresh')?.value || '0.9');
       break;
     case 'embed':
       params.interval = parseFloat(document.getElementById('embedInterval')?.value || '1.0');
@@ -20786,12 +20351,12 @@ class TasksManager {
         previews: {processed: 0, total: 0, missing: 0},
         phash: {processed: 0, total: 0, missing: 0},
         markers: {processed: 0, total: 0, missing: 0},
-        heatmaps: {processed: 0, total: 0, missing: 0},
-        subtitles: {processed: 0, total: 0, missing: 0},
-        faces: {processed: 0, total: 0, missing: 0},
+        heatmap: {processed: 0, total: 0, missing: 0},
+        embed: {processed: 0, total: 0, missing: 0},
       };
       const statusCache = (window.__artifactStatus || {});
       const total = selectedItems.size;
+      // @todo copilot redundant
       const presentFor = (st, key) => {
         if (!st) return false;
         switch (key) {
@@ -20801,9 +20366,8 @@ class TasksManager {
         case 'previews': return Boolean(st.preview != null ? st.preview : st.hover);
         case 'phash': return Boolean(st.phash);
         case 'markers': return Boolean(st.markers);
-        case 'heatmaps': return Boolean(st.heatmaps);
-        case 'subtitles': return Boolean(st.subtitles);
-        case 'faces': return Boolean(st.faces);
+        case 'heatmap': return Boolean(st.heatmap);
+        case 'embed': return Boolean(st.embed != null ? st.embed : st.faces);
         default: return false;
         }
       };
@@ -20826,6 +20390,7 @@ class TasksManager {
       return cov;
     };
     const selectedCoverage = useSelected ? computeSelectedCoverage() : null;
+    // @todo copilot redundant
     const artifacts = [
       'metadata',
       'thumbnails',
@@ -20833,9 +20398,7 @@ class TasksManager {
       'previews',
       'phash',
       'markers',
-      'heatmaps',
-      'subtitles',
-      'faces',
+      'heatmap',
     ];
     artifacts.forEach((artifact) => {
       const dataSource = useSelected && selectedCoverage ? selectedCoverage : this.coverage;
@@ -20930,10 +20493,12 @@ class TasksManager {
         // Metadata uses same adaptive control: Generate All -> Generate Missing -> Clear All
       }
     });
-    // Mirror faces coverage to embeddings UI (embeddings share faces.json presence)
-    const facesData = (useSelected && selectedCoverage ? selectedCoverage.faces : (this.coverage.faces || {processed: 0, total: 0})) || {processed: 0, total: 0};
-    const embedProcessed = facesData.processed || 0;
-    const embedTotal = facesData.total || 0;
+    const embedSource = useSelected && selectedCoverage
+      ? selectedCoverage.embed
+      : (this.coverage.embed != null ? this.coverage.embed : this.coverage.faces);
+    const embedData = embedSource || {processed: 0, total: 0};
+    const embedProcessed = embedData.processed || 0;
+    const embedTotal = embedData.total || 0;
     const embedPct = embedTotal > 0 ? Math.round((embedProcessed / embedTotal) * 100) : 0;
     const embedPctEl = document.getElementById('embedCoverage');
     const embedFillEl = document.getElementById('embedFill');
@@ -21073,15 +20638,14 @@ class TasksManager {
       const isActive = st === 'running' || st === 'queued' || st === 'pending' || st === 'starting';
       if (!isActive) continue;
       // Prefer explicit artifact field from backend; fallback to heuristic only if absent
+      // @todo copilot redundant
       let artifact = normArt(job.artifact || '');
       if (!artifact) {
         const task = (job.task || '').toLowerCase();
         if (/scene/.test(task)) artifact = 'markers';
         else if (/sprite/.test(task)) artifact = 'sprites';
         else if (/preview/.test(task)) artifact = 'preview';
-        else if (/heatmap/.test(task)) artifact = 'heatmaps';
-        else if (/subtitle|caption/.test(task)) artifact = 'subtitles';
-        else if (/face/.test(task)) artifact = 'faces';
+        else if (/heatmap/.test(task)) artifact = 'heatmap';
         else if (/phash/.test(task)) artifact = 'phash';
         else if (/metadata/.test(task)) artifact = 'metadata';
         else if (/cover|thumb/.test(task)) artifact = 'thumbnail';
@@ -21869,24 +21433,10 @@ class TasksManager {
     this.orphanFiles = orphanData.orphaned_files || [];
     // If preview currently visible, refresh its contents
     if (orphanDetails && !orphanDetails.classList.contains('d-none') && orphanList) {
-      // Rebuild orphan list using DOM nodes (avoid innerHTML)
-      while (orphanList.firstChild) orphanList.removeChild(orphanList.firstChild);
-      if (this.orphanFiles && this.orphanFiles.length) {
-        const frag = document.createDocumentFragment();
-        this.orphanFiles.forEach((file) => {
-          const d = document.createElement('div');
-          d.className = 'orphan-file';
-          d.textContent = file;
-          frag.appendChild(d);
-        });
-        orphanList.appendChild(frag);
-      }
-      else {
-        const d = document.createElement('div');
-        d.className = 'orphan-file empty';
-        d.textContent = 'No orphaned files';
-        orphanList.appendChild(d);
-      }
+      const rows = Array.isArray(this.orphanFiles) && this.orphanFiles.length
+        ? this.orphanFiles.map((file) => createOrphanRow(file))
+        : [createOrphanRow('No orphaned files', { classes: ['empty'] })];
+      orphanList.replaceChildren(...rows);
     }
     // If repair preview visible and we have cached results, re-render
     if (orphanRenames && !orphanRenames.classList.contains('d-none') && orphanRenamesList) {
@@ -21921,23 +21471,10 @@ class TasksManager {
         }
       }
       // Show: populate orphanList using DOM nodes
-      while (orphanList.firstChild) orphanList.removeChild(orphanList.firstChild);
-      if (this.orphanFiles && this.orphanFiles.length) {
-        const frag = document.createDocumentFragment();
-        this.orphanFiles.forEach((file) => {
-          const d = document.createElement('div');
-          d.className = 'orphan-file';
-          d.textContent = file;
-          frag.appendChild(d);
-        });
-        orphanList.appendChild(frag);
-      }
-      else {
-        const d = document.createElement('div');
-        d.className = 'orphan-file empty';
-        d.textContent = 'No orphaned files';
-        orphanList.appendChild(d);
-      }
+      const rows = Array.isArray(this.orphanFiles) && this.orphanFiles.length
+        ? this.orphanFiles.map((file) => createOrphanRow(file))
+        : [createOrphanRow('No orphaned files', { classes: ['empty'] })];
+      orphanList.replaceChildren(...rows);
       orphanDetails.classList.remove('d-none');
       orphanDetails.removeAttribute('hidden');
       if (btn) btn.textContent = 'Hide';
@@ -22002,7 +21539,7 @@ class TasksManager {
       return;
     }
     // Show container immediately and progressively stream results
-    while (renamesList.firstChild) renamesList.removeChild(renamesList.firstChild);
+    renamesList.replaceChildren();
     renamesWrap.classList.remove('d-none');
     renamesWrap.removeAttribute('hidden');
     this._lastRepairPreview = [];
@@ -22027,14 +21564,13 @@ class TasksManager {
           applyBtn.disabled = true;
         }
         const appendItem = (it) => {
-          const row = document.createElement('div');
-          row.className = 'orphan-file';
           const from = String(it.from || '');
           const to = String(it.to || '');
           const conf = typeof it.confidence === 'number' ? Math.round(it.confidence * 100) : null;
           const confText = conf != null ? ` (${conf}%)` : '';
-          row.textContent = `${from} → ${to}${confText}`;
-          row.title = 'strategy: ' + (it.strategy || '');
+          const text = `${from} → ${to}${confText}`;
+          const title = 'strategy: ' + (it.strategy || '');
+          const row = createOrphanRow(text, { title });
           renamesList.appendChild(row);
         };
         while (true) {
@@ -22162,28 +21698,21 @@ class TasksManager {
     const renamesWrap = document.getElementById('orphanRenames');
     const renamesList = document.getElementById('orphanRenamesList');
     if (!renamesWrap || !renamesList) return;
-    while (renamesList.firstChild) renamesList.removeChild(renamesList.firstChild);
     const items = Array.isArray(this._lastRepairPreview) ? this._lastRepairPreview : [];
     if (!items.length) {
-      const d = document.createElement('div');
-      d.className = 'orphan-file empty';
-      d.textContent = 'No repair suggestions';
-      renamesList.appendChild(d);
+      renamesList.replaceChildren(createOrphanRow('No repair suggestions', { classes: ['empty'] }));
       return;
     }
-    const frag = document.createDocumentFragment();
-    for (const it of items) {
-      const row = document.createElement('div');
-      row.className = 'orphan-file';
+    const nodes = items.map((it) => {
       const from = String(it.from || '');
       const to = String(it.to || '');
       const conf = typeof it.confidence === 'number' ? Math.round(it.confidence * 100) : null;
       const confText = conf != null ? ` (${conf}%)` : '';
-      row.textContent = `${from} → ${to}${confText}`;
-      row.title = 'strategy: ' + (it.strategy || '');
-      frag.appendChild(row);
-    }
-    renamesList.appendChild(frag);
+      const text = `${from} → ${to}${confText}`;
+      const title = 'strategy: ' + (it.strategy || '');
+      return createOrphanRow(text, { title });
+    });
+    renamesList.replaceChildren(...nodes);
   }
 }
 // Lazy initialize Tasks tab only when activated

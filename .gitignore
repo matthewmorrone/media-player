@@ -80,3 +80,5 @@ nosetests.xml
 staticfiles/
 
 node_modules/
+
+.state/

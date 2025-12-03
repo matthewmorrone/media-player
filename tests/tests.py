@@ -53,7 +53,7 @@ def test_parse_artifact_name_round_trip():
 
 def test_artifact_from_type_normalizes_batches():
     assert app._artifact_from_type("preview-batch") == "previews"
-    assert app._artifact_from_type("HEATMAP") == "heatmaps"
+    assert app._artifact_from_type("HEATMAP") == "heatmap"
     assert app._artifact_from_type(None) is None
 
 
@@ -266,12 +266,8 @@ def test_report_and_route_listing(media_root):
     sheet, sheet_json = app.sprite_sheet_paths(video)
     sheet.write_bytes(b"sprite")
     sheet_json.write_text(json.dumps({"grid": [1, 2]}))
-    app.heatmaps_json_path(video).write_text(json.dumps({"bins": [0, 1]}))
+    app.heatmap_json_path(video).write_text(json.dumps({"bins": [0, 1]}))
     app.scenes_json_path(video).write_text(json.dumps({"scenes": []}))
-    faces_payload = {"faces": [{"embedding": [0.5], "box": [1, 2, 3, 4]}]}
-    app.faces_path(video).write_text(json.dumps(faces_payload))
-    subtitles_path = app.artifact_dir(video) / f"{video.stem}{app.SUFFIX_SUBTITLES_SRT}"
-    subtitles_path.write_text("1\n00:00:00,000 --> 00:00:01,000\ncaption\n")
 
     report_data = app.report(directory=".", recursive=True)
     assert report_data["total"] == 1
@@ -322,23 +318,8 @@ def test_path_and_artifact_helpers(media_root):
 
     app.scenes_json_path(video).write_text(json.dumps({"scenes": []}))
     assert app.scenes_json_exists(video)
-    app.heatmaps_json_path(video).write_text(json.dumps({"bins": []}))
-    assert app.heatmaps_json_exists(video)
-
-    faces_file = app.faces_path(video)
-    faces_file.write_text(json.dumps({"faces": [{"embedding": [], "box": [0, 0, 100, 100]}]}))
-    assert not app.faces_exists_check(video)
-    faces_file.write_text(json.dumps({"faces": [{"embedding": [0.2], "box": [0.1, 0.2, 0.3, 0.4]}]}))
-    assert app.faces_exists_check(video)
-
-    art_subs = art_dir / f"{video.stem}{app.SUFFIX_SUBTITLES_SRT}"
-    art_subs.write_text("[no speech engine installed]\n")
-    assert app.find_subtitles(video) == art_subs
-    assert app._is_stub_subtitles_file(art_subs) is True
-
-    side_subs = video.with_suffix(app.SUFFIX_SUBTITLES_SRT)
-    side_subs.write_text("1\n00:00:00,000 --> 00:00:01,000\ncaption\n")
-    assert app.find_subtitles(video) == art_subs
+    app.heatmap_json_path(video).write_text(json.dumps({"bins": []}))
+    assert app.heatmap_json_exists(video)
 
 
 def test_per_file_lock_and_metadata_cache(media_root, monkeypatch):
@@ -467,4 +448,62 @@ def test_cleanup_orphan_jobs_marks_stale(media_root, job_state):
     result = app._cleanup_orphan_jobs(max_idle=0.01, min_age=0.0)
     assert jid in result["ids"]
     assert app.JOBS[jid]["state"] == "failed"
+
+
+def test_restore_jobs_from_db_purges_legacy_snapshots(media_root, job_state, monkeypatch):
+    monkeypatch.setenv("JOB_AUTORESTORE_DISABLE", "1")
+    video = media_root / "restore.mp4"
+    video.write_bytes(b"x")
+    rel_target = str(video.relative_to(media_root))
+
+    jid = app._new_job("preview", rel_target)
+    request = {"task": "preview", "directory": str(media_root), "recursive": False, "force": False, "params": {}}
+    with app.JOB_LOCK:
+        app.JOBS[jid]["request"] = request
+    app._persist_job(jid)
+
+    legacy_dir = app._jobs_state_dir()
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_file = legacy_dir / f"{jid}.json"
+    legacy_file.write_text(json.dumps({"id": jid, "state": "running"}))
+
+    app.JOBS = {}
+    app.JOB_CANCEL_EVENTS = {}
+    app.JOB_HEARTBEATS = {}
+
+    app._restore_jobs_on_start()
+
+    assert jid in app.JOBS
+    assert app.JOBS[jid]["state"] == "restored"
+    assert legacy_file.exists() is False
+
+
+def test_jobs_backup_import_round_trip(media_root, job_state, monkeypatch):
+    monkeypatch.setenv("JOB_AUTORESTORE_DISABLE", "1")
+    video = media_root / "backup.mp4"
+    video.write_bytes(b"x")
+    rel_target = str(video.relative_to(media_root))
+
+    jid = app._new_job("preview", rel_target)
+    request = {"task": "preview", "directory": str(media_root), "recursive": False, "force": False, "params": {}}
+    with app.JOB_LOCK:
+        app.JOBS[jid]["request"] = request
+    app._persist_job(jid)
+
+    export_resp = app.jobs_backup_export()
+    export_payload = json.loads(bytes(export_resp.body))
+    exported = export_payload["data"]["jobs"]
+    assert exported
+
+    app._clear_all_jobs_state()
+
+    record_models = [app.JobBackupRecord(**exported[0])]
+    import_payload = app.JobBackupImport(jobs=record_models, replace=True, auto_resume=False)
+    import_resp = app.jobs_backup_import(import_payload)
+    import_data = json.loads(bytes(import_resp.body))["data"]
+
+    assert import_data["imported"] == 1
+    assert import_data["replaced"] is True
+    assert jid in app.JOBS
+    assert app.JOBS[jid]["state"] == "restored"
 

@@ -24,7 +24,7 @@ from itertools import combinations
 from collections import defaultdict
 
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple, cast
+from typing import Any, Callable, Collection, Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple, cast
 import hashlib
 import asyncio
 import uuid
@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 from PIL import Image
 
 from fastapi import FastAPI, APIRouter, HTTPException, Query, Body, Request, UploadFile, File
-from fastapi.responses import JSONResponse, HTMLResponse, FileResponse, RedirectResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from starlette.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,15 +60,44 @@ STATE.setdefault("db_path", None)
 _CONFIG_LOCK = threading.Lock()
 
 
+def _preferred_state_base() -> Path:
+    env_base = os.environ.get("MEDIA_PLAYER_STATE_DIR")
+    candidates: list[Path] = []
+    if env_base:
+        try:
+            candidates.append(Path(env_base).expanduser())
+        except Exception:
+            pass
+    # Platform defaults (keep repo root only as last-resort fallback)
+    if sys.platform.startswith('win'):
+        appdata = os.environ.get('APPDATA') or os.environ.get('LOCALAPPDATA')
+        if appdata:
+            candidates.append(Path(appdata) / 'Media Player')
+        candidates.append(Path.home() / 'AppData' / 'Roaming' / 'Media Player')
+    elif sys.platform == 'darwin':
+        candidates.append(Path.home() / 'Library' / 'Application Support' / 'media-player')
+    else:
+        xdg_state = os.environ.get('XDG_STATE_HOME')
+        if xdg_state:
+            candidates.append(Path(xdg_state) / 'media-player')
+        xdg_data = os.environ.get('XDG_DATA_HOME')
+        if xdg_data:
+            candidates.append(Path(xdg_data) / 'media-player')
+        candidates.append(Path.home() / '.local' / 'share' / 'media-player')
+    candidates.append(STATE.get("root") or Path.cwd())
+    for candidate in candidates:
+        try:
+            return Path(candidate).expanduser().resolve()
+        except Exception:
+            continue
+    return Path.cwd()
+
+
 def _state_dir() -> Path:
     cached = STATE.get("state_dir")
     if isinstance(cached, (str, Path)):
         return Path(cached)
-    env_base = os.environ.get("MEDIA_PLAYER_STATE_DIR")
-    try:
-        base_path = Path(env_base).expanduser().resolve() if env_base else STATE["root"].resolve()
-    except Exception:
-        base_path = STATE["root"].resolve()
+    base_path = _preferred_state_base()
     d = base_path / ".state"
     try:
         d.mkdir(parents=True, exist_ok=True)
@@ -96,6 +125,49 @@ STATE["state_dir"] = _state_dir()
 STATE["db_path"] = _db_file_path()
 db.configure(STATE["db_path"])
 db.ensure_schema()
+
+
+SCHEMA_VERSION_REQUIRED = 1
+
+
+def _schema_version_info() -> Dict[str, Any]:
+    version = 0
+    applied_at: Optional[int] = None
+    try:
+        with db.session(read_only=True) as conn:
+            row = conn.execute("SELECT version, applied_at FROM schema_version WHERE id = 1").fetchone()
+            if row:
+                try:
+                    version = int(row["version"] or 0)
+                except Exception:
+                    version = 0
+                try:
+                    raw_ts = row["applied_at"]
+                    if raw_ts is not None:
+                        applied_at = int(raw_ts)
+                except Exception:
+                    applied_at = None
+    except Exception:
+        version = 0
+        applied_at = None
+    return {"version": version, "applied_at": applied_at}
+
+
+def _enforce_schema_version() -> Dict[str, Any]:
+    info = _schema_version_info()
+    STATE["schema_version"] = info
+    if info["version"] < SCHEMA_VERSION_REQUIRED:
+        msg = (
+            "Database schema version "
+            f"{info['version']} is older than required version {SCHEMA_VERSION_REQUIRED}. "
+            "Run the database migration tooling and restart the server."
+        )
+        logging.getLogger().error(msg)
+        raise RuntimeError(msg)
+    return info
+
+
+_enforce_schema_version()
 
 
 def _registry_dir() -> Path:
@@ -284,101 +356,19 @@ def sprite_sheet_paths(video: Path) -> tuple[Path, Path]:
     j = artifact_dir(video) / f"{video.stem}.sprites.json"
     return sheet, j
 
-def heatmaps_json_path(video: Path) -> Path:
-    return artifact_dir(video) / f"{video.stem}.heatmaps.json"
+def heatmap_json_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}.heatmap.json"
 
-def heatmaps_json_exists(video: Path) -> bool:
+def heatmap_json_exists(video: Path) -> bool:
     """
-    Strict: only accept <stem>.heatmaps.json in .artifacts (non-empty)."""
+    Strict: only accept <stem>.heatmap.json in .artifacts (non-empty)."""
     try:
-        return _file_nonempty(heatmaps_json_path(video), min_size=2)
+        return _file_nonempty(heatmap_json_path(video), min_size=2)
     except Exception:
         return False
 
-def heatmaps_png_path(video: Path) -> Path:
-    return artifact_dir(video) / f"{video.stem}.heatmaps.png"
-
-def faces_path(video: Path) -> Path:
-    return artifact_dir(video) / f"{video.stem}.faces.json"
-
-def faces_exists_check(video: Path) -> bool:
-    """
-    Strict: only accept <stem>.faces.json in .artifacts (non-empty, non-stub).
-
-    Rules to count as existing/processed:
-    - File exists and is non-empty JSON
-    - Not explicitly marked as a stub ("stub": true)
-    - Contains a non-empty "faces" array
-    - At least one face entry contains a non-empty embedding vector
-      (pure detections without embeddings are treated as incomplete)
-    - Rejects known sentinel stub: single face with box [0,0,100,100] and empty embedding
-    """
-    try:
-        p = faces_path(video)
-        if not _file_nonempty(p, min_size=2):
-            return False
-        # Parse and reject known stub outputs
-        try:
-            data = json.loads(p.read_text())
-        except Exception:
-            return False
-        if isinstance(data, dict):
-            if bool(data.get("stub")):
-                return False
-            faces = data.get("faces") or []
-            if not isinstance(faces, list) or not faces:
-                return False
-            # Must have at least one face with a non-empty embedding vector
-            try:
-                any_emb = False
-                for f in faces:
-                    emb = (f or {}).get("embedding") or []
-                    if isinstance(emb, list) and len(emb) > 0:
-                        any_emb = True
-                        break
-                if not any_emb:
-                    return False
-            except Exception:
-                return False
-            # Heuristic: a single sentinel face with empty embedding and 100x100 box is considered stub
-            if len(faces) == 1:
-                f = faces[0] or {}
-                box = f.get("box") or []
-                emb = f.get("embedding") or []
-                if isinstance(box, list) and len(box) == 4 and list(map(int, box)) == [0, 0, 100, 100] and not emb:
-                    return False
-        return True
-    except Exception:
-        return False
-
-def find_subtitles(video: Path) -> Optional[Path]:
-    """
-    Strict: only accept <stem>{SUFFIX_SUBTITLES_SRT} either in .artifacts or alongside the video (non-empty).
-    """
-    s_art = artifact_dir(video) / f"{video.stem}{SUFFIX_SUBTITLES_SRT}"
-    s_side = video.with_suffix(SUFFIX_SUBTITLES_SRT)
-    if _file_nonempty(s_art, min_size=2):
-        return s_art
-    if _file_nonempty(s_side, min_size=2):
-        return s_side
-    return None
-
-def _is_stub_subtitles_file(p: Path) -> bool:
-    """Heuristic: detect a previously generated 'stub' subtitles file (so we can auto-regenerate later).
-
-    When no real whisper backend is installed we fall back to a tiny deterministic subtitle output.
-    If the user later installs a backend the existence check would otherwise skip regeneration and
-    jobs appear to finish instantly. We treat files containing the sentinel phrase as stubs.
-    """
-    try:
-        if not p.exists() or p.stat().st_size > 8_000:  # real SRTs usually get larger quickly
-            return False
-        head = p.read_text(encoding="utf-8", errors="ignore")[:400].lower()
-        if "[no speech engine installed]" in head:
-            return True
-        return False
-    except Exception:
-        return False
+def heatmap_png_path(video: Path) -> Path:
+    return artifact_dir(video) / f"{video.stem}.heatmap.png"
 
 def preview_json_path(video: Path) -> Path:
     return artifact_dir(video) / f"{video.stem}{SUFFIX_PREVIEW_JSON}"
@@ -393,8 +383,7 @@ def waveform_png_path(video: Path) -> Path:
     return artifact_dir(video) / f"{video.stem}{SUFFIX_WAVEFORM_PNG}"
 def motion_json_path(video: Path) -> Path:
     return artifact_dir(video) / f"{video.stem}{SUFFIX_MOTION_JSON}"
-SUFFIX_SUBTITLES_SRT = ".subtitles.srt"
-HIDDEN_DIR_SUFFIX_PREVIEWS = ".previews"
+
 
 # Common artifact suffixes used across the server. Keep in sync with path helpers above.
 SUFFIX_METADATA_JSON = ".metadata.json"
@@ -403,9 +392,8 @@ SUFFIX_PHASH_JSON = ".phash.json"
 SUFFIX_SCENES_JSON = ".scenes.json"
 SUFFIX_SPRITES_JPG = ".sprites.jpg"
 SUFFIX_SPRITES_JSON = ".sprites.json"
-SUFFIX_HEATMAPS_JSON = ".heatmaps.json"
-SUFFIX_HEATMAPS_PNG = ".heatmaps.png"
-SUFFIX_FACES_JSON = ".faces.json"
+SUFFIX_HEATMAP_JSON = ".heatmap.json"
+SUFFIX_HEATMAP_PNG = ".heatmap.png"
 SUFFIX_PREVIEW_WEBM = ".preview.webm"
 SUFFIX_PREVIEW_MP4 = ".preview.mp4"
 SUFFIX_PREVIEW_JSON = ".preview.json"
@@ -752,6 +740,52 @@ def _rel_from_root(p: Path) -> str:
     return str(p)
 
 
+def _ts_to_iso(ts: Optional[int]) -> Optional[str]:
+    if ts in (None, 0):
+        return None
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(ts)))
+    except Exception:
+        return None
+
+
+def _collect_db_counts() -> Dict[str, Optional[int]]:
+    tables = ("video", "tag", "performer", "media_tags", "media_performers", "artifact", "job")
+    counts: Dict[str, Optional[int]] = {table: None for table in tables}
+    try:
+        with db.session(read_only=True) as conn:
+            for table in tables:
+                try:
+                    row = conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()
+                    counts[table] = int(row["c"]) if row and row["c"] is not None else 0
+                except Exception:
+                    counts[table] = None
+    except Exception:
+        pass
+    return counts
+
+
+def _db_status_payload() -> Dict[str, Any]:
+    schema_info = _schema_version_info()
+    counts = _collect_db_counts()
+    applied_iso = _ts_to_iso(schema_info.get("applied_at"))
+    return {
+        "schema": {
+            "actual": schema_info.get("version", 0),
+            "expected": SCHEMA_VERSION_REQUIRED,
+            "appliedAt": schema_info.get("applied_at"),
+            "appliedAtIso": applied_iso,
+            "migrationRequired": schema_info.get("version", 0) < SCHEMA_VERSION_REQUIRED,
+        },
+        "counts": counts,
+        "paths": {
+            "db": str(db.path()),
+            "state": str(STATE.get("state_dir") or _state_dir()),
+            "root": str(STATE.get("root") or Path.cwd()),
+        },
+    }
+
+
 def _sync_video_meta_to_db(p: Path, **fields: Any) -> None:
     try:
         rel = _rel_from_root(p)
@@ -768,18 +802,79 @@ class DualWriteError(RuntimeError):
         self.context = context
 
 
-ARTIFACT_KEYS: tuple[str, ...] = (
-    "metadata",
-    "thumbnail",
-    "preview",
-    "sprites",
-    "markers",
-    "subtitles",
-    "faces",
-    "phash",
-    "heatmaps",
+ArtifactExistsFn = Callable[[Path], bool]
+ArtifactPathsFn = Callable[[Path], list[Path]]
+
+
+class ArtifactSpec(NamedTuple):
+    key: str
+    exists: ArtifactExistsFn
+    paths: ArtifactPathsFn
+    tracked: bool = True
+
+
+def _single_path_checker(path_fn: Callable[[Path], Path], *, require_nonempty: bool = False) -> ArtifactExistsFn:
+    def _inner(video: Path) -> bool:
+        try:
+            path = path_fn(video)
+        except Exception:
+            return False
+        return _file_nonempty(path) if require_nonempty else path.exists()
+
+    return _inner
+
+
+def _single_path_candidates(path_fn: Callable[[Path], Path]) -> ArtifactPathsFn:
+    def _inner(video: Path) -> list[Path]:
+        try:
+            return [path_fn(video)]
+        except Exception:
+            return []
+
+    return _inner
+
+
+def _preview_exists(video: Path) -> bool:
+    if _file_nonempty(preview_webm_path(video)):
+        return True
+    if _file_nonempty(preview_mp4_path(video)):
+        return True
+    return preview_json_path(video).exists()
+
+
+def _preview_paths(video: Path) -> list[Path]:
+    return [preview_webm_path(video), preview_mp4_path(video), preview_json_path(video)]
+
+
+def _sprite_exists(video: Path) -> bool:
+    sheet, meta = sprite_sheet_paths(video)
+    return sheet.exists() and meta.exists()
+
+
+def _sprite_paths(video: Path) -> list[Path]:
+    sheet, meta = sprite_sheet_paths(video)
+    return [sheet, meta]
+
+def _heatmap_paths(video: Path) -> list[Path]:
+    return [heatmap_json_path(video), heatmap_png_path(video)]
+
+
+ARTIFACT_SPECS: tuple[ArtifactSpec, ...] = (
+    ArtifactSpec("metadata", _single_path_checker(metadata_path), _single_path_candidates(metadata_path)),
+    ArtifactSpec("thumbnail", _single_path_checker(thumbnails_path), _single_path_candidates(thumbnails_path)),
+    ArtifactSpec("preview", _preview_exists, _preview_paths),
+    ArtifactSpec("sprites", _sprite_exists, _sprite_paths),
+    ArtifactSpec("markers", scenes_json_exists, _single_path_candidates(scenes_json_path)),
+    ArtifactSpec("phash", _single_path_checker(phash_path), _single_path_candidates(phash_path)),
+    ArtifactSpec("heatmap", heatmap_json_exists, _heatmap_paths),
+    ArtifactSpec("waveform", _single_path_checker(waveform_png_path), _single_path_candidates(waveform_png_path), False),
+    ArtifactSpec("motion", _single_path_checker(motion_json_path), _single_path_candidates(motion_json_path), False),
 )
+
+ARTIFACT_KEYS: tuple[str, ...] = tuple(spec.key for spec in ARTIFACT_SPECS if spec.tracked)
 _ARTIFACT_KEY_SET = set(ARTIFACT_KEYS)
+_ARTIFACT_SPEC_MAP: dict[str, ArtifactSpec] = {spec.key: spec for spec in ARTIFACT_SPECS}
+FINISH_ARTIFACT_ORDER: list[str] = [spec.key for spec in ARTIFACT_SPECS]
 
 
 def _canonical_artifact_key(name: Optional[str]) -> Optional[str]:
@@ -788,8 +883,6 @@ def _canonical_artifact_key(name: Optional[str]) -> Optional[str]:
     key = str(name).strip().lower()
     if key == "previews":
         key = "preview"
-    elif key == "heatmap":
-        key = "heatmaps"
     if not key or key not in _ARTIFACT_KEY_SET:
         return None
     return key
@@ -957,36 +1050,30 @@ def _detect_artifacts_for_video(video: Path) -> dict[str, dict[str, Any]]:
     scenes = scenes_json_path(video)
     info["markers"] = _entry(scenes)
 
-    subs = find_subtitles(video)
-    info["subtitles"] = _entry(subs)
-
-    faces = faces_path(video)
-    info["faces"] = _entry(faces if faces.exists() else None)
-
     phash_file = phash_path(video)
     info["phash"] = _entry(phash_file if phash_file.exists() else None)
 
-    heat_png = heatmaps_png_path(video)
-    heat_json = heatmaps_json_path(video)
-    heat_payload: dict[str, Any] | None = None
-    heat_path: Optional[str] = None
-    if heat_png.exists() or heat_json.exists():
-        heat_payload = {}
-        if heat_png.exists():
-            heat_payload["png"] = _artifact_rel_path(heat_png)
-            heat_path = heat_payload["png"]
-        if heat_json.exists():
-            heat_payload["json"] = _artifact_rel_path(heat_json)
-            if not heat_path:
-                heat_path = heat_payload["json"]
-    info["heatmaps"] = {
-        "present": bool(heat_payload),
-        "path": heat_path,
-        "payload": heat_payload,
+    heatmap_png = heatmap_png_path(video)
+    heatmap_json = heatmap_json_path(video)
+    heatmap_payload: dict[str, Any] | None = None
+    heatmap_path: Optional[str] = None
+    if heatmap_png.exists() or heatmap_json.exists():
+        heatmap_payload = {}
+        if heatmap_png.exists():
+            heatmap_payload["png"] = _artifact_rel_path(heatmap_png)
+            heatmap_path = heatmap_payload["png"]
+        if heatmap_json.exists():
+            heatmap_payload["json"] = _artifact_rel_path(heatmap_json)
+            if not heatmap_path:
+                heatmap_path = heatmap_payload["json"]
+    info["heatmap"] = {
+        "present": bool(heatmap_payload),
+        "path": heatmap_path,
+        "payload": heatmap_payload,
     }
 
-    meta = metadata_path(video)
-    info["metadata"] = _entry(meta if meta.exists() else None)
+    metadata = metadata_path(video)
+    info["metadata"] = _entry(metadata if metadata.exists() else None)
 
     return info
 
@@ -1209,25 +1296,30 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
             size0 = None
         _log("thumbnail", f"thumbnail skip path={video} reason=exists size={size0 if size0 is not None else 'na'} out={out}")
         return
+
     out.parent.mkdir(parents=True, exist_ok=True)
     _log("thumbnail", f"thumbnail start path={video} force={int(force)} out={out} time_spec={time_spec} q_in={quality}")
-    # If ffmpeg isn't available, write a valid placeholder JPEG (last resort)
+
     if not ffmpeg_available():
         try:
             from PIL import Image  # type: ignore
             img = Image.new("RGB", (320, 180), color=(17, 17, 17))
-            img.save(out, format="JPEG", quality=max(2, min(95, int(quality)*10)))
-            _log("thumbnail", f"thumbnail placeholder written (ffmpeg missing) path={video} size={out.stat().st_size if out.exists() else 'na'}")
+            img.save(out, format="JPEG", quality=max(2, min(95, int(quality) * 10)))
+            size0 = out.stat().st_size if out.exists() else None
+            _log("thumbnail", f"thumbnail placeholder written (ffmpeg missing) path={video} size={size0 if size0 is not None else 'na'}")
             return
         except Exception:
-            # Last resort: write a tiny valid JPEG byte sequence
-            # 1x1 black JPEG
             stub = bytes([
-                0xFF,0xD8,0xFF,0xDB,0x00,0x43,0x00,0x03,0x02,0x02,0x03,0x02,0x02,0x03,0x03,0x03,0x03,0x04,0x03,0x03,0x04,0x05,0x08,0x05,0x05,0x04,0x04,0x05,0x0A,0x07,0x07,0x06,0x08,0x0C,0x0A,0x0C,0x0C,0x0B,0x0A,0x0B,0x0B,0x0D,0x0E,0x12,0x10,0x0D,0x0E,0x11,0x0E,0x0B,0x0B,0x10,0x16,0x10,0x11,0x13,0x14,0x15,0x15,0x15,0x0C,0x0F,0x17,0x18,0x16,0x14,0x18,0x12,0x14,0x15,0x14,
-                0xFF,0xC0,0x00,0x0B,0x08,0x00,0x01,0x00,0x01,0x01,0x01,0x11,0x00,
-                0xFF,0xC4,0x00,0x14,0x00,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-                0xFF,0xC4,0x00,0x14,0x10,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-                0xFF,0xDA,0x00,0x08,0x01,0x01,0x00,0x00,0x3F,0x00,0xBF,0xFF,0xD9
+                0xFF, 0xD8, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x03, 0x02, 0x02, 0x03, 0x02, 0x02, 0x03, 0x03, 0x03,
+                0x03, 0x04, 0x03, 0x03, 0x04, 0x05, 0x08, 0x05, 0x05, 0x04, 0x04, 0x05, 0x0A, 0x07, 0x07, 0x06,
+                0x08, 0x0C, 0x0A, 0x0C, 0x0C, 0x0B, 0x0A, 0x0B, 0x0B, 0x0D, 0x0E, 0x12, 0x10, 0x0D, 0x0E, 0x11,
+                0x0E, 0x0B, 0x0B, 0x10, 0x16, 0x10, 0x11, 0x13, 0x14, 0x15, 0x15, 0x15, 0x0C, 0x0F, 0x17, 0x18,
+                0x16, 0x14, 0x18, 0x12, 0x14, 0x15, 0x14, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01,
+                0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x14, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xC4, 0x00, 0x14,
+                0x10, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0xBF, 0xFF,
+                0xD9,
             ])
             try:
                 out.write_bytes(stub)
@@ -1236,25 +1328,35 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
             _log("thumbnail", f"thumbnail stub written (ffmpeg missing) path={video}")
             return
 
-    duration = None
+    duration: float | None = None
+    metadata_source = "missing"
+    mpath = metadata_path(video)
     try:
-        mpath = metadata_path(video)
         if mpath.exists():
-            duration = extract_duration(json.loads(metadata_path(video).read_text()))
+            duration = extract_duration(json.loads(mpath.read_text()))
+            metadata_source = "cached"
         else:
             metadata_single(video, force=False)
             duration = extract_duration(json.loads(metadata_path(video).read_text()))
+            metadata_source = "generated"
     except Exception:
         duration = None
-    _log("thumbnail", f"thumbnail metadata path={video} dur={duration if duration is not None else 'na'} source={'cached' if 'mpath' in locals() and mpath.exists() else 'generated'}")
+    _log("thumbnail", f"thumbnail metadata path={video} dur={duration if duration is not None else 'na'} source={metadata_source}")
+
     t = parse_time_spec(time_spec, duration)
     _log("thumbnail", f"thumbnail time_spec_resolved path={video} time={t:.3f}s from={time_spec}")
-    # Use mjpeg to write jpg
-    # Allow env override when API callers pass default quality (2)
+
     if int(quality) == 2:
-        # Default to more compressed thumbnails unless overridden via env
         quality = _env_int("THUMBNAIL_QUALITY", 8)
-    # Capture ffmpeg runtime flags for visibility
+
+    try:
+        target_w = int(os.environ.get("THUMBNAIL_WIDTH", "480") or 480)
+    except Exception:
+        target_w = 480
+    target_w = max(120, min(1024, target_w))
+    if target_w % 2:
+        target_w += 1
+
     try:
         hw = _ffmpeg_hwaccel_flags()
     except Exception:
@@ -1263,35 +1365,29 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
         th_flags = _ffmpeg_threads_flags()
     except Exception:
         th_flags = []
-    # Preserve aspect ratio: scale width to a target while letting height follow (-1), ensure even dims
-    target_w = int(os.environ.get("THUMBNAIL_WIDTH", "320") or 320)
+
     cmd = [
-        "ffmpeg", "-y",
-        *(hw),
+        "ffmpeg", "-hide_banner", "-loglevel", os.environ.get("FFMPEG_LOGLEVEL", "warning"), "-nostdin", "-y",
+        *hw,
         "-noaccurate_seek",
         "-ss", f"{t:.3f}",
         "-i", str(video),
+        "-an",
         "-frames:v", "1",
-        # Scale by width keeping aspect ratio, then enforce even dimensions.
-        # The 'scale' ensures width~=target_w and height auto; 'scale' with ceil then even padding by truncation
-        "-vf", f"scale='min({target_w},iw)':'-2'",
+        "-vf", f"scale='min({target_w},iw)':-2",
         "-q:v", str(max(2, min(31, int(quality)))),
-        *(th_flags),
+        *th_flags,
         str(out),
     ]
     try:
-        tl = int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600)
-    except Exception:
-        tl = 600
-    try:
-        _log("thumbnail", f"thumbnail exec path={video} hw={','.join(hw) if hw else 'none'} threads_flags={' '.join(th_flags) if th_flags else 'none'} timelimit={tl}s cmd={' '.join(cmd)}")
+        _log("thumbnail", f"thumbnail exec path={video} hw={','.join(hw) if hw else 'none'} threads_flags={' '.join(th_flags) if th_flags else 'none'} cmd={' '.join(cmd)}")
     except Exception:
         pass
+
     t0 = time.time()
     proc = _run(cmd)
     elapsed = time.time() - t0
     if proc.returncode != 0:
-        # Log a trimmed stderr for inspection
         try:
             err = (proc.stderr or "").strip()
             if len(err) > 1200:
@@ -1300,14 +1396,14 @@ def generate_thumbnail(video: Path, *, force: bool, time_spec: str | float | int
             err = ""
         _log("thumbnail", f"thumbnail fail path={video} code={proc.returncode} elapsed={elapsed:.3f}s stderr={err!r}")
         raise RuntimeError(proc.stderr.strip() or "ffmpeg thumbnail failed")
-    else:
-        size = None
-        try:
-            if out.exists():
-                size = out.stat().st_size
-        except Exception:
-            pass
-        _log("thumbnail", f"thumbnail end path={video} code=0 size={size if size is not None else 'na'} elapsed={elapsed:.3f}s out={out}")
+
+    size = None
+    try:
+        if out.exists():
+            size = out.stat().st_size
+    except Exception:
+        pass
+    _log("thumbnail", f"thumbnail end path={video} code=0 size={size if size is not None else 'na'} elapsed={elapsed:.3f}s out={out}")
 
 # ----------------------
 # Preview generator
@@ -3025,11 +3121,10 @@ def generate_sprite_sheet(
     """
     Generate a sprite sheet by sampling frames with ffmpeg.
     Falls back to a repeated thumbnail if ffmpeg/Pillow are unavailable.
-    Writes a JPEG sprite sheet and a JSON index with fields:
-      - cols, rows, interval, width
-      - tile_width, tile_height
-      - frames (<= cols*rows)
-      Also includes legacy keys grid: [cols,rows], tile: [w,h] for compatibility.
+        Writes a JPEG sprite sheet and a JSON index with fields:
+            - cols, rows, interval, width
+            - tile_width, tile_height
+            - frames (<= cols*rows)
     """
     sheet, j = sprite_sheet_paths(video)
     # Idempotency guard: if both artifacts exist and are non-empty, skip work
@@ -3088,7 +3183,7 @@ def generate_sprite_sheet(
                     tile_w = int(max(1, sheet_w // max(1, cols)))
                     tile_h = int(max(1, sheet_h // max(1, rows)))
 
-                    # Uniqueness check similar to legacy path
+                    # Uniqueness check mirrored from the mosaic fallback path
                     try:
                         from PIL import Image  # type: ignore
 
@@ -3136,8 +3231,6 @@ def generate_sprite_sheet(
                             "tile_width": int(tile_w),
                             "tile_height": int(tile_h),
                             "frames": int(int(cols) * int(rows)),
-                            "grid": [int(cols), int(rows)],
-                            "tile": [int(tile_w), int(tile_h)],
                             "keyframes_sampling": True,
                         }
                         j.write_text(json.dumps(metadata, indent=2))
@@ -3152,7 +3245,7 @@ def generate_sprite_sheet(
                                 pass
                         return
                 except Exception:
-                    # Proceed to even/legacy strategies
+                    # Proceed to alternate sampling strategies
                     try:
                         print("[sprites][keyframes] path failed; trying other strategies")
                     except Exception:
@@ -3177,7 +3270,7 @@ def generate_sprite_sheet(
                         dur = extract_duration(json.loads(metadata_path(video).read_text()))
                 except Exception:
                     dur = None
-            # Auto-switch heuristic: if the legacy tile path would need to scan a long interval
+            # Auto-switch heuristic: if the standard tile path would need to scan a long interval
             # (interval * tiles) beyond a threshold, prefer even sampling for speed when possible.
             if not use_even:
                 try:
@@ -3210,7 +3303,7 @@ def generate_sprite_sheet(
                             use_even = True
             if use_even and dur and isinstance(dur, (int, float)) and float(dur) > 0:
                 total_tiles = int(cols * rows)
-                # Guard: if absurdly large grid, fallback to legacy (performance)
+                # Guard: if absurdly large grid, fallback to the mosaic path (performance)
                 if total_tiles <= 400:  # 20x20 upper bound for even sampling path
                     try:
                         from PIL import Image  # type: ignore
@@ -3330,7 +3423,7 @@ def generate_sprite_sheet(
                                     last_good = pth
                                 elif last_good is not None:
                                     extracted.append(last_good)
-                            # If still none, abort to legacy
+                            # If still none, abort to the mosaic tiling path
                             if not extracted:
                                 raise RuntimeError("no frames extracted in even sampling path")
                             # Load first frame to determine tile height
@@ -3371,8 +3464,6 @@ def generate_sprite_sheet(
                                 "tile_width": tile_w,
                                 "tile_height": tile_h,
                                 "frames": frames_metadata[: total_tiles],
-                                "grid": [cols, rows],
-                                "tile": [tile_w, tile_h],
                                 "even_sampling": True,
                                 "duration": _dur_f,
                             }
@@ -3388,9 +3479,9 @@ def generate_sprite_sheet(
                                 pass
                             return  # Successful even sampling path
                     except Exception:
-                        # Fall through to legacy single-pass mosaic path
+                        # Fall through to single-pass mosaic path
                         try:
-                            print("[sprites][even] fallback to legacy path")
+                            print("[sprites][even] fallback to mosaic path")
                         except Exception:
                             pass
             # Build filter:
@@ -3745,9 +3836,6 @@ def generate_sprite_sheet(
                     "tile_width": int(tile_w),
                     "tile_height": int(tile_h),
                     "frames": int(frames),
-                    # legacy keys for compatibility
-                    "grid": [int(cols), int(rows)],
-                    "tile": [int(tile_w), int(tile_h)],
                 }
                 j.write_text(json.dumps(metadata, indent=2))
                 try:
@@ -3777,8 +3865,6 @@ def generate_sprite_sheet(
             "tile_width": int(tile_w),
             "tile_height": int(tile_h),
             "frames": int(cols * rows),
-            "grid": [int(cols), int(rows)],
-            "tile": [int(tile_w), int(tile_h)],
         }
         j.write_text(json.dumps(metadata, indent=2))
         return
@@ -3789,16 +3875,15 @@ def generate_sprite_sheet(
             j.write_text(json.dumps({
                 "cols": int(cols), "rows": int(rows), "interval": float(interval), "width": int(width),
                 "tile_width": int(width), "tile_height": int(width * 9 // 16), "frames": int(cols * rows),
-                "grid": [int(cols), int(rows)], "tile": [int(width), int(width * 9 // 16)],
             }, indent=2))
         except Exception:
             pass
 
 # ---------------
-# Heatmaps (stub)
+# Heatmap (stub)
 # ---------------
-@_artifact_db_sync(("heatmaps",))
-def compute_heatmaps(
+@_artifact_db_sync(("heatmap",))
+def compute_heatmap(
     video: Path,
     interval: float,
     mode: str,
@@ -3815,9 +3900,9 @@ def compute_heatmaps(
     except Exception:
         # Fallback: empty data
         data = {"interval": interval, "samples": []}
-        heatmaps_json_path(video).write_text(json.dumps(data, indent=2))
+        heatmap_json_path(video).write_text(json.dumps(data, indent=2))
         if png:
-            heatmaps_png_path(video).write_bytes(b"")
+            heatmap_png_path(video).write_bytes(b"")
         if progress_cb:
             try:
                 progress_cb(1, 1)
@@ -3837,9 +3922,9 @@ def compute_heatmaps(
         duration = None
     if not duration or duration <= 0 or not ffmpeg_available():
         data = {"interval": interval, "samples": []}
-        heatmaps_json_path(video).write_text(json.dumps(data, indent=2))
+        heatmap_json_path(video).write_text(json.dumps(data, indent=2))
         if png:
-            heatmaps_png_path(video).write_bytes(b"")
+            heatmap_png_path(video).write_bytes(b"")
         if progress_cb:
             try:
                 progress_cb(1, 1)
@@ -3989,7 +4074,7 @@ def compute_heatmaps(
         "interval": float(interval),
         "samples": samples
     }
-    heatmaps_json_path(video).write_text(json.dumps(data, indent=2))
+    heatmap_json_path(video).write_text(json.dumps(data, indent=2))
     if png and samples:
         # Simple bar chart visualization
         W = max(50, len(samples))
@@ -4001,66 +4086,16 @@ def compute_heatmaps(
             h = int(val * (H - 2))
             dr.line([(x, H - 1), (x, H - 1 - h)], fill=(79, 140, 255))
         try:
-            img.save(heatmaps_png_path(video), optimize=True, compress_level=9)
+            img.save(heatmap_png_path(video), optimize=True, compress_level=9)
         except Exception:
             # Fallback: save without options if Pillow lacks these params
-            img.save(heatmaps_png_path(video))
+            img.save(heatmap_png_path(video))
     if progress_cb and total_steps:
         try:
             progress_cb(total_steps, total_steps)
         except Exception:
             pass
     return data
-
-# -----------------
-# Subtitles
-# -----------------
-def detect_backend(preference: str) -> str:
-    if preference != "auto":
-        print(f"[subtitles.backend] preference override -> {preference}", flush=True)
-        return preference
-    # Prefer installed Python backends (faster-whisper first)
-    if _safe_importable("faster_whisper"):
-        print("[subtitles.backend] auto-selected faster-whisper", flush=True)
-        return "faster-whisper"
-    print("[subtitles.backend] faster-whisper unavailable", flush=True)
-    if _safe_importable("whisper"):
-        print("[subtitles.backend] auto-selected whisper (PyTorch)", flush=True)
-        return "whisper"
-    print("[subtitles.backend] whisper module unavailable", flush=True)
-    # If whisper.cpp is available (env or auto-discovered), use it
-    cpp_bin_env = os.environ.get("WHISPER_CPP_BIN")
-    cpp_model_env = os.environ.get("WHISPER_CPP_MODEL")
-    cpp_bin_path, cpp_model_path = _resolve_whisper_cpp_paths()
-    bin_ok = cpp_bin_path is not None
-    model_ok = cpp_model_path is not None
-    if bin_ok and model_ok:
-        bin_token = _log_safe_token(cpp_bin_path, "whisper.bin") if cpp_bin_path else "<whisper.bin:?>"
-        model_token = _log_safe_token(cpp_model_path, "whisper.model") if cpp_model_path else "<whisper.model:?>"
-        print(
-            f"[subtitles.backend] auto-selected whisper.cpp (bin={bin_token}, model={model_token})",
-            flush=True,
-        )
-        return "whisper.cpp"
-    if not bin_ok:
-        if cpp_bin_env:
-            print(
-                f"[subtitles.backend] whisper.cpp binary missing or unreadable: {_log_safe_token(cpp_bin_env, 'whisper.bin.env')}",
-                flush=True,
-            )
-        else:
-            print("[subtitles.backend] whisper.cpp binary not configured or auto-discovery failed", flush=True)
-    if not model_ok:
-        if cpp_model_env:
-            print(
-                f"[subtitles.backend] whisper.cpp model missing or unreadable: {_log_safe_token(cpp_model_env, 'whisper.model.env')}",
-                flush=True,
-            )
-        else:
-            print("[subtitles.backend] whisper.cpp model not configured or auto-discovery failed", flush=True)
-    # As a last-resort, return stub to avoid hard failure
-    print("[subtitles.backend] falling back to stub backend", flush=True)
-    return "stub"
 
 
 def _safe_importable(mod: str) -> bool:
@@ -4070,921 +4105,6 @@ def _safe_importable(mod: str) -> bool:
     except Exception:
         return False
 
-
-def _format_srt_segments(segments: List[Dict[str, Any]]) -> str:
-    lines: List[str] = []
-    for i, s in enumerate(segments, start=1):
-        def ts(t: float) -> str:
-            h = int(t // 3600)
-            m = int((t % 3600) // 60)
-            sec = float(t % 60)
-            return f"{h:02d}:{m:02d}:{sec:06.3f}".replace('.', ',')
-        lines.append(str(i))
-        lines.append(f"{ts(float(s.get('start', 0)))} --> {ts(float(s.get('end', 0)))}")
-        lines.append((s.get('text') or '').strip())
-        lines.append("")
-    return ("\n".join(lines)).strip() + "\n"
-
-
-def run_whisper_backend(
-    video: Path,
-    backend: str,
-    model_name: str,
-    language: Optional[str],
-    translate: bool,
-    cpp_bin: Optional[str] = None,
-    cpp_model: Optional[str] = None,
-    compute_type: Optional[str] = None,
-    progress_cb: Optional[Callable[[float], None]] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
-) -> List[Dict[str, Any]]:
-    # Returns list of segments: {start,end,text}
-    video_token = _log_safe_token(video, "video")
-    if os.environ.get("FFPROBE_DISABLE"):
-        segs = [{
-            "start": i * 2.0,
-            "end": i * 2.0 + 1.5,
-            "text": f"Stub segment {i+1}"
-        } for i in range(3)]
-        if progress_cb:
-            try:
-                for i, s in enumerate(segs, start=1):
-                    progress_cb(min(1.0, float(i) / float(len(segs))))
-            except Exception:
-                pass
-        return segs
-    if backend == "faster-whisper":
-        from faster_whisper import WhisperModel  # type: ignore
-        initial_type = compute_type or ("int8" if translate else "float16")
-        tried: list[str] = []
-        chain = [initial_type]
-        if initial_type != "int8":
-            chain.append("int8")
-        if initial_type not in ("float32", "int16"):
-            chain.append("float32")
-        last_err: Exception | None = None
-        # Determine duration for fractional progress
-        duration: float | None = None
-        try:
-            if metadata_path(video).exists():
-                duration = extract_duration(json.loads(metadata_path(video).read_text()))
-            else:
-                metadata_single(video, force=False)
-                duration = extract_duration(json.loads(metadata_path(video).read_text()))
-        except Exception:
-            duration = None
-        for ct in chain:
-            try:
-                tried.append(ct)
-                model = WhisperModel(model_name, compute_type=ct)
-                seg_iter, _info = model.transcribe(str(video), language=language, task=("translate" if translate else "transcribe"))
-                segs: List[Dict[str, Any]] = []
-                for s in seg_iter:
-                    if cancel_check and cancel_check():
-                        raise RuntimeError("canceled")
-                    segs.append({"start": s.start, "end": s.end, "text": s.text})
-                    if progress_cb and duration and duration > 0:
-                        try:
-                            end_t = float(getattr(s, "end", 0.0) or 0.0)
-                            frac = max(0.0, min(1.0, end_t / duration))
-                            progress_cb(frac)
-                        except Exception:
-                            pass
-                if ct != initial_type:
-                    print(f"[subtitles] compute_type fallback: {initial_type} -> {ct}", file=sys.stderr)
-                return segs
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                continue
-        raise RuntimeError(f"faster-whisper failed (tried {tried}): {last_err}")
-    if backend == "whisper":
-        import whisper  # type: ignore
-        model = whisper.load_model(model_name)
-        result = model.transcribe(str(video), language=language, task=("translate" if translate else "transcribe"))
-        segs: List[Dict[str, Any]] = []
-        for s in result.get("segments", []):
-            if isinstance(s, dict):
-                segs.append({
-                    "start": s.get("start"),
-                    "end": s.get("end"),
-                    "text": s.get("text")
-                })
-                if progress_cb:
-                    try:
-                        # Best-effort fractional progress based on segment index
-                        idx = len(segs)
-                        total = max(idx, len(result.get("segments") or []))
-                        if total > 0:
-                            progress_cb(min(1.0, float(idx) / float(total)))
-                    except Exception:
-                        pass
-        return segs
-    if backend == "whisper.cpp":
-        # Allow env-based autodiscovery
-        cpp_bin = cpp_bin or os.environ.get("WHISPER_CPP_BIN")
-        cpp_model = cpp_model or os.environ.get("WHISPER_CPP_MODEL")
-        bin_path = _existing_path(cpp_bin)
-        model_path = _existing_path(cpp_model)
-        if not bin_path or not model_path:
-            auto_bin, auto_model = _resolve_whisper_cpp_paths()
-            if not bin_path:
-                bin_path = auto_bin
-            if not model_path:
-                model_path = auto_model
-        if not bin_path:
-            raise RuntimeError("whisper.cpp binary not found (provide --whisper-cpp-bin)")
-        if not model_path:
-            raise RuntimeError("whisper.cpp model not found (provide --whisper-cpp-model)")
-        try:
-            preferred_cli = _discover_whisper_cli(bin_path)
-            if preferred_cli and bin_path and preferred_cli != bin_path:
-                cli_token = _log_safe_token(preferred_cli, "whisper.bin.peer")
-                bin_token = _log_safe_token(bin_path, "whisper.bin")
-                print(f"[subtitles.whisper.cpp] preferring whisper-cli at {cli_token} instead of deprecated {bin_token}", flush=True)
-                bin_path = preferred_cli
-        except Exception:
-            pass
-        cpp_bin = str(bin_path)
-        cpp_model = str(model_path)
-
-        temp_audio: Optional[Path] = None
-        audio_input = video
-        try:
-            if video.suffix.lower() not in _WHISPER_CPP_NATIVE_AUDIO_EXTS:
-                fd, tmp_name = tempfile.mkstemp(prefix="whisper-audio-", suffix=".wav")
-                os.close(fd)
-                temp_audio = Path(tmp_name)
-                ffmpeg_cmd = [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-loglevel",
-                    os.environ.get("WHISPER_CPP_FFMPEG_LOGLEVEL", "error"),
-                    "-y",
-                    "-i",
-                    str(video),
-                    "-vn",
-                    "-ac",
-                    os.environ.get("WHISPER_CPP_AUDIO_CHANNELS", "1"),
-                    "-ar",
-                    os.environ.get("WHISPER_CPP_SAMPLE_RATE", "16000"),
-                    str(temp_audio),
-                ]
-                res = _run(ffmpeg_cmd)
-                if res.returncode != 0:
-                    err = res.stderr.strip() if isinstance(res.stderr, str) else ""
-                    if not err and isinstance(res.stdout, str):
-                        err = res.stdout.strip()
-                    raise RuntimeError(f"Failed to extract audio for whisper.cpp: {err or f'exit {res.returncode}'}")
-                audio_input = temp_audio
-            else:
-                audio_input = video
-
-            art_dir = artifact_dir(video)
-            out_prefix = art_dir / f"{video.stem}.whispercpp"
-            out_json = Path(f"{out_prefix}.json")
-            try:
-                out_json.unlink(missing_ok=True)
-            except TypeError:
-                if out_json.exists():
-                    out_json.unlink()
-
-            cmd = [cpp_bin, "-m", cpp_model, "-f", str(audio_input), "-oj", "-of", str(out_prefix)]
-            if language:
-                cmd += ["-l", language]
-            if translate:
-                cmd += ["-tr"]
-            bin_attempts: set[str] = set()
-            while True:
-                bin_attempts.add(cpp_bin)
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                if proc.returncode == 0:
-                    break
-                raw_stderr = (proc.stderr or "").strip()
-                raw_stdout = (proc.stdout or "").strip()
-                err_msg = raw_stderr or raw_stdout or f"exit {proc.returncode}"
-                replacements = _log_redaction_map([
-                    (video, "video"),
-                    (audio_input, "audio"),
-                    (cpp_bin, "whisper.bin"),
-                    (cpp_model, "whisper.model"),
-                    (out_prefix, "whisper.prefix"),
-                    (out_json, "whisper.json"),
-                ])
-                log_ctx = {
-                    "cmd": _log_redact_text(" ".join(cmd), replacements),
-                    "exit": proc.returncode,
-                    "stderr": _log_redact_text(raw_stderr, replacements),
-                    "stdout": _log_redact_text(raw_stdout, replacements),
-                    "video": video_token,
-                }
-                try:
-                    print(
-                        "[subtitles.whisper.cpp] command failed",
-                        log_ctx,
-                        flush=True,
-                    )
-                except Exception:
-                    pass
-                retry = False
-                missing_cli = False
-                combined = f"{proc.stderr}\n{proc.stdout}".lower()
-                if "deprecated" in combined and "whisper-cli" in combined:
-                    try:
-                        peer_path = _discover_whisper_cli(Path(cpp_bin))
-                    except Exception:
-                        peer_path = None
-                    if peer_path:
-                        peer_str = str(peer_path)
-                        if peer_str not in bin_attempts:
-                            peer_token = _log_safe_token(peer_path, "whisper.bin.peer")
-                            print(f"[subtitles.whisper.cpp] retrying with whisper-cli at {peer_token}", flush=True)
-                            cpp_bin = peer_str
-                            cmd[0] = cpp_bin
-                            retry = True
-                    else:
-                        missing_cli = True
-                if retry:
-                    continue
-                err_msg = _log_redact_text(err_msg, replacements)
-                if missing_cli:
-                    raise RuntimeError(
-                        f"whisper.cpp main binary refused to run for {video_token}. Install or point WHISPER_CLI_BIN to the whisper-cli executable. Upstream warning: {err_msg}"
-                    )
-                raise RuntimeError(f"whisper.cpp failed for {video_token}: {err_msg}")
-
-            if out_json.exists():
-                payload = json.loads(out_json.read_text())
-            else:
-                payload = json.loads(proc.stdout)
-
-            def _collect_segments(raw_payload: Any) -> List[Dict[str, Any]]:
-                root: Any = raw_payload
-                if isinstance(root, dict):
-                    trans = root.get("transcription")
-                    if isinstance(trans, dict):
-                        seg_iter = trans.get("segments", [])
-                    elif isinstance(trans, list):
-                        seg_iter = trans
-                    else:
-                        seg_iter = []
-                elif isinstance(root, list):
-                    seg_iter = root
-                else:
-                    seg_iter = []
-
-                segments: List[Dict[str, Any]] = []
-                for seg in seg_iter:
-                    if not isinstance(seg, dict):
-                        continue
-
-                    def _ts_from_offsets(val: Any) -> Optional[float]:
-                        try:
-                            if val is None:
-                                return None
-                            if isinstance(val, (int, float)):
-                                # whisper.cpp emits offsets in milliseconds
-                                return float(val) / 1000.0
-                            return None
-                        except Exception:
-                            return None
-
-                    def _ts_from_str(val: Any) -> Optional[float]:
-                        if not isinstance(val, str):
-                            return None
-                        try:
-                            parts = val.replace(",", ".").split(":")
-                            if len(parts) != 3:
-                                return None
-                            hours = int(parts[0])
-                            minutes = int(parts[1])
-                            seconds = float(parts[2])
-                            return hours * 3600 + minutes * 60 + seconds
-                        except Exception:
-                            return None
-
-                    start = seg.get("start")
-                    end = seg.get("end")
-
-                    if start is None or end is None:
-                        offsets = seg.get("offsets")
-                        if isinstance(offsets, dict):
-                            start = start or _ts_from_offsets(offsets.get("from"))
-                            end = end or _ts_from_offsets(offsets.get("to"))
-
-                    if (start is None or end is None) and "t0" in seg or "t1" in seg:
-                        try:
-                            start = start or (seg.get("t0") / 1000.0) # type: ignore
-                            end = end or (seg.get("t1") / 1000.0) # type: ignore
-                        except Exception:
-                            pass
-
-                    if (start is None or end is None) and isinstance(seg.get("timestamps"), dict):
-                        ts = seg["timestamps"]
-                        start = start or _ts_from_str(ts.get("from"))
-                        end = end or _ts_from_str(ts.get("to"))
-
-                    def _coerce_time(val: Any) -> Optional[float]:
-                        if val is None:
-                            return None
-                        if isinstance(val, (int, float)):
-                            return float(val)
-                        return _ts_from_str(val)
-
-                    start_f = _coerce_time(start)
-                    end_f = _coerce_time(end)
-                    segments.append({
-                        "start": start_f or 0.0,
-                        "end": end_f or 0.0,
-                        "text": seg.get("text", "")
-                    })
-                return segments
-
-            seg_list = _collect_segments(payload)
-            segs: List[Dict[str, Any]] = []
-            total = len(seg_list)
-            for idx, s in enumerate(seg_list, start=1):
-                segs.append(s)
-                if progress_cb and total > 0:
-                    try:
-                        progress_cb(min(1.0, float(idx) / float(total)))
-                    except Exception:
-                        pass
-            return segs
-        finally:
-            if temp_audio is not None:
-                try:
-                    temp_audio.unlink(missing_ok=True)
-                except TypeError:
-                    if temp_audio.exists():
-                        try:
-                            temp_audio.unlink()
-                        except Exception:
-                            pass
-    if backend == "stub":
-        # Deterministic tiny set of segments to ensure UI works without deps
-        return [
-            {"start": 0.0, "end": 1.5, "text": "[no speech engine installed]"},
-            {"start": 2.0, "end": 3.2, "text": "Install faster-whisper or whisper."},
-        ]
-    raise RuntimeError(f"Unknown backend {backend}")
-
-
-@_artifact_db_sync(("subtitles",))
-def generate_subtitles(
-    video: Path,
-    out_file: Path,
-    model: str = "small",
-    language: Optional[str] = None,
-    translate: bool = False,
-    progress_cb: Optional[Callable[[float], None]] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
-) -> None:
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-    backend = detect_backend("auto")
-    cpp_bin_path, cpp_model_path = _resolve_whisper_cpp_paths()
-    video_token = _log_safe_token(video, "video")
-    out_token = _log_safe_token(out_file, "subtitles.out")
-    dbg = bool(os.environ.get("SUBTITLES_DEBUG")) or True  # always-on lightweight logging (can tune later)
-    if dbg:
-        try:
-            print(
-                f"[subtitles] start video={video_token} backend={backend} model={model} lang={language or 'auto'} translate={translate} out={out_token}",
-                flush=True,
-            )
-        except Exception:
-            pass
-    try:
-        segments = run_whisper_backend(
-            video, backend, model, language, translate,
-            cpp_bin=str(cpp_bin_path) if cpp_bin_path else None,
-            cpp_model=str(cpp_model_path) if cpp_model_path else None,
-            progress_cb=progress_cb,
-            cancel_check=cancel_check,
-        )
-    except Exception as exc:
-        if dbg:
-            try:
-                print(f"[subtitles] backend failure video={video_token} backend={backend}: {exc}", flush=True)
-            except Exception:
-                pass
-        try:
-            traceback.print_exc()
-        except Exception:
-            pass
-        raise
-    # Write SRT
-    srt = _format_srt_segments(segments)
-    out_file.write_text(srt, encoding="utf-8")
-    if dbg:
-        try:
-            print(f"[subtitles] wrote {len(segments)} segments size={out_file.stat().st_size}B backend={backend}", flush=True)
-        except Exception:
-            pass
-    return None
-
-
-def detect_face_backend(preference: str) -> str:
-    """
-    Select an available faces backend.
-
-    Returns one of: 'insightface', 'opencv', or 'none' when nothing usable is installed.
-    - 'auto' prefers InsightFace when both insightface and OpenCV (cv2) are available;
-      otherwise falls back to OpenCV when cv2 is available; else 'none'.
-    - When a specific preference is provided, we return it verbatim; callers must validate
-      availability separately.
-    """
-    if preference != "auto":
-        return preference
-    has_cv2 = False
-    has_insight = False
-    try:
-        __import__("cv2")
-        has_cv2 = True
-    except Exception:
-        has_cv2 = False
-    try:
-        __import__("insightface")
-        has_insight = True
-    except Exception:
-        has_insight = False
-    if has_insight and has_cv2:
-        return "insightface"
-    if has_cv2:
-        return "opencv"
-    return "none"
-
-
-def _detect_faces(
-    video: Path,
-    interval: float = 1.0,
-    scale_factor: float = 1.2,
-    min_neighbors: int = 7,
-    min_size_frac: float = 0.10,
-    backend: str = "auto",
-    progress_cb: Optional[Callable[[int, int], None]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Detect faces using selected backend.
-    - insightface: SCRFD/RetinaFace + ArcFace embeddings via insightface.app.FaceAnalysis
-    - opencv: Haar + OpenFace embeddings (existing path)
-    """
-    be = detect_face_backend(backend)
-    if be == "insightface":
-        try:
-            import cv2  # type: ignore
-            from insightface.app import FaceAnalysis  # type: ignore
-            # Lazy singleton cache
-            app_inst = getattr(_detect_faces, "_ins_app", None)
-            if app_inst is None:
-                providers = ["CPUExecutionProvider"]
-                app_inst = FaceAnalysis(name="buffalo_l", providers=providers)
-                # det_size keeps detection efficient; 640x640 is typical
-                app_inst.prepare(ctx_id=0, det_size=(640, 640))
-                _detect_faces._ins_app = app_inst  # type: ignore[attr-defined]
-            cap = cv2.VideoCapture(str(video))
-            if not cap.isOpened():
-                raise RuntimeError("cannot open video")
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            step = max(int(fps * interval), 1)
-            # progress: estimate how many frames we will process
-            try:
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            except Exception:
-                total_frames = 0
-            total_processed = int(total_frames // step) if total_frames > 0 else 0
-            processed = 0
-            if progress_cb is not None:
-                try:
-                    progress_cb(processed, total_processed)
-                except Exception:
-                    pass
-            results: List[Dict[str, Any]] = []
-            frame_idx = 0
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                if frame_idx % step == 0:
-                    faces = app_inst.get(frame)
-                    t = frame_idx / fps if fps else 0.0
-                    for f in faces or []:
-                        try:
-                            # bbox: [x1, y1, x2, y2]
-                            b = getattr(f, "bbox", None)
-                            if b is None:
-                                continue
-                            x1, y1, x2, y2 = [int(max(0, v)) for v in b]
-                            w = max(1, int(x2 - x1))
-                            h = max(1, int(y2 - y1))
-                            # embedding: prefer normed_embedding; else embedding
-                            emb = getattr(f, "normed_embedding", None)
-                            if emb is None:
-                                emb = getattr(f, "embedding", None)
-                            embedding = []
-                            if emb is not None:
-                                try:
-                                    embedding = [round(float(x), 6) for x in list(emb)]
-                                except Exception:
-                                    embedding = []
-                            score = float(getattr(f, "det_score", 1.0) or 1.0)
-                            results.append({
-                                "time": round(float(t), 3),
-                                "box": [int(x1), int(y1), int(w), int(h)],
-                                "score": score,
-                                "embedding": embedding,
-                            })
-                        except Exception:
-                            continue
-                    processed += 1
-                    if progress_cb is not None:
-                        try:
-                            progress_cb(processed, total_processed)
-                        except Exception:
-                            pass
-                frame_idx += 1
-            cap.release()
-            return results
-        except Exception:
-            # Fall through to OpenCV path on any failure
-            pass
-
-    # OpenCV legacy path
-    try:
-        import cv2  # type: ignore
-        import numpy as _np  # type: ignore
-        cap = cv2.VideoCapture(str(video))
-        if not cap.isOpened():
-            raise RuntimeError("cannot open video")
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        step = max(int(fps * interval), 1)
-        # progress: estimate number of processed frames
-        try:
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        except Exception:
-            total_frames = 0
-        total_processed = int(total_frames // step) if total_frames > 0 else 0
-        processed = 0
-        if progress_cb is not None:
-            try:
-                progress_cb(processed, total_processed)
-            except Exception:
-                pass
-        import cv2.data  # type: ignore  # noqa: F401
-        cascade = cv2.CascadeClassifier(f"{cv2.data.haarcascades}haarcascade_frontalface_default.xml")
-        if cascade.empty():
-            raise RuntimeError("cascade not found")
-        # Optional: OpenFace embedding model (if available via env OPENFACE_MODEL)
-        net = None
-        try:
-            model_path = os.environ.get("OPENFACE_MODEL")
-            if model_path and Path(model_path).exists():
-                net = cv2.dnn.readNetFromTorch(str(model_path))
-        except Exception:
-            net = None
-        results: List[Dict[str, Any]] = []
-
-        def _fallback_embed(face_img) -> list[float]:
-            """
-            Lightweight embedding when no DNN model is available.
-            - Convert to grayscale, resize to 32x32
-            - 2D DCT and take top-left 8x8 coefficients (low-frequency)
-            - L2-normalize the vector
-            Returns a small non-empty vector stable enough for cosine dedupe.
-            """
-            try:
-                if face_img is None:
-                    return []
-                if len(getattr(face_img, 'shape', []) or []) == 3:
-                    g = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
-                else:
-                    g = face_img
-                g = cv2.resize(g, (32, 32), interpolation=cv2.INTER_AREA)
-                m = _np.asarray(g, dtype=_np.float32) / 255.0
-                dct = cv2.dct(m)
-                blk = dct[:8, :8].astype(_np.float32)
-                vec = blk.reshape(-1)
-                n = float(_np.linalg.norm(vec))
-                if n > 0:
-                    vec = vec / n
-                return [round(float(x), 6) for x in vec.tolist()]
-            except Exception:
-                return []
-        frame_idx = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % step == 0:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                # Dynamic minimum size to suppress tiny false positives
-                gh, gw = gray.shape[:2]
-                min_w = max(32, int(gw * float(min_size_frac)))
-                min_h = max(32, int(gh * float(min_size_frac)))
-                detections = cascade.detectMultiScale(
-                    gray,
-                    float(scale_factor),
-                    int(min_neighbors),
-                    minSize=(min_w, min_h),
-                )
-                t = frame_idx / fps if fps else 0.0
-                for (x, y, w, h) in detections:
-                    # Basic geometric filtering (aspect ratio and size)
-                    if w <= 0 or h <= 0:
-                        continue
-                    ar = float(w) / float(h)
-                    if ar < 0.6 or ar > 1.8:
-                        # Unusually wide/tall boxes tend to be non-faces for Haar frontal
-                        continue
-                    if w < min_w or h < min_h:
-                        continue
-                    face = frame[y:y+h, x:x+w]
-                    embedding = []
-                    if net is not None:
-                        try:
-                            blob = cv2.dnn.blobFromImage(cv2.resize(face, (96, 96)), 1/255.0, (96, 96), (0,0,0), swapRB=True, crop=False)
-                            net.setInput(blob)
-                            vec = net.forward()[0]
-                            embedding = [round(float(v), 6) for v in vec.tolist()]
-                        except Exception:
-                            embedding = []
-                    # If DNN embedding unavailable, compute a lightweight descriptor so output isn't a stub
-                    if not embedding:
-                        try:
-                            embedding = _fallback_embed(face)
-                        except Exception:
-                            embedding = []
-                    results.append({"time": round(float(t), 3), "box": [int(x), int(y), int(w), int(h)], "score": 1.0, "embedding": embedding})
-                processed += 1
-                if progress_cb is not None:
-                    try:
-                        progress_cb(processed, total_processed)
-                    except Exception:
-                        pass
-            frame_idx += 1
-        cap.release()
-        return results
-    except Exception:
-        # As a last resort, return a clearly marked sentinel that our exists_check will treat as stub.
-        # The caller (compute_face_embeddings) will convert this into a hard error so we don't write stubs.
-        return [{
-            "time": 0.0,
-            "box": [0, 0, 100, 100],
-            "score": 1.0,
-            "embedding": []
-        }]
-
-
-@_artifact_db_sync(("faces",))
-def compute_face_embeddings(
-    video: Path,
-    sim_thresh: float | None = None,
-    interval: float = 1.0,
-    scale_factor: float = 1.2,
-    min_neighbors: int = 7,
-    min_size_frac: float = 0.10,
-    backend: str = "auto",
-    progress_cb: Optional[Callable[[int, int], None]] = None,
-) -> dict:
-    out = faces_path(video)
-    # Validate backend availability up-front to avoid writing stubs when deps are missing
-    sel = detect_face_backend(backend)
-    # Explicit preferences must also be honored/validated
-    if backend == "insightface":
-        if not _has_module("cv2") or not _has_module("insightface"):
-            raise RuntimeError("InsightFace backend requested but required packages are missing (need opencv-python and insightface)")
-    elif backend == "opencv":
-        if not _has_module("cv2"):
-            raise RuntimeError("OpenCV backend requested but 'cv2' (opencv-python) is not installed")
-    else:  # auto
-        if sel == "none":
-            raise RuntimeError("No face detection backend available. Please install at least 'opencv-python' or 'insightface' (plus 'onnxruntime').")
-    # Deduplicate faces so there's one embedding per distinct face for this video.
-    faces = _detect_faces(
-        video,
-        interval=interval,
-        scale_factor=scale_factor,
-        min_neighbors=min_neighbors,
-        min_size_frac=min_size_frac,
-        backend=(backend if backend != "auto" else sel),
-        progress_cb=progress_cb,
-    )
-    # If we received the sentinel stub detection, treat as a hard failure instead of writing a stub file
-    try:
-        if isinstance(faces, list) and len(faces) == 1:
-            f0 = faces[0] or {}
-            if list(map(int, (f0.get("box") or []))) == [0, 0, 100, 100] and not (f0.get("embedding") or []):
-                raise RuntimeError("Face detection failed (no usable backend). Install 'opencv-python' or 'insightface' to enable faces.")
-    except Exception:
-        # If any error occurs during sentinel inspection, continue to normal flow
-        pass
-
-    def _dedupe_faces(items: List[Dict[str, Any]], sim_thresh: float = 0.9) -> List[Dict[str, Any]]:
-        """
-        Group face detections by embedding similarity and return one per identity.
-
-        - Uses cosine similarity with a greedy online clustering.
-        - Aggregates count/first_time/last_time and keeps a representative box.
-        - If numpy is unavailable or embeddings are empty, falls back to coarse hashing.
-        """
-        clusters: List[Dict[str, Any]] = []
-        stub_cluster: Optional[Dict[str, Any]] = None
-
-        # Try numpy-based cosine clustering first.
-        try:
-            import numpy as np  # type: ignore
-
-            for f in items:
-                emb = f.get("embedding") or []
-                t = float(f.get("time", 0.0))
-                if not emb:
-                    if stub_cluster is None:
-                        stub_cluster = {
-                            "type": "stub",
-                            "count": 1,
-                            "first_time": t,
-                            "last_time": t,
-                            "box": f.get("box"),
-                            "best_score": float(f.get("score", 0.0)),
-                            "rep_time": t,
-                        }
-                    else:
-                        stub_cluster["count"] += 1
-                        stub_cluster["first_time"] = min(float(stub_cluster["first_time"]), t)
-                        stub_cluster["last_time"] = max(float(stub_cluster["last_time"]), t)
-                        sc = float(f.get("score", 0.0))
-                        if sc >= float(stub_cluster.get("best_score", -1)):
-                            stub_cluster["box"] = f.get("box")
-                            stub_cluster["best_score"] = sc
-                            stub_cluster["rep_time"] = t
-                    continue
-
-                # Normalize embedding
-                v = np.asarray(emb, dtype=np.float32)
-                n = float(np.linalg.norm(v))
-                if n > 0:
-                    v = v / n
-
-                assigned = False
-                for c in clusters:
-                    if c.get("type") != "vec":
-                        continue
-                    sim = float(np.dot(c["centroid"], v))
-                    if sim >= sim_thresh:
-                        # Update centroid and aggregate stats
-                        cnt = int(c["count"])
-                        c["centroid"] = ((c["centroid"] * cnt) + v) / (cnt + 1)
-                        c["count"] = cnt + 1
-                        c["first_time"] = min(float(c["first_time"]), t)
-                        c["last_time"] = max(float(c["last_time"]), t)
-                        sc = float(f.get("score", 0.0))
-                        if sc >= float(c.get("best_score", -1)):
-                            c["box"] = f.get("box")
-                            c["best_score"] = sc
-                            c["rep_time"] = t
-                        assigned = True
-                        break
-                if not assigned:
-                    clusters.append({
-                        "type": "vec",
-                        "centroid": v,
-                        "count": 1,
-                        "first_time": t,
-                        "last_time": t,
-                        "box": f.get("box"),
-                        "best_score": float(f.get("score", 0.0)),
-                        "rep_time": t,
-                    })
-        except Exception:
-            # Fallback: coarse hash of rounded embeddings to group similar ones.
-            from hashlib import sha1
-            buckets: Dict[str, Dict[str, Any]] = {}
-            for f in items:
-                emb = f.get("embedding") or []
-                t = float(f.get("time", 0.0))
-                if not emb:
-                    key = "stub"
-                else:
-                    key = sha1(
-                        (",".join(f"{float(x):.3f}" for x in emb)).encode("utf-8")
-                    ).hexdigest()
-                b = buckets.get(key)
-                if not b:
-                    buckets[key] = {
-                        "type": "stub" if key == "stub" else "hash",
-                        "count": 1,
-                        "first_time": t,
-                        "last_time": t,
-                        "box": f.get("box"),
-                        "best_score": float(f.get("score", 0.0)),
-                        "embedding": emb,
-                        "rep_time": t,
-                    }
-                else:
-                    b["count"] += 1
-                    b["first_time"] = min(float(b["first_time"]), t)
-                    b["last_time"] = max(float(b["last_time"]), t)
-                    sc = float(f.get("score", 0.0))
-                    if sc >= float(b.get("best_score", -1)):
-                        b["box"] = f.get("box")
-                        b["best_score"] = sc
-                        b["rep_time"] = t
-            # Convert buckets
-            for key, b in buckets.items():
-                if key == "stub":
-                    if stub_cluster is None:
-                        stub_cluster = b
-                    else:
-                        # merge
-                        stub_cluster["count"] += b.get("count", 0)
-                        stub_cluster["first_time"] = min(float(stub_cluster["first_time"]), float(b.get("first_time", 0.0)))
-                        stub_cluster["last_time"] = max(float(stub_cluster["last_time"]), float(b.get("last_time", 0.0)))
-                        if float(b.get("best_score", -1)) >= float(stub_cluster.get("best_score", -1)):
-                            stub_cluster["box"] = b.get("box")
-                            stub_cluster["best_score"] = b.get("best_score")
-                else:
-                    clusters.append({
-                        "type": "hash",
-                        "centroid": None,
-                        "count": b.get("count", 1),
-                        "first_time": b.get("first_time", 0.0),
-                        "last_time": b.get("last_time", 0.0),
-                        "box": b.get("box"),
-                        "best_score": b.get("best_score", 0.0),
-                        "embedding": b.get("embedding") or [],
-                        "rep_time": b.get("rep_time", b.get("first_time", 0.0)),
-                    })
-
-        # Prepare output faces: one entry per cluster
-        out_faces: List[Dict[str, Any]] = []
-        try:
-            import numpy as np  # type: ignore
-            for c in clusters:
-                if c.get("type") == "vec":
-                    v = c["centroid"]
-                    n = float(np.linalg.norm(v)) or 1.0
-                    v = v / n
-                    embedding = [round(float(x), 6) for x in v.tolist()]
-                else:
-                    embedding = [round(float(x), 6) for x in (c.get("embedding") or [])]
-                out_faces.append({
-                    "time": round(float(c.get("rep_time", c.get("first_time", 0.0))), 3),
-                    "box": c.get("box") or [0, 0, 0, 0],
-                    "score": 1.0,
-                    "embedding": embedding,
-                    "count": int(c.get("count", 1)),
-                    "first_time": round(float(c.get("first_time", 0.0)), 3),
-                    "last_time": round(float(c.get("last_time", 0.0)), 3),
-                })
-        except Exception:
-            for c in clusters:
-                embedding = c.get("embedding") or []
-                out_faces.append({
-                    "time": round(float(c.get("rep_time", c.get("first_time", 0.0))), 3),
-                    "box": c.get("box") or [0, 0, 0, 0],
-                    "score": 1.0,
-                    "embedding": embedding,
-                    "count": int(c.get("count", 1)),
-                    "first_time": round(float(c.get("first_time", 0.0)), 3),
-                    "last_time": round(float(c.get("last_time", 0.0)), 3),
-                })
-
-        if stub_cluster is not None:
-            out_faces.append({
-                "time": round(float(stub_cluster.get("rep_time", stub_cluster.get("first_time", 0.0))), 3),
-                "box": stub_cluster.get("box") or [0, 0, 0, 0],
-                "score": 1.0,
-                "embedding": [],
-                "count": int(stub_cluster.get("count", 1)),
-                "first_time": round(float(stub_cluster.get("first_time", 0.0)), 3),
-                "last_time": round(float(stub_cluster.get("last_time", 0.0)), 3),
-            })
-
-        return out_faces
-
-    # Allow callers to tune similarity threshold; default to 0.9
-    deduped = _dedupe_faces(faces, sim_thresh if isinstance(sim_thresh, (int, float)) else 0.9)
-    # Annotate backend and stub=false when we have at least one real detection or embedding
-    is_stub = False
-    try:
-        if not deduped:
-            is_stub = True
-        elif len(deduped) == 1:
-            f = deduped[0]
-            box = f.get("box") or []
-            emb = f.get("embedding") or []
-            if isinstance(box, list) and len(box) == 4 and list(map(int, box)) == [0, 0, 100, 100] and not emb:
-                is_stub = True
-    except Exception:
-        is_stub = False
-    data = {
-        "video": video.name,
-        "faces": deduped,
-        "generated_at": time.time(),
-        "backend": (backend if backend != "auto" else sel),
-        "stub": bool(is_stub),
-    }
-    out.write_text(json.dumps(data, indent=2))
-    return data
 
 
 def api_success(data=None, message: str = "OK", status_code: int = 200):
@@ -5045,8 +4165,7 @@ def _humanize_segment(seg: str) -> str:
         'phash': 'perceptual hash',
         'orphans': 'orphaned artifacts',
         'sprites': 'sprite sheets',
-        'heatmaps': 'heatmaps',
-        'faces': 'face detections',
+        'heatmap': 'heatmap',
         'scenes': 'scenes',
         'preview': 'preview',
         'library': 'library files',
@@ -5432,6 +4551,24 @@ def _jobs_state_dir() -> Path:
 def _job_file_path(jid: str) -> Path:
     return _jobs_state_dir() / f"{jid}.json"
 
+
+def _purge_legacy_job_files() -> int:
+    """Remove deprecated per-job JSON snapshots left on disk."""
+    removed = 0
+    try:
+        legacy_dir = _jobs_state_dir()
+        for path in legacy_dir.glob("*.json"):
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                continue
+            except Exception:
+                pass
+    except Exception:
+        return removed
+    return removed
+
 def _job_json_dumps(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -5471,6 +4608,16 @@ def _job_db_row_payload(job: dict, heartbeat: Optional[float]) -> Optional[dict]
         "created_at": int(created),
         "updated_at": int(updated),
     }
+
+def _restored_state(prev: str, auto_resume: bool) -> str:
+    prev_norm = (prev or "").strip().lower()
+    if prev_norm == "cancel_requested":
+        return "canceled"
+    if prev_norm in ("done", "failed", "canceled"):
+        return prev_norm
+    if prev_norm in ("queued", "running"):
+        return "queued" if auto_resume else "restored"
+    return "queued" if auto_resume else "restored"
 
 def _db_upsert_job(job: dict) -> None:
     if os.environ.get("JOB_PERSIST_DISABLE"):
@@ -5543,23 +4690,6 @@ def _persist_job(jid: str) -> None:
         return
     # Avoid persisting volatile fields that churn rapidly
     j.pop("current", None)
-    # Ensure minimal keys
-    payload = {
-        "id": j.get("id"),
-        "type": j.get("type"),
-        "path": j.get("path"),
-        "state": j.get("state"),
-        "created_at": j.get("created_at"),
-        "started_at": j.get("started_at"),
-        "ended_at": j.get("ended_at"),
-        "error": j.get("error"),
-        "total": j.get("total"),
-        "processed": j.get("processed"),
-        "label": j.get("label"),
-        "request": j.get("request"),
-        "result": j.get("result"),
-    }
-    _json_dump_atomic(_job_file_path(str(j.get("id") or "")), payload)  # type: ignore[arg-type]
     _db_upsert_job(j)
     # Update heartbeat timestamp when persisting job state to reflect liveness
     try:
@@ -5568,12 +4698,6 @@ def _persist_job(jid: str) -> None:
         pass
 
 def _delete_persisted_job(jid: str) -> None:
-    try:
-        p = _job_file_path(jid)
-        if p.exists():
-            p.unlink(missing_ok=True)
-    except Exception:
-        pass
     _db_delete_job(jid)
 
 def _restore_jobs_from_db(existing_ids: set[str]) -> None:
@@ -5583,7 +4707,7 @@ def _restore_jobs_from_db(existing_ids: set[str]) -> None:
         with db.session(read_only=True) as conn:
             rows = conn.execute(
                 """
-                SELECT id, type, target_path, state, priority, progress, total,
+                SELECT id, type, media_id, target_path, state, priority, progress, total,
                        payload_json, result_json, error, heartbeat_ts, created_at, updated_at
                 FROM job
                 """
@@ -5600,14 +4724,7 @@ def _restore_jobs_from_db(existing_ids: set[str]) -> None:
             continue
         base_type = _normalize_job_type(str(row["type"] or ""))
         prev = str(row["state"] or "").lower()
-        if prev == "cancel_requested":
-            target_state = "canceled"
-        elif prev in ("done", "failed", "canceled"):
-            target_state = prev
-        elif prev in ("queued", "running"):
-            target_state = "queued" if auto_restore else "restored"
-        else:
-            target_state = "queued" if auto_restore else "restored"
+        target_state = _restored_state(prev, auto_restore)
         job_entry = {
             "id": jid,
             "type": base_type,
@@ -5623,6 +4740,7 @@ def _restore_jobs_from_db(existing_ids: set[str]) -> None:
             "result": _job_json_loads(row["result_json"]),
             "request": _job_json_loads(row["payload_json"]),
             "priority": bool(row["priority"]),
+            "media_id": row["media_id"],
         }
         with JOB_LOCK:
             JOBS[jid] = job_entry
@@ -5636,98 +4754,183 @@ def _restore_jobs_from_db(existing_ids: set[str]) -> None:
             _db_upsert_job(job_entry)
 
 
+def _resume_saved_jobs(job_ids: Optional[Iterable[str]] = None, *, force: Optional[bool] = None) -> int:
+    """Spawn worker threads for queued jobs that have persisted requests."""
+    if force is False:
+        return 0
+    auto_resume = force
+    if auto_resume is None:
+        auto_resume = not bool(os.environ.get("JOB_AUTORESTORE_DISABLE"))
+    if not auto_resume:
+        return 0
+    targets: list[tuple[str, dict]] = []
+    with JOB_LOCK:
+        if job_ids is None:
+            targets = list(JOBS.items())
+        else:
+            wanted = set(job_ids)
+            targets = [(jid, JOBS[jid]) for jid in wanted if jid in JOBS]
+    submits = 0
+    for jid, job in targets:
+        try:
+            if job.get("state") != "queued":
+                continue
+            req_data = job.get("request")
+            if not isinstance(req_data, dict):
+                continue
+            task = str(req_data.get("task") or job.get("type") or "")
+            directory = req_data.get("directory") or job.get("path") or str(STATE["root"])  # type: ignore[assignment]
+            recursive = bool(req_data.get("recursive", False))
+            force_flag = bool(req_data.get("force", False))
+            params = dict(req_data.get("params") or {})
+            jr = JobRequest(task=task, directory=directory, recursive=recursive, force=force_flag, params=params)
+
+            def _runner(_jid=jid, _jr=jr):
+                try:
+                    with JOB_RUN_SEM:
+                        _run_job_worker(_jid, _jr)
+                except Exception:
+                    pass
+            if _RESTORE_EXEC is not None:
+                try:
+                    _RESTORE_EXEC.submit(_runner)
+                    submits += 1
+                    continue
+                except Exception:
+                    pass
+            try:
+                threading.Thread(target=_runner, name=f"job-restore-{task}-{jid}", daemon=True).start()
+                submits += 1
+            except Exception:
+                pass
+        except Exception:
+            continue
+    return submits
+
+
+def _prune_orphan_job_rows(states: Optional[Collection[str]] = None) -> int:
+    """Delete job rows that are no longer tracked in-memory (terminal states only)."""
+    if os.environ.get("JOB_PERSIST_DISABLE"):
+        return 0
+    keep_ids: set[str] = set()
+    with JOB_LOCK:
+        keep_ids = set(JOBS.keys())
+    target_states = list(states) if states is not None else [
+        "done",
+        "completed",
+        "failed",
+        "canceled",
+        "cancel_requested",
+        "restored",
+    ]
+    if not target_states:
+        return 0
+    placeholders = ",".join(["?"] * len(target_states))
+    sql = f"DELETE FROM job WHERE state IN ({placeholders})"
+    params: list[Any] = list(target_states)
+    if keep_ids:
+        keep_vals = sorted(keep_ids)
+        keep_placeholders = ",".join(["?"] * len(keep_vals))
+        sql += f" AND id NOT IN ({keep_placeholders})"
+        params.extend(keep_vals)
+    try:
+        with db.session() as conn:
+            cur = conn.execute(sql, params)
+            removed = cur.rowcount if cur.rowcount is not None else 0
+    except Exception:
+        removed = 0
+    return int(removed)
+
+
+def _clear_all_jobs_state() -> int:
+    """Remove every in-memory job and wipe the job table."""
+    removed = 0
+    with JOB_LOCK:
+        ids = list(JOBS.keys())
+        for jid in ids:
+            JOBS.pop(jid, None)
+            JOB_CANCEL_EVENTS.pop(jid, None)
+            JOB_HEARTBEATS.pop(jid, None)
+            JOB_PROCS.pop(jid, None)
+            removed += 1
+    if not os.environ.get("JOB_PERSIST_DISABLE"):
+        try:
+            with db.session() as conn:
+                conn.execute("DELETE FROM job")
+        except Exception:
+            pass
+    return removed
+
+
+def _job_row_to_backup(row: Any) -> dict[str, Any]:
+    data = dict(row) if not isinstance(row, dict) else row
+    return {
+        "id": data.get("id"),
+        "type": _normalize_job_type(str(data.get("type") or "")),
+        "path": data.get("target_path"),
+        "state": data.get("state"),
+        "created_at": data.get("created_at"),
+        "started_at": None,
+        "ended_at": data.get("updated_at"),
+        "error": data.get("error"),
+        "total": data.get("total"),
+        "processed": data.get("progress"),
+        "label": None,
+        "request": _job_json_loads(data.get("payload_json")),
+        "result": _job_json_loads(data.get("result_json")),
+        "priority": bool(data.get("priority")),
+        "media_id": data.get("media_id"),
+        "heartbeat_ts": data.get("heartbeat_ts"),
+    }
+
+
+def _job_backup_record_to_entry(rec: "JobBackupRecord", *, auto_resume: bool) -> dict[str, Any]:
+    now = time.time()
+    entry = {
+        "id": rec.id,
+        "type": _normalize_job_type(rec.type),
+        "path": rec.path,
+        "state": _restored_state(rec.state or "", auto_resume),
+        "created_at": rec.created_at or now,
+        "started_at": rec.started_at,
+        "ended_at": rec.ended_at or rec.created_at or now,
+        "error": rec.error,
+        "total": rec.total,
+        "processed": rec.processed,
+        "label": rec.label,
+        "request": rec.request,
+        "result": rec.result,
+        "priority": bool(rec.priority),
+        "media_id": rec.media_id,
+    }
+    return entry
+
+
+def _export_jobs_snapshot() -> list[dict[str, Any]]:
+    if os.environ.get("JOB_PERSIST_DISABLE"):
+        return []
+    try:
+        with db.session(read_only=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, type, media_id, target_path, state, priority, progress, total,
+                       payload_json, result_json, error, heartbeat_ts, created_at, updated_at
+                FROM job
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+    except Exception:
+        rows = []
+    return [_job_row_to_backup(r) for r in rows]
+
+
 def _restore_jobs_on_start() -> None:
     if os.environ.get("JOB_PERSIST_DISABLE"):
         return
     restored: set[str] = set()
-    d = _jobs_state_dir()
-    try:
-        files = list(d.glob("*.json"))
-    except Exception:
-        files = []
-    for fp in files:
-        try:
-            data = json.loads(fp.read_text())
-            jid = str(data.get("id") or fp.stem)
-            base_type = _normalize_job_type(str(data.get("type") or ""))
-            # Decide target state based on previous state and auto-restore setting
-            prev = str(data.get("state") or "").lower()
-            auto_restore = not bool(os.environ.get("JOB_AUTORESTORE_DISABLE"))
-            # Treat cancel_requested as canceled on restore to avoid resurrecting them
-            if prev == "cancel_requested":
-                target_state = "canceled"
-            elif prev in ("done", "failed", "canceled"):
-                target_state = prev
-            elif prev in ("queued", "running"):
-                target_state = "queued" if auto_restore else "restored"
-            else:
-                # Unknown or missing state: treat as restored (paused) unless auto-resume is enabled
-                target_state = "queued" if auto_restore else "restored"
-            with JOB_LOCK:
-                JOBS[jid] = {
-                    "id": jid,
-                    "type": base_type,
-                    "path": data.get("path"),
-                    "state": target_state,
-                    "created_at": data.get("created_at"),
-                    "started_at": data.get("started_at"),
-                    "ended_at": data.get("ended_at"),
-                    "error": data.get("error"),
-                    "total": data.get("total"),
-                    "processed": data.get("processed"),
-                    "label": data.get("label"),
-                    "result": data.get("result"),
-                    "request": data.get("request"),
-                }
-                JOB_CANCEL_EVENTS[jid] = threading.Event()
-            restored.add(jid)
-            _db_upsert_job(JOBS[jid])
-            # Persist any state normalization (e.g., running->queued, or queued->restored)
-            if prev != target_state:
-                _persist_job(jid)
-        except Exception:
-            continue
-
     _restore_jobs_from_db(restored)
-
-    # Optionally auto-resume queued jobs that have a saved request
-    if os.environ.get("JOB_AUTORESTORE_DISABLE"):
-        return
-    with JOB_LOCK:
-        items = list(JOBS.items())
-    # Submit restore jobs through a bounded executor to prevent spawning hundreds of threads
-    submits: int = 0
-    for jid, j in items:
-        try:
-            if j.get("state") == "queued" and isinstance(j.get("request"), dict):
-                req_data = j["request"]
-                task = str(req_data.get("task") or j.get("type") or "")
-                directory = req_data.get("directory") or j.get("path") or str(STATE["root"])  # type: ignore[assignment]
-                recursive = bool(req_data.get("recursive", False))
-                force = bool(req_data.get("force", False))
-                params = dict(req_data.get("params") or {})
-                jr = JobRequest(task=task, directory=directory, recursive=recursive, force=force, params=params)
-                def _runner(_jid=jid, _jr=jr):
-                    try:
-                        with JOB_RUN_SEM:
-                            _run_job_worker(_jid, _jr)
-                    except Exception:
-                        pass
-                if _RESTORE_EXEC is not None:
-                    try:
-                        _RESTORE_EXEC.submit(_runner)
-                        submits += 1
-                        continue
-                    except Exception:
-                        pass
-                # Fallback: start a single conservative thread if executor unavailable
-                try:
-                    threading.Thread(target=_runner, name=f"job-restore-{task}-{jid}", daemon=True).start()
-                    submits += 1
-                except Exception:
-                    pass
-        except Exception:
-            continue
+    _purge_legacy_job_files()
+    _resume_saved_jobs()
 
 
 def _normalize_job_type(job_type: str) -> str:
@@ -5740,12 +4943,12 @@ def _normalize_job_type(job_type: str) -> str:
     return s
 
 def _artifact_from_type(job_type: Optional[str]) -> Optional[str]:
-    """Map job type to canonical artifact identifier used by the frontend badges."""
+    """
+    Map job type to canonical artifact identifier used by the frontend badges.
+    """
     if not job_type:
         return None
     t = _normalize_job_type(job_type)
-    if t == "embed":
-        return "faces"
     if t == "preview":
         # Frontend/UI expect plural 'previews' badge names even though the artifact key is singular.
         return "previews"
@@ -5754,7 +4957,8 @@ def _artifact_from_type(job_type: Optional[str]) -> Optional[str]:
 
 def _publish_job_event(evt: dict) -> None:
     """
-    Publish a job event to SSE subscribers. Thread-safe."""
+    Publish a job event to SSE subscribers. Thread-safe.
+    """
     try:
         payload = f"data: {json.dumps(evt)}\n\n"
     except Exception:
@@ -6001,6 +5205,7 @@ def _cleanup_orphan_jobs(max_idle: float = 300.0, min_age: float = 5.0) -> dict:
     """Mark running jobs as finished if their processes are gone and heartbeat stale."""
     now = time.time()
     marked: list[str] = []
+    persist_queue: list[str] = []
     with JOB_LOCK:
         for jid, j in JOBS.items():
             if j.get("state") != "running":
@@ -6017,16 +5222,49 @@ def _cleanup_orphan_jobs(max_idle: float = 300.0, min_age: float = 5.0) -> dict:
             j.setdefault("error", "orphaned (no active process)")
             j["ended_at"] = time.time()
             marked.append(jid)
-            try:
-                _persist_job(jid)
-            except Exception:
-                pass
+            persist_queue.append(jid)
+    for jid in persist_queue:
+        try:
+            _persist_job(jid)
+        except Exception:
+            pass
     return {"marked": len(marked), "ids": marked}
 
 
 @api.post("/jobs/reap-orphans")
 def jobs_reap_orphans(max_idle: float = Query(default=300.0), min_age: float = Query(default=5.0)):
     return api_success(_cleanup_orphan_jobs(max_idle=max_idle, min_age=min_age))
+
+
+class JobBackupRecord(BaseModel):  # type: ignore
+    id: str
+    type: str
+    state: str
+    path: Optional[str] = None
+    media_id: Optional[int] = Field(default=None, alias="mediaId")
+    priority: Optional[bool] = False
+    total: Optional[int] = None
+    processed: Optional[int] = None
+    label: Optional[str] = None
+    request: Optional[dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    created_at: Optional[int] = Field(default=None, alias="createdAt")
+    started_at: Optional[int] = Field(default=None, alias="startedAt")
+    ended_at: Optional[int] = Field(default=None, alias="endedAt")
+    heartbeat_ts: Optional[int] = Field(default=None, alias="heartbeatTs")
+
+    class Config:
+        allow_population_by_field_name = True
+
+
+class JobBackupImport(BaseModel):  # type: ignore
+    jobs: list[JobBackupRecord]
+    replace: bool = False
+    auto_resume: Optional[bool] = Field(default=None, alias="autoResume")
+
+    class Config:
+        allow_population_by_field_name = True
 
 
 
@@ -6094,7 +5332,7 @@ def _wrap_job_background(job_type: str, path: str, fn, *, priority: bool = False
             # Controlled via env:
             #   LIGHT_SLOT_ALL=1            -> all jobs use light slot
             #   LIGHT_SLOT_TYPES=csv        -> only listed types (normalized) use light slot
-            # Default list (if LIGHT_SLOT_TYPES unset): markers,preview,sprites,phash,faces,heatmaps
+            # Default list (if LIGHT_SLOT_TYPES unset): markers,preview,sprites,phash,heatmap
             use_light = False
             try:
                 if str(os.environ.get("LIGHT_SLOT_ALL", "0")).lower() in ("1", "true", "yes"):  # global override
@@ -6104,7 +5342,7 @@ def _wrap_job_background(job_type: str, path: str, fn, *, priority: bool = False
                     if raw is not None:
                         wanted = {s.strip().lower() for s in raw.split(',') if s.strip()}
                     else:
-                        wanted = {"markers", "preview", "sprites", "phash", "faces", "heatmaps"}
+                        wanted = {"markers", "preview", "sprites", "phash", "heatmap"}
                     norm = _normalize_job_type(job_type)
                     use_light = norm in wanted
             except Exception:
@@ -6244,7 +5482,9 @@ def _wait_for_turn(jid: str, poll_interval: float = 0.15, timeout: Optional[floa
 
 @api.get("/tasks/pause")
 def tasks_get_pause():
-    """Return whether the job queue is paused."""
+    """
+    Return whether the job queue is paused.
+    """
     try:
         return api_success({"paused": bool(JOB_QUEUE_PAUSED)})
     except Exception as e:
@@ -6253,7 +5493,8 @@ def tasks_get_pause():
 
 @api.post("/tasks/pause")
 def tasks_set_pause(paused: bool = Query(...)):
-    """Pause or resume the job queue.
+    """
+    Pause or resume the job queue.
 
     When pausing (paused=true):
     - Prevent new jobs from starting.
@@ -6392,10 +5633,6 @@ def apple_touch_icon():
         return FileResponse(str(p), media_type="image/png")
     return Response(status_code=404)
 
-
-# Note: legacy /old-index.html route removed; existing bookmarks will 404.
-# If a redirect is desired, re-add a handler returning a RedirectResponse("/").
-
 # Static assets are already mounted at the top of the file - no need to mount again
 
 # Lifespan: replaces deprecated on_event startup handler
@@ -6450,7 +5687,7 @@ MEDIA_EXTS = _media_exts()
 
 def _is_hidden_path(p: Path, base: Path) -> bool:
     """
-    Return True if any directory component under base starts with '.' or ends with '.previews'.
+    Return True if any directory component under base starts with '.'.
     """
     try:
         parts = p.relative_to(base).parts
@@ -6458,14 +5695,14 @@ def _is_hidden_path(p: Path, base: Path) -> bool:
         parts = p.parts
     # exclude file itself when checking for dot prefix
     for comp in parts[:-1]:
-        if comp.startswith(".") or comp.endswith(HIDDEN_DIR_SUFFIX_PREVIEWS):
+        if comp.startswith("."):
             return True
     return False
 
 
 def _is_original_media_file(p: Path, base: Path) -> bool:
     """
-    Only consider user media files, not artifacts or legacy preview segments.
+    Only consider user media files, not artifacts.
     """
     if not p.is_file():
         return False
@@ -6708,34 +5945,6 @@ def _load_registry(path: Path, kind: str) -> dict:
         return skel
     try:
         data = json.loads(path.read_text())
-        # Support legacy/simple formats:
-        # - If file is a bare list, wrap into the expected dict skeleton.
-        if isinstance(data, list):
-            wrapped = {"version": 1, "next_id": 1, kind: []}
-            items: list = []
-            if kind == "performers":
-                # Convert strings to performer objects; pass through dicts with name when present
-                next_id = 1
-                for it in data:
-                    if isinstance(it, str):
-                        nm = it.strip()
-                        if not nm:
-                            continue
-                        items.append({"id": next_id, "name": nm, "slug": _slugify(nm), "images": []})
-                        next_id += 1
-                    elif isinstance(it, dict):
-                        nm = str(it.get("name") or "").strip()
-                        if not nm:
-                            continue
-                        slug = it.get("slug") or _slugify(nm)
-                        items.append({"id": next_id, "name": nm, "slug": slug, "images": list(it.get("images") or [])})
-                        next_id += 1
-                wrapped[kind] = items
-                wrapped["next_id"] = next_id
-            else:
-                # tags: make sure it's a list of strings
-                wrapped[kind] = [str(t).strip() for t in data if str(t).strip()]
-            return wrapped
         if not isinstance(data, dict):
             return skel
         # ensure keys
@@ -6842,6 +6051,11 @@ class PerformerDelete(PerformerUpdate):
 # Core API
 ############################
 
+@api.get("/db/status")
+def api_db_status():
+    return api_success(_db_status_payload())
+
+
 @api.get("/health")
 def health():
     uptime = None
@@ -6863,36 +6077,18 @@ def health():
         },
         "ffmpeg": ffmpeg_available(),
         "ffprobe": ffprobe_available(),
-        "faces_backend": detect_face_backend("auto"),
-        "faces_deps": {
-            "opencv": _has_module("cv2"),
-            "insightface": _has_module("insightface"),
-            "onnxruntime": _has_module("onnxruntime"),
-        },
         "version": app.version,
         "pid": os.getpid(),
     }
 
 
-@app.get("/health")
-def health_redirect():
-    """Compatibility alias: redirect root /health to canonical /api/health.
-
-    Using 307 preserves method if clients ever POST (unlikely for health) and avoids caching confusion.
-    """
-    return RedirectResponse(url="/api/health", status_code=307)
-
-
 @app.get("/config")
 def config_info():
-    """Unified configuration endpoint.
+    """
+    Unified configuration endpoint.
 
-    Combines legacy environment/dependency info with dynamic runtime config
-    (previously available at /api/config). Provides three sections:
-      - raw: raw persisted config file contents
-      - defaults: derived default values (e.g., sprites)
-      - effective: defaults overlaid with raw overrides
-    Retains legacy keys (features, deps, versions) for backward compatibility.
+    Reports persisted config, derived defaults, and effective runtime values alongside
+    feature/dependency snapshots so the UI can adapt without probing optional routes.
     """
     with _CONFIG_LOCK:
         raw_cfg = copy.deepcopy(STATE.get("config") or {})
@@ -6901,8 +6097,6 @@ def config_info():
         "sprites": {**defaults["sprites"], **(raw_cfg.get("sprites") or {})},
     }
     cpp_bin_path, cpp_model_path = _resolve_whisper_cpp_paths()
-    subtitles_backend = detect_backend("auto")
-    faces_backend = detect_face_backend("auto")
     # Detect SSE jobs events route presence for frontend (avoid 404 probing)
     try:
         jobs_sse = any(getattr(r, "path", None) == "/jobs/events" for r in app.routes)
@@ -6915,9 +6109,7 @@ def config_info():
         "features": {
             "range_stream": True,
             "sprites": True,
-            "heatmaps": True,
-            "faces": True,
-            "subtitles": True,
+            "heatmap": True,
             "phash": True,
             "jobs_sse": jobs_sse,
         },
@@ -6945,12 +6137,6 @@ def config_info():
             "numpy": _module_version("numpy"),
             "pillow": _module_version("PIL"),
         },
-        "capabilities": {
-            "subtitles_backend": subtitles_backend,
-            "faces_backend": faces_backend,
-            "subtitles_enabled": subtitles_backend != "stub",
-            "faces_enabled": (faces_backend in ("opencv", "insightface")) and (_has_module("cv2") or _has_module("insightface")),
-        },
         "raw": raw_cfg,
         "defaults": defaults,
         "effective": effective,
@@ -6958,13 +6144,11 @@ def config_info():
         "version": app.version,
     }
 
-# Provide /api/config alias for clients expecting the API-prefixed route
-@app.get("/api/config", include_in_schema=False)
-def config_info_api_alias():
-    try:
-        return config_info()  # type: ignore[misc]
-    except Exception as e:
-        raise_api_error(f"Failed to load config: {e}")
+
+@app.get("/api/config")
+def config_info_api():
+    """Legacy alias: UI still expects /api/config."""
+    return config_info()
 
 
 # -----------------------------
@@ -7009,22 +6193,29 @@ def _find_mp4s(root: Path, recursive: bool) -> list[Path]:
 
 
 def _build_artifacts_info(p: Path) -> dict:
-    info: dict[str, Any] = {}
-    # Standard names
-    info["thumbnail"] = thumbnails_path(p).exists()
-    info["preview"] = _file_nonempty(_preview_concat_path(p))
-    s, j = sprite_sheet_paths(p)
-    info["sprites"] = s.exists() and j.exists()
-    info["subtitles"] = find_subtitles(p) is not None
-    info["phash"] = phash_path(p).exists()
-    info["heatmaps"] = heatmaps_json_exists(p)
-    info["markers"] = scenes_json_exists(p)
-    info["faces"] = faces_exists_check(p)
-    return info
+    return {key: _artifact_exists(p, key) for key in ARTIFACT_KEYS}
 
 
 def _tags_file(p: Path) -> Path:
     return artifact_dir(p) / f"{p.stem}.tags.json"
+
+
+_DATA_BACKEND_MODE_FLAG = os.environ.get("MEDIA_DATA_BACKEND", "dual")
+_DATA_BACKEND_MODE = str(_DATA_BACKEND_MODE_FLAG or "dual").strip().lower()
+if _DATA_BACKEND_MODE not in {"dual", "db", "files"}:
+    _DATA_BACKEND_MODE = "dual"
+
+
+def _data_backend_mode() -> str:
+    return _DATA_BACKEND_MODE
+
+
+def _sidecar_reads_enabled() -> bool:
+    return _DATA_BACKEND_MODE in {"dual", "files"}
+
+
+def _sidecar_writes_enabled() -> bool:
+    return _DATA_BACKEND_MODE in {"dual", "files"}
 
 
 _METADATA_SIDECAR_WRITE_FLAG = os.environ.get("METADATA_SIDECAR_WRITE", "1")
@@ -7060,6 +6251,8 @@ def _default_tags_sidecar_payload(p: Path) -> dict[str, Any]:
 
 def _load_tags_sidecar_payload(p: Path) -> dict[str, Any]:
     data = _default_tags_sidecar_payload(p)
+    if not _sidecar_reads_enabled():
+        return data
     tf = _tags_file(p)
     if tf.exists():
         try:
@@ -7121,7 +6314,7 @@ def _normalize_metadata_updates(
 
 
 def _persist_metadata_sidecar_fields(video: Path, updates: dict[str, Any]) -> None:
-    if not updates or not _metadata_sidecar_writes_enabled():
+    if not updates or not _metadata_sidecar_writes_enabled() or not _sidecar_writes_enabled():
         return
     payload = _load_tags_sidecar_payload(video)
     changed = False
@@ -7180,22 +6373,44 @@ def tags_export(directory: str = Query("."), recursive: bool = Query(False)):
             "rating": 0,
             "favorite": False
         }
-        if tf.exists():
-            try:
-                td = json.loads(tf.read_text())
-                data["tags"] = td.get("tags", []) or []
-                data["performers"] = td.get("performers", []) or []
-                data["description"] = td.get("description", "") or ""
+        rel = _rel_from_root(v)
+        db_tags, db_perfs = _current_media_lists(rel)
+        if db_tags:
+            data["tags"] = db_tags
+        if db_perfs:
+            data["performers"] = db_perfs
+        meta = _db_fetch_video_meta(rel)
+        if meta:
+            if meta.get("description") is not None:
+                data["description"] = meta.get("description") or ""
+            if meta.get("rating") is not None:
                 try:
-                    rating = int(td.get("rating", 0) or 0)
+                    data["rating"] = max(0, min(5, int(meta.get("rating") or 0)))
                 except Exception:
-                    rating = 0
-                # Clamp rating to valid range 0-5
-                data["rating"] = max(0, min(5, rating))
+                    data["rating"] = 0
+            if meta.get("favorite") is not None:
                 try:
-                    data["favorite"] = bool(td.get("favorite", False))
+                    data["favorite"] = bool(meta.get("favorite"))
                 except Exception:
                     data["favorite"] = False
+        if _sidecar_reads_enabled() and tf.exists():
+            try:
+                td = json.loads(tf.read_text())
+                data.setdefault("tags", td.get("tags", []) or [])
+                data.setdefault("performers", td.get("performers", []) or [])
+                if not meta or meta.get("description") is None:
+                    data["description"] = td.get("description", "") or ""
+                if not meta or meta.get("rating") is None:
+                    try:
+                        rating = int(td.get("rating", 0) or 0)
+                    except Exception:
+                        rating = 0
+                    data["rating"] = max(0, min(5, rating))
+                if not meta or meta.get("favorite") is None:
+                    try:
+                        data["favorite"] = bool(td.get("favorite", False))
+                    except Exception:
+                        data["favorite"] = False
             except Exception:
                 pass
         out.append(data)
@@ -7243,24 +6458,19 @@ def tags_import(payload: TagsImport):
         if not p.exists():
             continue
         tf = _tags_file(p)
-        cur = {
-            "video": p.name,
-            "tags": [],
-            "performers": [],
-            "description": "",
-            "rating": 0,
-            "favorite": False,
-        }
-        if tf.exists() and not payload.replace:
-            try:
-                cur = json.loads(tf.read_text())
-            except Exception:
-                pass
-        cur.setdefault("tags", [])
-        cur.setdefault("performers", [])
-        cur.setdefault("description", "")
-        cur.setdefault("rating", 0)
-        cur.setdefault("favorite", False)
+        rel = _rel_from_root(p)
+        entry = _media_entry(rel)
+        cur = _load_tags_sidecar_payload(p)
+        if payload.replace:
+            cur["tags"] = []
+            cur["performers"] = []
+        else:
+            entry_tags = entry.get("tags") or []
+            entry_perfs = entry.get("performers") or []
+            if entry_tags:
+                cur["tags"] = list(entry_tags)
+            if entry_perfs:
+                cur["performers"] = list(entry_perfs)
         # merge
         for k in ("tags", "performers"):
             vals = data.get(k)
@@ -7282,15 +6492,33 @@ def tags_import(payload: TagsImport):
                 cur["favorite"] = bool(data.get("favorite"))
             except Exception:
                 cur["favorite"] = False
+        entry["tags"] = _norm_list(cur.get("tags", []))
+        entry["performers"] = _norm_list(cur.get("performers", []))
         try:
-            tf.write_text(json.dumps(cur, indent=2))
-            count += 1
+            _save_media_attr([rel])
+        except Exception:
+            pass
+        if _sidecar_writes_enabled():
+            try:
+                tf.parent.mkdir(parents=True, exist_ok=True)
+                tf.write_text(json.dumps({
+                    "video": p.name,
+                    "tags": entry["tags"],
+                    "performers": entry["performers"],
+                    "description": cur.get("description", ""),
+                    "rating": cur.get("rating", 0),
+                    "favorite": cur.get("favorite", False),
+                }, indent=2))
+            except Exception:
+                pass
+        try:
             _sync_video_meta_to_db(
                 p,
                 description=cur.get("description"),
                 rating=cur.get("rating"),
                 favorite=cur.get("favorite"),
             )
+            count += 1
         except Exception:
             continue
     return {"updated": count}
@@ -7367,11 +6595,9 @@ def _artifact_kinds_for_stem(stem: str) -> set[str]:
         f"{stem}{SUFFIX_SCENES_JSON}",
         f"{stem}{SUFFIX_SPRITES_JPG}",
         f"{stem}{SUFFIX_SPRITES_JSON}",
-        f"{stem}{SUFFIX_HEATMAPS_JSON}",
-        f"{stem}{SUFFIX_HEATMAPS_PNG}",
-        f"{stem}{SUFFIX_FACES_JSON}",
+        f"{stem}{SUFFIX_HEATMAP_JSON}",
+        f"{stem}{SUFFIX_HEATMAP_PNG}",
         f"{stem}{SUFFIX_PREVIEW_WEBM}",
-        f"{stem}{SUFFIX_SUBTITLES_SRT}",
     }
 
 def _parse_artifact_name(name: str) -> tuple[str, str] | None:
@@ -7391,11 +6617,9 @@ def _parse_artifact_name(name: str) -> tuple[str, str] | None:
         SUFFIX_SCENES_JSON,
         SUFFIX_SPRITES_JPG,
         SUFFIX_SPRITES_JSON,
-        SUFFIX_HEATMAPS_JSON,
-        SUFFIX_HEATMAPS_PNG,
-        SUFFIX_FACES_JSON,
+        SUFFIX_HEATMAP_JSON,
+        SUFFIX_HEATMAP_PNG,
         SUFFIX_PREVIEW_WEBM,
-        SUFFIX_SUBTITLES_SRT,
     ]
     for suf in known_suffixes:
         if name.endswith(suf):
@@ -7424,11 +6648,6 @@ def _collect_media_and_metadata(root: Path) -> tuple[dict[str, Path], dict[str, 
         metadata[v.stem] = summaries.get(rel) or {}
     return media, metadata
 
-## Removed legacy: /videos endpoint
-
-## Removed legacy: GET /videos/{name}/tags
-
-
 class TagUpdate(BaseModel): # type: ignore
     add: list[str] | None = None
     remove: list[str] | None = None
@@ -7447,8 +6666,8 @@ def _list_dir(root: Path, rel: str):
     for entry in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
         if entry.name.startswith("._") or entry.name == ".DS_Store":
             continue
-        # Hide dot-directories (like .artifacts) and legacy .previews dirs
-        if entry.is_dir() and (entry.name.startswith(".") or entry.name.endswith(".previews")):
+        # Hide dot-directories (like .artifacts)
+        if entry.is_dir() and entry.name.startswith("."):
             continue
         if entry.is_dir():
             dirs.append({"name": entry.name, "path": str(entry.relative_to(root))})
@@ -7468,9 +6687,7 @@ def _list_dir(root: Path, rel: str):
             phash_exists = False
             scenes_exists = False
             sprites_exists = False
-            heatmaps_exists = False
-            faces_exists = False
-            subtitles_exists = False
+            heatmap_exists = False
             try:
                 phash_exists = phash_path(entry).exists()
             except Exception:
@@ -7485,15 +6702,7 @@ def _list_dir(root: Path, rel: str):
             except Exception:
                 pass
             try:
-                heatmaps_exists = heatmaps_json_exists(entry)
-            except Exception:
-                pass
-            try:
-                faces_exists = faces_exists_check(entry)
-            except Exception:
-                pass
-            try:
-                subtitles_exists = find_subtitles(entry) is not None
+                heatmap_exists = heatmap_json_exists(entry)
             except Exception:
                 pass
             info = {
@@ -7508,9 +6717,7 @@ def _list_dir(root: Path, rel: str):
                 "phash": phash_exists,
                 "markers": scenes_exists,
                 "sprites": sprites_exists,
-                "heatmaps": heatmaps_exists,
-                "subtitles": subtitles_exists,
-                "faces": faces_exists,
+                "heatmap": heatmap_exists,
             }
             # Thumbnail/preview URLs
             if thumbnails_path(entry).exists():
@@ -7548,7 +6755,7 @@ def _list_dir_fast_basic(root: Path, rel: str, need_mtime: bool) -> dict:
         try:
             if entry.name.startswith("._") or entry.name == ".DS_Store":
                 continue
-            if entry.is_dir() and (entry.name.startswith(".") or entry.name.endswith(".previews")):
+            if entry.is_dir() and entry.name.startswith("."):
                 continue
             if entry.is_dir():
                 dirs.append({"name": entry.name, "path": str(entry.relative_to(root))})
@@ -7571,7 +6778,7 @@ def _list_dir_fast_basic(root: Path, rel: str, need_mtime: bool) -> dict:
 
 
 def _enrich_file_basic(entry: dict) -> dict:
-    """Enrich a single file dict with metadata/artifact presence (extracted from legacy _list_dir logic)."""
+    """Enrich a single file dict with metadata/artifact presence derived from the directory listing logic."""
     try:
         rel_path = entry.get("path")
         if not rel_path:
@@ -7591,9 +6798,7 @@ def _enrich_file_basic(entry: dict) -> dict:
         phash_exists = False
         scenes_exists = False
         sprites_exists = False
-        heatmaps_exists = False
-        faces_exists = False
-        subtitles_exists = False
+        heatmap_exists = False
         try: phash_exists = phash_path(fp).exists()
         except Exception: pass
         try: scenes_exists = scenes_json_exists(fp)
@@ -7602,11 +6807,7 @@ def _enrich_file_basic(entry: dict) -> dict:
             s_sheet, s_json = sprite_sheet_paths(fp)
             sprites_exists = s_sheet.exists() and s_json.exists()
         except Exception: pass
-        try: heatmaps_exists = heatmaps_json_exists(fp)
-        except Exception: pass
-        try: faces_exists = faces_exists_check(fp)
-        except Exception: pass
-        try: subtitles_exists = find_subtitles(fp) is not None
+        try: heatmap_exists = heatmap_json_exists(fp)
         except Exception: pass
         # Add enriched fields (only if not already present to avoid overwriting sort keys like mtime)
         entry.setdefault("type", mime or "application/octet-stream")
@@ -7637,9 +6838,7 @@ def _enrich_file_basic(entry: dict) -> dict:
         entry.setdefault("phash", phash_exists)
         entry.setdefault("markers", scenes_exists)
         entry.setdefault("sprites", sprites_exists)
-        entry.setdefault("heatmaps", heatmaps_exists)
-        entry.setdefault("subtitles", subtitles_exists)
-        entry.setdefault("faces", faces_exists)
+        entry.setdefault("heatmap", heatmap_exists)
         # Explicit metadata presence flag so frontend chips avoid per-row /api/metadata fetch
         try:
             entry.setdefault("metadata", metadata_path(fp).exists())
@@ -7648,9 +6847,9 @@ def _enrich_file_basic(entry: dict) -> dict:
         # Tags/performers from sidecar (populate for page slice to power list columns)
         try:
             tf = _tags_file(fp)
-            tags_arr = []
-            perf_arr = []
-            if tf.exists():
+            tags_arr: list[str] = []
+            perf_arr: list[str] = []
+            if _sidecar_reads_enabled() and tf.exists():
                 try:
                     td = json.loads(tf.read_text())
                     _t = td.get("tags") or []
@@ -7675,7 +6874,7 @@ def _enrich_file_basic(entry: dict) -> dict:
                     perf_arr = db_perfs
             except Exception:
                 db_tags, db_perfs = [], []
-            # Merge/override with legacy media attribute store if DB unavailable
+            # Merge/override with the media attribute sidecar store if DB unavailable
             try:
                 ent = _MEDIA_ATTR.get(str(rel_path))
                 if isinstance(ent, dict):
@@ -7828,19 +7027,6 @@ def get_library(
         tf = _tags_file(fp)
         vt: set[str] = set()
         vp: set[str] = set()
-        if tf.exists():
-            try:
-                tdata = json.loads(tf.read_text())
-                for t in (tdata.get("tags") or []):
-                    ss = _slugify(str(t))
-                    if ss:
-                        vt.add(ss)
-                for p in (tdata.get("performers") or []):
-                    ss = _slugify(str(p))
-                    if ss:
-                        vp.add(ss)
-            except Exception:
-                pass
         try:
             db_tags, db_perfs = _current_media_lists(rel_path)
             for t in db_tags:
@@ -7853,6 +7039,19 @@ def get_library(
                     vp.add(ss)
         except Exception:
             pass
+        if _sidecar_reads_enabled() and tf.exists():
+            try:
+                tdata = json.loads(tf.read_text())
+                for t in (tdata.get("tags") or []):
+                    ss = _slugify(str(t))
+                    if ss:
+                        vt.add(ss)
+                for p in (tdata.get("performers") or []):
+                    ss = _slugify(str(p))
+                    if ss:
+                        vp.add(ss)
+            except Exception:
+                pass
         return vt, vp
 
     pre_filter_count = len(files)
@@ -7877,19 +7076,28 @@ def get_library(
                 if not isinstance(relp, str) or not relp:
                     continue
                 try:
-                    fp = safe_join(root, relp)
-                    tf = _tags_file(fp)
-                    if not tf.exists():
-                        continue
-                    tdata = json.loads(tf.read_text())
-                    for t in (tdata.get("tags") or []):
+                    db_tags, db_perfs = _current_media_lists(relp)
+                    for t in db_tags:
                         ss = _slugify(str(t))
                         if ss:
                             new_by_tag.setdefault(ss, set()).add(relp)
-                    for pslug in (tdata.get("performers") or []):
-                        ss = _slugify(str(pslug))
+                    for performer in db_perfs:
+                        ss = _slugify(str(performer))
                         if ss:
                             new_by_perf.setdefault(ss, set()).add(relp)
+                    if _sidecar_reads_enabled():
+                        fp = safe_join(root, relp)
+                        tf = _tags_file(fp)
+                        if tf.exists():
+                            tdata = json.loads(tf.read_text())
+                            for t in (tdata.get("tags") or []):
+                                ss = _slugify(str(t))
+                                if ss:
+                                    new_by_tag.setdefault(ss, set()).add(relp)
+                            for pslug in (tdata.get("performers") or []):
+                                ss = _slugify(str(pslug))
+                                if ss:
+                                    new_by_perf.setdefault(ss, set()).add(relp)
                 except Exception:
                     continue
             STATE["_sidecar_index"] = {"built_at": time.time(), "by_tag": new_by_tag, "by_perf": new_by_perf}
@@ -8082,7 +7290,7 @@ def get_library(
             # Sidecar/flags booleans only if requested (can be costly across many files)
             def _ensure_flags(f: dict):
                 try:
-                    needed = any(k in flt_obj for k in ("phash","markers","sprites","heatmaps","subtitles","faces","thumbnail","preview"))
+                    needed = any(k in flt_obj for k in ("phash","markers","sprites","heatmap","thumbnail","preview"))
                     if not needed:
                         return
                     relp = f.get("path") or ""
@@ -8100,14 +7308,8 @@ def get_library(
                             s_sheet, s_json = sprite_sheet_paths(fp)
                             f["sprites"] = s_sheet.exists() and s_json.exists()
                         except Exception: pass
-                    if "heatmaps" in flt_obj and f.get("heatmaps") in (None, ""):
-                        try: f["heatmaps"] = heatmaps_json_exists(fp)
-                        except Exception: pass
-                    if "faces" in flt_obj and f.get("faces") in (None, ""):
-                        try: f["faces"] = faces_exists_check(fp)
-                        except Exception: pass
-                    if "subtitles" in flt_obj and f.get("subtitles") in (None, ""):
-                        try: f["subtitles"] = find_subtitles(fp) is not None
+                    if "heatmap" in flt_obj and f.get("heatmap") in (None, ""):
+                        try: f["heatmap"] = heatmap_json_exists(fp)
                         except Exception: pass
                     if "thumbnail" in flt_obj and f.get("thumbnail") in (None, ""):
                         try: f["thumbnail"] = thumbnails_path(fp).exists()
@@ -8219,7 +7421,7 @@ def get_library(
                     _ensure_metadata_basic(f)
                 if k in ("bitrate", "vcodec", "acodec"):
                     _ensure_bitrate_codecs(f)
-                if k in ("phash","markers","sprites","heatmaps","subtitles","faces","thumbnail","preview"):
+                if k in ("phash","markers","sprites","heatmap","thumbnail","preview"):
                     _ensure_flags(f)
                 # Provide set values for tags/performers to allow include/exclude matching
                 if k in ("tags", "performers"):
@@ -8883,7 +8085,7 @@ def api_report_previews(
             "previews": _file_nonempty(_preview_concat_path(v)),
             "sprites": s_sheet.exists() and s_json.exists(),
             "markers": scenes_json_exists(v),
-            "heatmaps": heatmaps_json_exists(v),
+            "heatmap": heatmap_json_exists(v),
             "phash": phash_path(v).exists(),
         }
     records: list[dict] = []
@@ -8899,7 +8101,7 @@ def api_report_previews(
             "preview": bool(f.get("previews")),
             "sprites": bool(f.get("sprites")),
             "markers": bool(f.get("markers")),
-            "heatmaps": bool(f.get("heatmaps")),
+            "heatmap": bool(f.get("heatmap")),
             "phash": bool(f.get("phash")),
         })
     total = len(records)
@@ -8928,35 +8130,6 @@ _PERFORMERS_INDEX: dict[str, set[str]] = {}  # name -> set(paths)
 _PERFORMERS_SCAN_IN_PROGRESS: bool = False
 _PERFORMERS_SCAN_REQUESTED_AT: float | None = None
 _PERFORMERS_INDEX_LOCK = threading.Lock()
-
-# Persistent on-disk incremental index (optional). We store per-file performer arrays + mtime
-# to avoid reparsing unchanged metadata sidecars. This greatly reduces cold-start overhead
-# for large libraries while always returning accurate counts.
-def _performers_index_path() -> Path:
-    """Legacy path for the standalone performers index (pre-consolidation).
-    Kept for migration; new writes go into _MEDIA_ATTR file.
-    """
-    root = STATE.get("root") or Path.cwd()
-    return Path(root) / ".media_player_performers_index.json"
-
-def _load_performers_index() -> dict:
-    """Load legacy performers index if present (for one-time migration)."""
-    p = _performers_index_path()
-    if not p.exists() or p.stat().st_size < 8:
-        return {"files": {}, "version": 1}
-    try:
-        raw = json.loads(p.read_text())
-        if isinstance(raw, dict):
-            files = raw.get("files") or {}
-            if isinstance(files, dict):
-                return {"files": files, "version": raw.get("version", 1)}
-    except Exception:
-        pass
-    return {"files": {}, "version": 1}
-
-def _save_performers_index(_idx: dict) -> None:  # deprecated no-op (retain for backward calls)
-    # We now persist performers per-file lists inside _MEDIA_ATTR; keep silent compatibility.
-    return None
 
 # -- Incremental index mutation helpers (avoid full sidecar rescan on every mutation) --
 _PERFORMERS_LAST_SCAN_STATS: dict[str, Any] | None = None
@@ -9097,55 +8270,34 @@ def _load_performers_sidecars() -> None:
     Uses a persisted index file to avoid reparsing unchanged JSON. Always merges registry
     and media-attr store so counts are accurate each call.
     """
-    global _PERFORMERS_CACHE_TS, _PERFORMERS_INDEX
+    global _PERFORMERS_CACHE_TS, _PERFORMERS_INDEX, _PERFORMERS_LAST_SCAN_STATS
     if STATE.get("root") is None:
         return
     root = Path(STATE["root"]).resolve()
     t_start = time.time()
-    # Ensure media-attr is loaded and import any legacy index into it once
+    if not _sidecar_reads_enabled():
+        try:
+            _load_media_attr()
+        except Exception:
+            pass
+        _PERFORMERS_INDEX = {}
+        for rel, ent in (_MEDIA_ATTR or {}).items():
+            performers = (ent or {}).get("performers") or []
+            rel_str = str(rel)
+            for nm in performers:
+                if not isinstance(nm, str):
+                    continue
+                norm = _normalize_performer(nm)
+                if not norm:
+                    continue
+                _PERFORMERS_INDEX.setdefault(norm, set()).add(rel_str)
+                _PERFORMERS_CACHE.setdefault(norm, {"name": nm, "tags": []})
+        _PERFORMERS_CACHE_TS = time.time()
+        _PERFORMERS_LAST_SCAN_STATS = {"source": "db", "duration_sec": 0.0, "files_scanned": 0}
+        return
+    # Ensure media-attr is loaded before scanning
     try:
         _load_media_attr()
-    except Exception:
-        pass
-    # One-time migration from legacy standalone index file
-    try:
-        leg = _load_performers_index()  # legacy structure {files:{rel:{mtime_ns, performers}}}
-        files_map_legacy: dict = leg.get("files", {}) if isinstance(leg, dict) else {}
-        if files_map_legacy:
-            migrated_rels: set[str] = set()
-            for rel, entry in files_map_legacy.items():
-                try:
-                    names = entry.get("performers") or []
-                    mns = entry.get("mtime_ns") or 0
-                    ent = _MEDIA_ATTR.get(rel)
-                    if not ent:
-                        ent = {"performers": [], "tags": []}
-                        _MEDIA_ATTR[rel] = ent
-                    # Merge legacy sidecar into unified fields
-                    merged = (ent.get("performers") or []) + [str(n) for n in names if isinstance(n, str)]
-                    seen: set[str] = set(); perf_out: list[str] = []
-                    for nm in merged:
-                        k = str(nm).lower().strip()
-                        if k and k not in seen:
-                            seen.add(k); perf_out.append(str(nm).strip())
-                    ent["performers"] = perf_out[:500]
-                    if isinstance(mns, (int, float)):
-                        try:
-                            ent["mtime_ns"] = int(mns) # type: ignore
-                        except Exception:
-                            pass
-                    migrated_rels.add(rel)
-                except Exception:
-                    pass
-            if migrated_rels:
-                _save_media_attr(migrated_rels)
-            # After migration, remove legacy file to avoid confusion
-            try:
-                p = _performers_index_path()
-                if p.exists():
-                    p.unlink(missing_ok=True)  # type: ignore[call-arg]
-            except Exception:
-                pass
     except Exception:
         pass
     # Rebuild in-memory structures fresh each call (cheap)
@@ -9288,7 +8440,6 @@ def _load_performers_sidecars() -> None:
     _PERFORMERS_CACHE_TS = t_start
     try:
         duration_ms = round((time.time() - t_start) * 1000, 2)
-        global _PERFORMERS_LAST_SCAN_STATS
         _PERFORMERS_LAST_SCAN_STATS = {
             "videos": len(videos),
             "changed": changed,
@@ -9404,13 +8555,18 @@ def api_performers(
     t_l0 = _time.perf_counter() if _time else None
     # Deprecated: no retro-normalization; keep whatever box shape was stored
     items = _list_performers(search)
-    image_filter = (image or "any").strip().lower()
+    def _param_value(val, default="any"):
+        if isinstance(val, str):
+            return val
+        return getattr(val, "default", default)
+
+    image_filter = (_param_value(image) or "any").strip().lower()
     if image_filter not in ("any", "with", "without"):
         image_filter = "any"
     if image_filter != "any":
         want_image = image_filter == "with"
         items = [item for item in items if bool(item.get("has_image")) is want_image]
-    face_filter = (face or "any").strip().lower()
+    face_filter = (_param_value(face) or "any").strip().lower()
     if face_filter not in ("any", "with", "without"):
         face_filter = "any"
     if face_filter != "any":
@@ -10976,10 +10132,8 @@ _REPORT_ARTIFACT_KEY_MAP = {
     "metadata": "metadata",
     "thumbnail": "thumbnails",
     "preview": "previews",
-    "subtitles": "subtitles",
-    "faces": "faces",
     "sprites": "sprites",
-    "heatmaps": "heatmaps",
+    "heatmap": "heatmap",
     "phash": "phash",
     "markers": "markers",
 }
@@ -11037,14 +10191,10 @@ def _filesystem_artifact_counts(base: Path, recursive: bool) -> tuple[dict[str, 
             s_sheet, s_json = sprite_sheet_paths(v)
             if s_sheet.exists() and s_json.exists():
                 counts["sprites"] += 1
-            if heatmaps_json_exists(v):
-                counts["heatmaps"] += 1
+            if heatmap_json_exists(v):
+                counts["heatmap"] += 1
             if phash_path(v).exists():
                 counts["phash"] += 1
-            if faces_exists_check(v):
-                counts["faces"] += 1
-            if find_subtitles(v):
-                counts["subtitles"] += 1
         except Exception:
             continue
     return counts, len(vids)
@@ -11836,7 +10986,6 @@ def api_performers_index_stats():
     """Expose debug/stats about the performers incremental index for troubleshooting.
 
     Updated unified schema: per file we persist {performers:[], tags:[], mtime:int} only.
-    Legacy 'sidecar_entries' renamed to 'mtime_entries'.
     """
     try:
         with _PERFORMERS_INDEX_LOCK:
@@ -11850,7 +10999,6 @@ def api_performers_index_stats():
             "performer_keys": len(_PERFORMERS_INDEX),
             "cache_size": len(_PERFORMERS_CACHE),
             "last_scan": _PERFORMERS_LAST_SCAN_STATS,
-            "legacy_index_removed": not _performers_index_path().exists(),
         }
         return api_success({"index_stats": stats})
     except Exception as e:
@@ -12175,13 +11323,21 @@ def thumbnail_head(path: str = Query(...)):
     root = Path(directory)
     target = root / name
     thumbnail = thumbnails_path(target)
-    if not thumbnail.exists():
-        raise_api_error("thumbnail not found", status_code=404)
-    return Response(status_code=200, media_type="image/jpeg", headers={
+    exists = thumbnail.exists()
+    headers = {
         "Cache-Control": "no-store, max-age=0",
         "Pragma": "no-cache",
         "Expires": "0",
-    })
+        "X-Thumbnail-Exists": "1" if exists else "0",
+    }
+    if exists:
+        try:
+            stat = thumbnail.stat()
+            headers["X-Thumbnail-Mtime"] = str(int(stat.st_mtime))
+            headers["X-Thumbnail-Size"] = str(int(stat.st_size))
+        except Exception:
+            pass
+    return Response(status_code=200, media_type="image/jpeg", headers=headers)
 
 
 @api.head("/thumbnail")
@@ -13179,16 +12335,6 @@ def markers_store_get(path: str = Query(...)):
             data = json.loads(j.read_text())
         except Exception:
             data = {"raw": j.read_text(errors="ignore")}
-    else:
-        # Legacy fallback: markers.json (array of {time})
-        legacy = artifact_dir(fp) / f"{fp.stem}.markers.json"
-        if legacy.exists():
-            try:
-                arr = json.loads(legacy.read_text())
-                if isinstance(arr, list):
-                    data = {"markers": arr}
-            except Exception:
-                data = {"raw": legacy.read_text(errors="ignore")}
     if data is None:
         raise_api_error("Markers not found", status_code=404)
     return api_success(data)
@@ -13198,9 +12344,6 @@ def markers_store_head(path: str = Query(...)):
     fp = safe_join(STATE["root"], path)
     j = scenes_json_path(fp)
     if j.exists():
-        return Response(status_code=200, media_type="application/json")
-    legacy = artifact_dir(fp) / f"{fp.stem}.markers.json"
-    if legacy.exists():
         return Response(status_code=200, media_type="application/json")
     raise_api_error("Markers not found", status_code=404)
 
@@ -13321,7 +12464,7 @@ async def markers_clear(request: Request, path: str | None = Query(default=None)
             targets.append(Path(directory) / name)
     else:
         # Global delete: collect known scene artifact files/directories
-        patterns = (f"*{SUFFIX_SCENES_JSON}", "*.markers.json")
+        patterns = (f"*{SUFFIX_SCENES_JSON}",)
         for patt in patterns:
             for p in root.rglob(patt):
                 targets.append(p)
@@ -13353,7 +12496,7 @@ async def markers_clear(request: Request, path: str | None = Query(default=None)
             resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
             # Direct artifact files (already resolved to JSON sidecars)
             candidate_name = resolved.name
-            if candidate_name.endswith(SUFFIX_SCENES_JSON) or candidate_name.endswith(".markers.json"):
+            if candidate_name.endswith(SUFFIX_SCENES_JSON):
                 if resolved.exists():
                     try:
                         resolved.unlink()
@@ -13846,31 +12989,31 @@ def sprites_list_head(path: str = Query(default=""), recursive: bool = Query(def
     })
 
 
-# --- Heatmaps (brightness/motion timeline) ---
-@api.get("/heatmaps")
-def heatmaps_get(path: str = Query(...)):
-    """Unified heatmaps fetch: return PNG if present, else JSON payload, else 204."""
+# --- Heatmap (brightness/motion timeline) ---
+@api.get("/heatmap")
+def heatmap_get(path: str = Query(...)):
+    """Unified heatmap fetch: return PNG if present, else JSON payload, else 204."""
     fp = safe_join(STATE["root"], path)
-    p = heatmaps_png_path(fp)
+    p = heatmap_png_path(fp)
     if p.exists():
         return FileResponse(str(p), media_type="image/png")
-    j = heatmaps_json_path(fp)
+    j = heatmap_json_path(fp)
     if j.exists():
         try:
             data = json.loads(j.read_text())
         except Exception:
             data = {"raw": j.read_text(errors="ignore")}
-        return api_success({"heatmaps": data})
+        return api_success({"heatmap": data})
     # No content
     return Response(status_code=204, media_type="application/octet-stream")
 
-@api.head("/heatmaps")
-def heatmaps_head(path: str = Query(...)):
+@api.head("/heatmap")
+def heatmap_head(path: str = Query(...)):
     fp = safe_join(STATE["root"], path)
-    p = heatmaps_png_path(fp)
+    p = heatmap_png_path(fp)
     if p.exists():
         return Response(status_code=200, media_type="image/png")
-    j = heatmaps_json_path(fp)
+    j = heatmap_json_path(fp)
     if j.exists():
         return Response(status_code=200, media_type="application/json")
     return Response(status_code=204)
@@ -13878,11 +13021,11 @@ def heatmaps_head(path: str = Query(...)):
 
 
 
-@api.post("/heatmaps/create")
-def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=True), force: bool = Query(default=False), priority: bool = Query(default=False)):
+@api.post("/heatmap/create")
+def heatmap_create(path: str = Query(...), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=True), force: bool = Query(default=False), priority: bool = Query(default=False)):
     fp = safe_join(STATE["root"], path)
     # Heatmap sampling uses ffmpeg signalstats; block if missing
-    _require_ffmpeg_or_error("heatmaps generation")
+    _require_ffmpeg_or_error("heatmap generation")
     def _do():
         jid = getattr(JOB_CTX, "jid", None)
         def _pcb(i: int, n: int):
@@ -13891,21 +13034,21 @@ def heatmaps_create(path: str = Query(...), interval: float = Query(default=5.0)
                     _set_job_progress(jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
                 except Exception:
                     pass
-        d = compute_heatmaps(fp, float(interval), str(mode), bool(png), progress_cb=_pcb)
-        return api_success({"created": True, "path": str(heatmaps_json_path(fp)), "samples": len(d.get("samples", []))})
+        d = compute_heatmap(fp, float(interval), str(mode), bool(png), progress_cb=_pcb)
+        return api_success({"created": True, "path": str(heatmap_json_path(fp)), "samples": len(d.get("samples", []))})
     try:
-        return _wrap_job("heatmaps", str(fp.relative_to(STATE["root"])), _do, priority=bool(priority))
+        return _wrap_job("heatmap", str(fp.relative_to(STATE["root"])), _do, priority=bool(priority))
     except Exception as e:
-        raise_api_error(f"heatmaps failed: {e}", status_code=500)
+        raise_api_error(f"heatmap failed: {e}", status_code=500)
 
 
-@api.post("/heatmaps/create/batch")
-def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query(default=True), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=False), force: bool = Query(default=False), only_missing: bool = Query(default=True)):
+@api.post("/heatmap/create/batch")
+def heatmap_create_batch(path: str = Query(default=""), recursive: bool = Query(default=True), interval: float = Query(default=5.0), mode: str = Query(default="both"), png: bool = Query(default=False), force: bool = Query(default=False), only_missing: bool = Query(default=True)):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
-    _require_ffmpeg_or_error("heatmaps generation")
-    sup_jid = _new_job("heatmaps-batch", str(base))
+    _require_ffmpeg_or_error("heatmap generation")
+    sup_jid = _new_job("heatmap-batch", str(base))
     _start_job(sup_jid)
     def _worker():
         try:
@@ -13918,12 +13061,12 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
             threads: list[threading.Thread] = []
             def _process(p: Path):
                 try:
-                    if only_missing and heatmaps_json_exists(p):
+                    if only_missing and heatmap_json_exists(p):
                         return
-                    jid = _new_job("heatmaps", str(p.relative_to(STATE["root"])) )
+                    jid = _new_job("heatmap", str(p.relative_to(STATE["root"])) )
                     _start_job(jid)
                     try:
-                        lk = _file_task_lock(p, "heatmaps")
+                        lk = _file_task_lock(p, "heatmap")
                         with JOB_RUN_SEM:
                             with lk:
                                 def _pcb(i: int, n: int, _jid=jid):
@@ -13931,7 +13074,7 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
                                         _set_job_progress(_jid, total=max(1, int(n)), processed_set=max(0, min(int(i), int(n))))
                                     except Exception:
                                         pass
-                                compute_heatmaps(p, float(interval), str(mode), bool(png), progress_cb=_pcb)
+                                compute_heatmap(p, float(interval), str(mode), bool(png), progress_cb=_pcb)
                         _finish_job(jid, None)
                     except Exception as e:
                         _finish_job(jid, str(e))
@@ -13941,12 +13084,12 @@ def heatmaps_create_batch(path: str = Query(default=""), recursive: bool = Query
             _finish_job(sup_jid, None)
         except Exception as e:
             _finish_job(sup_jid, str(e))
-    _start_worker_once(f"batch-heatmaps-{sup_jid}", _worker)
+    _start_worker_once(f"batch-heatmap-{sup_jid}", _worker)
     return api_success({"started": True, "job": sup_jid})
 
 
-@api.delete("/heatmaps/delete")
-async def heatmaps_delete(request: Request, path: str | None = Query(default=None)):
+@api.delete("/heatmap/delete")
+async def heatmap_delete(request: Request, path: str | None = Query(default=None)):
     """Delete heatmap artifacts (JSON + optional PNG) for specific files or globally."""
 
     body_paths: list[str] = []
@@ -13972,7 +13115,7 @@ async def heatmaps_delete(request: Request, path: str | None = Query(default=Non
             targets.append(Path(directory) / name)
     else:
         # Global delete: collect all heatmap artifacts
-        patterns = (f"*{SUFFIX_HEATMAPS_JSON}", f"*{SUFFIX_HEATMAPS_PNG}")
+        patterns = (f"*{SUFFIX_HEATMAP_JSON}", f"*{SUFFIX_HEATMAP_PNG}")
         for patt in patterns:
             for p in root.rglob(patt):
                 targets.append(p)
@@ -13984,7 +13127,7 @@ async def heatmaps_delete(request: Request, path: str | None = Query(default=Non
         try:
             resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
             name = str(resolved)
-            if name.endswith(SUFFIX_HEATMAPS_JSON) or name.endswith(SUFFIX_HEATMAPS_PNG):
+            if name.endswith(SUFFIX_HEATMAP_JSON) or name.endswith(SUFFIX_HEATMAP_PNG):
                 if resolved.exists():
                     try:
                         resolved.unlink()
@@ -13992,8 +13135,8 @@ async def heatmaps_delete(request: Request, path: str | None = Query(default=Non
                     except Exception:
                         errors += 1
                 continue
-            j = heatmaps_json_path(resolved)
-            png = heatmaps_png_path(resolved)
+            j = heatmap_json_path(resolved)
+            png = heatmap_png_path(resolved)
             if j.exists():
                 try:
                     j.unlink(); deleted += 1
@@ -14010,15 +13153,15 @@ async def heatmaps_delete(request: Request, path: str | None = Query(default=Non
 
     mode = "single" if path else ("batch" if body_paths else "global")
     if mode == "single" and deleted == 0 and errors == 0:
-        raise_api_error("Heatmaps not found", status_code=404)
+        raise_api_error("Heatmap not found", status_code=404)
     try:
-        _artifact_db_handle_deletions("heatmaps", videos_for_refresh, global_delete=global_delete)
+        _artifact_db_handle_deletions("heatmap", videos_for_refresh, global_delete=global_delete)
     except Exception:
         pass
     return api_success({"deleted": deleted, "errors": errors, "mode": mode})
 
-@api.delete("/heatmaps/delete/batch")
-def heatmaps_delete_batch(path: str = Query(default=""), recursive: bool = Query(default=True)):
+@api.delete("/heatmap/delete/batch")
+def heatmap_delete_batch(path: str = Query(default=""), recursive: bool = Query(default=True)):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
@@ -14028,8 +13171,8 @@ def heatmaps_delete_batch(path: str = Query(default=""), recursive: bool = Query
     it = base.rglob("*") if recursive else base.iterdir()
     for p in it:
         if _is_original_media_file(p, base):
-            j = heatmaps_json_path(p)
-            png = heatmaps_png_path(p)
+            j = heatmap_json_path(p)
+            png = heatmap_png_path(p)
             try:
                 if j.exists():
                     j.unlink()
@@ -14044,14 +13187,14 @@ def heatmaps_delete_batch(path: str = Query(default=""), recursive: bool = Query
             except Exception:
                 pass
     try:
-        _artifact_db_handle_deletions("heatmaps", videos_for_refresh, global_delete=global_delete)
+        _artifact_db_handle_deletions("heatmap", videos_for_refresh, global_delete=global_delete)
     except Exception:
         pass
     return api_success({"deleted": deleted})
 
 
-@api.get("/heatmaps/list")
-def heatmaps_list(path: str = Query(default=""), recursive: bool = Query(default=True)):
+@api.get("/heatmap/list")
+def heatmap_list(path: str = Query(default=""), recursive: bool = Query(default=True)):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
@@ -14062,14 +13205,14 @@ def heatmaps_list(path: str = Query(default=""), recursive: bool = Query(default
         if _is_original_media_file(p, base):
             total += 1
             try:
-                if heatmaps_json_exists(p):
+                if heatmap_json_exists(p):
                     have += 1
             except Exception:
                 pass
     return api_success({"total": total, "have": have, "missing": max(0, total - have)})
 
-@api.head("/heatmaps/list")
-def heatmaps_list_head(path: str = Query(default=""), recursive: bool = Query(default=True)):
+@api.head("/heatmap/list")
+def heatmap_list_head(path: str = Query(default=""), recursive: bool = Query(default=True)):
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
@@ -14080,7 +13223,7 @@ def heatmaps_list_head(path: str = Query(default=""), recursive: bool = Query(de
         if _is_original_media_file(p, base):
             total += 1
             try:
-                if heatmaps_json_exists(p):
+                if heatmap_json_exists(p):
                     have += 1
             except Exception:
                 pass
@@ -14398,257 +13541,6 @@ async def metadata_delete(request: Request, path: str | None = Query(default=Non
     print(f"[metadata.delete] result={result}", flush=True)
     return api_success(result)
 
-
-@api.get("/subtitles/get")
-def subtitles_get(path: str = Query(...)):
-    fp = safe_join(STATE["root"], path)
-    s = find_subtitles(fp)
-    if not s:
-        raise_api_error("Subtitles not found", status_code=404)
-    return FileResponse(str(s), media_type="text/plain")
-
-@api.head("/subtitles/get")
-def subtitles_head(path: str = Query(...)):
-    fp = safe_join(STATE["root"], path)
-    s = find_subtitles(fp)
-    if not s or not Path(s).exists():
-        raise_api_error("Subtitles not found", status_code=404)
-    return Response(status_code=200, media_type="text/plain")
-
-@api.get("/subtitles")
-def subtitles_get_canonical(path: str = Query(...)):
-    return subtitles_get(path)  # type: ignore[misc]
-
-@api.head("/subtitles")
-def subtitles_head_canonical(path: str = Query(...)):
-    return subtitles_head(path)  # type: ignore[misc]
-
-
-@api.get("/subtitles/list")
-def subtitles_list(path: str = Query(default=""), recursive: bool = Query(default=True)):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    total = 0
-    have = 0
-    it = base.rglob("*") if recursive else base.iterdir()
-    for p in it:
-        if _is_original_media_file(p, base):
-            total += 1
-            if find_subtitles(p):
-                have += 1
-    return api_success({"total": total, "have": have, "missing": max(0, total - have)})
-
-@api.head("/subtitles/list")
-def subtitles_list_head(path: str = Query(default=""), recursive: bool = Query(default=True)):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    total = 0
-    have = 0
-    it = base.rglob("*") if recursive else base.iterdir()
-    for p in it:
-        if _is_original_media_file(p, base):
-            total += 1
-            if find_subtitles(p):
-                have += 1
-    return Response(status_code=200, headers={
-        "X-Total": str(total),
-        "X-Have": str(have),
-        "X-Missing": str(max(0, total - have)),
-    })
-
-
-@api.post("/subtitles/create")
-def subtitles_create(
-    path: str = Query(...),
-    model: str = Query(default="small"),
-    overwrite: bool = Query(default=False),
-    language: str = Query(default="en"),
-    translate: bool = Query(default=False),
-    priority: bool = Query(default=False),
-):
-    fp = safe_join(STATE["root"], path)
-    out_dir = artifact_dir(fp)
-    out_file = out_dir / f"{fp.stem}{SUFFIX_SUBTITLES_SRT}"
-    if out_file.exists() and not overwrite and not _is_stub_subtitles_file(out_file):
-        return api_success({"created": False, "reason": "exists"})
-    class _Ns:
-        subtitles_backend = "auto"
-        subtitles_model = model
-        subtitles_language = language or "en"
-        subtitles_translate = bool(translate)
-        force = True
-        compute_type = None
-    def _do():
-        # Map fractional progress from backend to integer steps [0..100]
-        jid = getattr(JOB_CTX, "jid", None)
-        if jid:
-            try:
-                _set_job_progress(jid, total=100, processed_set=0)
-            except Exception:
-                pass
-        def _pcb(frac: float):
-            if jid:
-                try:
-                    p = int(max(0.0, min(1.0, float(frac))) * 100)
-                    _set_job_progress(jid, total=100, processed_set=p)
-                except Exception:
-                    pass
-        generate_subtitles(fp, out_file, model=_Ns.subtitles_model, language=_Ns.subtitles_language, translate=_Ns.subtitles_translate, progress_cb=_pcb)
-        return api_success({"created": True, "path": str(out_file)})
-    try:
-        return _wrap_job("subtitles", str(fp.relative_to(STATE["root"])), _do, priority=bool(priority))
-    except Exception as e:
-        raise_api_error(f"Subtitle generation failed: {e}", status_code=500)
-
-
-@api.get("/subtitles/backend")
-def subtitles_backend_info():
-    """Return which backend would be used for subtitles plus a few diagnostic flags.
-
-    Helps explain 'instant completion' when the stub backend or FFPROBE_DISABLE shortcut is active.
-    """
-    be = detect_backend("auto")
-    cpp_bin_path, cpp_model_path = _resolve_whisper_cpp_paths()
-    return api_success({
-        "backend": be,
-        "ffprobe_disable": bool(os.environ.get("FFPROBE_DISABLE")),
-        "has_faster_whisper": _safe_importable("faster_whisper"),
-        "has_whisper": _safe_importable("whisper"),
-        "whisper_cpp_bin": str(cpp_bin_path) if cpp_bin_path else None,
-        "whisper_cpp_model": str(cpp_model_path) if cpp_model_path else None,
-    })
-
-
-@api.delete("/subtitles/delete")
-def subtitles_delete(path: str = Query(...)):
-    fp = safe_join(STATE["root"], path)
-    s = find_subtitles(fp)
-    if s and s.exists():
-        try:
-            s.unlink()
-            try:
-                _artifact_db_handle_deletions("subtitles", [fp], global_delete=False)
-            except Exception:
-                pass
-            return api_success({"deleted": True})
-        except Exception as e:
-            raise_api_error(f"Failed to delete subtitles: {e}", status_code=500)
-    raise_api_error("Subtitles not found", status_code=404)
-
-
-@api.post("/subtitles/create/batch")
-def subtitles_create_batch(
-    path: str = Query(default=""),
-    recursive: bool = Query(default=True),
-    model: str = Query(default="small"),
-    overwrite: bool = Query(default=False),
-    language: str = Query(default="en"),
-    translate: bool = Query(default=False),
-):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    sup_jid = _new_job("subtitles-batch", str(base))
-    _start_job(sup_jid)
-    def _worker():
-        try:
-            vids: list[Path] = []
-            it = base.rglob("*") if recursive else base.iterdir()
-            for p in it:
-                if _is_original_media_file(p, base):
-                    vids.append(p)
-            _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            threads: list[threading.Thread] = []
-            def _process(p: Path):
-                try:
-                    out_file = artifact_dir(p) / f"{p.stem}{SUFFIX_SUBTITLES_SRT}"
-                    if out_file.exists() and not overwrite and not _is_stub_subtitles_file(out_file):
-                        return
-                    jid = _new_job("subtitles", str(p.relative_to(STATE["root"])) )
-                    _start_job(jid)
-                    try:
-                        lk = _file_task_lock(p, "subtitles")
-                        with JOB_RUN_SEM:
-                            with lk:
-                                def _pcb(frac: float, _jid=jid):
-                                    try:
-                                        p = int(max(0.0, min(1.0, float(frac))) * 100)
-                                        _set_job_progress(_jid, total=100, processed_set=p)
-                                    except Exception:
-                                        pass
-                                generate_subtitles(p, out_file, model=model, language=(language or "en"), translate=bool(translate), progress_cb=_pcb)
-                        _finish_job(jid, None)
-                    except Exception as e:
-                        _finish_job(jid, str(e))
-                finally:
-                    _set_job_progress(sup_jid, processed_inc=1)
-            _run_batch_items(vids, _process)
-            _finish_job(sup_jid, None)
-        except Exception as e:
-            _finish_job(sup_jid, str(e))
-    _start_worker_once(f"batch-subtitles-{sup_jid}", _worker)
-    return api_success({"started": True, "job": sup_jid})
-
-
-@api.delete("/subtitles/delete/batch")
-async def subtitles_delete_batch(request: Request, path: str = Query(default=""), recursive: bool = Query(default=True)):
-    body_paths: list[str] = []
-    try:
-        if request.headers.get("content-type", "").startswith("application/json"):
-            payload = await request.json()
-            if isinstance(payload, dict):
-                arr = payload.get("paths")
-                if isinstance(arr, list):
-                    body_paths = [str(p) for p in arr if isinstance(p, str)]
-    except Exception:
-        body_paths = []
-
-    deleted = 0
-    videos_for_refresh: list[Path] = []
-    global_delete = False
-    if body_paths:
-        targets: list[Path] = []
-        for rel in body_paths:
-            try:
-                name, directory = _name_and_dir(rel)
-            except Exception:
-                continue
-            targets.append(Path(directory) / name)
-        for fp in targets:
-            try:
-                s = find_subtitles(fp)
-                if s and s.exists():
-                    s.unlink()
-                    deleted += 1
-            except Exception:
-                continue
-            videos_for_refresh.append(fp)
-    else:
-        base = safe_join(STATE["root"], path) if path else STATE["root"]
-        if not base.exists() or not base.is_dir():
-            raise_api_error("Not found", status_code=404)
-        it = base.rglob("*") if recursive else base.iterdir()
-        global_delete = not bool(path)
-        for p in it:
-            if _is_original_media_file(p, base):
-                s = find_subtitles(p)
-                if s and s.exists():
-                    try:
-                        s.unlink()
-                        deleted += 1
-                        if not global_delete:
-                            videos_for_refresh.append(p)
-                    except Exception:
-                        pass
-    try:
-        _artifact_db_handle_deletions("subtitles", videos_for_refresh, global_delete=global_delete)
-    except Exception:
-        pass
-    return api_success({"deleted": deleted})
-
-
 # --- Root/testpath ---
 @api.get("/root")
 def get_root():
@@ -14728,11 +13620,9 @@ def media_rename(
         SUFFIX_SCENES_JSON,
         SUFFIX_SPRITES_JPG,
         SUFFIX_SPRITES_JSON,
-        SUFFIX_HEATMAPS_JSON,
-        SUFFIX_HEATMAPS_PNG,
-        SUFFIX_FACES_JSON,
+        SUFFIX_HEATMAP_JSON,
+        SUFFIX_HEATMAP_PNG,
         SUFFIX_PREVIEW_WEBM,
-        SUFFIX_SUBTITLES_SRT,
     ]
     # Also include scenes directory if present
     scenes_dirname_old = f"{src_stem}.scenes"
@@ -14826,11 +13716,9 @@ def media_delete(path: str = Query(..., description="Relative path of the media 
         SUFFIX_SCENES_JSON,
         SUFFIX_SPRITES_JPG,
         SUFFIX_SPRITES_JSON,
-        SUFFIX_HEATMAPS_JSON,
-        SUFFIX_HEATMAPS_PNG,
-        SUFFIX_FACES_JSON,
+        SUFFIX_HEATMAP_JSON,
+        SUFFIX_HEATMAP_PNG,
         SUFFIX_PREVIEW_WEBM,
-        SUFFIX_SUBTITLES_SRT,
     ]
     scenes_dirname = f"{src_stem}.scenes"
     deleted: list[str] = []
@@ -14943,10 +13831,6 @@ def test_path(path: str = Query(...)):
     "mode": oct(p.stat().st_mode & 0o777) if p.exists() else None,
     "owner": (p.owner() if p.exists() else None) if hasattr(p, "owner") else None,
     })
-
-# TODO @copilot v2 reference, unnecessary backwards compatibility
-# --- Stats --- map v2 -> v1 shape
-
 
 # --- Faces API ---
 @api.get("/faces/get")
@@ -15089,670 +13973,6 @@ def _compute_fallback_embedding_for_box(video: Path, t: float, box: List[int]) -
         except Exception:
             pass
     return []
-
-
-@api.post("/faces/upload")
-def faces_upload(
-    path: str = Query(...),
-    compute_embeddings: bool = Query(default=True),
-    overwrite: bool = Query(default=True),
-    payload: _FacesUpload = Body(...),
-):
-    """
-    Accept faces detected client-side and write a faces.json artifact.
-    Optionally compute lightweight embeddings for detections missing an embedding.
-    """
-    if STATE.get("root") is None:
-        raise_api_error("Root not set", status_code=400)
-    fp = safe_join(STATE["root"], path)
-    if not fp.exists() or not fp.is_file():
-        raise_api_error("Not found", status_code=404)
-    faces_in = list(payload.faces or [])
-    if not faces_in:
-        raise_api_error("No faces provided", status_code=400)
-    # Ensure each has required keys and compute missing embeddings if requested
-    out_faces: List[Dict[str, Any]] = []
-    for f in faces_in:
-        try:
-            t = float(f.get("time", 0.0))
-            box = f.get("box") or []
-            if not (isinstance(box, list) and len(box) == 4):
-                continue
-            emb = f.get("embedding") or []
-            if (not emb) and compute_embeddings:
-                try:
-                    emb = _compute_fallback_embedding_for_box(fp, t, [int(x) for x in box])
-                except Exception:
-                    emb = []
-            out_faces.append({
-                "time": round(t, 3),
-                "box": [int(x) for x in box],
-                "score": float(f.get("score", 1.0) or 1.0),
-                "embedding": list(emb) if isinstance(emb, list) else [],
-            })
-        except Exception:
-            continue
-    # If still no usable embeddings, reject to avoid writing stubs
-    any_emb = False
-    for fc in out_faces:
-        emb = fc.get("embedding")
-        if isinstance(emb, list) and emb:
-            any_emb = True
-            break
-    if not any_emb:
-        raise_api_error("No embeddings present; enable compute_embeddings or include embeddings in payload", status_code=400)
-    # Write artifact
-    out = faces_path(fp)
-    if out.exists() and not overwrite:
-        raise_api_error("faces.json already exists (set overwrite=true to replace)", status_code=409)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    doc = {
-        "faces": out_faces,
-        "backend": payload.backend or "browser",
-        "source": "upload",
-        "stub": False,
-        "uploaded": True,
-        "uploaded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    try:
-        out.write_text(json.dumps(doc, indent=2))
-    except Exception as e:  # noqa: BLE001
-        raise_api_error(f"Failed to write faces: {e}", status_code=500)
-    return api_success({"created": True, "path": str(out), "count": len(out_faces)})
-
-
-@api.post("/faces/create")
-def faces_create(
-    path: str = Query(...),
-    sim_thresh: float = Query(default=0.9),
-    interval: float = Query(default=1.0),
-    scale_factor: float = Query(default=1.2),
-    min_neighbors: int = Query(default=7),
-    min_size_frac: float = Query(default=0.10),
-    backend: str = Query(default="auto", pattern="^(auto|opencv|insightface)$"),
-    background: bool = Query(default=False),
-    priority: bool = Query(default=False),
-):
-    fp = safe_join(STATE["root"], path)
-    # Background mode for UI progress: return immediately with job id and report progress via SSE/polling
-    if background:
-        rel = str(fp.relative_to(STATE["root"]))
-        def _runner():
-            compute_face_embeddings(
-                fp,
-                sim_thresh=sim_thresh,
-                interval=interval,
-                scale_factor=scale_factor,
-                min_neighbors=min_neighbors,
-                min_size_frac=min_size_frac,
-                backend=backend,
-                progress_cb=lambda processed, total: _set_job_progress(jid, total=total if total is not None else None, processed_set=processed),
-            )
-            return {"created": True, "path": str(faces_path(fp))}
-        # create job and start thread
-        jid = _new_job("faces", rel, priority=bool(priority))
-        _start_job(jid)
-        def _bg():
-            try:
-                res = _runner()
-                with JOB_LOCK:
-                    if jid in JOBS:
-                        JOBS[jid]["result"] = res
-                _finish_job(jid, None)
-            except Exception as e:  # noqa: BLE001
-                _finish_job(jid, str(e))
-        threading.Thread(target=_bg, name=f"job-faces-{Path(path).name}", daemon=True).start()
-        return api_success({"job": jid, "queued": True})
-    # Synchronous mode (used by tests and scripts); still emits job progress while running
-    jid = _new_job("faces", str(fp.relative_to(STATE["root"])) , priority=bool(priority))
-    _start_job(jid)
-    try:
-        compute_face_embeddings(
-            fp,
-            sim_thresh=sim_thresh,
-            interval=interval,
-            scale_factor=scale_factor,
-            min_neighbors=min_neighbors,
-            min_size_frac=min_size_frac,
-            backend=backend,
-            progress_cb=lambda processed, total: _set_job_progress(jid, total=total if total is not None else None, processed_set=processed),
-        )
-        _finish_job(jid, None)
-        return api_success({"created": True, "path": str(faces_path(fp))})
-    except Exception as e:
-        _finish_job(jid, str(e))
-        raise_api_error(f"faces failed: {e}", status_code=500)
-
-
-@api.post("/faces/create/batch")
-def faces_create_batch(
-    path: str = Query(default=""),
-    recursive: bool = Query(default=True),
-    sim_thresh: float = Query(default=0.9),
-    interval: float = Query(default=1.0),
-    scale_factor: float = Query(default=1.2),
-    min_neighbors: int = Query(default=7),
-    min_size_frac: float = Query(default=0.10),
-    backend: str = Query(default="auto", pattern="^(auto|opencv|insightface)$"),
-    only_missing: bool = Query(default=True),
-    force: bool = Query(default=False),
-):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    sup_jid = _new_job("faces-batch", str(base))
-    _start_job(sup_jid)
-    # Emit an immediate progress event so the UI gets instant feedback
-    try:
-        _set_job_progress(sup_jid, total=0, processed_set=0)
-    except Exception:
-        pass
-    def _worker():
-        try:
-            vids: list[Path] = []
-            it = base.rglob("*") if recursive else base.iterdir()
-            for p in it:
-                if _is_original_media_file(p, base):
-                    vids.append(p)
-            _set_job_progress(sup_jid, total=len(vids), processed_set=0)
-            threads: list[threading.Thread] = []
-            def _process(p: Path):
-                try:
-                    if (only_missing and not force) and faces_exists_check(p):
-                        return
-                    jid = _new_job("faces", str(p.relative_to(STATE["root"])) )
-                    _start_job(jid)
-                    try:
-                        compute_face_embeddings(
-                            p,
-                            sim_thresh=sim_thresh,
-                            interval=interval,
-                            scale_factor=scale_factor,
-                            min_neighbors=min_neighbors,
-                            min_size_frac=min_size_frac,
-                            backend=backend,
-                            progress_cb=lambda processed, total, _jid=jid: _set_job_progress(_jid, total=total if total is not None else None, processed_set=processed),
-                        )
-                        _finish_job(jid, None)
-                    except Exception as e:
-                        _finish_job(jid, str(e))
-                finally:
-                    _set_job_progress(sup_jid, processed_inc=1)
-            _run_batch_items(vids, _process)
-            _finish_job(sup_jid, None)
-        except Exception as e:
-            _finish_job(sup_jid, str(e))
-    _start_worker_once(f"batch-faces-{sup_jid}", _worker)
-    return api_success({"started": True, "job": sup_jid})
-
-
-@api.delete("/faces/delete")
-async def faces_delete(request: Request, path: str | None = Query(default=None)):
-    body_paths: list[str] = []
-    try:
-        if request.headers.get("content-type", "").startswith("application/json"):
-            payload = await request.json()
-            if isinstance(payload, dict):
-                arr = payload.get("paths")
-                if isinstance(arr, list):
-                    body_paths = [str(p) for p in arr if isinstance(p, str)]
-    except Exception:
-        body_paths = []
-
-    root: Path = STATE["root"]
-    targets: list[Path] = []
-    if path:
-        name, directory = _name_and_dir(path)
-        targets.append(Path(directory) / name)
-    elif body_paths:
-        for rel in body_paths:
-            name, directory = _name_and_dir(rel)
-            targets.append(Path(directory) / name)
-    else:
-        for p in root.rglob(f"*{SUFFIX_FACES_JSON}"):
-            targets.append(p)
-
-    deleted = 0
-    errors = 0
-    videos_for_refresh: list[Path] = []
-    global_delete = not path and not body_paths
-    for candidate in targets:
-        try:
-            resolved = candidate if candidate.is_absolute() else safe_join(root, str(candidate))
-            if str(resolved).endswith(SUFFIX_FACES_JSON):
-                if resolved.exists():
-                    try:
-                        resolved.unlink()
-                        deleted += 1
-                    except Exception:
-                        errors += 1
-                continue
-            fp = resolved
-            art = faces_path(fp)
-            if art.exists():
-                try:
-                    art.unlink()
-                    deleted += 1
-                except Exception:
-                    errors += 1
-            videos_for_refresh.append(fp)
-        except Exception:
-            errors += 1
-
-    mode = "single" if path else ("batch" if body_paths else "global")
-    if mode == "single" and deleted == 0 and errors == 0:
-        raise_api_error("Faces not found", status_code=404)
-    try:
-        _artifact_db_handle_deletions("faces", videos_for_refresh, global_delete=global_delete)
-    except Exception:
-        pass
-    return api_success({"deleted": deleted, "errors": errors, "mode": mode})
-
-@api.delete("/faces/delete/batch")
-def faces_delete_batch(path: str = Query(default=""), recursive: bool = Query(default=True)):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    deleted = 0
-    videos_for_refresh: list[Path] = []
-    global_delete = not bool(path)
-    it = base.rglob("*") if recursive else base.iterdir()
-    for p in it:
-        if _is_original_media_file(p, base):
-            f = faces_path(p)
-            try:
-                if f.exists():
-                    f.unlink()
-                    deleted += 1
-                    if not global_delete:
-                        videos_for_refresh.append(p)
-            except Exception:
-                pass
-    try:
-        _artifact_db_handle_deletions("faces", videos_for_refresh, global_delete=global_delete)
-    except Exception:
-        pass
-    return api_success({"deleted": deleted})
-
-
-@api.get("/faces/list")
-def faces_list(path: str = Query(default=""), recursive: bool = Query(default=True)):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    total = 0
-    have = 0
-    it = base.rglob("*") if recursive else base.iterdir()
-    for p in it:
-        if _is_original_media_file(p, base):
-            total += 1
-            if faces_exists_check(p):
-                have += 1
-    return api_success({"total": total, "have": have, "missing": max(0, total - have)})
-
-@api.head("/faces/list")
-def faces_list_head(path: str = Query(default=""), recursive: bool = Query(default=True)):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    total = 0
-    have = 0
-    it = base.rglob("*") if recursive else base.iterdir()
-    for p in it:
-        if _is_original_media_file(p, base):
-            total += 1
-            try:
-                if faces_exists_check(p):
-                    have += 1
-            except Exception:
-                pass
-    return Response(status_code=200, headers={
-        "X-Total": str(total),
-        "X-Have": str(have),
-        "X-Missing": str(max(0, total - have)),
-    })
-
-
-@api.get("/faces/listing")
-def faces_listing(path: str = Query(default=""), recursive: bool = Query(default=True)):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    out: list[dict] = []
-    it = base.rglob("*") if recursive else base.iterdir()
-    for p in it:
-        if _is_original_media_file(p, base):
-            f = faces_path(p)
-            if not f.exists():
-                continue
-            try:
-                data = json.loads(f.read_text())
-                faces = data.get("faces") or []
-                out.append({"path": str(p.relative_to(STATE["root"])), "count": len(faces)})
-            except Exception:
-                continue
-    return api_success({"videos": out, "count": len(out)})
-
-
-@api.get("/faces/signatures")
-def faces_signatures(path: str = Query(default=""), recursive: bool = Query(default=True)):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    sigs: dict[str, int] = {}
-    by_video: list[dict] = []
-    it = base.rglob("*") if recursive else base.iterdir()
-    for p in it:
-        if _is_original_media_file(p, base):
-            f = faces_path(p)
-            if not f.exists():
-                continue
-            try:
-                data = json.loads(f.read_text())
-                faces = data.get("faces") or []
-                video_sigs: list[str] = []
-                for fc in faces:
-                    emb = fc.get("embedding") or []
-                    if isinstance(emb, list) and emb:
-                        h = hashlib.sha1(
-                            ",".join(str(float(x)) for x in emb).encode("utf-8")
-                        ).hexdigest()
-                    else:
-                        h = "stub"
-                    sigs[h] = sigs.get(h, 0) + 1
-                    video_sigs.append(h)
-                by_video.append({
-                    "path": str(p.relative_to(STATE["root"])),
-                    "signatures": video_sigs,
-                    "count": len(video_sigs),
-                })
-            except Exception:
-                continue
-    return api_success({"signatures": sigs, "videos": by_video})
-
-
-# --- Embed API (re-embed/update embeddings without re-detecting boxes) ---
-@api.post("/embed/update")
-def embed_update(
-    path: str = Query(...),
-    sim_thresh: float = Query(default=0.9),
-    interval: float = Query(default=1.0),
-    scale_factor: float = Query(default=1.2),
-    min_neighbors: int = Query(default=7),
-    min_size_frac: float = Query(default=0.10),
-    backend: str = Query(default="auto", pattern="^(auto|opencv|insightface)$"),
-    overwrite: bool = Query(default=False),
-    background: bool = Query(default=False),
-):
-    """
-    Trigger an embed job for a single file. Produces/updates faces.json.
-
-    Semantics match the 'embed' Task job branch: skips when a valid, non-stub
-    faces.json exists unless overwrite=true; otherwise recomputes and writes.
-    """
-    fp = safe_join(STATE["root"], path)
-    # Background mode returns immediately with a job id
-    if background:
-        rel = str(fp.relative_to(STATE["root"]))
-        prm = {
-            "targets": [rel],
-            "overwrite": bool(overwrite),
-            "sim_thresh": float(sim_thresh),
-            "interval": float(interval),
-            "scale_factor": float(scale_factor),
-            "min_neighbors": int(min_neighbors),
-            "min_size_frac": float(min_size_frac),
-            "backend": str(backend),
-        }
-        jr = JobRequest(task="embed", directory=str(fp.parent), recursive=False, force=bool(overwrite), params=prm)
-        jid = _new_job(jr.task, rel)
-        # Persist request for resume
-        try:
-            with JOB_LOCK:
-                if jid in JOBS:
-                    JOBS[jid]["request"] = jr.dict()
-        except Exception:
-            pass
-        def _runner():
-            with JOB_RUN_SEM:
-                _run_job_worker(jid, jr)
-        threading.Thread(target=_runner, daemon=True).start()
-        return api_success({"job": jid, "queued": True})
-
-    # Synchronous: run now but still track as a job for progress
-    rel = str(fp.relative_to(STATE["root"]))
-    prm = {
-        "targets": [rel],
-        "overwrite": bool(overwrite),
-        "sim_thresh": float(sim_thresh),
-        "interval": float(interval),
-        "scale_factor": float(scale_factor),
-        "min_neighbors": int(min_neighbors),
-        "min_size_frac": float(min_size_frac),
-        "backend": str(backend),
-    }
-    jr = JobRequest(task="embed", directory=str(fp.parent), recursive=False, force=bool(overwrite), params=prm)
-    jid = _new_job(jr.task, rel)
-    # Ensure synchronous execution still respects global job ordering and concurrency limits
-    try:
-        _wait_for_turn(jid)
-        # Acquire per-file task lock when we know the singular target to avoid duplicate work
-        lock_ctx = None
-        targets = (jr.params or {}).get("targets") or []
-        if isinstance(targets, list) and len(targets) == 1:
-            try:
-                target_path = safe_join(STATE["root"], targets[0])
-                lock_ctx = _file_task_lock(target_path, jr.task)
-            except Exception:
-                lock_ctx = None
-        if lock_ctx is not None:
-            with JOB_RUN_SEM:
-                with lock_ctx:
-                    _run_job_worker(jid, jr)
-        else:
-            with JOB_RUN_SEM:
-                _run_job_worker(jid, jr)
-        return api_success({"job": jid, "queued": False, "path": str(faces_path(fp))})
-    except Exception as e:  # noqa: BLE001
-        raise_api_error(f"embed failed: {e}", status_code=500)
-
-
-@api.post("/embed/update/batch")
-def embed_update_batch(
-    path: str = Query(default=""),
-    recursive: bool = Query(default=True),
-    sim_thresh: float = Query(default=0.9),
-    interval: float = Query(default=1.0),
-    scale_factor: float = Query(default=1.2),
-    min_neighbors: int = Query(default=7),
-    min_size_frac: float = Query(default=0.10),
-    backend: str = Query(default="auto", pattern="^(auto|opencv|insightface)$"),
-    only_missing: bool = Query(default=True),
-    overwrite: bool = Query(default=False),
-):
-    base = safe_join(STATE["root"], path) if path else STATE["root"]
-    if not base.exists() or not base.is_dir():
-        raise_api_error("Not found", status_code=404)
-    # Determine targets
-    vids = _find_mp4s(base, recursive)
-    targets: list[str] = []
-    for v in vids:
-        if only_missing and not overwrite:
-            if faces_exists_check(v):
-                continue
-        try:
-            targets.append(str(v.relative_to(STATE["root"])))
-        except Exception:
-            continue
-    # Create a single batch job using the generic worker; it will fan out per target
-    prm = {
-        "targets": targets,
-        "overwrite": bool(overwrite),
-        "sim_thresh": float(sim_thresh),
-        "interval": float(interval),
-        "scale_factor": float(scale_factor),
-        "min_neighbors": int(min_neighbors),
-        "min_size_frac": float(min_size_frac),
-        "backend": str(backend),
-    }
-    jr = JobRequest(task="embed", directory=str(base), recursive=False, force=bool(overwrite), params=prm)
-    jid = _new_job(jr.task, str(base))
-    # Persist request for resume
-    try:
-        with JOB_LOCK:
-            if jid in JOBS:
-                JOBS[jid]["request"] = jr.dict()
-    except Exception:
-        pass
-    def _runner():
-        with JOB_RUN_SEM:
-            _run_job_worker(jid, jr)
-    threading.Thread(target=_runner, daemon=True).start()
-    return api_success({"job": jid, "queued": True, "fileCount": len(targets)})
-
-
-# --- Face crops (image thumbnails for FaceLab) ---
-@api.get("/frame/crop")
-def frame_crop(path: str = Query(...), t: float = Query(...), x: int = Query(...), y: int = Query(...), w: int = Query(...), h: int = Query(...), scale: int = Query(default=128)):
-    """
-    Return a cropped face image at time t from the given box.
-
-    Attempts PIL first for lightweight JPEG/PNG from decoded frame via ffmpeg pipe fallback.
-    """
-    if STATE.get("root") is None:
-        raise_api_error("Root not set", status_code=400)
-    fp = safe_join(STATE["root"], path)
-    if not fp.exists():
-        raise_api_error("Not found", status_code=404)
-    try:
-        if Image is None:
-            raise RuntimeError("PIL not available")
-        cmd = [
-            "ffmpeg", "-y",
-            *(_ffmpeg_hwaccel_flags()),
-            "-noaccurate_seek", "-ss", str(float(t)), "-i", str(fp),
-            "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-",
-        ]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if proc.returncode != 0 or not proc.stdout:
-            raise RuntimeError(proc.stderr.decode("utf-8", errors="ignore"))
-        im = Image.open(io.BytesIO(proc.stdout)).convert("RGB")
-        # Clamp crop box to image bounds to avoid errors on edge cases
-        cx, cy, cw, ch = int(x), int(y), int(w), int(h)
-        cx = max(0, min(cx, im.width - 1))
-        cy = max(0, min(cy, im.height - 1))
-        if cw <= 0 or ch <= 0:
-            # Fallback to small center crop if invalid size
-            cw = max(1, min(64, im.width))
-            ch = max(1, min(64, im.height))
-        # Ensure right/bottom inside bounds
-        right = max(cx + 1, min(cx + cw, im.width))
-        bottom = max(cy + 1, min(cy + ch, im.height))
-        crop = im.crop((cx, cy, right, bottom))
-        if scale and scale > 0:
-            # Use filter=3 (BICUBIC) to avoid depending on PIL constants across versions
-            crop = crop.resize((int(scale), int(scale * crop.height / max(1, crop.width))), 3)
-        buf = io.BytesIO()
-        crop.save(buf, format="JPEG", quality=90)
-        buf.seek(0)
-        headers = {"Cache-Control": "public, max-age=604800"}
-        return Response(content=buf.getvalue(), media_type="image/jpeg", headers=headers)
-    except Exception:
-        # Sanitize crop values for ffmpeg; ensure non-negative and at least 1x1
-        cw = max(1, int(w))
-        ch = max(1, int(h))
-        cx = max(0, int(x))
-        cy = max(0, int(y))
-        vf = f"crop={cw}:{ch}:{cx}:{cy},scale={int(scale)}:-1"
-        cmd = [
-            "ffmpeg", "-y",
-            *(_ffmpeg_hwaccel_flags()),
-            "-noaccurate_seek", "-ss", str(float(t)), "-i", str(fp),
-            "-vf", vf, "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
-        ]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if proc.returncode != 0 or not proc.stdout:
-            raise_api_error("frame crop failed", status_code=500)
-        headers = {"Cache-Control": "public, max-age=604800"}
-        return Response(content=proc.stdout, media_type="image/jpeg", headers=headers)
-
-
-@api.get("/frame/boxed")
-def frame_boxed(
-    path: str = Query(...),
-    t: float = Query(...),
-    x: int = Query(...),
-    y: int = Query(...),
-    w: int = Query(...),
-    h: int = Query(...),
-    scale: int = Query(default=256),
-    thickness: int = Query(default=3),
-):
-    """
-    Return a full video frame at time t with a bounding box overlay.
-    Uses PIL to draw the rectangle when available; falls back to ffmpeg drawbox.
-    """
-    if STATE.get("root") is None:
-        raise_api_error("Root not set", status_code=400)
-    fp = safe_join(STATE["root"], path)
-    if not fp.exists():
-        raise_api_error("Not found", status_code=404)
-    try:
-        if Image is None:
-            raise RuntimeError("PIL not available")
-        cmd = [
-            "ffmpeg", "-y",
-            *(_ffmpeg_hwaccel_flags()),
-            "-noaccurate_seek", "-ss", str(float(t)), "-i", str(fp),
-            "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-",
-        ]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if proc.returncode != 0 or not proc.stdout:
-            raise RuntimeError(proc.stderr.decode("utf-8", errors="ignore"))
-        from PIL import ImageDraw  # type: ignore
-        im = Image.open(io.BytesIO(proc.stdout)).convert("RGB")
-        # Draw rectangle clamped to bounds
-        cx, cy, cw, ch = int(x), int(y), int(w), int(h)
-        cx = max(0, min(cx, im.width - 1))
-        cy = max(0, min(cy, im.height - 1))
-        if cw <= 0 or ch <= 0:
-            cw = max(1, min(64, im.width))
-            ch = max(1, min(64, im.height))
-        right = max(cx + 1, min(cx + cw, im.width))
-        bottom = max(cy + 1, min(cy + ch, im.height))
-        draw = ImageDraw.Draw(im)
-        th = max(1, int(thickness))
-        # Draw multiple rectangles to simulate thickness
-        for i in range(th):
-            draw.rectangle([cx - i, cy - i, right + i, bottom + i], outline=(255, 64, 64))
-        # Scale down if requested
-        if scale and scale > 0:
-            im = im.resize((int(scale), int(scale * im.height / max(1, im.width))), 3)
-        buf = io.BytesIO()
-        im.save(buf, format="JPEG", quality=90)
-        buf.seek(0)
-        headers = {"Cache-Control": "public, max-age=604800"}
-        return Response(content=buf.getvalue(), media_type="image/jpeg", headers=headers)
-    except Exception:
-        # Fallback: use ffmpeg drawbox then scale
-        cw = max(1, int(w))
-        ch = max(1, int(h))
-        cx = max(0, int(x))
-        cy = max(0, int(y))
-        th = max(1, int(thickness))
-        # drawbox thickness uses absolute pixels in source resolution
-        vf = f"drawbox=x={cx}:y={cy}:w={cw}:h={ch}:color=red@0.8:thickness={th},scale={int(scale)}:-1"
-        cmd = [
-            "ffmpeg", "-y",
-            *(_ffmpeg_hwaccel_flags()),
-            "-noaccurate_seek", "-ss", str(float(t)), "-i", str(fp),
-            "-vf", vf, "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
-        ]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if proc.returncode != 0 or not proc.stdout:
-            raise_api_error("frame boxed failed", status_code=500)
-        headers = {"Cache-Control": "public, max-age=604800"}
-        return Response(content=proc.stdout, media_type="image/jpeg", headers=headers)
 
 # --- Markers (manual timeline points)
 @api.post("/markers")
@@ -16921,9 +15141,7 @@ _COVERAGE_KEYS: tuple[str, ...] = (
     "previews",
     "phash",
     "markers",
-    "heatmaps",
-    "subtitles",
-    "faces",
+    "heatmap",
 )
 
 _ARTIFACT_TYPE_TO_COVERAGE_KEY: dict[str, str] = {
@@ -16933,9 +15151,7 @@ _ARTIFACT_TYPE_TO_COVERAGE_KEY: dict[str, str] = {
     "preview": "previews",
     "phash": "phash",
     "markers": "markers",
-    "heatmaps": "heatmaps",
-    "subtitles": "subtitles",
-    "faces": "faces",
+    "heatmap": "heatmap",
 }
 
 _ARTIFACT_TYPES_FOR_COVERAGE: tuple[str, ...] = tuple(_ARTIFACT_TYPE_TO_COVERAGE_KEY.keys())
@@ -17060,30 +15276,14 @@ def _compute_filesystem_coverage(base: Path) -> tuple[dict[str, dict[str, int]],
     _set("previews", preview_count)
     _set("phash", sum(1 for v in videos if phash_path(v).exists()))
     _set("markers", sum(1 for v in videos if scenes_json_exists(v)))
-    heatmaps_count = 0
+    heatmap_count = 0
     for v in videos:
         try:
-            if heatmaps_json_exists(v):
-                heatmaps_count += 1
+            if heatmap_json_exists(v):
+                heatmap_count += 1
         except Exception:
             continue
-    _set("heatmaps", heatmaps_count)
-    subtitles_count = 0
-    for v in videos:
-        try:
-            if find_subtitles(v) is not None:
-                subtitles_count += 1
-        except Exception:
-            continue
-    _set("subtitles", subtitles_count)
-    faces_count = 0
-    for v in videos:
-        try:
-            if faces_exists_check(v):
-                faces_count += 1
-        except Exception:
-            continue
-    _set("faces", faces_count)
+    _set("heatmap", heatmap_count)
     _finalize_coverage_entries(coverage, total)
     return coverage, total
 
@@ -17132,10 +15332,7 @@ def tasks_defaults():
             "previews": {"segments": 9, "duration": 1.0, "width": 320},
             "phash": {"frames": 5, "algorithm": "ahash"},
             "markers": {"threshold": 0.4, "limit": 0, "thumbnails": False, "clips": False},
-            "heatmaps": {"interval": 1.0, "mode": "both", "png": True},
-            "subtitles": {"model": "small", "language": "auto", "translate": False},
-            "faces": {"interval": 1.0, "min_size_frac": 0.10, "backend": "auto", "scale_factor": 1.2, "min_neighbors": 7, "sim_thresh": 0.9},
-            "embed": {"interval": 1.0, "min_size_frac": 0.10, "backend": "auto", "sim_thresh": 0.9},
+            "heatmap": {"interval": 1.0, "mode": "both", "png": True},
         }
         return api_success(data)
     except Exception as e:
@@ -17262,16 +15459,8 @@ def tasks_batch_operation(request: Request):
                     needs_processing = True
                 elif operation == "markers" and not scenes_json_exists(video):
                     needs_processing = True
-                elif operation == "heatmaps" and not heatmaps_json_exists(video):
+                elif operation == "heatmap" and not heatmap_json_exists(video):
                     needs_processing = True
-                elif operation == "subtitles" and not find_subtitles(video):
-                    needs_processing = True
-                elif operation == "embed" and not faces_exists_check(video):
-                    # Treat missing or stub faces.json as needing embed
-                    needs_processing = True
-                elif operation == "faces" and not faces_exists_check(video):
-                    needs_processing = True
-
                 if needs_processing:
                     filtered_videos.append(video)
 
@@ -17349,25 +15538,10 @@ def tasks_batch_operation(request: Request):
                     job_params["width"] = pw
             except Exception:
                 pass
-        elif operation == "embed":
-            task_name = "embed"
-            # Re-embed parameters (same tunables as faces)
-            job_params["sim_thresh"] = float(params.get("sim_thresh", 0.9))
-            job_params["interval"] = float(params.get("interval", 1.0))
-            job_params["scale_factor"] = float(params.get("scale_factor", 1.2))
-            job_params["min_neighbors"] = int(params.get("min_neighbors", 7))
-            job_params["min_size_frac"] = float(params.get("min_size_frac", 0.10))
-            job_params["backend"] = str(params.get("backend", "auto"))
-            if bool(params.get("force", False)) or bool(params.get("overwrite", False)):
-                job_params["overwrite"] = True
-        elif operation == "heatmaps":
+        elif operation == "heatmap":
             job_params["interval"] = params.get("interval", 5.0)
             job_params["mode"] = params.get("mode", "both")
             job_params["png"] = bool(params.get("png", True))
-        elif operation == "subtitles":
-            job_params["model"] = params.get("model", "small")
-            job_params["language"] = params.get("language", "auto")
-            job_params["translate"] = bool(params.get("translate", False))
         elif operation == "markers":
             # Support both snake_case and camelCase param names from the UI
             job_params["threshold"] = float(params.get("threshold", 0.4))
@@ -17376,18 +15550,6 @@ def tasks_batch_operation(request: Request):
             job_params["clips"] = bool(params.get("clips", False))
             job_params["thumbnails_width"] = int(params.get("thumbnails_width", params.get("thumbnailsWidth", 320)))
             job_params["clip_duration"] = float(params.get("clip_duration", params.get("clipDuration", 2.0)))
-        elif operation == "faces":
-            # Face embeddings parameters
-            job_params["sim_thresh"] = float(params.get("sim_thresh", 0.9))
-            job_params["interval"] = float(params.get("interval", 1.0))
-            job_params["scale_factor"] = float(params.get("scale_factor", 1.2))
-            job_params["min_neighbors"] = int(params.get("min_neighbors", 7))
-            job_params["min_size_frac"] = float(params.get("min_size_frac", 0.10))
-            job_params["backend"] = str(params.get("backend", "auto"))
-            if bool(params.get("force", False)):
-                # Force recompute even if outputs exist
-                job_params["overwrite"] = True
-
         # When running only missing, pass explicit targets so job progress reflects the actual work set
         targets: list[str] = []
         if mode == "missing" and videos_to_process:
@@ -17786,17 +15948,10 @@ def tasks_jobs():
                         tp = scenes_json_path(vp)
                     elif jtype == "sprites":
                         tp, _ = sprite_sheet_paths(vp)
-                    elif jtype == "heatmaps":
-                        tp = heatmaps_json_path(vp)
-                    elif jtype == "faces":
-                        tp = faces_path(vp)
-                    elif jtype == "embed":
-                        # Embed jobs also produce/update faces.json
-                        tp = faces_path(vp)
+                    elif jtype == "heatmap":
+                        tp = heatmap_json_path(vp)
                     elif jtype == "metadata":
                         tp = metadata_path(vp)
-                    elif jtype == "subtitles":
-                        tp = artifact_dir(vp) / f"{vp.stem}{SUFFIX_SUBTITLES_SRT}"
                     if tp is not None:
                         target_path_str = _fmt_rel(tp)
                 if target_path_str:
@@ -17900,7 +16055,7 @@ def tasks_diag():
         if raw_light is not None:
             light_types = {s.strip().lower() for s in raw_light.split(',') if s.strip()}
         else:
-            light_types = {"markers", "previews", "sprites", "phash", "faces", "heatmaps"}
+            light_types = {"markers", "previews", "sprites", "phash", "heatmap"}
         light_all = str(os.environ.get("LIGHT_SLOT_ALL", "0")).lower() in ("1","true","yes")
         resp = {
             "jobMaxConcurrency": int(JOB_MAX_CONCURRENCY),
@@ -18112,7 +16267,7 @@ def tasks_resume_restored():
 @api.post("/tasks/jobs/clear-restored")
 def tasks_clear_restored():
     """
-    Remove jobs in 'restored' state from memory and delete their persisted .jobs files.
+    Remove jobs in 'restored' state from memory and delete their persisted DB rows.
     Useful to declutter after a dev session with auto-restore disabled.
     """
     try:
@@ -18127,6 +16282,7 @@ def tasks_clear_restored():
                     _delete_persisted_job(jid)
                 except Exception:
                     pass
+        _prune_orphan_job_rows()
         _publish_job_event({"event": "purge_restored", "removed": removed})
         return api_success({"removed": removed})
     except Exception as e:
@@ -18229,7 +16385,7 @@ def ffmpeg_set_settings(
 @api.post("/tasks/jobs/clear-completed")
 def tasks_clear_completed():
     """
-    Remove completed/failed/canceled jobs from the registry and on-disk .jobs folder."""
+    Remove completed/failed/canceled jobs from the registry and job table."""
     try:
         removed = 0
         with JOB_LOCK:
@@ -18244,34 +16400,8 @@ def tasks_clear_completed():
                     _delete_persisted_job(jid)
                 except Exception:
                     pass
-        # Sweep any orphaned .jobs files too
-        try:
-            d = _jobs_state_dir()
-            for p in d.glob("*.json"):
-                try:
-                    jid = p.stem
-                    # If file id no longer in JOBS OR its persisted state is terminal, remove
-                    if jid not in JOBS:
-                        p.unlink(missing_ok=True)
-                        continue
-                    # If still present but somehow terminal (e.g. race where JOBS mutated after id list capture)
-                    try:
-                        data = json.loads(p.read_text())
-                        st = str(data.get("state") or "").lower()
-                        if st in ("done", "failed", "canceled", "cancel_requested", "completed"):
-                            p.unlink(missing_ok=True)
-                            # Ensure registry reflects purge to avoid ghost re-persist
-                            with JOB_LOCK:
-                                JOBS.pop(jid, None)
-                                JOB_CANCEL_EVENTS.pop(jid, None)
-                            removed += 1
-                    except Exception:
-                        # If unreadable, treat as orphan and remove
-                        p.unlink(missing_ok=True)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        _purge_legacy_job_files()
+        _prune_orphan_job_rows()
         _publish_job_event({"event": "purge", "removed": removed})
         return api_success({"removed": removed})
     except Exception as e:
@@ -18280,25 +16410,67 @@ def tasks_clear_completed():
 
 @api.post("/tasks/jobs/clear-all")
 def tasks_clear_all():
-    """Clear all jobs and delete their persisted state."""
+    """Clear all jobs and delete their persisted DB rows."""
     try:
-        removed = 0
-        with JOB_LOCK:
-            ids = list(JOBS.keys())
-            for jid in ids:
-                JOBS.pop(jid, None)
-                ev = JOB_CANCEL_EVENTS.pop(jid, None)
-                removed += 1
-        try:
-            d = _jobs_state_dir()
-            for p in d.glob("*.json"):
-                p.unlink(missing_ok=True)
-        except Exception:
-            pass
+        removed = _clear_all_jobs_state()
+        _prune_orphan_job_rows()
         _publish_job_event({"event": "purge", "removed": removed})
         return api_success({"removed": removed})
     except Exception as e:
         raise_api_error(f"Failed to clear all jobs: {str(e)}")
+
+
+@api.get("/jobs/backup")
+def jobs_backup_export():
+    """Return a JSON snapshot of all persisted jobs."""
+    try:
+        snapshot = _export_jobs_snapshot()
+        return api_success({"jobs": snapshot, "count": len(snapshot)})
+    except Exception as e:
+        raise_api_error(f"Failed to export jobs backup: {str(e)}")
+
+
+@api.post("/jobs/backup")
+def jobs_backup_import(payload: JobBackupImport):
+    """Import jobs from a backup payload. Optionally replace existing state."""
+    try:
+        jobs = list(payload.jobs or [])
+        if not jobs:
+            return api_success({"imported": 0, "resumed": 0, "replaced": False})
+        if payload.replace:
+            _clear_all_jobs_state()
+        auto_resume_flag = payload.auto_resume
+        if auto_resume_flag is None:
+            auto_resume_flag = not bool(os.environ.get("JOB_AUTORESTORE_DISABLE"))
+        imported = 0
+        skipped = 0
+        new_ids: list[str] = []
+        for rec in jobs:
+            jid = (rec.id or "").strip()
+            if not jid:
+                skipped += 1
+                continue
+            with JOB_LOCK:
+                if not payload.replace and jid in JOBS:
+                    skipped += 1
+                    continue
+            entry = _job_backup_record_to_entry(rec, auto_resume=auto_resume_flag)
+            with JOB_LOCK:
+                JOBS[jid] = entry
+                JOB_CANCEL_EVENTS[jid] = threading.Event()
+                JOB_HEARTBEATS[jid] = float(rec.heartbeat_ts or time.time())
+            _db_upsert_job(entry)
+            imported += 1
+            new_ids.append(jid)
+        resumed = _resume_saved_jobs(new_ids, force=payload.auto_resume)
+        return api_success({
+            "imported": imported,
+            "skipped": skipped,
+            "resumed": resumed,
+            "replaced": bool(payload.replace),
+        })
+    except Exception as e:
+        raise_api_error(f"Failed to import jobs backup: {str(e)}")
 
 
 # --------------------------
@@ -18510,6 +16682,8 @@ def registry_tags_delete(payload: TagDelete):
 
 @api.post("/registry/tags/rewrite-sidecars")
 def registry_tags_rewrite_sidecars(path: str = Query(default=""), recursive: bool = Query(default=True)):
+    if not _sidecar_reads_enabled():
+        return api_success({"updated_files": 0, "sidecars_disabled": True})
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
@@ -18680,6 +16854,8 @@ def registry_performers_delete(payload: PerformerDelete):
 
 @api.post("/registry/performers/rewrite-sidecars")
 def registry_performers_rewrite_sidecars(path: str = Query(default=""), recursive: bool = Query(default=True)):
+    if not _sidecar_reads_enabled():
+        return api_success({"updated_files": 0, "sidecars_disabled": True})
     base = safe_join(STATE["root"], path) if path else STATE["root"]
     if not base.exists() or not base.is_dir():
         raise_api_error("Not found", status_code=404)
@@ -19305,41 +17481,48 @@ def _handle_autotag_job(jid: str, jr: JobRequest, base: Path) -> None:
                 continue
             matched_count += 1
             tfile = _tags_file(v)
-            if tfile.exists():
-                try:
-                    data = json.loads(tfile.read_text())
-                except Exception:
-                    data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
-            else:
-                data = {"video": v.name, "tags": [], "performers": [], "description": "", "rating": 0}
-            data.setdefault("tags", [])
-            data.setdefault("performers", [])
-            before_t = set(data["tags"])
-            before_p = set(data["performers"])
+            before_t: set[str] = set()
+            before_p: set[str] = set()
+            data = _load_tags_sidecar_payload(v)
+            before_t = set(data.get("tags") or [])
+            before_p = set(data.get("performers") or [])
             for t in found_tags:
-                if t not in data["tags"]:
+                if t not in data.setdefault("tags", []):
                     data["tags"].append(t)
             for p in found_perfs:
-                if p not in data["performers"]:
+                if p not in data.setdefault("performers", []):
                     data["performers"].append(p)
-            if set(data["tags"]) != before_t or set(data["performers"]) != before_p:
+            file_changed = (set(data.get("tags", [])) != before_t) or (set(data.get("performers", [])) != before_p)
+            mutated = False
+            if file_changed and _sidecar_writes_enabled():
                 try:
+                    tfile.parent.mkdir(parents=True, exist_ok=True)
                     tfile.write_text(json.dumps(data, indent=2))
-                    changed += 1
+                    mutated = True
                 except Exception:
                     pass
-            # Mirror into media attribute store for immediate UI reflection
             try:
                 rel = str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)
                 ent = _media_entry(rel)
                 # merge performers/tags with normalization and dedupe
                 merged_perfs = _norm_list((ent.get("performers") or []) + list(found_perfs))
                 merged_tags = _norm_list((ent.get("tags") or []) + list(found_tags))
-                ent["performers"] = merged_perfs
-                ent["tags"] = merged_tags
-                _save_media_attr([rel])
+                entry_changed = False
+                if merged_perfs != ent.get("performers"):
+                    ent["performers"] = merged_perfs
+                    entry_changed = True
+                if merged_tags != ent.get("tags"):
+                    ent["tags"] = merged_tags
+                    entry_changed = True
+                if entry_changed:
+                    _save_media_attr([rel])
+                    mutated = True
+                elif file_changed and not _sidecar_writes_enabled():
+                    mutated = True
             except Exception:
                 pass
+            if mutated:
+                changed += 1
         finally:
             _set_job_progress(jid, processed_set=i)
     _job_set_result(jid, {"matched_files": matched_count, "updated_files": changed, "total": len(vids)})
@@ -19418,73 +17601,6 @@ def _handle_metadata_job(jid: str, jr: JobRequest, base: Path) -> None:
         _set_job_progress(jid, processed_set=int(cur) + 1)
     _job_set_result(jid, {"processed": len(vids), "forced": bool(force)})
     _finish_job(jid)
-
-
-def _handle_embed_job(jid: str, jr: JobRequest, base: Path) -> None:
-    prm = jr.params or {}
-    targets = prm.get("targets") or []
-    if targets:
-        vids: list[Path] = []
-        for rel in targets:
-            try:
-                p = safe_join(STATE["root"], rel)
-                if p.exists() and p.is_file():
-                    vids.append(p)
-            except Exception:
-                continue
-    else:
-        vids = _iter_videos(base, bool(jr.recursive))
-    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-    prm2 = jr.params or {}
-    overwrite = bool(prm2.get("overwrite", False))
-    sim_thresh = float(prm2.get("sim_thresh", 0.9))
-    interval = float(prm2.get("interval", 1.0))
-    scale_factor = float(prm2.get("scale_factor", 1.2))
-    min_neighbors = int(prm2.get("min_neighbors", 7))
-    min_size_frac = float(prm2.get("min_size_frac", 0.10))
-    backend = str(prm2.get("backend", "auto"))
-    done_files = 0
-    skipped = 0
-    for v in vids:
-        if _job_check_canceled(jid):
-            _finish_job(jid)
-            return
-        try:
-            _set_job_current(jid, str(v))
-            lk = _file_task_lock(v, "faces")
-            with lk:
-                if faces_exists_check(v) and not (bool(jr.force) or overwrite):
-                    done_files += 1
-                    skipped += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-                else:
-                    def _pcb_embed(i: int, n: int):
-                        try:
-                            n = max(1, int(n))
-                            i = max(0, min(int(i), n))
-                            overall = (done_files * 100) + int((i / n) * 100)
-                            _set_job_progress(jid, processed_set=overall)
-                        except Exception:
-                            pass
-                    compute_face_embeddings(
-                        v,
-                        sim_thresh=sim_thresh,
-                        interval=interval,
-                        scale_factor=scale_factor,
-                        min_neighbors=min_neighbors,
-                        min_size_frac=min_size_frac,
-                        backend=backend,
-                        progress_cb=_pcb_embed,
-                    )
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-        except Exception:
-            done_files += 1
-            _set_job_progress(jid, processed_set=done_files * 100)
-    _set_job_current(jid, None)
-    _job_set_result(jid, {"processed": len(vids), "skipped": skipped})
-    _finish_job(jid)
-
 
 def _handle_clip_job(jid: str, jr: JobRequest, base: Path) -> None:
     prm = jr.params or {}
@@ -19892,7 +18008,7 @@ def _handle_sprites_job(jid: str, jr: JobRequest, base: Path) -> None:
     _finish_job(jid)
 
 
-def _handle_heatmaps_job(jid: str, jr: JobRequest, base: Path) -> None:
+def _handle_heatmap_job(jid: str, jr: JobRequest, base: Path) -> None:
     prm = jr.params or {}
     targets = prm.get("targets") or []
     if targets:
@@ -19917,9 +18033,9 @@ def _handle_heatmaps_job(jid: str, jr: JobRequest, base: Path) -> None:
             return
         try:
             _set_job_current(jid, str(v))
-            lk = _file_task_lock(v, "heatmaps")
+            lk = _file_task_lock(v, "heatmap")
             with lk:
-                if heatmaps_json_exists(v) and not bool(jr.force):
+                if heatmap_json_exists(v) and not bool(jr.force):
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
                 else:
@@ -19933,70 +18049,7 @@ def _handle_heatmaps_job(jid: str, jr: JobRequest, base: Path) -> None:
                             pass
                     def _cc() -> bool:
                         return _job_check_canceled(jid)
-                    compute_heatmaps(v, interval=interval, mode=mode, png=png, progress_cb=_pcb_heat, cancel_check=_cc)
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-        except Exception:
-            done_files += 1
-            _set_job_progress(jid, processed_set=done_files * 100)
-    _set_job_current(jid, None)
-    _job_set_result(jid, {"processed": len(vids)})
-    _finish_job(jid)
-
-
-def _handle_faces_job(jid: str, jr: JobRequest, base: Path) -> None:
-    prm = jr.params or {}
-    targets = prm.get("targets") or []
-    overwrite = bool(prm.get("overwrite", False))
-    if targets:
-        vids: list[Path] = []
-        for rel in targets:
-            try:
-                p = safe_join(STATE["root"], rel)
-                if p.exists() and p.is_file():
-                    vids.append(p)
-            except Exception:
-                continue
-    else:
-        vids = _iter_videos(base, bool(jr.recursive))
-    _set_job_progress(jid, total=max(0, len(vids) * 100), processed_set=0)
-    sim_thresh = float(prm.get("sim_thresh", 0.9))
-    interval = float(prm.get("interval", 1.0))
-    scale_factor = float(prm.get("scale_factor", 1.2))
-    min_neighbors = int(prm.get("min_neighbors", 7))
-    min_size_frac = float(prm.get("min_size_frac", 0.10))
-    backend = str(prm.get("backend", "auto"))
-    done_files = 0
-    for v in vids:
-        if _job_check_canceled(jid):
-            _finish_job(jid)
-            return
-        try:
-            _set_job_current(jid, str(v))
-            lk = _file_task_lock(v, "faces")
-            with lk:
-                if faces_exists_check(v) and not (bool(jr.force) or overwrite):
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-                else:
-                    def _pcb_faces(i: int, n: int):
-                        try:
-                            n = max(1, int(n))
-                            i = max(0, min(int(i), n))
-                            overall = (done_files * 100) + int((i / n) * 100)
-                            _set_job_progress(jid, processed_set=overall)
-                        except Exception:
-                            pass
-                    compute_face_embeddings(
-                        v,
-                        sim_thresh=sim_thresh,
-                        interval=interval,
-                        scale_factor=scale_factor,
-                        min_neighbors=min_neighbors,
-                        min_size_frac=min_size_frac,
-                        backend=backend,
-                        progress_cb=_pcb_faces,
-                    )
+                    compute_heatmap(v, interval=interval, mode=mode, png=png, progress_cb=_pcb_heat, cancel_check=_cc)
                     done_files += 1
                     _set_job_progress(jid, processed_set=done_files * 100)
         except Exception:
@@ -20074,106 +18127,9 @@ def _handle_preview_job(jid: str, jr: JobRequest, base: Path) -> None:
     _finish_job(jid)
 
 
-def _handle_subtitles_job(jid: str, jr: JobRequest, base: Path) -> None:
-    prm = jr.params or {}
-    targets = prm.get("targets") or []
-    if targets:
-        vids: list[Path] = []
-        for rel in targets:
-            try:
-                p = safe_join(STATE["root"], rel)
-                if p.exists() and p.is_file():
-                    vids.append(p)
-            except Exception:
-                continue
-    else:
-        vids = _iter_videos(base, bool(jr.recursive))
-    total_targets = len(vids)
-    _set_job_progress(jid, total=max(0, total_targets * 100), processed_set=0)
-    model = str(prm.get("model", "small"))
-    language = prm.get("language")
-    translate = bool(prm.get("translate", False))
-    done_files = 0
-    try:
-        print(
-            f"[subtitles.job] start jid={jid} targets={total_targets} model={model} lang={language or 'auto'} translate={translate} recursive={bool(jr.recursive)}",
-            flush=True,
-        )
-    except Exception:
-        pass
-    for v in vids:
-        rel: Any = v
-        rel_safe = _log_safe_token(rel, "video")
-        if _job_check_canceled(jid):
-            _finish_job(jid)
-            return
-        try:
-            try:
-                rel = v.relative_to(STATE["root"])
-            except Exception:
-                rel = v
-            rel_safe = _log_safe_token(rel, "video")
-            _set_job_current(jid, str(v))
-            out_file = artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}"
-            dest_safe = _log_safe_token(out_file, "subtitles.out")
-            lk = _file_task_lock(v, "subtitles")
-            with lk:
-                if out_file.exists() and not bool(jr.force) and not _is_stub_subtitles_file(out_file):
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-                    try:
-                        print(f"[subtitles.job] skip existing subtitles rel={rel_safe}", flush=True)
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        print(f"[subtitles.job] generate rel={rel_safe} destination={dest_safe}", flush=True)
-                    except Exception:
-                        pass
-                    def _pcb_sub(frac: float):
-                        try:
-                            frac = max(0.0, min(1.0, float(frac)))
-                            overall = (done_files * 100) + int(frac * 100)
-                            _set_job_progress(jid, processed_set=overall)
-                        except Exception:
-                            pass
-                    def _cc() -> bool:
-                        return _job_check_canceled(jid)
-                    generate_subtitles(
-                        v, out_file, model=model, language=(language or None), translate=translate,
-                        progress_cb=_pcb_sub, cancel_check=_cc,
-                    )
-                    done_files += 1
-                    _set_job_progress(jid, processed_set=done_files * 100)
-                    try:
-                        size = out_file.stat().st_size if out_file.exists() else 0
-                    except Exception:
-                        size = 0
-                    try:
-                        print(f"[subtitles.job] finished rel={rel_safe} size={size}B", flush=True)
-                    except Exception:
-                        pass
-        except Exception:
-            done_files += 1
-            _set_job_progress(jid, processed_set=done_files * 100)
-            try:
-                print(f"[subtitles.job] error rel={rel_safe} (jid={jid})", flush=True)
-            except Exception:
-                pass
-            try:
-                traceback.print_exc()
-            except Exception:
-                pass
-    _set_job_current(jid, None)
-    _job_set_result(jid, {"processed": len(vids)})
-    _finish_job(jid)
-    try:
-        print(f"[subtitles.job] finish jid={jid} processed={done_files}/{total_targets}", flush=True)
-    except Exception:
-        pass
-
 def _handle_concat_job(jid: str, jr: JobRequest, base: Path) -> None:
-    """Concatenate multiple input files into a single MP4 (H.264/AAC).
+    """
+    Concatenate multiple input files into a single MP4 (H.264/AAC).
 
     jr.params fields:
       inputs: list[str] relative paths under MEDIA_ROOT (required, len>=2)
@@ -20794,9 +18750,7 @@ def _handle_chain_job(jid: str, jr: JobRequest, base: Path) -> None:
     propagate_force = bool(prm.get("propagate_force", False))
     # Determine allowed tasks (reuse handlers registry excluding chain itself)
     allowed_tasks = {
-    "transcode", "autotag", "embed", "clip", "cleanup-artifacts",
-        "sprites", "heatmaps", "faces", "preview", "subtitles", "scenes", "sample",
-        "waveform", "motion", "index-embeddings", "integrity-scan"
+        "transcode", "autotag", "embed", "clip", "cleanup-artifacts", "sprites", "heatmap", "preview",  "scenes", "sample", "waveform", "motion", "index-embeddings", "integrity-scan"
     }
     # Validate steps
     norm_steps: list[dict[str, Any]] = []
@@ -20911,18 +18865,7 @@ def _handle_integrity_scan_job(jid: str, jr: JobRequest, base: Path) -> None:
     vids = _iter_videos(base, bool(jr.recursive))
     # Pre-compute artifact file path resolvers
     def _artifact_paths(v: Path) -> dict[str, list[Path]]:
-        mp: dict[str, list[Path]] = {
-            "metadata": [metadata_path(v)],
-            "thumbnail": [thumbnails_path(v)],
-            "preview": [preview_webm_path(v), preview_json_path(v)],
-            "sprites": list(sprite_sheet_paths(v)),
-            "scenes": [scenes_json_path(v)],
-            "heatmaps": [heatmaps_json_path(v), heatmaps_png_path(v)],
-            "phash": [phash_path(v)],
-            "faces": [faces_path(v)],
-            "subtitles": [artifact_dir(v) / f"{v.stem}{SUFFIX_SUBTITLES_SRT}", v.with_suffix(SUFFIX_SUBTITLES_SRT)],
-        }
-        return mp
+        return {key: spec.paths(v) for key, spec in _ARTIFACT_SPEC_MAP.items()}
     base_root = STATE["root"]
     rel = lambda p: str(p.relative_to(base_root)) if str(p).startswith(str(base_root)) else str(p)
     results: list[dict[str, Any]] = []
@@ -21061,106 +19004,6 @@ def _placeholder_clip_embedding(seed_text: str) -> list[float]:
                 break
     return _vec_norm(out)
 
-def _average_face_embedding(faces_json: dict) -> list[float]:
-    faces = faces_json.get("faces") if isinstance(faces_json, dict) else None
-    if not isinstance(faces, list) or not faces:
-        return []
-    accum: list[float] = []
-    count = 0
-    for f in faces:
-        try:
-            emb = f.get("embedding") if isinstance(f, dict) else None
-            if not isinstance(emb, list) or not emb:
-                continue
-            if not accum:
-                accum = [0.0]*len(emb)
-            if len(emb) != len(accum):
-                continue
-            for i, val in enumerate(emb):
-                accum[i] += float(val)
-            count += 1
-        except Exception:
-            continue
-    if not accum or count == 0:
-        return []
-    return _vec_norm([x / count for x in accum])
-
-def _combined_vector(ent: dict[str, Any], mode: str) -> list[float]:
-    mode = mode.lower()
-    vec: list[float] = []
-    if mode in ("auto", "phash", "all"):
-        pv = ent.get("phash_vec")
-        if isinstance(pv, list) and pv:
-            vec.extend([1.0 if bool(b) else -1.0 for b in pv])
-    if mode in ("auto", "faces", "all"):
-        fv = ent.get("face_vec")
-        if isinstance(fv, list) and fv:
-            vec.extend([float(x) for x in fv])
-    if mode in ("auto", "clip", "all"):
-        cv = ent.get("clip_vec")
-        if isinstance(cv, list) and cv:
-            vec.extend([float(x) for x in cv])
-    return _vec_norm(vec)
-
-def _handle_index_embeddings_job(jid: str, jr: JobRequest, base: Path) -> None:
-    prm = jr.params or {}
-    mode = str(prm.get("mode", "auto"))
-    vids = _iter_videos(base, bool(jr.recursive))
-    _set_job_progress(jid, total=len(vids), processed_set=0)
-    entries: list[dict[str, Any]] = []
-    for i, v in enumerate(vids, start=1):
-        if _job_check_canceled(jid):
-            _finish_job(jid); return
-        rel = str(v.relative_to(STATE["root"])) if str(v).startswith(str(STATE["root"])) else str(v)
-        phash_hex = None
-        phash_vec: list[int] = []
-        try:
-            pp = phash_path(v)
-            if not pp.exists():
-                try:
-                    phash_create_single(v)  # type: ignore[arg-type]
-                except Exception:
-                    pass
-            if pp.exists():
-                data = json.loads(pp.read_text())
-                phash_hex = data.get("phash")
-                if isinstance(phash_hex, str) and phash_hex:
-                    phash_vec = _hex_to_bits(phash_hex)
-        except Exception:
-            pass
-        face_vec: list[float] = []
-        try:
-            fp = faces_path(v)
-            if fp.exists():
-                fdata = json.loads(fp.read_text())
-                face_vec = _average_face_embedding(fdata)
-        except Exception:
-            pass
-        clip_vec: list[float] = []
-        try:
-            clip_vec = _placeholder_clip_embedding(rel)
-        except Exception:
-            pass
-        ent = {
-            "file": rel,
-            "phash_hex": phash_hex,
-            "phash_vec": phash_vec,
-            "face_vec": face_vec,
-            "clip_vec": clip_vec,
-        }
-        entries.append(ent)
-        _set_job_progress(jid, processed_set=i)
-    with EMB_INDEX_LOCK:
-        STATE["embedding_index"] = {
-            "built_at": time.time(),
-            "count": len(entries),
-            "mode": mode,
-            "entries": entries,
-        }
-    _job_set_result(jid, {"count": len(entries), "mode": mode})
-    _finish_job(jid)
-
-
 def _run_job_worker(jid: str, jr: JobRequest):
     try:
         try:
@@ -21195,10 +19038,8 @@ def _run_job_worker(jid: str, jr: JobRequest):
             "concat": _handle_concat_job,
             "cleanup-artifacts": _handle_cleanup_artifacts_job,
             "sprites": _handle_sprites_job,
-            "heatmaps": _handle_heatmaps_job,
-            "faces": _handle_faces_job,
+            "heatmap": _handle_heatmap_job,
             "preview": _handle_preview_job,
-            "subtitles": _handle_subtitles_job,
             "markers": _handle_scenes_job,
             "sample": _handle_sample_job,
             "chain": _handle_chain_job,
@@ -21432,20 +19273,16 @@ def api_get_video_tags(name: str, directory: str = Query(default="")):
     path = base / name
     if not path.exists():
         raise_api_error("video not found", status_code=404)
-    tfile = _tags_file(path)
-    if not tfile.exists():
-        return {"video": name, "tags": [], "performers": [], "description": "", "rating": 0, "favorite": False}
-    try:
-        data = json.loads(tfile.read_text())
-    except Exception:
-        raise_api_error("invalid tags file", status_code=500)
-    if "description" not in data:
-        data["description"] = ""
-    if "rating" not in data:
-        data["rating"] = 0
-    if "favorite" not in data:
-        data["favorite"] = False
-    return data
+    rel = _rel_from_root(path)
+    payload = _media_info_payload(rel, include_sidecar=_sidecar_reads_enabled())
+    return {
+        "video": name,
+        "tags": payload.get("tags", []),
+        "performers": payload.get("performers", []),
+        "description": payload.get("description", ""),
+        "rating": payload.get("rating", 0),
+        "favorite": payload.get("favorite", False),
+    }
 
 
 @api.patch("/videos/{name}/tags")
@@ -21454,34 +19291,31 @@ def api_update_video_tags(name: str, payload: TagUpdate, directory: str = Query(
     path = base / name
     if not path.exists():
         raise_api_error("video not found", status_code=404)
-    tfile = _tags_file(path)
-    if tfile.exists():
-        try:
-            data = json.loads(tfile.read_text())
-        except Exception:
-            data = {"video": name, "tags": [], "performers": [], "description": "", "rating": 0, "favorite": False}
-    else:
-        data = {"video": name, "tags": [], "performers": [], "description": "", "rating": 0, "favorite": False}
+    rel = _rel_from_root(path)
+    entry = _media_entry(rel)
+    data = _load_tags_sidecar_payload(path)
     data.setdefault("description", "")
     data.setdefault("rating", 0)
     data.setdefault("favorite", False)
+    tags_list = list(entry.get("tags") or [])
+    perf_list = list(entry.get("performers") or [])
     meta_updates: dict[str, Any] = {}
     if payload.replace and payload.add is not None:
-        data["tags"] = []
+        tags_list = []
     if payload.replace:
-        data["performers"] = []
+        perf_list = []
     if payload.add:
         for t in payload.add:
-            if t not in data["tags"]:
-                data["tags"].append(t)
+            if t not in tags_list:
+                tags_list.append(t)
     if payload.remove:
-        data["tags"] = [t for t in data["tags"] if t not in payload.remove]
+        tags_list = [t for t in tags_list if t not in payload.remove]
     if payload.performers_add:
         for t in payload.performers_add:
-            if t not in data["performers"]:
-                data["performers"].append(t)
+            if t not in perf_list:
+                perf_list.append(t)
     if payload.performers_remove:
-        data["performers"] = [t for t in data["performers"] if t not in payload.performers_remove]
+        perf_list = [t for t in perf_list if t not in payload.performers_remove]
     if payload.description is not None:
         data["description"] = payload.description
         meta_updates["description"] = data["description"]
@@ -21497,10 +19331,20 @@ def api_update_video_tags(name: str, payload: TagUpdate, directory: str = Query(
         except Exception:
             data["favorite"] = False
         meta_updates["favorite"] = data["favorite"]
-    try:
-        tfile.write_text(json.dumps(data, indent=2))
-    except Exception:
-        raise_api_error("failed to write tags", status_code=500)
+    tags_list = _norm_list(tags_list)
+    perf_list = _norm_list(perf_list)
+    entry["tags"] = tags_list
+    entry["performers"] = perf_list
+    _save_media_attr([rel])
+    data["tags"] = tags_list
+    data["performers"] = perf_list
+    tfile = _tags_file(path)
+    if _sidecar_writes_enabled():
+        try:
+            tfile.parent.mkdir(parents=True, exist_ok=True)
+            tfile.write_text(json.dumps(data, indent=2))
+        except Exception:
+            raise_api_error("failed to write tags", status_code=500)
     if meta_updates:
         _sync_video_meta_to_db(path, **meta_updates)
     return data
@@ -21526,16 +19370,18 @@ def api_tags_summary(path: str = Query(default=""), recursive: bool = Query(defa
     tag_counts: dict[str, int] = {}
     perf_counts: dict[str, int] = {}
     for p in vids:
-        tf = _tags_file(p)
-        if not tf.exists():
-            continue
-        try:
-            data = json.loads(tf.read_text())
-        except Exception:
-            continue
-        for t in data.get("tags", []) or []:
+        rel = _rel_from_root(p)
+        tags_list, perf_list = _current_media_lists(rel)
+        if not tags_list and not perf_list and _sidecar_reads_enabled():
+            try:
+                data = _load_tags_sidecar_payload(p)
+                tags_list = [str(t) for t in data.get("tags", []) if str(t).strip()]
+                perf_list = [str(t) for t in data.get("performers", []) if str(t).strip()]
+            except Exception:
+                tags_list, perf_list = [], []
+        for t in tags_list:
             tag_counts[t] = tag_counts.get(t, 0) + 1
-        for t in data.get("performers", []) or []:
+        for t in perf_list:
             perf_counts[t] = perf_counts.get(t, 0) + 1
     return {"tags": tag_counts, "performers": perf_counts}
 
@@ -21582,32 +19428,32 @@ def _load_tags_sidecars() -> None:
                 _TAGS_CACHE.setdefault(tag, {"name": n})
     except Exception:
         pass
-    # Merge from sidecar files on disk
-    try:
-        vids = _find_mp4s(root, True) if root and root.exists() else []
-    except Exception:
-        vids = []
-    for p in vids:
-        tf = _tags_file(p)
-        if not tf.exists():
-            continue
+    if _sidecar_reads_enabled():
         try:
-            data = json.loads(tf.read_text())
+            vids = _find_mp4s(root, True) if root and root.exists() else []
         except Exception:
-            continue
-        for n in (data.get("tags") or []):
-            if not isinstance(n, str):
+            vids = []
+        for p in vids:
+            tf = _tags_file(p)
+            if not tf.exists():
                 continue
-            tag = _normalize_tag(n)
-            if not tag:
-                continue
-            rel = None
             try:
-                rel = str(p.relative_to(root)) if root else str(p)
+                data = json.loads(tf.read_text())
             except Exception:
-                rel = str(p)
-            _TAGS_INDEX.setdefault(tag, set()).add(rel)
-            _TAGS_CACHE.setdefault(tag, {"name": n})
+                continue
+            for n in (data.get("tags") or []):
+                if not isinstance(n, str):
+                    continue
+                tag = _normalize_tag(n)
+                if not tag:
+                    continue
+                rel = None
+                try:
+                    rel = str(p.relative_to(root)) if root else str(p)
+                except Exception:
+                    rel = str(p)
+                _TAGS_INDEX.setdefault(tag, set()).add(rel)
+                _TAGS_CACHE.setdefault(tag, {"name": n})
     # Merge from registry (ensures known tags appear with count=0)
     try:
         path = _tags_registry_path()
@@ -21691,30 +19537,31 @@ def _delete_tag_everywhere(slug: str) -> dict[str, int]:
     except Exception:
         pass
 
-    root = STATE.get("root")
-    if isinstance(root, Path) and root.exists():
-        try:
-            videos = _find_mp4s(root, True)
-        except Exception:
-            videos = []
-        for vid in videos:
-            tf = _tags_file(vid)
-            if not tf.exists():
-                continue
+    if _sidecar_writes_enabled():
+        root = STATE.get("root")
+        if isinstance(root, Path) and root.exists():
             try:
-                data = json.loads(tf.read_text())
+                videos = _find_mp4s(root, True)
             except Exception:
-                continue
-            tags = data.get("tags") or []
-            new_tags = [t for t in tags if _slugify(str(t)) != slug_norm]
-            if new_tags == tags:
-                continue
-            data["tags"] = new_tags
-            try:
-                tf.write_text(json.dumps(data, indent=2))
-                sidecars_updated += 1
-            except Exception:
-                pass
+                videos = []
+            for vid in videos:
+                tf = _tags_file(vid)
+                if not tf.exists():
+                    continue
+                try:
+                    data = json.loads(tf.read_text())
+                except Exception:
+                    continue
+                tags = data.get("tags") or []
+                new_tags = [t for t in tags if _slugify(str(t)) != slug_norm]
+                if new_tags == tags:
+                    continue
+                data["tags"] = new_tags
+                try:
+                    tf.write_text(json.dumps(data, indent=2))
+                    sidecars_updated += 1
+                except Exception:
+                    pass
 
     global _TAGS_CACHE_TS
     _TAGS_CACHE_TS = None
@@ -21802,7 +19649,7 @@ def api_stats(path: str = Query(default=""), recursive: bool = Query(default=Tru
         return api_success({"num_files": 0, "total_size": 0, "total_duration": 0.0, "tags": 0, "performers": 0, "res_buckets": {}, "duration_buckets": {}})
 
     data = _db_scope_stats(base, library_root, recursive=bool(recursive))
-    if data.get("num_files") == 0:
+    if data.get("num_files") == 0 and _sidecar_reads_enabled():
         data = _filesystem_scope_stats(base, bool(recursive))
     return api_success(data)
 
@@ -21821,16 +19668,6 @@ def _which_version(cmd: str) -> tuple[bool, Optional[str]]:
         return True, first
     except Exception:
         return True, None
-
-
-def _model_available(name: str) -> bool:
-    # Placeholder heuristic until face/subtitle models formalized
-    if name == "whisper":
-        return _has_module("whisper") or _has_module("faster_whisper")
-    if name == "faces":
-        return _has_module("insightface") or _has_module("facenet_pytorch") or _has_module("dlib")
-    return False
-
 
 @api.get("/system/doctor")
 def api_system_doctor():
@@ -21865,7 +19702,6 @@ def api_system_doctor():
 
     # optional models
     add("model.whisper", _model_available("whisper"))
-    add("model.faces", _model_available("faces"))
 
     # python deps snapshot (selected)
     for mod in ["PIL", "numpy", "torch", "onnx", "opencv-python"]:
@@ -22307,35 +20143,14 @@ def api_integrity_scan(path: str = Query(default=""), recursive: bool = Query(de
 
 
 def _artifact_exists(video: Path, kind: str) -> bool:
-    if kind == "metadata":
-        return metadata_path(video).exists()
-    if kind == "thumbnail":
-        return thumbnails_path(video).exists()
-    if kind == "preview":
-        return preview_webm_path(video).exists() or preview_json_path(video).exists()
-    if kind == "sprites":
-        s, j = sprite_sheet_paths(video)
-        return s.exists() and j.exists()
-    if kind == "markers":
-        return scenes_json_exists(video)
-    if kind == "heatmaps":
-        return heatmaps_json_exists(video)
-    if kind == "phash":
-        return phash_path(video).exists()
-    if kind == "faces":
-        return faces_exists_check(video)
-    if kind == "subtitles":
-        return find_subtitles(video) is not None
-    if kind == "waveform":
-        return waveform_png_path(video).exists()
-    if kind == "motion":
-        return motion_json_path(video).exists()
-    return False
+    spec = _ARTIFACT_SPEC_MAP.get(kind)
+    if not spec:
+        return False
+    try:
+        return bool(spec.exists(video))
+    except Exception:
+        return False
 
-
-FINISH_ARTIFACT_ORDER = [
-    "metadata", "thumbnail", "preview", "sprites", "markers", "heatmaps", "phash", "faces", "subtitles", "waveform", "motion"
-]
 
 # -----------------------------
 # Batch rename (plan/apply)
@@ -22534,6 +20349,9 @@ def api_finish_plan(
     subset: list[str] | None = None
     if artifacts:
         subset = [a.strip() for a in artifacts.split(',') if a.strip()]
+        subset = [k for k in subset if k in _ARTIFACT_SPEC_MAP]
+        if not subset:
+            subset = None
     vids = _iter_videos(base, recursive)
     plan: list[dict[str, Any]] = []
     for v in vids:
@@ -22566,7 +20384,6 @@ def api_finish_run(payload: dict = Body(default_factory=dict)):
     path = payload.get("path") or ""
     recursive = bool(payload.get("recursive", True))
     force = bool(payload.get("force", False))
-    force_faces = bool(payload.get("force_faces", False))
     arts = payload.get("artifacts")
     if isinstance(arts, str):
         artifacts_list = [a.strip() for a in arts.split(',') if a.strip()]
@@ -22574,6 +20391,7 @@ def api_finish_run(payload: dict = Body(default_factory=dict)):
         artifacts_list = [str(a) for a in arts]
     else:
         artifacts_list = FINISH_ARTIFACT_ORDER
+    artifacts_list = [k for k in artifacts_list if k in _ARTIFACT_SPEC_MAP] or FINISH_ARTIFACT_ORDER
     # Preserve ordering from FINISH_ARTIFACT_ORDER while filtering
     order_filtered = [a for a in FINISH_ARTIFACT_ORDER if a in artifacts_list]
     base = safe_join(STATE["root"], path) if path else STATE["root"]
@@ -22586,7 +20404,7 @@ def api_finish_run(payload: dict = Body(default_factory=dict)):
             continue
         entry: dict[str, Any] = {"file": rel, "planned": needed, "actions": []}
         # Job-backed artifacts first
-        job_map = {"sprites": "sprites", "markers": "markers", "subtitles": "subtitles"}
+        job_map = {"sprites": "sprites", "markers": "markers"}
         for kind in [k for k in needed if k in job_map]:
             jobs_submit(JobRequest(task=job_map[kind], directory=str(v.parent), params={"targets": [rel]}, force=force, recursive=False))  # type: ignore[arg-type]
             entry["actions"].append({"name": kind, "mode": "job", "status": "queued"})
@@ -22605,15 +20423,10 @@ def api_finish_run(payload: dict = Body(default_factory=dict)):
                         generate_thumbnail(v, force=force)
                     elif kind == "preview":
                         generate_preview(v, segments=9, seg_dur=0.8, width=240, fmt="webm")
-                    elif kind == "heatmaps":
-                        compute_heatmaps(v, interval=1.0, mode="avg", png=True)
+                    elif kind == "heatmap":
+                        compute_heatmap(v, interval=1.0, mode="avg", png=True)
                     elif kind == "phash":
                         phash_create_single(v)
-                    elif kind == "faces":
-                        if force or force_faces or not faces_exists_check(v):
-                            _ = _detect_faces(v, stride=30)  # type: ignore[name-defined]
-                        else:
-                            status = "skipped"
                     else:
                         status = "unsupported"
                 except Exception as e:  # pragma: no cover
@@ -22679,7 +20492,6 @@ if __name__ == "__main__":  # pragma: no cover
             ".jobs/*",
             "**/.jobs/*",
             "**/.artifacts/*",
-            "**/.previews/*",
             "**/*.preview.webm",
         ]
     try:

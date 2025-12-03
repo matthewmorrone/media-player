@@ -35,7 +35,7 @@ def _idle_conf_app() -> dict:
         "poll_seconds": int(_get("poll_seconds", 15)),
         "max_concurrent": int(_get("max_concurrent", 1)),
         "artifacts": list(_get("artifacts", [
-            "metadata", "thumbnail", "preview", "sprites", "phash", "heatmaps", "faces"
+            "metadata", "thumbnail", "preview", "sprites", "phash", "heatmap", "faces"
         ])),
     }
 
@@ -62,8 +62,8 @@ def _artifact_missing_app(kind: str, v: Path) -> bool:
         if k == "sprites":
             jpg, jsonp = sprite_sheet_paths(v)
             return not (jpg.exists() and jsonp.exists())
-        if k == "heatmaps":
-            return not heatmaps_json_exists(v)
+        if k == "heatmap":
+            return not heatmap_json_exists(v)
         if k == "phash":
             return not phash_path(v).exists()
         if k == "faces":

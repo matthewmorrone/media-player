@@ -43,7 +43,6 @@ DEFAULT_EXCLUDE = [
     "**/.git/**",
     "**/__pycache__/**",
     "**/.artifacts/**",
-    "**/.previews/**",
     "**/.jobs/**",
     "**/.DS_Store",
 ]
