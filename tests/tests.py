@@ -52,7 +52,7 @@ def test_parse_artifact_name_round_trip():
 
 
 def test_artifact_from_type_normalizes_batches():
-    assert app._artifact_from_type("preview-batch") == "previews"
+    assert app._artifact_from_type("preview-batch") == "preview"
     assert app._artifact_from_type("HEATMAP") == "heatmap"
     assert app._artifact_from_type(None) is None
 
@@ -65,9 +65,89 @@ def test_tasks_coverage_uses_database(media_root):
     response = app.tasks_coverage(path="")
     assert isinstance(response, JSONResponse)
     payload = json.loads(bytes(response.body))
-    coverage = payload["data"]["coverage"]
+    data = payload["data"]
+    coverage = data["coverage"]
+    assert data["coverage_source"] == "db"
+    assert data["coverage_reason"] == "db"
     assert coverage["metadata"]["total"] == 1
     assert coverage["metadata"]["processed"] == 1
+
+
+def test_db_prune_missing_handles_stale_rows(media_root):
+    keep = _write_video_with_sidecars(media_root, "keep.mp4", phash_hex="1111")
+    stale = _write_video_with_sidecars(media_root, "stale.mp4", phash_hex="2222")
+    with db.session() as conn:
+        app._db_backfill_single_video(conn, keep)
+        app._db_backfill_single_video(conn, stale)
+    stale.unlink()
+
+    dry_response = app.db_prune_missing(path="", recursive=True, dry_run=True)
+    dry_payload = json.loads(bytes(dry_response.body))
+    dry_data = dry_payload["data"]
+    assert dry_data["missing"] == 1
+    assert dry_data["deleted"] == 0
+    assert dry_data["dry_run"] is True
+
+    apply_response = app.db_prune_missing(path="", recursive=True, dry_run=False)
+    apply_payload = json.loads(bytes(apply_response.body))
+    apply_data = apply_payload["data"]
+    assert apply_data["missing"] == 1
+    assert apply_data["deleted"] == 1
+    assert apply_data["dry_run"] is False
+
+    coverage_resp = app.tasks_coverage(path="")
+    coverage_payload = json.loads(bytes(coverage_resp.body))
+    data = coverage_payload["data"]
+    coverage = data["coverage"]
+    assert data["coverage_source"] == "db"
+    assert data["db_total"] == 1
+    assert coverage["metadata"]["total"] == 1
+    assert coverage["metadata"]["processed"] == 1
+
+
+def test_tasks_coverage_prefers_filesystem_when_db_missing_new_files(media_root):
+    fresh = _write_video_with_sidecars(media_root, "fresh.mp4", phash_hex="3333")
+    response = app.tasks_coverage(path="")
+    payload = json.loads(bytes(response.body))
+    data = payload["data"]
+    coverage = data["coverage"]
+    assert data["coverage_source"] == "filesystem"
+    assert data["coverage_reason"] == "fs_db_empty"
+    assert data["db_total"] == 0
+    assert data["fs_total"] >= 1
+    assert coverage["metadata"]["total"] >= 1
+    assert coverage["metadata"]["processed"] >= 1
+
+
+def test_media_delete_removes_video_row(media_root):
+    video = _write_video_with_sidecars(media_root, "remove.mp4", phash_hex="abba")
+    with db.session() as conn:
+        app._db_backfill_single_video(conn, video)
+    rel = _relative_path(video)
+    resp = app.media_delete(path=rel)
+    payload = json.loads(bytes(resp.body))
+    data = payload["data"]
+    assert rel in data["deleted"]
+    with db.session(read_only=True) as conn:
+        row = conn.execute("SELECT 1 FROM video WHERE rel_path = ?", (rel,)).fetchone()
+        assert row is None
+
+
+def test_media_rename_updates_video_row(media_root):
+    video = _write_video_with_sidecars(media_root, "source.mp4", phash_hex="5555")
+    with db.session() as conn:
+        app._db_backfill_single_video(conn, video)
+    rel_before = _relative_path(video)
+    resp = app.media_rename(path=rel_before, new_name="renamed.mp4", to=None, overwrite=False)
+    payload = json.loads(bytes(resp.body))
+    assert payload["data"]["to"].endswith("renamed.mp4")
+    renamed_path = media_root / "renamed.mp4"
+    rel_after = _relative_path(renamed_path)
+    with db.session(read_only=True) as conn:
+        new_row = conn.execute("SELECT 1 FROM video WHERE rel_path = ?", (rel_after,)).fetchone()
+        old_row = conn.execute("SELECT 1 FROM video WHERE rel_path = ?", (rel_before,)).fetchone()
+        assert new_row is not None
+        assert old_row is None
 
 
 def test_api_duplicates_list_identifies_pair(media_root):
@@ -204,9 +284,9 @@ def test_media_info_and_updates_flow(media_root):
     import_result = app.tags_import(import_payload)
     assert import_result["updated"] == 1
 
-    previews_resp = app.api_report_previews(directory=".", recursive=False, page=1, page_size=10)
-    previews_data = json.loads(bytes(previews_resp.body))["data"]
-    assert previews_data["total_files"] >= 2
+    preview_resp = app.api_report_preview(directory=".", recursive=False, page=1, page_size=10)
+    preview_data = json.loads(bytes(preview_resp.body))["data"]
+    assert preview_data["total_files"] >= 2
 
     compare_resp = app.api_compare_metadata(path_a=_relative_path(alpha), path_b=_relative_path(beta))
     compare_payload = json.loads(bytes(compare_resp.body))
@@ -267,7 +347,7 @@ def test_report_and_route_listing(media_root):
     sheet.write_bytes(b"sprite")
     sheet_json.write_text(json.dumps({"grid": [1, 2]}))
     app.heatmap_json_path(video).write_text(json.dumps({"bins": [0, 1]}))
-    app.scenes_json_path(video).write_text(json.dumps({"scenes": []}))
+    app.markers_json_path(video).write_text(json.dumps({"markers": []}))
 
     report_data = app.report(directory=".", recursive=True)
     assert report_data["total"] == 1
@@ -316,8 +396,8 @@ def test_path_and_artifact_helpers(media_root):
     assert sheet.parent == art_dir
     assert sheet_json.parent == art_dir
 
-    app.scenes_json_path(video).write_text(json.dumps({"scenes": []}))
-    assert app.scenes_json_exists(video)
+    app.markers_json_path(video).write_text(json.dumps({"markers": []}))
+    assert app.markers_json_exists(video)
     app.heatmap_json_path(video).write_text(json.dumps({"bins": []}))
     assert app.heatmap_json_exists(video)
 

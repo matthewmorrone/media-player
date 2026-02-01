@@ -6,6 +6,7 @@
 - [x] separate out multiple statements on a single line
 - [x] remove references to faces and subtitles jobs
 - [ ] refactor against html and css generation in js (111 left)
+- [ ] finish marker terminology cleanup
 
 ## Database Migration Plan
 - [x] **Dual-write safety (current requirement):** ensure every metadata/tags/performers/artifact/job mutation continues to update the legacy flat files _and_ the SQLite tables in lockstep (failures must be reported and retried) until a later cutoff is agreed.
@@ -13,7 +14,7 @@
 - [x] **Tag/performer CRUD overhaul:** Rework `/media/tags/*`, `/media/performers/*`, bulk-add/remove, and performer auto-match flows to mutate `media_tags` / `media_performers` link tables; regenerate `_MEDIA_ATTR` from SQLite (sidecar writes now optional via `MEDIA_ATTR_SIDECAR_WRITE`).
 - [x] **Artifact and status queries:** Introduce centralized SQL query helpers for artifacts, coverage, and list views (e.g., `get_media_listing`, `get_artifact_flags`); have `/grid`, `/list`, `/tasks/coverage`, `/report`, and sidebar summaries execute SQL instead of filesystem scans.
 - [x] **Search/filter engine:** Implement DB-backed filtering (duration, rating, tags, performers, favorites, missing artifacts, date ranges) with pagination so the UI can support richer queries once the filesystem fallback is gone.
-- [x] **Migration + validator CLI:** `tools/migrate_media_attr.py` imports `.artifacts/scenes.json` + `*.tags.json`, compares row counts/hashes vs. SQLite, and can archive or delete the JSON once parity is confirmed.
+- [x] **Migration + validator CLI:** `tools/migrate_media_attr.py` imports `.artifacts/markers.json` + `*.tags.json`, compares row counts/hashes vs. SQLite, and can archive or delete the JSON once parity is confirmed.
 - [x] **Job persistence unification:** Remove `.jobs/*.json` snapshots by ensuring `_restore_jobs_on_start` reads exclusively from the `job` table, add cleanup for orphaned DB rows, and expose `/api/jobs/backup` to export/import job queues when needed.
 - [x] **Bootstrapping & health:** Add `/api/db/status` to report schema version, row counts, and whether any legacy files still exist; refuse to start if DB migrations haven’t been applied (Alembic-lite or manual version table).
 - [x] **Front-end adjustments:** Modify `index.js` fetchers to rely on the new SQL-backed endpoints (sorting, filters, stats) and remove code paths that expect sidecar-only fields.
@@ -31,25 +32,25 @@ New movie import pipeline:
 	copy to server
 	detect in scan
 	run script for tagging
-	check if any scenes are recognized in stashdb
+	check if any markers are recognized in stashdb
 	add new performers
 	check if any performers are added in stashdb
 
 
-•	Persistent database and complex data model: StashApp maintains structured entities for scenes, images, galleries, performers, studios, and tags, whereas this app relies mostly on the filesystem without a relational or graph database.
+•	Persistent database and complex data model: StashApp maintains structured entities for clips, images, galleries, performers, studios, and tags, whereas this app relies mostly on the filesystem without a relational or graph database.
 •	implement Comprehensive web UI for browsing, editing, and searching the library
 •	Metadata scraping and StashBox integration: scrape Google or something
 •	File scanning and library management: automatically scan directories, import new media, rename files, and track changes, implement automatic artifact generation and automated import pipeline.
 •	Plugin and scripting ecosystem: implement hooks for scraping, post-processing, and custom workflows
 •	Advanced search and filtering UI: implement rich filtering (e.g., by tags, performers, studios, resolution, duration, and custom fields) along with saved searches and complex query language.
-•	Video playback and streaming features: implement integrated video playback, HLS transcoding, scene markers, preview tiles, and heatmap in the UI
-•	Scene editing and markers: allow users to create, edit, and export scene markers, chapters, and interactive metadata
+•	Video playback and streaming features: implement integrated video playback, HLS transcoding, marker overlays, preview tiles, and heatmap in the UI
+•	Marker editing: allow users to create, edit, and export marker chapters and interactive metadata
 •	Duplicate detection and management UI: implement visual deduplication workflows with UI support
 
 ### Known issues:
 - [ ] No percentage progress for orphans
 - [ ] add a way to filter by duration: input and lt/gt/eq
-- [ ] batch jobs for metadata and thumbnail generation should be split into individual jobs
+- [x] batch jobs for metadata and thumbnail generation should be split into individual jobs
 - [x] thumbnail doesn't update in the UI without a refresh
 - [x] in performers metadata, stores both image and images array: this is redundant
 - [x] add forward and backward buttons in player: forward hits random, backward will require history
@@ -62,7 +63,7 @@ New movie import pipeline:
 - [x] add a tab for library-wide statistics: number of files, library size, library total duration, resolution pi chart, duration pi chart, number of tags, number of performers
 - [x] add a boolean favorite heart icon (videoFavorite + btnFavorite with toggle, persists to /api/media/favorite)
 - [x] move forward and back with left and right arrows (amount of time specified in settings)
-- [ ] jump forward and backward by scene markers
+- [ ] jump forward and backward by markers
 - [ ] persist color filters (controls exist, persistence unclear)
 - [x] Phone/Mobile Layout optimization
 - [x] Fire TV Layout optimization

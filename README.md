@@ -19,6 +19,7 @@ Environment variables:
 - JOB_MAX_CONCURRENCY: limit parallel heavy jobs (default 1).
 - FFMPEG_TIMELIMIT: per ffmpeg run time cap (default 600 seconds).
 - MEDIA_DATA_BACKEND: set to `dual` (default) to allow both DB + JSON reads, `db` to disable tag/performer sidecar reads & writes, or `files` to keep legacy JSON as the only source while importing.
+- SPRITES_MAX_TILES: upper bound for auto-expanded sprite grids (default 400). Set to 0 to allow unlimited growth when a video needs more preview tiles.
 
 ## Optional features & extras
 Some functionality (face detection, subtitles via whisper.cpp) activates automatically if supporting binaries or Python packages are present.
@@ -41,7 +42,7 @@ If OpenCV wheels fail on ARM and you pass `--apt-opencv`, the script will attemp
 - Library filters & saved views
 - Duplicate manager (pHash driven) + actions
 - Tags & performers management (rename/merge)
-- Scenes markers editor
+- Markers editor
 - Jobs dashboard (SSE live updates, cancel)
 - Face identities & clustering (longer term)
 
@@ -74,7 +75,7 @@ See `COPILOT_GUIDE.md` for extended semantics (endpoints, adaptive artifact butt
 If you change core UI semantics or API endpoints, update those docs to keep them authoritative.
 
 ### Database sidecar migration
-Use `python tools/migrate_media_attr.py` to import the legacy `.artifacts/scenes.json` index and per-video `*.tags.json` files into SQLite. The tool reports row counts and SHA-256 hashes for the sidecars vs. the database so you can spot drift before removing the JSON. Typical flow:
+Use `python tools/migrate_media_attr.py` to import the legacy marker index stored in `.artifacts/markers.json` plus the per-video `*.tags.json` files into SQLite. The tool reports row counts and SHA-256 hashes for the sidecars vs. the database so you can spot drift before removing the JSON. Typical flow:
 
 ```bash
 # Dry-run: preview diffs without touching the DB
@@ -102,14 +103,14 @@ Flags such as `--limit` (process first N paths), `--delete` (remove JSON after a
 - Cold-start a new library by running `python tools/migrate_media_attr.py --apply`, then `POST /api/db/import` (or `python tools/artifacts.py --root <path> --what all`) to populate the remaining artifact tables; UI endpoints will be instant once the DB is hydrated.
 
 ### Migration & rollback checklist
-1. Stop the server, ensure a backup of `.artifacts/scenes.json` plus any `*.tags.json` sidecars exists (the migrate tool can archive them automatically).
+1. Stop the server, ensure a backup of the legacy marker file `.artifacts/markers.json` plus any `*.tags.json` sidecars exists (the migrate tool can archive them automatically).
 2. Run `python tools/migrate_media_attr.py --apply --archive` to import performers/tags + metadata into SQLite.
 3. Restart `./serve.sh` and visit `/api/db/status`; confirm `legacy_files` is empty and row counts look sane.
 4. (Optional) Disable future JSON writes with `MEDIA_ATTR_SIDECAR_WRITE=0 ./serve.sh` so only the DB receives updates.
 5. Use `python tools/db_backup.py --out backups/media-player-$(date +%Y%m%d).json` (or `GET /api/jobs/backup`) to snapshot the DB before deleting legacy files.
 
 Rollback steps:
-1. Restore the archived `.artifacts/scenes.json` and `*.tags.json` produced in step 1.
+1. Restore the archived `.artifacts/markers.json` marker file and `*.tags.json` produced in step 1.
 2. Start the server with `MEDIA_ATTR_SIDECAR_WRITE=1` so mutations re-populate sidecars.
 3. Call `python tools/migrate_media_attr.py --apply` (without `--archive`) to push DB contents back into the JSON store if you need parity before disabling the DB.
 4. Endpoints automatically fall back to filesystem scans when the relevant tables are empty, so no additional flags are required.
@@ -143,7 +144,7 @@ Notes:
 ## Legacy sidecar fallback
 
 - The SQLite database is authoritative for all list/stat/report endpoints, but every route still has a filesystem fallback for safety. If the DB tables are empty, `/api/library`, `/api/stats`, `/api/tags`, `/api/performers`, etc. will walk the media root and (re)hydrate the DB opportunistically.
-- Leave `MEDIA_ATTR_SIDECAR_WRITE=1` if you still need `.artifacts/scenes.json` and per-file `*.tags.json` for external tooling. Set it to `0` once you fully trust the DB to reduce disk churn.
+- Leave `MEDIA_ATTR_SIDECAR_WRITE=1` if you still need the legacy marker `.artifacts/markers.json` file and per-file `*.tags.json` for external tooling. Set it to `0` once you fully trust the DB to reduce disk churn.
 - Prefer `MEDIA_DATA_BACKEND=db` instead of juggling multiple *_SIDECAR_* flags when you want a clean DB-only run; it disables tag/performer sidecar reads and writes globally while keeping artifact generation untouched.
 - To regenerate the DB from sidecars after a rollback, run `python tools/migrate_media_attr.py --apply` followed by `POST /api/db/import` (or the relevant `tools/artifacts.py` command) and watch `/api/db/status` until row counts recover.
 - JSON archives created by the migrate tool live under `.artifacts/archive/media-attr/<timestamp>`; restore those files if you ever need to abandon the DB temporarily.

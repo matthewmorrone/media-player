@@ -6,7 +6,7 @@ Artifacts covered:
 - thumbnail JPG
 - preview (webm)
 - sprite sheet JPG + JSON
-- scene JSON (+ optional thumbs/clips)
+- marker JSON (+ optional thumbs/clips; stored under `.artifacts/markers/`)
 - heatmap JSON (+ optional PNG)
 - phash JSON
 - metadata JSON
@@ -15,7 +15,7 @@ Usage:
     python artifacts.py \
         --root /path/to/videos \
     [--recursive] \
-    [--what all|thumb|preview|sprites|scenes|heatmap|phash|metadata] \
+    [--what all|thumbnail|preview|sprites|markers|heatmap|phash|metadata] \
     [--force] [--concurrency 2]
 
 Notes:
@@ -136,7 +136,7 @@ def find_videos(m, base: Path, recursive: bool) -> list[Path]:
     return vids
 
 
-def task_thumb(m, v: Path, force: bool):
+def task_thumbnail(m, v: Path, force: bool):
     m.generate_thumbnail(v, force=force, time_spec="middle", quality=2)
 
 
@@ -154,9 +154,9 @@ def task_sprites(m, v: Path):
     m.generate_sprite_sheet(v, interval=float(d["interval"]), width=int(d["width"]), cols=int(d["cols"]), rows=int(d["rows"]), quality=int(d["quality"]))
 
 
-def task_scenes(m, v: Path, thumbs: bool, clips: bool):
+def task_markers(m, v: Path, thumbs: bool, clips: bool):
     # Default threshold/limit mirror server defaults
-    m.generate_scene_artifacts(
+    m.generate_marker_artifacts(
         v,
         threshold=0.4,
         limit=0,
@@ -185,13 +185,13 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--root", default=os.environ.get("MEDIA_ROOT", os.getcwd()), help="Directory containing media files")
     ap.add_argument("--recursive", action="store_true", help="Recurse into subdirectories")
     ap.add_argument("--what", default="all", choices=[
-        "all", "thumb", "preview", "sprites", "scenes", "heatmap", "phash", "metadata"
+        "all", "thumbnail", "preview", "sprites", "markers", "heatmap", "phash", "metadata"
     ], help="Which artifact(s) to generate")
     ap.add_argument("--force", action="store_true", help="Force overwrite where applicable")
     # Align with server default JOB_MAX_CONCURRENCY=4 (overridable via env)
     ap.add_argument("--concurrency", type=int, default=int(os.environ.get("JOB_MAX_CONCURRENCY", "4")), help="Max parallel workers")
-    ap.add_argument("--scene-thumbs", action="store_true", help="For scenes: write thumbnail JPEGs")
-    ap.add_argument("--scene-clips", action="store_true", help="For scenes: write MP4 clips")
+    ap.add_argument("--marker-thumbs", dest="marker_thumbs", action="store_true", help="For markers: write thumbnail JPEGs")
+    ap.add_argument("--marker-clips", dest="marker_clips", action="store_true", help="For markers: write MP4 clips")
     ap.add_argument("--heatmap-png", action="store_true", help="For heatmap: also write PNG strip")
     ap.add_argument("--ffmpeg-timelimit", type=int, default=int(os.environ.get("FFMPEG_TIMELIMIT", "600") or 600), help="Hard cap for each ffmpeg invocation in seconds (0 disables)")
     ap.add_argument("--no-ffprobe", action="store_true", help="Disable ffprobe (set FFPROBE_DISABLE=1) to avoid probe hangs; some features may be approximate")
@@ -208,6 +208,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--recompute-all", action="store_true", help="Force regenerate even if artifacts exist (overrides --only-missing)")
 
     args = ap.parse_args(argv)
+    if not hasattr(args, "marker_thumbs"):
+        args.marker_thumbs = False
+    if not hasattr(args, "marker_clips"):
+        args.marker_clips = False
     if args.venv_status:
         try:
             interp = sys.executable
@@ -273,11 +277,11 @@ def main(argv: list[str]) -> int:
         if args.what == "all":
             return [
                 "metadata",
-                "thumb",
+                "thumbnail",
                 # Keep sprites and preview adjacent; server runs them in the same phase
                 "sprites",
                 "preview",
-                "scenes",
+                "markers",
                 "heatmap",
                 "phash"
             ]
@@ -326,8 +330,8 @@ def main(argv: list[str]) -> int:
         try:
             if task == "metadata":
                 return m.metadata_path(v).exists()
-            if task == "thumb":
-                return m.thumbs_path(v).exists()
+            if task == "thumbnail":
+                return m.thumbnails_path(v).exists()
             if task == "preview":
                 fmt = args.preview_fmt
                 p = (m.artifact_dir(v) / f"{v.stem}.preview.{fmt}")
@@ -341,12 +345,12 @@ def main(argv: list[str]) -> int:
                     return sheet.exists() and jpath.exists()
                 except Exception:
                     return False
-            if task == "scenes":
+            if task == "markers":
                 try:
                     # Prefer strict server helper when available
-                    return bool(getattr(m, "scenes_json_exists")(v))  # type: ignore[misc]
+                    return bool(getattr(m, "markers_json_exists")(v))  # type: ignore[misc]
                 except Exception:
-                    return m.scenes_json_path(v).exists()
+                    return m.markers_json_path(v).exists()
             if task == "heatmap":
                 try:
                     return bool(getattr(m, "heatmap_json_exists")(v))  # type: ignore[misc]
@@ -404,10 +408,10 @@ def main(argv: list[str]) -> int:
                     starting("metadata"); task_metadata(m, v, args.force); advance("metadata")
                 if cancel_event.is_set():
                     return f"{v}: cancelled"
-                if only_missing and artifact_exists("thumb", v):
-                    advance("thumb (skip)")
+                if only_missing and artifact_exists("thumbnail", v):
+                    advance("thumbnail (skip)")
                 else:
-                    starting("thumb"); task_thumb(m, v, args.force); advance("thumb")
+                    starting("thumbnail"); task_thumbnail(m, v, args.force); advance("thumbnail")
                 if cancel_event.is_set():
                     return f"{v}: cancelled"
                 # Preview progress: update bar postfix or print simple progress
@@ -450,10 +454,10 @@ def main(argv: list[str]) -> int:
                     starting("sprites"); task_sprites(m, v); advance("sprites")
                 if cancel_event.is_set():
                     return f"{v}: cancelled"
-                if only_missing and artifact_exists("scenes", v):
-                    advance("scenes (skip)")
+                if only_missing and artifact_exists("markers", v):
+                    advance("markers (skip)")
                 else:
-                    starting("scenes"); task_scenes(m, v, thumbs=args.scene_thumbs, clips=args.scene_clips); advance("scenes")
+                    starting("markers"); task_markers(m, v, thumbs=args.marker_thumbs, clips=args.marker_clips); advance("markers")
                 if cancel_event.is_set():
                     return f"{v}: cancelled"
                 if only_missing and artifact_exists("heatmap", v):
@@ -471,11 +475,11 @@ def main(argv: list[str]) -> int:
                     advance("metadata (skip)")
                 else:
                     starting("metadata"); task_metadata(m, v, args.force); advance("metadata")
-            elif args.what == "thumb":
-                if only_missing and artifact_exists("thumb", v):
-                    advance("thumb (skip)")
+            elif args.what == "thumbnail":
+                if only_missing and artifact_exists("thumbnail", v):
+                    advance("thumbnail (skip)")
                 else:
-                    starting("thumb"); task_thumb(m, v, args.force); advance("thumb")
+                    starting("thumbnail"); task_thumbnail(m, v, args.force); advance("thumbnail")
             elif args.what == "preview":
                 if only_missing and artifact_exists("preview", v):
                     advance("preview (skip)")
@@ -511,11 +515,11 @@ def main(argv: list[str]) -> int:
                     advance("sprites (skip)")
                 else:
                     starting("sprites"); task_sprites(m, v); advance("sprites")
-            elif args.what == "scenes":
-                if only_missing and artifact_exists("scenes", v):
-                    advance("scenes (skip)")
+            elif args.what == "markers":
+                if only_missing and artifact_exists("markers", v):
+                    advance("markers (skip)")
                 else:
-                    starting("scenes"); task_scenes(m, v, thumbs=args.scene_thumbs, clips=args.scene_clips); advance("scenes")
+                    starting("markers"); task_markers(m, v, thumbs=args.marker_thumbs, clips=args.marker_clips); advance("markers")
             elif args.what == "heatmap":
                 if only_missing and artifact_exists("heatmap", v):
                     advance("heatmap (skip)")

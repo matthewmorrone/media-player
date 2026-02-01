@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Import media attribute sidecars into SQLite and verify parity.
 
-This CLI is meant to be run before deleting `.artifacts/scenes.json` and the
+This CLI is meant to be run before deleting `.artifacts/markers.json` and the
 per-video `*.tags.json` files. It can:
-  * load the consolidated media attribute index (`.artifacts/scenes.json`)
+  * load the consolidated media attribute index (`.artifacts/markers.json`)
   * load all per-video tags sidecars
   * upsert the data into the SQLite database
   * compare row counts & SHA-256 hashes between the source JSON and the DB
@@ -177,7 +177,7 @@ def build_stem_index(app_mod, root: Path, attr_map: dict[str, dict[str, list[str
 
 
 def load_tags_sidecars(root: Path, stem_index: dict[str, list[str]]) -> tuple[dict[str, dict[str, Any]], dict[str, Path], dict[str, Any]]:
-    base = root / ".artifacts" / "scenes"
+    base = root / ".artifacts" / "markers"
     entries: dict[str, dict[str, Any]] = {}
     sources: dict[str, Path] = {}
     stats = {
@@ -545,7 +545,7 @@ def main(argv: list[str]) -> int:
     APP = import_app_module()
     DB = importlib.import_module("db")
 
-    attr_index_path = root / ".artifacts" / "scenes.json"
+    attr_index_path = root / ".artifacts" / "markers.json"
     media_attr_map, index_warnings = load_media_attr_index(attr_index_path)
     stem_index = build_stem_index(APP, root, media_attr_map)
     metadata_map, metadata_sources, tag_stats = load_tags_sidecars(root, stem_index)

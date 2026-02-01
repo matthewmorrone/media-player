@@ -14,8 +14,8 @@ Purpose
 - Persistence: SQLite is the source of truth for media, tags, performers, artifacts, and jobs; JSON sidecars only exist as optional mirrors for legacy tooling.
 - Artifacts live beside media inside hidden directories (`.artifacts`, `.jobs`, etc.) to avoid polluting the visible file tree.
 - Artifact sidecars per video (naming centralized via helpers):
-	- `metadata.json`, `thumbnail.jpg`, `preview.webm`, `sprites.{jpg,json}`, `scenes.json`, `heatmap.{json,png}`, `faces.json`, `phash.json`, `subtitles.*`.
-- Generation model: Some artifacts inline (metadata, thumbnail, preview, phash, faces, subtitles); others job-queued (sprites, scenes). Finish flow: `/finish/plan` → `/finish/run`.
+	- `metadata.json`, `thumbnail.jpg`, `preview.webm`, `sprites.{jpg,json}`, `markers.json` (stored on disk as `markers.json`), `heatmap.{json,png}`, `faces.json`, `phash.json`, `subtitles.*`.
+- Generation model: Some artifacts inline (metadata, thumbnail, preview, phash, faces, subtitles); others job-queued (sprites, markers). Finish flow: `/finish/plan` → `/finish/run`.
 - Ordering contract: `FINISH_ARTIFACT_ORDER` ensures deterministic generation (metadata → thumbnail → sprites/preview → analysis sidecars).
 - FFmpeg & quality knobs controlled purely by environment variables (never hardcode derived values): `FFMPEG_THREADS`, `FFMPEG_TIMELIMIT`, `THUMBNAIL_QUALITY`, `PREVIEW_CRF_VP9`, etc.
 - Frontend: Monolithic `index.js` for DOM + fetch; pure, side‑effect‑free helpers in `utils.js`; HTML `<template>` tags in `index.html` define repeatable UI (jobs, markers, chips, etc.).
@@ -36,7 +36,7 @@ Purpose
 - LocalStorage key naming: Prefix `mediaPlayer:` (e.g., `mediaPlayer:videoAdjust`).
 
 ### DB-first operations (mandatory for agents)
-- Always read/write structured data via the SQLite helpers (`get_media_listing`, `_sync_video_meta_to_db`, `_db_backfill_from_fs`, etc.). Sidecars (`*.tags.json`, `.artifacts/scenes.json`, `metadata.json`) are regenerated from the DB when needed and must not be treated as canonical.
+- Always read/write structured data via the SQLite helpers (`get_media_listing`, `_sync_video_meta_to_db`, `_db_backfill_from_fs`, etc.). Sidecars (`*.tags.json`, the marker index `.artifacts/markers.json`, `metadata.json`) are regenerated from the DB when needed and must not be treated as canonical.
 - Use `/api/db/status` to confirm schema version, row counts, and whether any legacy files still exist before/after a migration. Treat a non-zero `legacy_files` indicator as a blocker.
 - Use `/api/db/import` (or `python tools/migrate_media_attr.py --apply`) when you need to backfill DB tables from sidecars, such as after a rollback or when importing historical artifacts. Never write SQL directly for migrations—call the helpers.
 - Honor `MEDIA_ATTR_SIDECAR_WRITE` (and `METADATA_SIDECAR_WRITE`) when touching metadata/tag endpoints. Agents must not flip these env flags inside code; expose knobs via docs/env instead.

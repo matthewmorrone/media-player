@@ -1,686 +1,1430 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Media Library</title>
-  <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
-  <link rel="manifest" href="/static/manifest.json" />
-  <link rel="stylesheet" href="index.css" />
-  <!-- Cytoscape.js and plugins (for Performers Graph tab) -->
-  <link rel="stylesheet" href="https://unpkg.com/cytoscape-panzoom@2.5.3/cytoscape.js-panzoom.css" />
-  <script src="https://unpkg.com/cytoscape@3.27.0/dist/cytoscape.min.js"></script>
-  <!-- fcose dependencies (must be loaded before fcose) -->
-  <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
-  <script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
-  <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
-  <script src="https://unpkg.com/cytoscape-cxtmenu@3.5.0/cytoscape-cxtmenu.js"></script>
-  <script src="https://unpkg.com/cytoscape-panzoom@2.5.3/cytoscape-panzoom.js"></script>
-  <script>
-    // Apply collapsed class ASAP to avoid post-load reflow when sidebar is persisted collapsed
-    try {
-      if (localStorage.getItem('mediaPlayer:sidebarCollapsed') === '1') {
-        (document.documentElement || document.body).classList.add('has-sidebar-collapsed');
-      }
-    } catch (e) { }
-  </script>
-  <script>window.__JOBS_SSE_ENABLED = false; /* detected by client via /api/config; default false to avoid assumptions */</script>
-  <script>
-    // Fire TV/Android TV Detection
-    (function() {
-      const isFireTV = /silk|aftvb|afts|aft\w|aftt/i.test(navigator.userAgent);
-      const isAndroidTV = /android.*tv|googletv/i.test(navigator.userAgent);
+ layer (tick overlay) */
+#timelineMarkers.timeline-markers-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
 
-      if (isFireTV || isAndroidTV) {
-        document.documentElement.classList.add('firetv');
-        // Also add to <body> once DOM is ready so body-scoped rules can apply
-        const addBodyClass = () => {
-          try {
-            document.body.classList.add('firetv');
-          }
-          catch (_) {}
-        };
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', addBodyClass, { once: true });
-        }
-        else {
-          addBodyClass();
-        }
-      }
-    })();
-  </script>
-  <script type="module" src="index.js"></script>
-  <style>
-    /* Column filter trigger and popover (List tab) */
-    .col-filter-trigger { margin-left: 6px; font-size: 12px; opacity: .7; cursor: pointer; }
-    .col-filter-trigger:hover { opacity: 1; }
-    .list-filter-menu { position: absolute; z-index: 9999; background: var(--panel-bg, #111827); color: inherit; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 10px; box-shadow: 0 6px 18px rgba(0,0,0,.35); min-width: 220px; }
-    .list-filter-menu .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
-    .list-filter-menu .values { padding: 4px 0; }
-    .list-filter-menu .values label { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 4px; font-size: 12px; }
-    .list-filter-menu .values label span { color: var(--muted); }
-    .list-filter-menu .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
-    .list-filter-menu select.control-select { height: 26px; font-size: 12px; padding: 0 18px 0 8px; }
-    .list-table tbody td.col-artifacts .chips-list { display: flex; flex-wrap: wrap; gap: 6px; }
-    .list-table tbody td.col-artifacts .chip { font-size: 11px; padding: 2px 6px; border-radius: 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); }
-    .list-table tbody td.col-artifacts .chip--ok { background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.4); color: #bbf7d0; }
-    .list-table tbody td.col-artifacts .chip--missing { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.45); color: #fecaca; }
-  </style>
-</head>
+#timelineMarkers.timeline-markers-layer .marker-tick {
+  position: absolute;
+  top: 0;
+  width: 4px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.75);
+  mix-blend-mode: screen;
+}
 
-<body>
-  <!-- Inline SVG sprite (all icon symbols embedded; external icons.svg removed) -->
-  <svg aria-hidden="true" focusable="false" class="svg-sprite">
-    <symbol id="icon-placeholder" viewBox="0 0 320 180">
-      <defs>
-        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#0e1016" />
-          <stop offset="100%" stop-color="#1a2030" />
-        </linearGradient>
-      </defs>
-      <rect width="320" height="180" fill="url(#g)" />
-      <g fill="#3b4663">
-        <rect x="30" y="40" width="260" height="100" rx="8" />
-        <polygon points="140,90 140,70 200,90 140,110" fill="#6b7aa6" />
-      </g>
-    </symbol>
-    <symbol id="icon-play" viewBox="0 0 24 24">
-      <!-- Triangular play icon with slight inset for sharper edges -->
-      <path d="M7 5v14l11-7-11-7z" fill="currentColor" />
-    </symbol>
-    <symbol id="icon-pause" viewBox="0 0 24 24">
-      <path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor" />
-    </symbol>
-    <symbol id="icon-vol" viewBox="0 0 24 24">
-      <path d="M3 9v6h4l5 4V5L7 9H3z" fill="currentColor" />
-      <!-- Sound waves (shown only in unmuted icon) -->
-      <path d="M14 9.5c.9.6 1.5 1.5 1.5 2.5s-.6 1.9-1.5 2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" />
-      <path d="M16.5 7.5c1.4 1 2.5 2.6 2.5 4.5s-1.1 3.5-2.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" />
-    </symbol>
-    <symbol id="icon-muted" viewBox="0 0 24 24">
-      <path d="M3 9v6h4l5 4V5L7 9H3z" fill="currentColor" />
-      <path d="M16 8l4 8M20 8l-4 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-    </symbol>
-    <symbol id="icon-options" viewBox="0 0 24 24">
-      <circle cx="5" cy="12" r="2" fill="currentColor" />
-      <circle cx="12" cy="12" r="2" fill="currentColor" />
-      <circle cx="19" cy="12" r="2" fill="currentColor" />
-    </symbol>
-    <symbol id="icon-gear" viewBox="0 0 24 24">
-      <!-- Simplified cog with 6 teeth for clarity at small sizes -->
-      <circle cx="12" cy="12" r="3.25" fill="currentColor" />
-      <path d="M12 2.75l1.2.45a2 2 0 0 0 2.6-1.2l.3-.8 2.2 1.27-.3.8a2 2 0 0 0 1.2 2.6l.8.3v2.54l-.8.3a2 2 0 0 0-1.2 2.6l.3.8-2.2 1.27-.3-.8a2 2 0 0 0-2.6-1.2l-1.2.45-1.2-.45a2 2 0 0 0-2.6 1.2l-.3.8-2.2-1.27.3-.8a2 2 0 0 0-1.2-2.6l-.8-.3V8.37l.8-.3a2 2 0 0 0 1.2-2.6l-.3-.8L7.9 3.2l.3.8A2 2 0 0 0 10.8 5l1.2-.45z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" opacity="0.9" />
-    </symbol>
-    <symbol id="icon-caret" viewBox="0 0 24 24">
-      <!-- filled chevron for better visibility (uses currentColor) -->
-      <path d="M9 18 L15 12 L9 6 Z" fill="currentColor" />
-    </symbol>
-    <symbol id="icon-jump" viewBox="0 0 24 24">
-      <path d="M4 12a8 8 0 1 1 16 0 8 8 0 0 1-16 0zm5.5-3.5v7l6-3.5-6-3.5z" fill="currentColor" />
-    </symbol>
-    <symbol id="icon-clear" viewBox="0 0 24 24">
-      <path d="M12 10.586 7.757 6.343 6.343 7.757 10.586 12l-4.243 4.243 1.414 1.414L12 13.414l4.243 4.243 1.414-1.414L13.414 12l4.243-4.243-1.414-1.414L12 10.586z" fill="currentColor" />
-    </symbol>
-    <symbol id="icon-reset" viewBox="0 0 24 24">
-      <!-- Circular arrow reset icon -->
-      <path d="M12 5a7 7 0 1 1-6.23 4H8a1 1 0 0 0 0-2H4.5A1.5 1.5 0 0 0 3 8.5V13a1 1 0 0 0 2 0V9.97A9 9 0 1 0 12 3v2z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" />
-    </symbol>
-    <symbol id="icon-restart" viewBox="0 0 24 24">
-      <!-- Replay arrow for restarting current video -->
-      <path d="M12 5V2L7 7l5 5V9c3.31 0 6 2.69 6 6s-2.69 6-6 6a6 6 0 0 1-5.65-4H6.1A8 8 0 0 0 20 15c0-4.42-3.58-8-8-8z" fill="currentColor" />
-    </symbol>
-    <symbol id="icon-prev" viewBox="0 0 24 24">
-      <path d="M18 5v14l-8-7 8-7z" fill="currentColor" />
-      <path d="M6 5h2v14H6z" fill="currentColor" />
-    </symbol>
-    <symbol id="icon-next" viewBox="0 0 24 24">
-      <path d="M6 5v14l8-7-8-7z" fill="currentColor" />
-      <path d="M16 5h2v14h-2z" fill="currentColor" />
-    </symbol>
-    <!-- Shuffle / Random icon (path supplied by user) -->
-    <symbol id="icon-shuffle" viewBox="0 0 1792 1792">
-      <path fill="currentColor" d="M666 481q-60 92-137 273-22-45-37-72.5t-40.5-63.5-51-56.5-63-35-81.5-14.5h-224q-14 0-23-9t-9-23v-192q0-14 9-23t23-9h224q250 0 410 225zm1126 799q0 14-9 23l-320 320q-9 9-23 9-13 0-22.5-9.5t-9.5-22.5v-192q-32 0-85 .5t-81 1-73-1-71-5-64-10.5-63-18.5-58-28.5-59-40-55-53.5-56-69.5q59-93 136-273 22 45 37 72.5t40.5 63.5 51 56.5 63 35 81.5 14.5h256v-192q0-14 9-23t23-9q12 0 24 10l319 319q9 9 9 23zm0-896q0 14-9 23l-320 320q-9 9-23 9-13 0-22.5-9.5t-9.5-22.5v-192h-256q-48 0-87 15t-69 45-51 61.5-45 77.5q-32 62-78 171-29 66-49.5 111t-54 105-64 100-74 83-90 68.5-106.5 42-128 16.5h-224q-14 0-23-9t-9-23v-192q0-14 9-23t23-9h224q48 0 87-15t69-45 51-61.5 45-77.5q32-62 78-171 29-66 49.5-111t54-105 64-100 74-83 90-68.5 106.5-42 128-16.5h256v-192q0-14 9-23t23-9q12 0 24 10l319 319q9 9 9 23z"/>
-    </symbol>
-    <!-- Repeat / Auto icon (two arrows in a circle) -->
-    <symbol id="icon-repeat" viewBox="0 0 24 24">
-      <path d="M7 7h7a5 5 0 0 1 0 10H7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M7 7l2.5-2.5M7 7L4.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M17 17H10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M17 17l-2.5 2.5M17 17l2.5 2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    </symbol>
-    <!-- Auto/loop icon for Random Auto (infinity-like circles) -->
-    <symbol id="icon-auto-shuffle" viewBox="0 0 24 24">
-      <path fill="currentColor" d="M20.288 9.463a4.856 4.856 0 0 0-4.336-2.3 4.586 4.586 0 0 0-3.343 1.767c.071.116.148.226.212.347l.879 1.652.134-.254a2.71 2.71 0 0 1 2.206-1.519 2.845 2.845 0 1 1 0 5.686 2.708 2.708 0 0 1-2.205-1.518L13.131 12l-1.193-2.26a4.709 4.709 0 0 0-3.89-2.581 4.845 4.845 0 1 0 0 9.682 4.586 4.586 0 0 0 3.343-1.767c-.071-.116-.148-.226-.212-.347l-.879-1.656-.134.254a2.71 2.71 0 0 1-2.206 1.519 2.855 2.855 0 0 1-2.559-1.369 2.825 2.825 0 0 1 0-2.946 2.862 2.862 0 0 1 2.442-1.374h.121a2.708 2.708 0 0 1 2.205 1.518l.7 1.327 1.193 2.26a4.709 4.709 0 0 0 3.89 2.581h.209a4.846 4.846 0 0 0 4.127-7.378z"/>
-    </symbol>
-    <symbol id="icon-cc" viewBox="0 0 24 24">
-      <rect x="2" y="5" width="20" height="14" rx="2" ry="2" fill="none" stroke="currentColor" stroke-width="2" />
-      <path d="M11.2 14.5c-.43.3-.93.5-1.5.5a3 3 0 1 1 0-6c.57 0 1.07.2 1.5.5M17.2 14.5c-.43.3-.93.5-1.5.5a3 3 0 1 1 0-6c.57 0 1.07.2 1.5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" />
-    </symbol>
-    <!-- Rating and Favorite Icons -->
-    <symbol id="icon-star" viewBox="0 0 24 24">
-      <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.62L12 2 9.19 8.62 2 9.24l5.46 4.73L5.82 21z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
-    </symbol>
-    <symbol id="icon-star-filled" viewBox="0 0 24 24">
-      <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.62L12 2 9.19 8.62 2 9.24l5.46 4.73L5.82 21z" fill="currentColor" />
-    </symbol>
-    <symbol id="icon-heart" viewBox="0 0 24 24">
-      <path d="M12.1 8.64 12 8.77l-.1-.13C10.14 6.6 7.1 6.52 5.14 8.5 3.07 10.57 3.24 14 6 16.5c1.54 1.38 3.4 2.74 5.1 3.94 1.7-1.2 3.56-2.56 5.1-3.94 2.76-2.5 2.93-5.93.86-8C16.9 6.52 13.86 6.6 12.1 8.64z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
-    </symbol>
-    <symbol id="icon-heart-filled" viewBox="0 0 24 24">
-      <path d="M12.1 8.64 12 8.77l-.1-.13C10.14 6.6 7.1 6.52 5.14 8.5 3.07 10.57 3.24 14 6 16.5c1.54 1.38 3.4 2.74 5.1 3.94 1.7-1.2 3.56-2.56 5.1-3.94 2.76-2.5 2.93-5.93.86-8C16.9 6.52 13.86 6.6 12.1 8.64z" fill="currentColor" />
-    </symbol>
-    <!-- Camera icon for frame download -->
-    <symbol id="icon-camera" viewBox="0 0 24 24">
-      <path d="M4 7h3.2l1.6-2h6.4l1.6 2H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-      <circle cx="12" cy="13" r="4" fill="none" stroke="currentColor" stroke-width="2" />
-      <circle cx="18" cy="9" r="1" fill="currentColor" />
-    </symbol>
-  </svg>
+#timelineMarkers.timeline-markers-layer .intro-marker-tick {
+  position: absolute;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  background: linear-gradient(180deg, #ffb000, #ff7a00);
+  box-shadow: 0 0 6px rgba(255, 122, 0, 0.6);
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  mix-blend-mode: normal;
+}
 
-  <!-- Hidden SVG filters for video color matrix (kept with SVG definitions) -->
-  <svg width="0" height="0" class="sprite-defs-hidden" aria-hidden="true" focusable="false">
-    <filter id="playerColorMatrix" color-interpolation-filters="sRGB">
-      <feColorMatrix id="playerColorMatrixValues" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0" />
-    </filter>
-  </svg>
+/* Detached heatmap band above scrubber */
+/* Heatmap now overlays directly atop scrubber track (no vertical offset).
+  Keep the track positioned for the absolute children while leaving the
+  scrubber bar free to remain absolutely positioned over the video. */
+.scrubber-track { position: relative; }
+.scrubber-heatmap-band {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  height: 100%;
+  border-radius: 0;
+  background: none;
+  overflow: hidden;
+  pointer-events: none; /* allow direct scrubbing without interference */
+  display: block;
+}
 
-  <!-- Templates: Settings JSON panels (Health, Config) -->
-  <template id="settingsHealthTemplate">
-    <section class="settings-block">
-      <header class="flex-row gap-10">
-        <strong>Server Health</strong>
-        <div class="ml-auto"></div>
-        <button class="btn-sm health-refresh" title="Refresh health">Refresh</button>
-      </header>
-      <pre class="json-pre health-pre" aria-live="polite"></pre>
-    </section>
-  </template>
-  <template id="settingsConfigTemplate">
-    <section class="settings-block">
-      <header class="flex-row gap-10">
-        <strong>Server Config</strong>
-        <div class="ml-auto"></div>
-        <button class="btn-sm config-refresh" title="Refresh config">Refresh</button>
-      </header>
-      <pre class="json-pre config-pre" aria-live="polite"></pre>
-    </section>
-  </template>
+.scrubber-heatmap-band.hidden {
+  display: none !important;
+}
 
-  <!-- Templates: Performers (card + empty state) -->
-  <template id="performerCardTemplate">
-    <div class="perf-card perf-card--pretty" role="group">
-      <div class="card-checkbox" role="checkbox" aria-checked="false" aria-label="Select performer"></div>
-      <div class="pc-top">
-        <div class="pc-avatar" role="button" tabindex="0" aria-label="Upload image">
-          <img class="pc-avatar-img" alt="" loading="lazy" hidden />
-          <svg class="pc-avatar-icon" width="18" height="18" aria-hidden="true"><use href="#icon-camera"></use></svg>
-        </div>
-        <div class="pc-titlebox">
-          <h3 class="pc-name"></h3>
-          <div class="pc-metadata hint-sm"></div>
-        </div>
-        <div class="pc-countwrap">
-          <div class="pc-count" title="Files">0</div>
-          <span class="pc-face-indicator" aria-hidden="true"></span>
-        </div>
-      </div>
-    </div>
-  </template>
-  <!-- Templates: Tags (card) -->
-  <template id="tagCardTemplate">
-    <div class="perf-card perf-card--pretty" role="group">
-      <div class="card-checkbox" role="checkbox" aria-checked="false" aria-label="Select tag"></div>
-      <div class="pc-top">
-        <div class="pc-avatar" aria-hidden="true"></div>
-        <div class="pc-titlebox">
-          <h3 class="pc-name"></h3>
-          <button class="tag-open-library-btn" type="button">Show in Library</button>
-        </div>
-        <span class="pc-count" title=""></span>
-      </div>
-    </div>
-  </template>
-  <template id="emptyHintTemplate">
-    <div class="hint-sm empty-hint"></div>
-  </template>
+.scrubber-heatmap-band .timeline-heatmap,
+.scrubber-heatmap-band .timeline-heatmap-canvas { position: absolute; inset: 0; }
 
-  <!-- Performer Import Preview Modal (moved inside <body> and grouped with other modals) -->
-  <div id="performerImportPreviewModal" class="modal" hidden>
-    <div class="panel panel--narrow">
-      <header class="panel-header--spaced">
-        <strong>Import Performers Preview</strong>
-        <button id="performerImportPreviewClose" class="btn-sm" title="Cancel">Cancel</button>
-      </header>
-      <div class="body panel-body--scroll">
-        <div class="hint-sm hint-sm--muted">The following performers will be imported:</div>
-        <div id="performerImportPreviewList" class="performer-import-list"></div>
-      </div>
-      <footer class="panel-footer--actions">
-        <button id="performerImportPreviewConfirm" class="btn">Import</button>
-      </footer>
-    </div>
-  </div>
-  <!-- Folder Picker Modal -->
-  <div id="modal" class="modal" hidden>
-    <div class="panel">
-      <header>
-        <div class="crumbs" id="crumbs"></div>
-      </header>
-      <div class="body">
-        <div class="dirlist" id="dirlist"></div>
-      </div>
-      <div class="actions">
-        <button class="btn" id="chooseBtn">Choose this folder</button>
-        <button class="btn" id="cancelBtn">Cancel</button>
-      </div>
-    </div>
-  </div>
+.scrubber-heatmap-band .timeline-heatmap { mix-blend-mode: soft-light; opacity: .65; }
 
-  <!-- Image Preview Modal -->
-  <div id="imgModal" class="modal" hidden>
-    <div class="panel panel--image">
-      <header>
-        <div class="panel-header--spaced">
-          <strong>Heatmap Preview</strong>
-          <button class="btn" id="imgModalClose">Close</button>
-        </div>
-      </header>
-      <div class="body panel--image-body">
-        <img id="imgModalImage" alt="Heatmap" class="panel-image" />
-      </div>
-    </div>
-  </div>
-  <!-- Performer Auto-Match Modal (grouped with other modals) -->
-  <div id="performerAutoMatchModal" class="modal" hidden>
-    <div class="panel panel--wide">
-      <header class="flex items-center justify-between gap-16">
-        <strong>Auto‑Match Performers</strong>
-        <div class="flex gap-8">
-          <button id="perfAutoMatchClose" class="btn-sm" title="Close">Close</button>
-        </div>
-      </header>
-      <div class="body panel-body--tall">
-        <div class="hint-sm mt-6">Preview scans all videos using registry performers. Apply writes to sidecars.</div>
-        <div id="perfAutoMatchStatus" class="hint-sm opacity-75">Awaiting preview.</div>
-        <table class="job-table autotag-table mt-8" id="perfAutoMatchTable">
-          <thead>
-            <tr>
-              <th>File</th>
-              <th>Performers</th>
-            </tr>
-          </thead>
-          <tbody id="perfAutoMatchTbody"></tbody>
-        </table>
-      </div>
-      <footer class="panel-footer--actions">
-        <span class="hint-sm hint-sm--muted">Esc or Close to dismiss • Changes only written after Apply.</span>
-        <div class="flex-row gap-8">
-          <button id="perfAutoApplyBtnFooter" class="btn-sm" disabled>Apply</button>
-          <button id="perfAutoCancelBtn" class="btn-sm">Cancel</button>
-        </div>
-      </footer>
-    </div>
-  </div>
+.scrubber-heatmap-band .timeline-heatmap-canvas { opacity: .75; }
 
-  <!-- Performer Image Face Box Preview Modal -->
-  <div id="faceBoxModal" class="modal" hidden>
-    <div class="panel panel--image">
-      <header>
-        <div class="panel-header--spaced">
-          <strong id="faceBoxTitle">Image Preview</strong>
-          <div class="flex-row gap-8">
-            <button class="btn" id="faceBoxDetectBtn" title="Auto-detect face box" disabled>Detect</button>
-            <button class="btn" id="faceBoxUploadBtn" title="Upload new image">Upload</button>
-            <button class="btn" id="faceBoxClose">Close</button>
-          </div>
-        </div>
-      </header>
-      <div class="body panel--image-body">
-        <div class="facebox-stage">
-          <img id="faceBoxImg" alt="Performer" class="panel-image" />
-          <div id="faceBoxOverlay" class="facebox-overlay" hidden>
-            <div class="handle" aria-hidden="true"></div>
-          </div>
-          <div id="faceBoxLinks" class="facebox-links hidden" aria-label="External performer links"></div>
-        </div>
-      </div>
-    </div>
-  </div>
+/* Markers list */
+.markers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
 
-  <!-- Tag Merge Modal -->
-  <div id="tagMergeModal" class="modal" hidden>
-    <div class="panel panel--narrow">
-      <header class="panel-header--spaced">
-        <h3>Merge Tags</h3>
-        <button id="tagMergeClose" class="btn btn-text" aria-label="Close">✕</button>
-      </header>
-      <div class="body">
-        <div class="hint-sm mb-8">Choose the tag name to keep. The other selected tags will be merged into it.</div>
-        <div class="row gap-8 mb-10">
-          <label class="hint-sm w-120">Selected</label>
-          <div id="tagMergeSelected" class="flex-row gap-6"></div>
-        </div>
-        <div class="row gap-8">
-          <label class="hint-sm w-120">Keep name</label>
-          <div id="tagMergeChoiceList" class="merge-choice-list" role="radiogroup" aria-live="polite"></div>
-        </div>
-      </div>
-      <footer class="panel-footer--actions">
-        <button id="tagMergeCancel" class="btn">Cancel</button>
-        <button id="tagMergeConfirm" class="btn btn-primary" disabled>Merge</button>
-      </footer>
-    </div>
-  </div>
+/* Default: allow the markers list to grow naturally (no internal scroll) so
+   the page will only scroll if the overall accordion doesn't fill available
+   space. When the accordion fills the sidebar, JS will add
+   `.accordion--fills` to the accordion and the markers list becomes
+   constrained and scrollable. */
+.markers-list {
+  max-height: none;
+  overflow-y: visible;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+}
 
-  <!-- Tag Rename Modal -->
-  <div id="tagRenameModal" class="modal" hidden>
-    <div class="panel panel--narrow">
-      <header class="panel-header--spaced">
-        <h3>Rename Tag</h3>
-        <button id="tagRenameClose" class="btn btn-text" aria-label="Close">✕</button>
-      </header>
-      <div class="body">
-        <div class="row gap-8 mb-10">
-          <label class="hint-sm w-120">Selected</label>
-          <div id="tagRenameSelected" class="flex-row gap-6"></div>
-        </div>
-        <div class="row gap-8">
-          <label for="tagRenameInput" class="hint-sm w-120">New name</label>
-          <input id="tagRenameInput" type="text" class="control-input w-100" placeholder="e.g. Vintage" />
-        </div>
-      </div>
-      <footer class="panel-footer--actions">
-        <button id="tagRenameCancel" class="btn">Cancel</button>
-        <button id="tagRenameConfirm" class="btn btn-primary" disabled>Rename</button>
-      </footer>
-    </div>
-  </div>
+/* When the accordion fills the sidebar, enable internal scrolling for
+   the markers list and cap its height to the available space. JS will also
+   set an inline max-height for pixel-perfect sizing, but this rule acts as
+   a graceful fallback. */
+.player-split .player-sidebar .accordion.accordion--fills .markers-list {
+  max-height: calc(100% - 120px);
+  /* fallback estimate */
+  overflow-y: auto;
+  padding-right: 8px;
+  /* space for scrollbar */
+}
 
-  <!-- Error modal (predeclared to avoid dynamic injection) -->
-  <div id="errorModal" class="modal" hidden>
-    <div class="modal-content modal-content--wide">
-      <div class="modal-header modal-header--spaced">
-        <h3 class="m-0">Job Error</h3>
+/* Thin scrollbar styling (WebKit) */
+.markers-list::-webkit-scrollbar {
+  width: 8px;
+}
 
-        <!-- Small directory list item (used by folder picker) -->
-        <template id="dirListItemTemplate">
-          <div class="dir">
-            <div class="icon"></div>
-            <div class="name"></div>
-          </div>
-        </template>
-        <template id="dirEmptyTemplate">
-          <div class="dir muted dir-empty">
-            <div class="icon dim" aria-hidden="true"></div>
-            <div class="name"></div>
-          </div>
-        </template>
-        <template id="dirErrorTemplate">
-          <div class="dir dir-error">
-            <div class="name"></div>
-          </div>
-        </template>
+.markers-list::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+}
 
-        <!-- Autotag preview row template -->
-        <template id="autotagRowTemplate">
-          <tr>
-            <td class="break file"></td>
-            <td class="tags"></td>
-          </tr>
-        </template>
+.markers-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+}
 
-        <!-- Job table row template -->
-        <template id="jobRowTemplate">
-          <tr>
-            <td class="cell-time-start"></td>
-            <td class="cell-time-end"></td>
-            <td class="cell-task"></td>
-            <td class="cell-file" title=""></td>
-            <td class="cell-status">
-              <span class="job-status"></span>
-            </td>
-            <td class="cell-progress">
-              <div class="job-progress">
-                <div class="job-progress-fill"></div>
-              </div>
-              <div class="cell-sub">
-                <span class="pct"></span>
-              </div>
-            </td>
-            <td class="cell-action"></td>
-          </tr>
-        </template>
-        <!-- Marker Row Template -->
-        <template id="markerRowTemplate">
-          <div class="marker-row">
-            <div class="marker-name-label marker-name-label--editable"></div>
-            <div class="marker-time-label marker-time-label--editable"></div>
-            <button type="button" class="marker-jump marker-btn-icon" aria-label="Jump to marker" title="Jump">
-              <svg width="14" height="14" aria-hidden="true" focusable="false">
-                <use href="#icon-jump" />
-              </svg>
-            </button>
-            <button type="button" class="marker-remove marker-btn-icon" aria-label="Remove marker" title="Remove">
-              <svg width="14" height="14" aria-hidden="true" focusable="false">
-                <use href="#icon-clear" />
-              </svg>
-            </button>
-          </div>
-        </template>
-        <!-- Shared chip templates -->
-        <template id="chipTemplate">
-          <span class="chip" title="">
-            <span class="chip-label"></span>
-            <button type="button" class="remove chip-remove" aria-label="Remove">×</button>
-          </span>
-        </template>
-        <template id="chipSuggestTemplate">
-          <button type="button" class="chip chip-suggest" title="">
-            <span class="chip-label"></span>
-          </button>
-        </template>
-        <template id="bulkSuggestionsLabelTemplate">
-          <div class="hint-sm hint-sm--muted mb-4">Matches:</div>
-        </template>
-        <!-- List filter templates -->
-        <template id="listFilterMenuTemplate">
-          <div class="list-filter-menu"></div>
-        </template>
-        <template id="listFilterRowTemplate">
-          <div class="row"></div>
-        </template>
-        <template id="listFilterValuesTemplate">
-          <div class="values"></div>
-        </template>
-        <template id="listFilterFooterTemplate">
-          <div class="footer"></div>
-        </template>
-        <template id="listFilterButtonTemplate">
-          <button type="button" class="btn-sm"></button>
-        </template>
-        <template id="listFilterCheckboxLabelTemplate">
-          <label class="list-filter-checkbox">
-            <input type="checkbox" />
-            <span></span>
-          </label>
-        </template>
-        <template id="listFilterSelectTemplate">
-          <select class="control-select"></select>
-        </template>
-        <template id="listFilterNumberInputTemplate">
-          <input type="number" class="chips-input" placeholder="value" />
-        </template>
-        <template id="listFilterDateInputTemplate">
-          <input type="datetime-local" class="chips-input" />
-        </template>
-        <template id="listFilterHintTemplate">
-          <span class="hint-sm"></span>
-        </template>
-        <template id="listFilterMessageTemplate">
-          <div class="row">
-            <span class="hint-sm"></span>
-          </div>
-        </template>
-        <template id="listFilterArtifactRowTemplate">
-          <label class="list-filter-artifact">
-            <span class="label"></span>
-            <select class="control-select"></select>
-          </label>
-        </template>
-        <template id="orphanFileTemplate">
-          <div class="orphan-file" title="">
-            <span class="orphan-file__text"></span>
-          </div>
-        </template>
-        <!-- Segmented select templates -->
-        <template id="segmentedControlTemplate">
-          <div class="segmented-control" role="group"></div>
-        </template>
-        <template id="segmentedControlButtonTemplate">
-          <button type="button" class="segmented-control__btn" data-value=""></button>
-        </template>
-        <!-- Artifact filter popover row template -->
-        <template id="artifactFilterRowTemplate">
-          <label class="artifact-filter-row">
-            <span class="artifact-filter-name"></span>
-            <select class="control-select artifact-filter-select">
-              <option value="">Any</option>
-              <option value="yes">Yes</option>
-              <option value="no">No</option>
-            </select>
-          </label>
-        </template>
-        <template id="artifactChipTemplate">
-          <div class="badge-pill artifact-chip" data-key="" data-present="0">
-            <span class="label"></span>
-            <span class="status" aria-hidden="true">✗</span>
-          </div>
-        </template>
-        <!-- Tags registry list item template -->
-        <template id="registryItemTemplate">
-          <div class="registry-item" data-selected="0"></div>
-        </template>
-        <!-- Breadcrumb segment template -->
-        <template id="crumbSegmentTemplate">
-          <span class="seg"></span>
-        </template>
+.markers-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.marker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #121c29;
+  border: 1px solid #1e2b3a;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.marker-row:hover {
+  border-color: #2f4760;
+  background: #162435;
+}
+
+.marker-row button.marker-remove {
+  background: none;
+  border: none;
+  color: #c74f4f;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+.marker-row button.marker-remove:hover {
+  color: #ff6b6b;
+}
+
+.marker-time-input {
+  width: 84px;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid #2a3a50;
+  background: #0f1621;
+  color: #d9e2ec;
+  border-radius: 4px;
+}
+
+.marker-time-input:focus {
+  outline: 1px solid #4f8cff;
+  border-color: #4f8cff;
+}
+
+.marker-jump {
+  background: #203246;
+  border: 1px solid #31465e;
+  color: #d5e2f2;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.marker-jump:hover {
+  background: #2a3e58;
+}
+
+.marker-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #d5e2f2;
+  line-height: 1;
+}
+
+.marker-btn-icon svg {
+  display: block;
+  pointer-events: none;
+}
+
+.marker-btn-icon.marker-jump {
+  background: #203246;
+  border-color: #31465e;
+}
+
+.marker-btn-icon.marker-jump:hover {
+  background: #2a3e58;
+}
+
+.marker-btn-icon.marker-remove {
+  background: none;
+  border: none;
+  color: #c74f4f;
+}
+
+.marker-btn-icon.marker-remove:hover {
+  color: #ff6b6b;
+}
+
+.markers-empty {
+  font-size: 12px;
+  opacity: .6;
+  padding: 4px 2px;
+}
+
+.marker-row--intro {
+  background: linear-gradient(90deg, rgba(255, 186, 0, 0.07), rgba(255, 122, 0, 0.04));
+  border-left: 4px solid #ff9800;
+  padding-left: 8px;
+  order: 0;
+  /* keep intro markers in normal flow */
+}
+
+.marker-row--intro .marker-jump {
+  background: rgba(255, 160, 40, 0.12);
+  border: 1px solid rgba(255, 160, 40, 0.18);
+}
+
+/* Outro (outro-begin) marker: visually distinct and pinned to bottom of list */
+.marker-row--outro {
+  background: linear-gradient(90deg, rgba(0, 186, 255, 0.07), rgba(0, 122, 255, 0.04));
+  border-left: 4px solid #0098ff;
+  padding-left: 8px;
+  order: 999;
+  /* show at bottom of the flex column */
+}
+
+.marker-row--outro .marker-jump {
+  background: rgba(0, 160, 255, 0.12);
+  border: 1px solid rgba(0, 160, 255, 0.18);
+}
+
+/* Outro begin marker tick (timeline tick) */
+.outro-marker-tick {
+  position: absolute;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  background: linear-gradient(180deg, #00b0ff, #007aff);
+  box-shadow: 0 0 6px rgba(0, 122, 255, 0.6);
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  mix-blend-mode: normal;
+}
+
+.scrubber-track:hover .scrubber-progress {
+  filter: brightness(1.15);
+}
+
+.scrubber-track:hover .scrubber-handle {
+  transform: translate(-50%, -50%) scale(1);
+  opacity: 1;
+}
+
+.scrubber-buffer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, .28);
+  width: 0%;
+  transition: width .25s linear;
+  opacity: .4;
+}
+
+.scrubber-progress {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0%;
+  background: linear-gradient(90deg, #3daaf9, #6679ff 45%, #9a6bff);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .15) inset, 0 1px 2px rgba(0, 0, 0, .45);
+  transition: width .08s linear;
+}
+
+.scrubber-handle {
+  position: absolute;
+  top: 50%;
+  left: 0%;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #fff, #d5e2ff);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .5), 0 0 0 2px rgba(0, 0, 0, .4), 0 0 0 1px rgba(255, 255, 255, .3) inset;
+  transform: translate(-50%, -50%) scale(.65);
+  opacity: 0;
+  transition: .18s ease;
+  pointer-events: none;
+}
+
+.player-scrubber-bar:hover .scrubber-handle {
+  opacity: 1;
+}
+
+/* Marker ticks */
+.scrubber-markers {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+.scrubber-markers span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, .85), rgba(255, 255, 255, .15));
+  opacity: .55;
+}
+
+.scrubber-markers .intro-scrubber-marker {
+  width: 4px;
+  background: linear-gradient(180deg, #ffb000, #ff7a00);
+  box-shadow: 0 0 6px rgba(255, 122, 0, 0.6);
+  border-radius: 2px;
+  opacity: 1;
+}
+
+/* Integrated heatmap inside scrubber track */
+.scrubber-track .timeline-heatmap,
+.scrubber-track .timeline-heatmap-canvas {
+  pointer-events: none;
+}
+
+.scrubber-track .timeline-heatmap {
+  mix-blend-mode: soft-light;
+  opacity: .75;
+}
+
+.scrubber-track .timeline-heatmap-canvas {
+  opacity: .85;
+}
+
+.scrubber-time {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .4px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .7);
+  font-weight: 500;
+}
+
+@media (max-width: 900px) {
+  .player-scrubber-bar {
+    padding: 12px 16px 16px;
+  }
+
+  #playerTitle.player-title {
+    max-width: 60vw;
+  }
+}
+
+@media (max-width: 640px) {
+  .player-scrubber-bar {
+    padding: 10px 12px 14px;
+  }
+
+  #playerTitle.player-title {
+    max-width: 70vw;
+    font-size: 12px;
+  }
+}
+
+.player-main {
+  position: relative;
+}
+
+.video-stage {
+  position: relative;
+  display: block;
+  width: 100%;
+  background: #000;
+}
+
+.video-el {
+  display: block;
+  width: 100%;
+  height: calc(100vh - var(--header-h));
+  max-height: calc(100vh - var(--header-h));
+  background: #000;
+  aspect-ratio: 16/9;
+  object-fit: contain;
+}
+
+/* Overlay */
+.player-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 14px 10px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0));
+}
+
+.player-overlay .overlay-inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: auto;
+  animation: accFade .25s ease;
+}
+
+.timeline-overlay {
+  position: relative;
+  height: 13px;
+  border-radius: 4px;
+  background: rgba(12, 18, 30, 0.55);
+  backdrop-filter: blur(2px);
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.timeline-overlay:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.timeline-heatmap,
+.timeline-heatmap-canvas,
+.timeline-progress,
+.timeline-markers {
+  position: absolute;
+  inset: 0;
+}
+
+.timeline-heatmap {
+  background-position: left center;
+  background-size: 100% 100%;
+  opacity: .85;
+  mix-blend-mode: soft-light;
+}
+
+.timeline-heatmap-canvas {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: .95;
+}
+
+.timeline-progress {
+  width: 0%;
+  background: linear-gradient(90deg, rgba(79, 140, 255, 0.65), rgba(79, 140, 255, 0.25));
+  mix-blend-mode: screen;
+  transition: width .12s linear;
+}
+
+.timeline-markers {
+  pointer-events: none;
+}
+
+.controls-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  background: rgba(14, 19, 30, 0.74);
+  backdrop-filter: blur(3px) saturate(130%);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 7px;
+  padding: 3px 7px;
+  box-shadow: 0 3px 14px -3px rgba(0, 0, 0, 0.6);
+  flex-wrap: wrap;
+  min-height: 30px;
+  font-size: 12px;
+}
+
+.controls-overlay:hover {
+  background: rgba(18, 24, 36, 0.84);
+}
+
+.controls-overlay .btn-sm {
+  --accent: #4f8cff;
+}
+
+.time-display {
+  font-size: 12px;
+  color: var(--muted, #94a2c7);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.player-controls {
+  display: flex;
+  width: 100%;
+}
+
+/* (Removed nested .player-controls volume styling in favor of global .vol-slider rules above) */
+
+/* Video adjustment panel */
+.video-adjustments {
+  padding: 4px 2px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.video-adjustments .adj-row {
+  display: grid;
+  grid-template-columns: 88px 1fr 52px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.video-adjustments .adj-row label {
+  font-weight: 500;
+  color: var(--fg-600, #ccd2e0);
+}
+
+.video-adjustments .adj-val {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--fg-500, #b5bccb);
+}
+
+.video-adjustments .adj-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.video-adjustments .adj-slider {
+  width: 100%;
+}
+
+/* Updated thumbnail flash */
+.thumbnail-updated {
+  outline: 2px solid var(--accent, #4f8cff);
+  outline-offset: 2px;
+  transition: outline-color .6s ease;
+}
+
+.thumbnail-updated {
+  animation: thumbnailFlash 1.2s ease 1;
+}
+
+@keyframes thumbnailFlash {
+  0% {
+    outline-color: var(--accent, #4f8cff);
+  }
+
+  70% {
+    outline-color: rgba(79, 140, 255, 0);
+  }
+
+  100% {
+    outline-color: rgba(79, 140, 255, 0);
+  }
+}
+
+/* Sidebar thumbnail updating shimmer */
+#fiThumbnail._updating {
+  position: relative;
+}
+
+#fiThumbnail._updating::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.15) 20%, rgba(255, 255, 255, 0.05) 40%);
+  animation: thumbShimmer 1s linear infinite;
+  mix-blend-mode: overlay;
+}
+
+@keyframes thumbShimmer {
+  from {
+    background-position: -200% 0;
+  }
+
+  to {
+    background-position: 200% 0;
+  }
+}
 
 
-        <!-- List tab: table cell template -->
-        <template id="listCellTemplate">
-          <td class="list-cell"></td>
-        </template>
+/* Sidebar File Info thumbnail */
+.thumbnail-wrap {
+  position: relative;
+  aspect-ratio: 16/9;
+  /* Reserve stable space immediately to avoid card height collapse */
+  background: #0e0f14;
+  overflow: hidden;
+}
 
-        <!-- List tab: table row template -->
-        <template id="listRowTemplate">
-          <tr class="list-row" data-selected="0" data-path=""></tr>
-        </template>
+/* Image & placeholder layered absolutely so placeholder no longer influences layout */
+.thumbnail-wrap>.thumbnail-img,
+.thumbnail-wrap>.thumbnail-placeholder {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
 
-        <!-- List tab: head cell template -->
-        <template id="listHeadCellTemplate">
-          <th>
-            <span class="col-drag-handle" title="Drag to reorder" draggable="true">⋮⋮</span>
-            <div class="list-head-cell"></div>
-            <div class="col-resizer"></div>
-          </th>
-        </template>
+.thumbnail-img {
+  aspect-ratio: 16/9;
+  /* Keep for legacy (dir cards without wrap) */
+  width: 100%;
+  display: block;
+  background: #0e0f14;
+  object-fit: cover;
+  opacity: 0;
+  /* Fade in when loaded */
+  transition: opacity .28s ease;
+}
 
-        <!-- List tab: column settings item template -->
-        <template id="listColumnItemTemplate">
-          <div class="list-col-item">
-            <span class="drag-handle" title="Drag to reorder" aria-hidden="true" draggable="true">⋮⋮</span>
-            <label>
-              <input type="checkbox" class="list-col-visible" checked />
-              <span class="list-col-label">Column</span>
-            </label>
-          </div>
-        </template>
-        <!-- Toast notification template -->
-        <template id="toastTemplate">
-          <div class="toast" role="status" aria-live="polite">
-            <span class="toast-text"></span>
-          </div>
-        </template>
-        <button class="btn" id="errorModalClose">Close</button>
-      </div>
-      <pre id="errorModalText" class="error-pre"></pre>
-    </div>
-  </div>
-  <!-- Generic message modal (replaces legacy alert usage) -->
-  <div id="messageModal" class="modal" hidden>
-    <div class="modal-content">
-      <div class="modal-header modal-header--spaced">
-        <h3 id="messageModalTitle" class="m-0">Notice</h3>
-        <button id="messageModalClose" class="btn-sm" aria-label="Close">Close</button>
-      </div>
-      <div class="modal-body">
-        <p id="messageModalBody" class="m-0"></p>
-      </div>
-      <footer class="panel-footer--actions mt-12">
-        <div class="flex-row gap-8 jc-end">
-          <button id="messageModalOk" class="btn">OK</button>
-        </div>
-      </footer>
-    </div>
-  </div>
+.card.loaded .thumbnail-wrap>.thumbnail-img {
+  opacity: 1;
+}
 
-  <!-- Templates: API Explorer -->
-  <template id="apiGroupTemplate">
-    <section class="api-group" data-open="1">
-      <header class="api-group__header flex-row gap-10" role="button" tabindex="0" aria-expanded="true">
-        <span class="api-group__caret" aria-hidden="true">
-          <svg width="18" height="18" viewBox="0 0 24 24"><use href="#icon-caret"></use></svg>
-        </span>
-        <h3 class="api-group__title"></h3>
-        <button class="btn-xs api-group__expand-all" title="Expand/collapse all children" style="display: none;">±</button>
-        <span class="ml-auto hint-sm api-group__count"></span>
-      </header>
-      <div class="api-group__body"></div>
-    </section>
-  </template>
-  <template id="apiEndpointTemplate">
-    <div class="card api-endpoint" data-open="0">
-  <div class="api-endpoint__header row" role="button" tabindex="0" aria-expanded="false">
-        <span class="method-badge">GET</span>
-        <code class="api-path w-100"></code>
-        <button class="btn-sm api-toggle" aria-expanded="false" aria-label="Toggle details">Details</button>
-      </div>
-      <div class="api-endpoint__body hidden">
-        <div class="hint-sm api-summary"></div>
-        <div class="api-params" role="group" aria-label="Parameters"></div>
-        <div class="api-body" hidden>
-          <label class="hint-sm">Request Body (JSON)
-            <textarea class="api-body-text control-textarea w-100" rows="6" placeholder="{ }"></textarea>
-          </label>
-        </div>
-        <div class="row gap-10 mt-12">
-          <button class="btn-sm api-run">Run</button>
-          <span class="hint-sm api-status"></span>
-        </div>
-        <pre class="json-pre api-response mt-12" aria-live="polite"></pre>
-      </div>
-    </div>
-  </template>
+/* Placeholder now overlays; fade it out after image load */
+.thumbnail-wrap>.thumbnail-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transition: opacity .28s ease;
+  color: #2f3749;
+  fill: currentColor;
+}
 
-  <header>
-    <!-- Tab Navigation only (top bar removed) -->
-    <nav class="tab-nav" role="tablist" aria-label="Main navigation">
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="player-panel" id="player-tab" data-tab="player">
-        Player
-      </button>
-      <button class="tab-button active" role="tab" aria-selected="true" aria-controls="library-panel" id="library-tab" data-tab="library">
-        Library
-      </button>
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="list-panel" id="list-tab" data-tab="list">
-        List
-      </button>
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="similar-panel" id="similar-tab" data-tab="similar">
-        Similar
-      </button>
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="tasks-panel" id="tasks-tab" data-tab="tasks">
-        Tasks
-      </button>
-      <button class="tab-button" role="tab" aria-selected="false" aria-controls="performers-panel" id="performers-tab" data-tab="performers">
+.card.loaded .thumbnail-wrap>.thumbnail-placeholder {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fi-thumbnail-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: opacity .25s ease;
+}
+
+.fi-thumbnail-box img._updating {
+  opacity: .35;
+}
+
+.fi-thumbnail-set {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, .55);
+  backdrop-filter: blur(3px);
+  border: 1px solid rgba(255, 255, 255, .18);
+  padding: 2px 6px;
+  line-height: 1;
+  font-size: 11px;
+}
+
+.fi-thumbnail-set:hover {
+  background: rgba(0, 0, 0, .7);
+}
+
+.rate-select-wrap {
+  min-width: 78px;
+}
+
+.utility-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+}
+
+.utility-buttons .btn-sm {
+  background: #1d2a3d;
+}
+
+.utility-buttons .btn-sm:hover {
+  background: #233348;
+}
+
+.sprite-preview {
+  position: absolute;
+  left: 8px;
+  width: 240px;
+  height: 135px;
+  background: #111 center/cover no-repeat;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  display: none;
+  pointer-events: none;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  z-index: 6;
+  opacity: 0.95;
+}
+
+/* Compact adjustments when sidebar collapsed */
+#playerLayout[data-sidebar-collapsed="true"] .player-overlay {
+  padding-bottom: 4px;
+}
+
+/* Responsive tweaks */
+/* Keep sidebar on the left;
+on narrower screens shrink width instead of stacking */
+
+/* === Viewport-Fit Player (no scroll) === */
+
+/* (Removed duplicate #player-panel height block;
+earlier flex rule governs layout now) */
+
+#player-panel .player-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#player-panel .player-stage-simple {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  min-height: 0;
+  /* allow flex child (video) to size fully */
+}
+
+/* Panel-specific .video-el override removed: unified calc-based height applies */
+
+@media (max-height: 760px) {
+
+  /* Tighten spacing on shorter viewports */
+  #player-panel .player-shell {
+    gap: 6px;
+    padding: 2px 6px 8px;
+  }
+
+  #player-panel .player-stage-simple {
+    padding: 4px;
+  }
+
+  .player-stage-simple .video-el {
+    border-radius: 8px;
+  }
+
+  #player-panel .player-bar-simple {
+    padding: 8px 10px;
+  }
+}
+
+@media (max-height: 560px) {
+
+  /* Compress controls further and shrink fonts */
+  #player-panel .player-bar-simple {
+    padding: 6px 8px;
+    gap: 6px;
+    font-size: 11px;
+  }
+
+  #player-panel .player-bar-simple button.btn-sm {
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+
+  #player-panel .player-bar-simple .time-display {
+    font-size: 11px;
+  }
+
+  .vol-slider {
+    width: 90px;
+  }
+}
+
+@media (max-width: 760px) {
+  .player-layout {
+    gap: 10px;
+  }
+
+  .player-video {
+    border-radius: 10px;
+  }
+}
+
+@media (max-width: 1024px) {
+  #playerControls.player-controls {
+    padding: 10px 14px;
+    gap: 12px;
+  }
+
+  #playerControls .player-control-cluster.cluster-transport,
+  #playerControls .player-control-cluster.cluster-audio {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  #playerControls .player-control-cluster {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .player-overlay {
+    padding: 10px 6px 4px;
+  }
+
+  #playerControls.player-controls {
+    padding: 10px;
+    border-radius: 14px;
+    gap: 10px;
+  }
+
+  #playerControls .player-controls-groups {
+    gap: 10px;
+    grid-template-columns: 1fr;
+  }
+
+  #playerControls .player-control-cluster {
+    width: 100%;
+  }
+
+  #playerControls .player-control-cluster.cluster-navigate {
+    flex: 0 0 auto;
+  }
+
+  #playerControls .player-volume {
+    min-width: 0;
+  }
+
+  #playerControls .player-volume .vol-slider {
+    width: clamp(96px, 50vw, 130px);
+  }
+
+  #playerControls .btn.btn-xs {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .player-title {
+    font-size: 16px;
+  }
+
+  .controls-overlay {
+    padding: 2px 6px;
+    gap: 4px;
+  }
+}
+
+/* Fullscreen refinements */
+:fullscreen .player-video,
+.player-video:fullscreen {
+  border-radius: 0;
+  max-height: 100vh;
+}
+
+:fullscreen .player-overlay {
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
+}
+
+/* High contrast / prefers-reduced-motion adjustments */
+@media (prefers-reduced-motion: reduce) {
+  .timeline-progress {
+    transition: none;
+  }
+
+  .player-overlay .overlay-inner {
+    animation: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .controls-overlay {
+    border: 1px solid CanvasText;
+  }
+
+  .timeline-overlay {
+    border: 1px solid CanvasText;
+  }
+}
+
+/* Toast / notification system */
+#toastHost {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 1000;
+  pointer-events: none;
+  /* clicks pass through when between toasts */
+}
+
+/* Destructive / danger button variant (used for Clear All) */
+.btn-danger,
+.btn.btn-danger,
+button.btn-danger {
+  background: linear-gradient(135deg, #b91c1c, #dc2626);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 4px -2px rgba(0, 0, 0, 0.5);
+}
+
+.btn-danger:hover {
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+}
+
+.btn-danger:active {
+  background: #991b1b;
+}
+
+.btn-danger:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+/* Capability banner extracted from inline style */
+.capability-banner {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  background: #221b12;
+  color: #f7d382;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.toast {
+  font-size: 13px;
+  line-height: 1.3;
+  background: #4f8cff;
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.4);
+  animation: toastIn 0.32s ease;
+  position: relative;
+  pointer-events: auto;
+  /* allow hover for potential future actions */
+  max-width: 320px;
+}
+
+.toast.is-success {
+  background: #22c55e;
+}
+
+.toast.is-error {
+  background: #ef4444;
+}
+
+.toast.is-info {
+  background: #4f8cff;
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast.fade-out {
+  opacity: 0;
+  transition: opacity .25s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}
+
+/* 18. Registry & Auto-Tag (appended) */
+.registry-flex {
+  display: flex;
+  gap: 32px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.registry-column {
+  flex: 1 1 340px;
+  min-width: 300px;
+  background: #1b1f28;
+  border: 1px solid #273140;
+  padding: 12px;
+  border-radius: 10px;
+  box-shadow: 0 2px 6px -2px rgba(0, 0, 0, .55);
+}
+
+.registry-column h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  letter-spacing: .3px;
+}
+
+.registry-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.registry-list {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid #273140;
+  border-radius: 6px;
+  background: #141a22;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.registry-item {
+  padding: 6px 8px;
+  border: 1px solid #273140;
+  border-radius: 5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  background: #1d2530;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.registry-item[data-selected="1"] {
+  background: #20344e;
+  border-color: #335a8a;
+}
+
+.registry-item .ri-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.registry-item .ri-count {
+  opacity: .55;
+  font-size: 11px;
+}
+
+.autotag-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.autotag-table th,
+.autotag-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #1f2833;
+  font-size: 12px;
+  vertical-align: top;
+  text-align: left;
+}
+
+.autotag-table thead th {
+  background: #18202a;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.autotag-table tbody tr:hover {
+  background: #1b2736;
+}
+
+.w-240 {
+  width: 240px;
+}
+
+.w-200 {
+  width: 200px;
+}
+
+/* Accordion animations: use max-height + opacity for a reliable, CSS-only transition
+   that doesn't require JS-driven measurements. We toggle the `.open` class on the
+   .acc-item and .acc-panel to animate. Keep `.hidden` as a graceful no-JS fallback. */
+.accordion .acc-panel {
+  max-height: 0;
+  /* collapsed */
+  overflow: hidden;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  transition: max-height 260ms cubic-bezier(.2, .9, .2, 1), opacity 180ms ease, padding 200ms ease;
+}
+
+.accordion .acc-panel.open {
+  /* large enough to cover most content;
+  using max-height avoids layout thrashing */
+  max-height: 2000px;
+  opacity: 1;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+/* When JS is disabled we still support hiding via `.hidden` */
+.accordion .acc-panel.hidden {
+  display: none !important;
+}
+
+/* Header caret rotation: rotate when the item is open or when aria-expanded is true */
+.accordion .acc-header .acc-header__icon {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
+  vertical-align: middle;
+  transition: transform 220ms ease, opacity 150ms ease;
+  color: inherit;
+  /* default: point right (icon originally points left in the sprite) */
+  transform: rotate(180deg);
+}
+
+.accordion .acc-header .acc-header__icon use,
+.accordion .acc-header .acc-header__icon path {
+  fill: currentColor;
+}
+
+/* rotate the svg caret when open/expanded */
+.acc-item.open .acc-header .acc-header__icon,
+.acc-header[aria-expanded="true"] .acc-header__icon {
+  /* open: point down */
+  transform: rotate(270deg);
+}
+
+/* ===== Settings: JSON panels (health/config) ===== */
+.settings-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.json-pre {
+  background: #0b0e18;
+  color: #e6ebff;
+  border: 1px solid #2a2e3a;
+  border-radius: 8px;
+  padding: 10px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* =============================================================
+   Fire TV / Android TV Mode Overrides
+   ============================================================= */
+
+/* Fire TV mode only active when .firetv class is present on html/documentElement */
+.firetv {
+  /* Remove fine hover interactions that don't work with remote */
+  --transition-quick: none;
+  --transition-med: none;
+}
+
+/* Larger grid tiles for better remote navigation */
+.firetv .grid {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+/* Larger, more visible focus indicators */
+.firetv .grid .card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.firetv .grid .card:focus {
+  outline: 4px solid var(--accent);
+  outline-offset: 4px;
+  transform: scale(1.05);
+  box-shadow: 0 8px 25px rgba(79, 140, 255, 0.3);
+  z-index: 10;
+  position: relative;
+}
+
+/* Larger buttons and controls */
+.firetv .btn {
+  min-height: 48px;
+  padding: 12px 20px;
+  font-size: 16px;
+}
+
+.firetv .search-input {
+  height: 48px;
+  font-size: 16px;
+  padding: 0 16px;
+}
+
+/* Header auto-hide preparation */
+.firetv header {
+  transition: transform 0.3s ease;
+}
+
+.firetv header.hidden {
+  transform: translateY(-100%);
+}
+
+/* Ensure content doesn't jump when header hides */
+/* Optional: if main needs to adjust when header hides */
+.firetv main { transition: padding-top 0.3s ease; }
+.firetv header.hidden + main { padding-top: 0; }
+
+/* Better contrast for text on TV screens */
+.firetv {
+  --text: #ffffff;
+  --muted: #b8c5e0;
+}
+
+/* Remove hover states that don't apply to remote control */
+.firetv .card:hover,
+.firetv .btn:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* Global link style: inherit color and remove underline for cleaner tile/title links */
+a,
+a:visited {
+  color: inherit;
+  text-decoration: none;
+}
+a:hover,
+a:focus {
+  text-decoration: none;
+}
+
+/* Focus-visible only for actual focus (not hover) */
+.firetv .card:focus-visible {
+  outline: 4px solid var(--accent);
+  outline-offset: 4px;
+  transform: scale(1.05);
+  box-shadow: 0 8px 25px rgba(79, 140, 255, 0.3);
+}
+
+/* =============================
+   Performers Graph (Cytoscape)
+   ============================= */
+#graph-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* allow children to size within flex */
+}
+.graph-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+}
+.graph-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+#cyContainer {  position: relative;  flex: 1 1 auto;  min-height: 320px; }
+#cyGraph { position: absolute; inset: 0; }
+.graph-controls input[type="range"] { width: 140px; }
+#graphTooltip { position: fixed; z-index: 9999; background: rgba(10,12,18,0.96); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; padding: 8px; box-shadow: 0 8px 22px rgba(0,0,0,.45); max-width: 400px; }
+#graphTooltip .gt-title { font-weight: 600; margin-bottom: 6px; font-size: 12px; }
+#graphTooltip .gt-list { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+#graphTooltip .gt-item { display: block; text-decoration: none; color: inherit; font-size: 11px; }
+#graphTooltip .gt-item div { margin-top: 3px; line-height: 1.2; word-break: break-word; }
+#graphTooltip img { width: 100%; height: 60px; object-fit: cover; border-radius: 4px; background: #111a28; }
+#cyContainer {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 320px;
+}
+#cyGraph {
+  position: absolute;
+  inset: 0;
+}
+#graphTooltip {
+  position: fixed;
+  z-index: 9999;
+  background: rgba(10,12,18,0.96);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: var(--text);
+  padding: 8px;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  max-width: 420px;
+  max-height: 320px;
+  overflow: auto;
+  font-size: 12px;
+}
+#graphTooltip .gt-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+#graphTooltip .gt-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+#graphTooltip .gt-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#graphTooltip .gt-item img {
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  display: block;
+}
+.cy-panzoom {
+  /* Slightly raise panzoom above graph so it's always clickable */
+  z-index: 10;
+}
+
+/* =============================
+   Connections (Cytoscape)
+   ============================= */
+#connections-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.graph-panel--connections {
+  flex-direction: row;
+  gap: 16px;
+  align-items: stretch;
+}
+#connectionsCyContainer {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 320px;
+}
+.graph-panel--connections #connectionsCyContainer {
+  order: 1;
+}
+#cyConnections {
+  position: absolute;
+  inset: 0;
+}
+
+.graph-controls--connections {
+  gap: 16px;
+}
+.graph-panel--connections .graph-controls--connections {
+  order: 2;
+  flex: 0 0 260px;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 16px;
+  border-bottom: 0;
+  border-left: 1px solid rgba(255,255,255,0.08);
+  background: var(--panel);
+}
+.graph-panel--connections .graph-controls--connections #connectionsRefreshBtn {
+  margin-top: auto;
+  width: 100%;
+}
+.graph-panel--connections .graph-controls--connections label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.graph-panel--connections .graph-controls--connections .connections-toggle {
+  align-items: flex-start;
+}
+
+@media (max-width: 900px) {
+  .graph-panel--connections {
+    flex-direction: column;
+  }
+  .graph-panel--connections .graph-controls--connections {
+    order: 1;
+    flex: 0 0 auto;
+    border-left: 0;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .graph-panel--connections #connectionsCyContainer {
+    order: 2;
+  }
+}
+
+.graph-controls--connections strong {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(226, 232, 255, 0.85);
+  display: block;
+  margin-bottom: 4px;
+}
+
+.connections-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.connections-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                -button" role="tab" aria-selected="false" aria-controls="performers-panel" id="performers-tab" data-tab="performers">
         Performers
       </button>
       <button class="tab-button" role="tab" aria-selected="false" aria-controls="graph-panel" id="graph-tab" data-tab="graph">
@@ -709,7 +1453,7 @@
     <div class="tab-panels">
       <!-- Connections Tab Panel (minimal: image-only nodes) -->
       <div class="tab-panel" role="tabpanel" aria-labelledby="connections-tab" id="connections-panel" hidden>
-        <section class="graph-panel">
+        <section class="graph-panel graph-panel--connections">
           <div class="graph-controls graph-controls--connections">
             <strong>Connections Graph</strong>
             <label class="hint-sm connections-toggle" title="Show performers even if no portrait is available">
@@ -732,7 +1476,6 @@
               <input id="connectionsVariableThickness" type="checkbox" checked />
               <span>Variable edge width</span>
             </label>
-            <div class="ml-auto"></div>
             <button id="connectionsRefreshBtn" class="btn-sm" type="button">Refresh</button>
           </div>
           <div id="connectionsCyContainer">
@@ -871,7 +1614,7 @@
                   <div class="markers-header markers-header--spaced mt-0">
                     <div class="hint-sm hint-sm--muted">Edit time, label, or type. Enter or blur to save. Color indicates marker type.</div>
                   </div>
-                  <div id="markersList" class="markers-list" aria-live="polite" aria-label="Scene markers list"></div>
+                  <div id="markersList" class="markers-list" aria-live="polite" aria-label="Marker list"></div>
                 </div>
               </div>
               <div class="acc-item" data-key="artifacts">
@@ -903,8 +1646,8 @@
                     <div id="badge-heatmap" class="badge-pill artifact-gen-btn" data-artifact="heatmap" title="Heatmap timeline overlay">
                       <span>Heatmap</span><span id="badge-heatmap-status" aria-hidden="true">?</span>
                     </div>
-                    <div id="badge-scenes" class="badge-pill artifact-gen-btn" data-artifact="markers" title="Scene / chapter markers">
-                      <span>Scenes</span><span id="badge-scenes-status" aria-hidden="true">?</span>
+                    <div id="badge-markers" class="badge-pill artifact-gen-btn" data-artifact="markers" title="Marker / chapter markers">
+                      <span>Markers</span><span id="badge-markers-status" aria-hidden="true">?</span>
                     </div>
                   </div>
                   <!-- Sidebar artifact previews (compact) -->
@@ -1364,7 +2107,7 @@
                 <option value="without" data-chip="Missing">No face box</option>
               </select>
             </div>
-            <!-- Sort controls: default to Scenes (desc) -->
+            <!-- Sort controls: default to Markers (desc) -->
             <div class="compact-filter ml-8" data-filter="perf-sort">
               <div class="compact-filter__label-row">
                 <span class="compact-filter__label">Sort</span>
@@ -1535,16 +2278,72 @@
       <!-- Template: Similar row (pair) -->
       <template id="similarRowTemplate">
         <div class="card similar-row">
-          <div class="row jc-between ai-center">
+          <div class="similar-row__header">
             <strong class="similar-title">—</strong>
-            <div class="row gap-10">
-              <button class="btn-sm play-a">Play A</button>
-              <button class="btn-sm play-b">Play B</button>
-            </div>
           </div>
-          <div class="hint-sm mt-6">
-            <div class="path-a"></div>
-            <div class="path-b"></div>
+          <div class="similar-files">
+            <div class="similar-file" data-role="a">
+              <div class="similar-file__label">File A</div>
+              <div class="similar-file__primary">
+                <button class="similar-thumb-btn" type="button" aria-label="Open file A" title="Open file">
+                  <img class="similar-thumb" alt="" loading="lazy" decoding="async" />
+                </button>
+                <div class="similar-file__path path-a"></div>
+              </div>
+              <dl class="similar-file__stats">
+                <div class="similar-file__stat" data-stat="duration" data-diff="unknown">
+                  <dt>Duration</dt>
+                  <dd class="meta-duration">—</dd>
+                </div>
+                <div class="similar-file__stat" data-stat="size" data-diff="unknown">
+                  <dt>Size</dt>
+                  <dd class="meta-size">—</dd>
+                </div>
+                <div class="similar-file__stat" data-stat="resolution" data-diff="unknown">
+                  <dt>Dimensions</dt>
+                  <dd class="meta-resolution">—</dd>
+                </div>
+                <div class="similar-file__stat" data-stat="bitrate_v" data-diff="unknown">
+                  <dt>Video BR</dt>
+                  <dd class="meta-bitrate-v">—</dd>
+                </div>
+                <div class="similar-file__stat" data-stat="bitrate_a" data-diff="unknown">
+                  <dt>Audio BR</dt>
+                  <dd class="meta-bitrate-a">—</dd>
+                </div>
+              </dl>
+            </div>
+            <div class="similar-file" data-role="b">
+              <div class="similar-file__label">File B</div>
+              <div class="similar-file__primary">
+                <button class="similar-thumb-btn" type="button" aria-label="Open file B" title="Open file">
+                  <img class="similar-thumb" alt="" loading="lazy" decoding="async" />
+                </button>
+                <div class="similar-file__path path-b"></div>
+              </div>
+              <dl class="similar-file__stats">
+                <div class="similar-file__stat" data-stat="duration" data-diff="unknown">
+                  <dt>Duration</dt>
+                  <dd class="meta-duration">—</dd>
+                </div>
+                <div class="similar-file__stat" data-stat="size" data-diff="unknown">
+                  <dt>Size</dt>
+                  <dd class="meta-size">—</dd>
+                </div>
+                <div class="similar-file__stat" data-stat="resolution" data-diff="unknown">
+                  <dt>Dimensions</dt>
+                  <dd class="meta-resolution">—</dd>
+                </div>
+                <div class="similar-file__stat" data-stat="bitrate_v" data-diff="unknown">
+                  <dt>Video BR</dt>
+                  <dd class="meta-bitrate-v">—</dd>
+                </div>
+                <div class="similar-file__stat" data-stat="bitrate_a" data-diff="unknown">
+                  <dt>Audio BR</dt>
+                  <dd class="meta-bitrate-a">—</dd>
+                </div>
+              </dl>
+            </div>
           </div>
         </div>
       </template>
@@ -1732,16 +2531,16 @@
                   <div class="artifact-info">
                     <h3>Thumbnails</h3>
                     <div class="coverage-display">
-                      <span class="coverage-text" id="thumbnailsCoverage">0%</span>
+                      <span class="coverage-text" id="thumbnailCoverage">0%</span>
                       <div class="coverage-bar-mini">
-                        <div class="coverage-fill-mini" id="thumbnailsFill"></div>
+                        <div class="coverage-fill-mini" id="thumbnailFill"></div>
                       </div>
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate hidden" data-operation="thumbnails-missing" title="Generate missing thumbnails">Generate Missing</button>
-                    <button class="btn-generate d-none hidden" data-operation="thumbnails-all" title="Recompute all thumbnails">Recompute All</button>
-                    <button class="btn-generate d-none hidden" data-operation="thumbnails-clear" title="Delete all generated thumbnails without regenerating">Clear</button>
+                    <button class="btn-generate hidden" data-operation="thumbnail-missing" title="Generate missing thumbnails">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="thumbnail-all" title="Recompute all thumbnails">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="thumbnail-clear" title="Delete all generated thumbnails without regenerating">Clear</button>
                     <button class="btn-options" data-artifact="thumbnail" title="Options" aria-label="Thumbnail options">
                       <svg width="16" height="16" aria-hidden="true">
                         <use href="#icon-options" />
@@ -1759,16 +2558,16 @@
                   <div class="artifact-info">
                     <h3>Previews</h3>
                     <div class="coverage-display">
-                      <span class="coverage-text" id="previewsCoverage">0%</span>
+                      <span class="coverage-text" id="previewCoverage">0%</span>
                       <div class="coverage-bar-mini">
-                        <div class="coverage-fill-mini" id="previewsFill"></div>
+                        <div class="coverage-fill-mini" id="previewFill"></div>
                       </div>
                     </div>
                   </div>
                   <div class="artifact-actions">
-                    <button class="btn-generate hidden" data-operation="previews-missing">Generate Missing</button>
-                    <button class="btn-generate d-none hidden" data-operation="previews-all">Recompute All</button>
-                    <button class="btn-generate d-none hidden" data-operation="previews-clear" title="Delete all preview videos">Clear</button>
+                    <button class="btn-generate hidden" data-operation="preview-missing">Generate Missing</button>
+                    <button class="btn-generate d-none hidden" data-operation="preview-all">Recompute All</button>
+                    <button class="btn-generate d-none hidden" data-operation="preview-clear" title="Delete all preview videos">Clear</button>
                     <button class="btn-options" data-artifact="preview" aria-label="Preview options">
                       <svg width="16" height="16" aria-hidden="true">
                         <use href="#icon-options" />
@@ -1854,7 +2653,7 @@
               <div class="artifact-card artifact-card-uniform" data-artifact="markers">
                 <div class="artifact-header">
                   <div class="artifact-info">
-                    <h3>Scene Detection</h3>
+                    <h3>Marker Detection</h3>
                     <div class="coverage-display">
                       <span class="coverage-text" id="markersCoverage">0%</span>
                       <div class="coverage-bar-mini">
@@ -1865,7 +2664,7 @@
                   <div class="artifact-actions">
                     <button class="btn-generate hidden" data-operation="markers-missing">Generate Missing</button>
                     <button class="btn-generate d-none hidden" data-operation="markers-all">Recompute All</button>
-                    <button class="btn-generate d-none hidden" data-operation="markers-clear" title="Delete all scene detection JSON">Clear</button>
+                    <button class="btn-generate d-none hidden" data-operation="markers-clear" title="Delete all marker detection JSON">Clear</button>
                     <button class="btn-options" data-artifact="markers">
                       <svg width="16" height="16" aria-hidden="true">
                         <use href="#icon-options" />
@@ -1874,8 +2673,8 @@
                   </div>
                 </div>
                 <div class="options-tooltip d-none" id="markersOptions">
-                  <label>Threshold: <input type="number" id="sceneThreshold" value="0.4" min="0.1" max="1.0" step="0.1"></label>
-                  <label>Limit: <input type="number" id="sceneLimit" value="0" min="0" max="100"></label>
+                  <label>Threshold: <input type="number" id="markerThreshold" value="0.4" min="0.1" max="1.0" step="0.1"></label>
+                  <label>Limit: <input type="number" id="markerLimit" value="0" min="0" max="100"></label>
                 </div>
               </div>
 
@@ -1919,46 +2718,6 @@
                   </label>
                 </div>
               </div>
-
-              <!-- Embeddings (recompute embeddings without re-detecting boxes) -->
-              <div class="artifact-card artifact-card-uniform hidden" data-artifact="embed" hidden style="display: none;">
-                <div class="artifact-header">
-                  <div class="artifact-info">
-                    <h3>Embeddings</h3>
-                    <div class="coverage-display">
-                      <span class="coverage-text" id="embedCoverage">0%</span>
-                      <div class="coverage-bar-mini">
-                        <div class="coverage-fill-mini" id="embedFill"></div>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="artifact-actions">
-                    <button class="btn-generate hidden" data-operation="embed-missing">Generate Missing</button>
-                    <button class="btn-generate d-none hidden" data-operation="embed-all">Recompute All</button>
-                    <button class="btn-generate d-none hidden" data-operation="embed-clear" title="Delete all embedding vectors">Clear</button>
-                    <button class="btn-options" data-artifact="embed" title="Options">
-                      <svg width="16" height="16" aria-hidden="true">
-                        <use href="#icon-options" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-                <div class="options-tooltip d-none" id="embedOptions">
-                  <label>Interval (sec): <input type="number" id="embedInterval" value="1.0" min="0.5" max="10.0" step="0.5"></label>
-                  <label>Min Size: <input type="number" id="embedMinSize" value="0.10" min="0.05" max="0.5" step="0.05"></label>
-                  <label>Backend:
-                    <div class="select">
-                      <select id="embedBackend" class="control-select">
-                        <option value="auto" selected>Auto</option>
-                        <option value="opencv">OpenCV</option>
-                        <option value="insightface">InsightFace</option>
-                      </select>
-                      <span class="chevron">▾</span>
-                    </div>
-                  </label>
-                  <label>Similarity Thresh: <input type="number" id="embedSimThresh" value="0.9" min="0.1" max="1.0" step="0.05"></label>
-                </div>
-              </div>
             </div>
           </div>
           <!-- Orphaned Artifacts Section -->
@@ -1976,6 +2735,7 @@
                   </div>
                 </div>
                 <div class="orphan-actions">
+                  <button class="btn-sm" id="refreshOrphansSummaryBtn" title="Manually recount orphaned artifacts">Refresh Count</button>
                   <button class="btn-preview" id="previewOrphansBtn" disabled title="Show suggested cleanup (dry run)">Preview Cleanup</button>
                   <!-- Apply Cleanup is hidden until a preview is displayed -->
                   <button class="btn-cleanup d-none" id="cleanupOrphansBtn" disabled title="Apply cleanup (removes unmatched orphans)">Apply Cleanup</button>
@@ -2101,11 +2861,11 @@
                 </div>
               </label>
               <label class="selection-option selection-option-wide mt-12">
-                <input type="checkbox" id="settingShowScenes" />
+                <input type="checkbox" id="settingShowMarkers" />
                 <div>
-                  <div class="fw-600">Show scene boundary markers</div>
+                  <div class="fw-600">Show marker boundary ticks</div>
                   <div class="hint-sm">
-                    Toggle the scene boundary ticks on the player timeline. This only affects display; scenes data still loads as usual.
+                    Toggle the marker boundary ticks on the player timeline. This only affects display; marker data still loads as usual.
                   </div>
                 </div>
               </label>
@@ -2141,40 +2901,46 @@
           </div>
           <div class="task-section task-section-spaced">
             <div class="section-header">
-              <h2>Job Processing</h2>
+              <h2>Auto-generate Missing Artifacts</h2>
             </div>
-            <div class="file-selection file-selection-compact file-selection-inline">
-              <div class="flex-row gap-16 w-100">
-                <div class="fw-600">Max concurrent jobs</div>
-                <input type="number" id="settingConcurrency" min="1" max="16" step="1" value="4" class="w-120" />
-              </div>
-            </div>
-            <div class="file-selection file-selection-compact file-selection-inline mt-12">
-              <div class="flex-row gap-16 w-100">
-                <div class="fw-600">FFmpeg parallel processes</div>
-                <input type="number" id="settingFfmpegConcurrency" min="1" max="16" step="1" value="4" class="w-120" />
-              </div>
-            </div>
-            <div class="file-selection file-selection-compact file-selection-inline mt-8">
-              <div class="flex-row gap-16 w-100">
-                <div class="fw-600">FFmpeg threads per process</div>
-                <input type="number" id="settingFfmpegThreads" min="1" max="32" step="1" value="1" class="w-120" />
-              </div>
-            </div>
-            <div class="file-selection file-selection-compact file-selection-inline mt-8">
-              <div class="flex-row gap-16 w-100">
-                <div class="fw-600">FFmpeg timelimit (s)</div>
-                <input type="number" id="settingFfmpegTimelimit" min="0" max="86400" step="10" value="600" class="w-120" />
-              </div>
-            </div>
-            <div class="hint-sm mt-8 max-w-640">FFmpeg settings control low-level media processing. Parallel processes multiply workload across different files; threads apply within a single process. Lower timelimit can fail very long operations; set 0 to disable.</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </main>
-
-  <!-- Toast host (notifications rendered via template clones) -->
-  <div id="toastHost" aria-live="polite" aria-atomic="false"></div>
-</body>
-</html>
+            <div class="file-selection file-selection-compact">
+              <label class="selection-option selection-option-wide">
+                <input type="checkbox" id="settingAutoArtifactMetadata" />
+                <div>
+                  <div class="fw-600">Metadata</div>
+                  <div class="hint-sm">Automatically queue metadata extraction when a video is opened and its metadata sidecar is missing.</div>
+                </div>
+              </label>
+              <label class="selection-option selection-option-wide mt-12">
+                <input type="checkbox" id="settingAutoArtifactThumbnail" />
+                <div>
+                  <div class="fw-600">Thumbnails</div>
+                  <div class="hint-sm">Start a thumbnail job for the active video if none exists yet. Requires FFmpeg.</div>
+                </div>
+              </label>
+              <label class="selection-option selection-option-wide mt-12">
+                <input type="checkbox" id="settingAutoArtifactPreview" />
+                <div>
+                  <div class="fw-600">Previews</div>
+                  <div class="hint-sm">Kick off preview generation on playback when hover previews are missing. Requires FFmpeg and may take longer than other artifacts.</div>
+                </div>
+              </label>
+              <label class="selection-option selection-option-wide mt-12">
+                <input type="checkbox" id="settingAutoArtifactSprites" />
+                <div>
+                  <div class="fw-600">Sprites</div>
+                  <div class="hint-sm">Queue sprite sheet jobs automatically for the playing video when none are present. Requires FFmpeg.</div>
+                </div>
+              </label>
+              <label class="selection-option selection-option-wide mt-12">
+                <input type="checkbox" id="settingAutoArtifactMarkers" />
+                <div>
+                  <div class="fw-600">Markers</div>
+                  <div class="hint-sm">Begin marker detection automatically when playback starts and marker data is missing. Requires FFmpeg.</div>
+                </div>
+              </label>
+              <label class="selection-option selection-option-wide mt-12">
+                <input type="checkbox" id="settingAutoArtifactHeatmap" />
+                <div>
+                  <div class="fw-600">Heatmaps</div>
+                  <

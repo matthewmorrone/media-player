@@ -944,13 +944,6 @@ button.btn-danger {
 
 
 
-/* Extracted from former inline styles */
-.embed-extra {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-
 .orphan-details {
   font-size: 13px;
   line-height: 1.5;
@@ -6031,7 +6024,7 @@ enforce single-line flex bar */
   cursor: pointer;
 }
 
-/* Legacy markers layer (scene ticks) */
+/* Legacy markers layer (tick overlay) */
 #timelineMarkers.timeline-markers-layer {
   position: absolute;
   inset: 0;
@@ -6333,8 +6326,8 @@ enforce single-line flex bar */
   opacity: 1;
 }
 
-/* Scene ticks */
-.scrubber-scenes {
+/* Marker ticks */
+.scrubber-markers {
   position: absolute;
   left: 0;
   top: 0;
@@ -6344,7 +6337,7 @@ enforce single-line flex bar */
   mix-blend-mode: screen;
 }
 
-.scrubber-scenes span {
+.scrubber-markers span {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -6353,7 +6346,7 @@ enforce single-line flex bar */
   opacity: .55;
 }
 
-.scrubber-scenes .intro-scrubber-marker {
+.scrubber-markers .intro-scrubber-marker {
   width: 4px;
   background: linear-gradient(180deg, #ffb000, #ff7a00);
   box-shadow: 0 0 6px rgba(255, 122, 0, 0.6);
