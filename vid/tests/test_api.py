@@ -1,0 +1,296 @@
+import time
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+import api
+
+
+def test_health_and_videos(tmp_path):
+    with TestClient(api.app) as client:
+        # Health endpoint test
+        r = client.get("/health")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+
+        # /videos with one video file
+        (tmp_path / "v.mp4").write_bytes(b"00")
+        r = client.get("/videos", params={"directory": str(tmp_path)})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] == 1
+        assert any(v["name"] == "v.mp4" for v in body["videos"])
+        for v in body["videos"]:
+            assert {"path", "name", "size"} <= v.keys()
+
+        # /videos with empty directory
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        r = client.get("/videos", params={"directory": str(empty_dir)})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] == 0
+        assert body["videos"] == []
+
+        # /videos with invalid/non-existent directory
+        invalid_dir = tmp_path / "does_not_exist"
+        r = client.get("/videos", params={"directory": str(invalid_dir)})
+        # Expecting 400 or 404 depending on API implementation, adjust as needed
+        assert r.status_code in (400, 404)
+
+
+def test_video_detail_artifacts(tmp_path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_DISABLE", "1")
+    vid = tmp_path / "a.mp4"
+    vid.write_bytes(b"00")
+    thumb = tmp_path / "a.jpg"
+    thumb.write_bytes(b"fakejpg")  # Simulate thumbnail exists
+
+    with TestClient(api.app) as client:
+        # Case: artifact exists
+        r = client.get(f"/videos/{vid.name}", params={"directory": str(tmp_path)})
+        assert r.status_code == 200
+        data = r.json()
+        assert "artifacts" in data
+        tinfo = data["artifacts"]["thumbs"]
+        assert {"url", "exists"} <= tinfo.keys()
+        assert tinfo["url"].endswith(".jpg")
+        assert tinfo["exists"] is True
+
+        r_list = client.get("/videos", params={"directory": str(tmp_path), "detail": 1})
+        assert r_list.status_code == 200
+        vdata = r_list.json()["videos"][0]
+        assert "artifacts" in vdata
+        ltinfo = vdata["artifacts"]["thumbs"]
+        assert {"url", "exists"} <= ltinfo.keys()
+        assert ltinfo["url"].endswith(".jpg")
+        assert ltinfo["exists"] is True
+
+        # Case: artifact missing
+        thumb.unlink()  # Remove thumbnail
+        r_missing = client.get(f"/videos/{vid.name}", params={"directory": str(tmp_path)})
+        assert r_missing.status_code == 200
+        data_missing = r_missing.json()
+        assert "artifacts" in data_missing
+        tinfo_missing = data_missing["artifacts"]["thumbs"]
+        assert {"url", "exists"} <= tinfo_missing.keys()
+        assert tinfo_missing["url"].endswith(".jpg")
+        assert tinfo_missing["exists"] is False
+
+        r_list_missing = client.get("/videos", params={"directory": str(tmp_path), "detail": 1})
+        assert r_list_missing.status_code == 200
+        vdata_missing = r_list_missing.json()["videos"][0]
+        assert "artifacts" in vdata_missing
+        ltinfo_missing = vdata_missing["artifacts"]["thumbs"]
+        assert {"url", "exists"} <= ltinfo_missing.keys()
+        assert ltinfo_missing["url"].endswith(".jpg")
+        assert ltinfo_missing["exists"] is False
+
+
+def test_job_metadata_and_report(tmp_path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_DISABLE", "1")
+    (tmp_path / "v.mp4").write_bytes(b"00")
+    with TestClient(api.app) as client:
+        payload = {
+            "task": "metadata",
+            "directory": str(tmp_path),
+            "recursive": False,
+            "force": True,
+            "params": {},
+        }
+        r = client.post("/jobs", json=payload)
+        assert r.status_code == 200
+        job_id = r.json()["id"]
+        for _ in range(20):
+            r2 = client.get(f"/jobs/{job_id}")
+            if r2.json()["status"] == "done":
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("job did not finish")
+        report = client.get("/report", params={"directory": str(tmp_path)})
+        assert report.status_code == 200
+        data = report.json()
+        assert data["counts"]["metadata"] == 1
+    assert (tmp_path / ".artifacts" / "v.ffprobe.json").exists()
+
+
+def test_api_dupes_and_embed_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_DISABLE", "1")
+    (tmp_path / "x.mp4").write_bytes(b"00")
+    (tmp_path / "y.mp4").write_bytes(b"00")
+    with TestClient(api.app) as client:
+        # phash job
+        job = client.post("/jobs", json={"task": "phash", "directory": str(tmp_path), "params": {"frames": 1}}).json()
+        for _ in range(30):
+            j = client.get(f"/jobs/{job['id']}").json()
+            if j["status"] == "done":
+                break
+            time.sleep(0.1)
+        # dupes endpoint
+        r_dup = client.get("/phash/duplicates", params={"directory": str(tmp_path), "threshold": 0.5})
+        assert r_dup.status_code == 200
+        assert "pairs" in r_dup.json()
+        # embed job
+        job2 = client.post("/jobs", json={"task": "embed", "directory": str(tmp_path), "params": {"sample_rate": 1.0}}).json()
+        for _ in range(30):
+            j2 = client.get(f"/jobs/{job2['id']}").json()
+            if j2["status"] in ("done", "error"):
+                break
+            time.sleep(0.1)
+        assert j2["status"] == "done"
+        assert j2["result"] == 0
+
+
+def test_api_clip_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_DISABLE", "1")
+    video = tmp_path / "c.mp4"
+    video.write_bytes(b"00")
+    dest = tmp_path / "out"
+    with TestClient(api.app) as client:
+        payload = {
+            "task": "clip",
+            "directory": str(tmp_path),
+            "params": {
+                "file": str(video),
+                "ranges": [{"start": 0.0, "end": 1.0}],
+                "dest": str(dest),
+            },
+        }
+        job = client.post("/jobs", json=payload).json()
+        for _ in range(30):
+            r = client.get(f"/jobs/{job['id']}").json()
+            if r["status"] == "done":
+                break
+            time.sleep(0.1)
+        assert r["status"] == "done"
+        files = r["result"]["files"]
+        assert len(files) == 1
+        assert Path(files[0]).exists()
+
+
+def test_api_invalid_task():
+    with TestClient(api.app) as client:
+        r = client.post("/jobs", json={"task": "not-a-task", "directory": "."})
+        assert r.status_code == 400
+
+
+def test_api_tags_endpoints(tmp_path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_DISABLE", "1")
+    (tmp_path / "a.mp4").write_bytes(b"00")
+    with TestClient(api.app) as client:
+        # Initially empty
+        r0 = client.get(f"/videos/a.mp4/tags", params={"directory": str(tmp_path)})
+        assert r0.status_code == 200
+        assert r0.json()["tags"] == []
+        # Add tags via PATCH
+        r1 = client.patch(f"/videos/a.mp4/tags", params={"directory": str(tmp_path)}, json={"add": ["x", "y"]})
+        assert r1.status_code == 200
+        assert set(r1.json()["tags"]) == {"x", "y"}
+        # Remove one and add another
+        r2 = client.patch(f"/videos/a.mp4/tags", params={"directory": str(tmp_path)}, json={"remove": ["x"], "add": ["z"]})
+        assert r2.status_code == 200
+        assert set(r2.json()["tags"]) == {"y", "z"}
+        # Summary
+        rs = client.get("/tags/summary", params={"directory": str(tmp_path)})
+        assert rs.status_code == 200
+        summ = rs.json()
+        assert summ["tags"].get("y") == 1
+        assert summ["tags"].get("z") == 1
+        # Filtering (match all)
+        rf = client.get("/videos", params={"directory": str(tmp_path), "tags": "y,z"})
+        assert rf.status_code == 200
+        assert rf.json()["count"] == 1
+        # Filtering (match any)
+        rfa = client.get("/videos", params={"directory": str(tmp_path), "tags": "y,foo", "match_any": 1})
+        assert rfa.status_code == 200
+        assert rfa.json()["count"] == 1
+        # ETag conditional
+        first = client.get("/videos", params={"directory": str(tmp_path)})
+        etag = first.json()["etag"]
+        not_mod = client.get("/videos", params={"directory": str(tmp_path)}, headers={"If-None-Match": etag})
+        assert not_mod.status_code == 304
+
+
+def test_api_rename_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_DISABLE", "1")
+    vid = tmp_path / "a.mp4"
+    vid.write_bytes(b"00")
+    art_dir = tmp_path / ".artifacts"
+    art_dir.mkdir()
+    (art_dir / "a.ffprobe.json").write_text("{}")
+    with TestClient(api.app) as client:
+        r = client.post(f"/videos/{vid.name}/rename", params={"directory": str(tmp_path)}, json={"new_name": "b.mp4"})
+        assert r.status_code == 200
+        assert (tmp_path / "b.mp4").exists()
+        assert (art_dir / "b.ffprobe.json").exists()
+        assert not vid.exists()
+
+def test_api_rename_nonexistent_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_DISABLE", "1")
+    art_dir = tmp_path / ".artifacts"
+    art_dir.mkdir()
+    with TestClient(api.app) as client:
+        r = client.post(f"/videos/nonexistent.mp4/rename", params={"directory": str(tmp_path)}, json={"new_name": "b.mp4"})
+        assert r.status_code == 404
+
+def test_api_rename_to_existing_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_DISABLE", "1")
+    vid1 = tmp_path / "a.mp4"
+    vid2 = tmp_path / "b.mp4"
+    vid1.write_bytes(b"00")
+    vid2.write_bytes(b"11")
+    art_dir = tmp_path / ".artifacts"
+    art_dir.mkdir()
+    (art_dir / "a.ffprobe.json").write_text("{}")
+    (art_dir / "b.ffprobe.json").write_text("{}")
+    with TestClient(api.app) as client:
+        r = client.post(f"/videos/{vid1.name}/rename", params={"directory": str(tmp_path)}, json={"new_name": "b.mp4"})
+        assert r.status_code == 409
+
+def test_api_rename_unexpected_exception(tmp_path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_DISABLE", "1")
+    vid = tmp_path / "a.mp4"
+    vid.write_bytes(b"00")
+    art_dir = tmp_path / ".artifacts"
+    art_dir.mkdir()
+    (art_dir / "a.ffprobe.json").write_text("{}")
+
+    # Monkeypatch os.rename to raise an exception
+    import os
+    original_rename = os.rename
+    def raise_exception(*args, **kwargs):
+        raise RuntimeError("Unexpected error")
+    monkeypatch.setattr(os, "rename", raise_exception)
+
+    with TestClient(api.app) as client:
+        r = client.post(f"/videos/{vid.name}/rename", params={"directory": str(tmp_path)}, json={"new_name": "b.mp4"})
+        assert r.status_code == 500
+
+    # Restore original os.rename
+    monkeypatch.setattr(os, "rename", original_rename)
+
+
+    def test_api_cancel_metadata_job(tmp_path, monkeypatch):
+        monkeypatch.setenv("FFPROBE_DISABLE", "1")
+        # Create many stub videos to keep job busy long enough to cancel
+        for i in range(80):
+            (tmp_path / f"v{i}.mp4").write_bytes(b"00")
+        from fastapi.testclient import TestClient
+        import api
+        with TestClient(api.app) as client:
+            job = client.post("/jobs", json={"task": "metadata", "directory": str(tmp_path), "params": {"force": True}}).json()
+            job_id = job["id"]
+            # Issue cancel quickly
+            cancel_resp = client.delete(f"/jobs/{job_id}")
+            assert cancel_resp.status_code == 200
+            # Wait for final state
+            final_status = None
+            for _ in range(40):
+                st = client.get(f"/jobs/{job_id}").json()
+                if st["status"] in ("canceled", "done", "error"):
+                    final_status = st["status"]
+                    break
+                time.sleep(0.1)
+            assert final_status == "canceled", f"expected canceled got {final_status}"
