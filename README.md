@@ -21,6 +21,12 @@ Environment variables:
 - MEDIA_DATA_BACKEND: set to `dual` (default) to allow both DB + JSON reads, `db` to disable tag/performer sidecar reads & writes, or `files` to keep legacy JSON as the only source while importing.
 - SPRITES_MAX_TILES: upper bound for auto-expanded sprite grids (default 400). Set to 0 to allow unlimited growth when a video needs more preview tiles.
 
+## How this repo differs from related projects
+
+- **vid** ([github.com/matthewmorrone/vid](https://github.com/matthewmorrone/vid)): a tiny Python CLI wrapper around mpv/mpv.net/IINA for launching a single file or URL quickly. It has no library indexing, metadata, or web UI; use it when you just need a minimal player front-end for an existing desktop media player.
+- **player**: there is no separate public “player” repo today; the full player + server stack lives here. Any earlier standalone player experiments have been folded into this repository so the backend API, database, and browser UI stay in lockstep.
+- **stash-js** (published as [rezitech/stash](https://github.com/rezitech/stash)): a ~1 KB JavaScript helper for offline/localStorage-like persistence of arbitrary data types. It is storage-only and media-agnostic, whereas this project layers a SQLite-backed media library, artifact generation, and playback UI on top of those storage primitives.
+
 ## Optional features & extras
 Some functionality (face detection, subtitles via whisper.cpp) activates automatically if supporting binaries or Python packages are present.
 
